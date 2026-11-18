@@ -1,0 +1,23 @@
+{
+ "source": "tests/test_osi_datatypes.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "typed",
+     "untyped"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "typed",
+     "untyped"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

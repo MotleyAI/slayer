@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_yaml_storage_cache.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  }
+ ]
+}

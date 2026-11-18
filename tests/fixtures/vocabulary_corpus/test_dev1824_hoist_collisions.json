@@ -1,0 +1,98 @@
+{
+ "source": "tests/test_dev1824_hoist_collisions.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, partition_by=region)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "last(amount, partition_by=region)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, partition_by=city)",
+    "name": "b"
+   },
+   "new": {
+    "expression": "last(amount, partition_by=city)",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d', partition_by=region)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d', partition_by=region)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, partition_by=region)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, partition_by=region)",
+    "name": "l"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 175,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -72,8 +72,8 @@ def _object_properties(definition: dict[str, Any]) -> set[str]:
     return {p for branch in definition.get("oneOf", []) for p in branch.get("properties", {})}
 
 
-def _model_keys(model: type[BaseModel]) -> set[str]:
-    return {info.alias or name for name, info in model.model_fields.items()}
+def _dataset_keys(dataset: type[BaseModel]) -> set[str]:
+    return {info.alias or name for name, info in dataset.model_fields.items()}
 
 
 @pytest.mark.parametrize("path", [*CURRENT_FIXTURES, EXAMPLE], ids=lambda p: p.name)
@@ -94,13 +94,13 @@ def test_every_schema_def_is_classified() -> None:
 @pytest.mark.parametrize("def_name", sorted(_MODEL_FOR_DEF))
 def test_schema_properties_are_modelled(def_name: str) -> None:
     properties = _object_properties(_schema()["$defs"][def_name])
-    missing = properties - _model_keys(_MODEL_FOR_DEF[def_name]) - {
+    missing = properties - _dataset_keys(_MODEL_FOR_DEF[def_name]) - {
         prop for d, prop in _IGNORED_PROPERTIES if d == def_name}
     assert not missing, f"{def_name}: unmodelled schema properties {sorted(missing)}"
 
 
 def test_root_properties_are_modelled() -> None:
-    missing = set(_schema()["properties"]) - _model_keys(OSIDocument)
+    missing = set(_schema()["properties"]) - _dataset_keys(OSIDocument)
     assert not missing, f"document root: unmodelled schema properties {sorted(missing)}"
 
 
@@ -120,5 +120,5 @@ def test_example_validates_and_imports_without_unconverted_entries(tmp_path: Pat
         OsiToSlayerConverter(documents=parse_osi_path(EXAMPLE), data_source="shop_osi", target_dialect="duckdb"),
         datasource=DatasourceConfig(name="shop_osi", type="duckdb", database=str(db)),
     )
-    assert result.models
+    assert result.datasets
     assert not [e for e in entries(result) if e.severity == "unconverted"]

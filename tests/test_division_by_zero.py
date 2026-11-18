@@ -7,7 +7,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects import SQLGLOT_NAMES
 
@@ -20,32 +20,32 @@ ORDERS = TableSpec(
 )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
     )
 
 
 def _empty_population_ratios() -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "orders",
-        "measures": [
-            {"formula": "sum(amount) / count(*)", "name": "avg_amount"},
-            {"formula": "count(id) / count(*)", "name": "share"},
+        "population": "orders",
+        "metrics": [
+            {"expression": "sum(amount) / count(*)", "name": "avg_amount"},
+            {"expression": "count(id) / count(*)", "name": "share"},
         ],
-        "filters": ["status = 'none'"],
+        "filter": ["status = 'none'"],
     })
 
 
 @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
 async def test_a_ratio_over_an_empty_population_is_null(backend: str) -> None:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [ORDERS]), models=[_orders()],
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [ORDERS]), datasets=[_orders()],
     ) as (engine, _db):
         resp = await engine.execute(_empty_population_ratios())
     assert [(r["orders.avg_amount"], r["orders.share"]) for r in resp.data] == [(None, None)]
@@ -53,7 +53,7 @@ async def test_a_ratio_over_an_empty_population_is_null(backend: str) -> None:
 
 @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
 async def test_every_dialect_guards_the_divisor(dialect: str) -> None:
-    sql = await _engine_generate(query=_empty_population_ratios(), model=_orders(), dialect=dialect)
+    sql = await _engine_generate(query=_empty_population_ratios(), dataset=_orders(), dialect=dialect)
     divisions = list(sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Div))
     assert divisions, sql
     assert all(
@@ -65,6 +65,6 @@ async def test_every_dialect_guards_the_divisor(dialect: str) -> None:
 
 
 async def test_a_nonzero_literal_divisor_is_not_guarded() -> None:
-    query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount) / 2", "name": "half"}]})
-    sql = await _engine_generate(query=query, model=_orders(), dialect="postgres")
+    query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount) / 2", "name": "half"}]})
+    sql = await _engine_generate(query=query, dataset=_orders(), dialect="postgres")
     assert "NULLIF" not in sql.upper(), sql

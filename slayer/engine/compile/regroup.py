@@ -7,43 +7,44 @@ from __future__ import annotations
 
 from typing import AbstractSet, Callable, Dict, Mapping
 
-from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey, ValueKey, substitute_value_keys, walk_value_keys
+from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, FieldKey, ValueKey, substitute_value_keys, walk_value_keys
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.bound import BoundFilter
+from slayer.core.models import SlayerDataset
+from slayer.core.scope import StageSchema
 
 __all__ = [
     "REGROUP_LEAF_PREFIX",
     "RegroupPlaceholderRegistry",
     "substitute_in_bound_filter",
-    "reserved_prefix_columns",
+    "reserved_prefix_fields",
 ]
 
 
-def reserved_prefix_columns(model) -> list:
-    """``model`` columns colliding with the reserved regroup placeholder prefix."""
-    if model is None:
+def reserved_prefix_fields(dataset: SlayerDataset | StageSchema | None) -> list[str]:
+    """``dataset`` fields colliding with the reserved regroup placeholder prefix."""
+    if dataset is None:
         return []
-    return [c.name for c in getattr(model, "columns", []) or []
-            if c.name.startswith(REGROUP_LEAF_PREFIX)]
+    return [c.name for c in dataset.fields if c.name.startswith(REGROUP_LEAF_PREFIX)]
 
 
 class RegroupPlaceholderRegistry:
-    """Mints a distinct reserved-leaf ``ColumnKey`` per structural aggregate, keyed
+    """Mints a distinct reserved-leaf ``FieldKey`` per structural aggregate, keyed
     by ``AggregateKey`` identity NOT canonical alias (which two distinct aggregates
     can share); a monotonic index guarantees distinct leaves, skipping ``reserved``
     (an enclosing plan's placeholders a sub-plan may read)."""
 
     def __init__(self, *, reserved: AbstractSet[ValueKey] = frozenset()) -> None:
-        self._by_key: Dict[ValueKey, ColumnKey] = {}
+        self._by_key: Dict[ValueKey, FieldKey] = {}
         self._reserved = reserved
         self._next = 0
 
-    def placeholder_for(self, key: ValueKey) -> ColumnKey:
+    def placeholder_for(self, key: ValueKey) -> FieldKey:
         existing = self._by_key.get(key)
         if existing is not None:
             return existing
         seed = (
-            (canonical_aggregate_alias(key, profile="stage_formula")
+            (canonical_aggregate_alias(key, profile="stage_expression")
              if isinstance(key, AggregateKey) else None)
             or getattr(key, "agg", None)
             or getattr(key, "op", None)
@@ -55,9 +56,9 @@ class RegroupPlaceholderRegistry:
         self._by_key[key] = placeholder
         return placeholder
 
-    def _mint(self, seed: str) -> ColumnKey:
+    def _mint(self, seed: str) -> FieldKey:
         self._next += 1
-        return ColumnKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}{self._next - 1}__{seed}")
+        return FieldKey(path=(), leaf=f"{REGROUP_LEAF_PREFIX}{self._next - 1}__{seed}")
 
 
 def substitute_in_bound_filter(

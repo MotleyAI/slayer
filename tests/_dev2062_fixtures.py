@@ -29,12 +29,13 @@ from typing import AsyncIterator, List, Optional
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
@@ -44,35 +45,35 @@ AOV = "sum(amount) / count(*)"
 CROSS_RATIO = "sum(amount) / max(customers.score)"
 
 
-def orders_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="order_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="amount", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.INT),
         ],
-        measures=[ModelMeasure(name="aov", formula=AOV)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        metrics=[DatasetMetric(name="aov", expression=AOV)],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="score", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="score", datatype=DataType.INT),
         ],
     )
 
 
-def dev2062_models(*, data_source: str = "test") -> List[SlayerModel]:
-    return [orders_model(data_source=data_source), customers_model(data_source=data_source)]
+def dev2062_datasets(*, data_source: str = "test") -> List[SlayerDataset]:
+    return [orders_dataset(data_source=data_source), customers_dataset(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
@@ -82,24 +83,24 @@ DATE_RANGE: List[Optional[str]] = ["2025-01-01", "2025-12-31"]
 DATE_FILTER = "order_date >= '2025-01-01'"
 
 
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(expression: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDimension]:
     return [TimeDimension(
-        dimension="order_date", granularity=TimeGranularity.MONTH, date_range=date_range,
+        field="order_date", granularity=TimeGranularity.MONTH, date_range=date_range,
     )]
 
 
-def monthly_q(*measures: ModelMeasure, **kw) -> SlayerQuery:
+def monthly_q(*measures: DatasetMetric, **kw) -> SlayerQuery:
     kw.setdefault("time_dimensions", month_td())
-    return orders_q(measures=list(measures), **kw)
+    return orders_q(metrics=list(measures), **kw)
 
 
 # --------------------------------------------------------------------------- #
@@ -163,7 +164,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev2062_models()) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev2062_datasets()) as (engine, _):
         yield engine
 
 
@@ -175,14 +176,14 @@ def month_key(value) -> str:
     return str(value)[:7]
 
 
-def by_month(resp, name: str = "v") -> dict:
+def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "order_date" in k)
     out = {month_key(r[tkey]): r[f"orders.{name}"] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one month"
     return out
 
 
-def month_order(resp) -> List[str]:
+def month_order(resp: SlayerResponse) -> List[str]:
     tkey = next(k for k in resp.columns if "order_date" in k)
     return [month_key(r[tkey]) for r in resp.data]
 

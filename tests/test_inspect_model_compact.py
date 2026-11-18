@@ -11,7 +11,7 @@ from collections.abc import Generator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -39,13 +39,13 @@ async def _seed_orders_with_memory(
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     ))
     mem = await storage.save_memory(
@@ -72,7 +72,7 @@ async def test_verbose_markdown_dumps_full_learning(
     )
     mcp = create_mcp_server(storage=yaml_storage)
     result = await _call(mcp, name="inspect", arguments={
-        "entity_type": "model", "reference": "orders", "compact": False,
+        "entity_type": "dataset", "reference": "orders", "compact": False,
     })
     assert "first paragraph." in result
     assert "second paragraph body." in result
@@ -89,7 +89,7 @@ async def test_verbose_json_learnings_keeps_full_learning(
     )
     mcp = create_mcp_server(storage=yaml_storage)
     result = await _call(mcp, name="inspect", arguments={
-        "entity_type": "model", "reference": "orders", "compact": False, "format": "json",
+        "entity_type": "dataset", "reference": "orders", "compact": False, "format": "json",
     })
     payload = json.loads(result)
     entry = payload["learnings"][0]

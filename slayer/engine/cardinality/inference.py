@@ -1,4 +1,4 @@
-"""Join-cardinality inference helpers and the detection report.
+"""Relationship-cardinality inference helpers and the detection report.
 
 Uniqueness is asymmetric evidence: a scan disproves it with one duplicate, but
 can never prove it.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import JoinCardinality, StrEnum
+from slayer.core.enums import RelationshipCardinality, StrEnum
 from slayer.core.models import is_identifier
 
 
@@ -17,39 +17,39 @@ from slayer.core.models import is_identifier
 # ---------------------------------------------------------------------------
 
 
-def declares_solo_unique(*, columns, column) -> bool:
-    """Does ``column`` ALONE carry a declared uniqueness among ``columns``?"""
-    return column.unique or is_identifier(column=column, columns=columns)
+def declares_solo_unique(*, fields, field) -> bool:
+    """Does ``field`` ALONE carry a declared uniqueness among ``fields``?"""
+    return field.unique or is_identifier(field=field, fields=fields)
 
 
 def classify_cardinality(
     *, source_unique: bool, target_unique: bool
-) -> JoinCardinality:
+) -> RelationshipCardinality:
     """Total classification from the two sides' uniqueness (profiling path)."""
     if source_unique and target_unique:
-        return JoinCardinality.ONE_TO_ONE
+        return RelationshipCardinality.ONE_TO_ONE
     if target_unique:
-        return JoinCardinality.MANY_TO_ONE
+        return RelationshipCardinality.MANY_TO_ONE
     if source_unique:
-        return JoinCardinality.ONE_TO_MANY
-    return JoinCardinality.MANY_TO_MANY
+        return RelationshipCardinality.ONE_TO_MANY
+    return RelationshipCardinality.MANY_TO_MANY
 
 
 def infer_structural_cardinality(
     *, source_unique: bool, target_verified_unique: bool
-) -> JoinCardinality | None:
+) -> RelationshipCardinality | None:
     """Ingest-time guess. ``None`` unless the target is *verified* unique."""
     if not target_verified_unique:
         return None
     return classify_cardinality(source_unique=source_unique, target_unique=True)
 
 
-def _claims_source_unique(c: JoinCardinality) -> bool:
-    return c in (JoinCardinality.ONE_TO_ONE, JoinCardinality.ONE_TO_MANY)
+def _claims_source_unique(c: RelationshipCardinality) -> bool:
+    return c in (RelationshipCardinality.ONE_TO_ONE, RelationshipCardinality.ONE_TO_MANY)
 
 
-def _claims_target_unique(c: JoinCardinality) -> bool:
-    return c in (JoinCardinality.ONE_TO_ONE, JoinCardinality.MANY_TO_ONE)
+def _claims_target_unique(c: RelationshipCardinality) -> bool:
+    return c in (RelationshipCardinality.ONE_TO_ONE, RelationshipCardinality.MANY_TO_ONE)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ class CardinalityVerdict(StrEnum):
     #: Profiled fine but the key population was empty — an empty scan is no
     #: evidence of arity. Unlike SKIPPED_UNSUPPORTED, worth re-running later.
     NO_EVIDENCE = "no_evidence"
-    #: The scan itself failed; the message is in ``note``. Contained per join
+    #: The scan itself failed; the message is in ``note``. Contained per relationship
     #: so one unreadable table cannot abort the whole report.
     SCAN_FAILED = "scan_failed"
 
@@ -77,13 +77,13 @@ class SideStats(BaseModel):
     observed_unique: bool
 
 
-class JoinCardinalityFinding(BaseModel):
+class RelationshipCardinalityFinding(BaseModel):
     data_source: str
-    model: str
-    target_model: str
+    dataset: str
+    to: str
     join_pairs: list[list[str]]
-    stored: JoinCardinality | None = None
-    detected: JoinCardinality | None = None
+    stored: RelationshipCardinality | None = None
+    detected: RelationshipCardinality | None = None
     source_side: SideStats | None = None
     target_side: SideStats | None = None
     verdict: CardinalityVerdict
@@ -91,14 +91,14 @@ class JoinCardinalityFinding(BaseModel):
     note: str | None = None
 
 
-class JoinCardinalityReport(BaseModel):
-    findings: list[JoinCardinalityFinding] = Field(default_factory=list)
+class RelationshipCardinalityReport(BaseModel):
+    findings: list[RelationshipCardinalityFinding] = Field(default_factory=list)
 
 
 def compute_verdict(
     *,
-    stored: JoinCardinality | None,
-    detected: JoinCardinality,
+    stored: RelationshipCardinality | None,
+    detected: RelationshipCardinality,
     source_observed_unique: bool,
     target_observed_unique: bool,
 ) -> CardinalityVerdict:

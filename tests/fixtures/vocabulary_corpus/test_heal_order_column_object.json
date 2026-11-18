@@ -1,0 +1,49 @@
+{
+ "source": "tests/test_heal_order_column_object.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": {
+     "name": "sum(amount)"
+    },
+    "direction": "desc"
+   },
+   "new": {
+    "field": {
+     "name": "sum(amount)"
+    },
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 45,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 69,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 70,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 93,
+   "reason": "unclassifiable"
+  }
+ ]
+}

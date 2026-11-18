@@ -16,6 +16,7 @@ moved to its supported table — that flip is enforced there, not here.)
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -23,18 +24,20 @@ import pytest
 import slayer
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.planned import RegroupAttachPlan
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
     AMOUNT_BY_CHANNEL,
-    ModelMeasure,
+    DatasetMetric,
     POP_TOTAL,
     SPEND_BAND,
     SPEND_BY_BAND,
     SPEND_TOTAL,
     broadcast_warnings,
-    dev1836_models,
+    dev1836_datasets,
     make_exec_engine,
     q,
     rows_by,
@@ -42,13 +45,13 @@ from tests._dev1836_fixtures import (
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_backend(request):
+async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[str, SlayerQueryEngine]]:
     async for engine in make_exec_engine(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
@@ -60,10 +63,10 @@ LOCAL_BARE = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
@@ -78,7 +81,7 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_band_dim_with_cm_executes(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=[LOCAL_BAND], measures=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=[LOCAL_BAND], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.band")
         assert set(by) == {(1,), (0,)}
@@ -95,7 +98,7 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_bare_dim_with_cm_executes(self, exec_backend):
         _, engine = exec_backend
-        resp = await engine.execute(q(dimensions=[LOCAL_BARE], measures=[M, CM], to_many_handling="broadcast"))
+        resp = await engine.execute(q(dimensions=[LOCAL_BARE], metrics=[M, CM], to_many_handling="broadcast"))
         by = rows_by(resp, "orders.ct")
         assert set(by) == {(87.0,), (30.0,)}
         for row in resp.data:
@@ -103,8 +106,8 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_adding_cm_keeps_the_band_grain(self, exec_backend):
         _, engine = exec_backend
-        solo = await engine.execute(q(dimensions=[LOCAL_BAND], measures=[M]))
-        both = await engine.execute(q(dimensions=[LOCAL_BAND], measures=[M, CM]))
+        solo = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M]))
+        both = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M, CM]))
         solo_by = rows_by(solo, "orders.band")
         both_by = rows_by(both, "orders.band")
         assert set(solo_by) == set(both_by)
@@ -119,7 +122,7 @@ class TestRowAttachWithCrossModelMeasure:
         resp = await engine.execute(q(
             dimensions=[{"expression": "rank(sum(amount, partition_by=channel), direction='desc')",
                          "name": "rr"}],
-            measures=[M, CM], to_many_handling="broadcast",
+            metrics=[M, CM], to_many_handling="broadcast",
         ))
         by = {int(k[0]): row for k, row in rows_by(resp, "orders.rr").items()}
         # Channel totals rank descending: web 87 → 1, app 30 → 2.
@@ -138,7 +141,7 @@ class TestRowAttachWithCrossModelMeasure:
                                "sum(amount, partition_by=status), direction='desc')"),
                 "name": "mr",
             }],
-            measures=[M, CM], to_many_handling="broadcast",
+            metrics=[M, CM], to_many_handling="broadcast",
         ))
         by = {int(k[0]): row for k, row in rows_by(resp, "orders.mr").items()}
         # (channel−status) deltas at the union grain, ranked descending:
@@ -153,7 +156,7 @@ class TestRowAttachWithCrossModelMeasure:
         """Plan structure: the migrated cross-model measure is a combined-phase
         regroup attach; the bespoke cross-model plan list is empty/gone."""
         planned = plan_query(
-            query=q(dimensions=[LOCAL_BAND], measures=[M, CM]), bundle=_bundle(),
+            query=q(dimensions=[LOCAL_BAND], metrics=[M, CM]), bundle=_bundle(),
         )
         phases = {p.attach_phase for p in planned.regroup_attach_plans}
         assert phases == {"row", "combined"}
@@ -167,7 +170,7 @@ class TestCrossModelSourceInComputedDimension:
         dialect, engine = exec_backend
         query = q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M],
+            metrics=[M],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.sband")
@@ -182,7 +185,7 @@ class TestCrossModelSourceInComputedDimension:
         dialect, engine = exec_backend
         query = q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, CM],
+            metrics=[M, CM],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.sband")
@@ -200,13 +203,13 @@ class TestCrossModelSourceInComputedDimension:
         planned = plan_query(
             query=q(
                 dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-                measures=[M, CM],
+                metrics=[M, CM],
             ),
             bundle=_bundle(),
         )
 
-        def _all_nested(plans) -> list:
-            out = []
+        def _all_nested(plans: list[RegroupAttachPlan]) -> list[RegroupAttachPlan]:
+            out: list[RegroupAttachPlan] = []
             for p in plans:
                 inner = p.producer_plan.regroup_attach_plans
                 out.extend(inner)
@@ -224,17 +227,19 @@ class TestCrossModelSourceInComputedDimension:
 class TestIntermediateHopDimensions:
     """The former generator raise for shared-grain dims on intermediate hops."""
 
-    async def test_intermediate_hop_dim_associates_by_default(self, exec_backend):
+    async def test_intermediate_hop_dim_associates_by_default(
+        self, exec_backend: tuple[str, SlayerQueryEngine],
+    ):
         """A region's population is not attributable per customer, so by default each
         tier aggregates the distinct regions its customers reach."""
         _, engine = exec_backend
         kw = {"dimensions": ["customers.tier"],
-              "measures": [M, ModelMeasure(formula="sum(customers.regions.pop)", name="pop")]}
+              "metrics": [M, DatasetMetric(expression="sum(customers.regions.pop)", name="pop")]}
         default = await engine.execute(q(**kw))
         assoc = await engine.execute(q(**kw, to_many_handling="associate"))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
         (w,) = [w for w in default.warnings or [] if w.kind == "associated"]
-        assert "pop" in w.measure
+        assert "pop" in w.metric
 
     async def test_intermediate_hop_dim_executes_and_broadcasts(self, exec_backend):
         """customers.tier lies on an intermediate hop of the pop aggregate's
@@ -244,7 +249,7 @@ class TestIntermediateHopDimensions:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[M, ModelMeasure(formula="sum(customers.regions.pop)",
+            metrics=[M, DatasetMetric(expression="sum(customers.regions.pop)",
                                       name="pop")],
             to_many_handling="broadcast",
         )
@@ -255,7 +260,7 @@ class TestIntermediateHopDimensions:
         for row in resp.data:
             assert float(row["orders.pop"]) == pytest.approx(POP_TOTAL)
         (w,) = broadcast_warnings(resp)
-        assert "pop" in w.measure
+        assert "pop" in w.metric
         await _dry_scope_closed(engine, query, dialect)
 
 

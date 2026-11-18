@@ -1,0 +1,33 @@
+{
+ "source": "tests/test_dev1841_warnings.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=status)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=status)",
+    "name": "cm"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  }
+ ]
+}

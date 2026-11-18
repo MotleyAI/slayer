@@ -44,9 +44,9 @@ def servers(store: FacadeStore) -> Iterator[Servers]:
 @pytest.fixture(scope="module")
 def catalog(store: FacadeStore) -> FacadeCatalog:
     async def load() -> FacadeCatalog:
-        names = await store.storage.list_models(data_source=DS)
-        models = [m for n in names if (m := await store.storage.get_model(n, data_source=DS)) is not None]
-        return build_catalog(models_by_datasource={DS: models})
+        names = await store.storage.list_datasets(data_source=DS)
+        models = [m for n in names if (m := await store.storage.get_dataset(n, data_source=DS)) is not None]
+        return build_catalog(datasets_by_datasource={DS: models})
     return asyncio.run(load())
 
 

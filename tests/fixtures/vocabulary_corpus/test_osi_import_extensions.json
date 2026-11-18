@@ -1,0 +1,38 @@
+{
+ "source": "tests/test_osi_import_extensions.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "revenue_growth"
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ordered_on",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "revenue_growth"
+    ],
+    "time_dimensions": [
+     {
+      "field": "ordered_on",
+      "granularity": "month"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  }
+ ]
+}

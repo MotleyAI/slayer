@@ -53,7 +53,7 @@ rules: each hop spelled by its edge name, else its target model, and resolving t
 A route crossing an unaddressable edge (an unnamed edge in a parallel set) is not executable and SHALL NOT be
 routed or suggested; when such a pair blocks every route, the rejection SHALL name the pair and the remedy to
 name its edges. A short-form target directly adjacent to the root via two or more edges SHALL keep
-failing as an ambiguous join hop (`AmbiguousJoinPathError`) — routing never applies to a hop that
+failing as an ambiguous join hop (`AmbiguousRelationshipPathError`) — routing never applies to a hop that
 resolves or fails closed.
 
 #### Scenario: Unnamed parallel pair on the only route is unroutable
@@ -61,7 +61,7 @@ resolves or fails closed.
 - THEN the reference is rejected with no suggested path, and the error names that pair and the remedy to name its edges
 
 #### Scenario: Adjacent parallel edges stay an ambiguous hop
-- WHEN the root itself has two named edges to the target and a reference names `Target.column` (dimension or saved measure)
+- WHEN the root itself has two named edges to the target and a reference names `Target.field` (dimension or saved measure)
 - THEN it fails with the ambiguous-join-hop error naming both edges, not a routing error, and schema-drift attributes the reference to nothing
 
 #### Scenario: A suggestion through a single named edge uses the edge name
@@ -70,7 +70,7 @@ resolves or fails closed.
 
 ### Requirement: Route-aware rejection of ambiguous and unreachable targets
 A short-form target that is ambiguous (two or more routes, not uniquely fan-out-free) or unreachable
-SHALL be rejected with `UnresolvableDimensionJoinError`. An ambiguous rejection SHALL carry a
+SHALL be rejected with `UnresolvableDimensionRelationshipError`. An ambiguous rejection SHALL carry a
 `suggested_path` when an executable full path exists (the shortest fan-out-free one if any, else the
 shortest executable full path); among equal-length candidates the suggestion SHALL be the one with fewer hops
 that are not provably to-one, then the lexicographically-smallest canonical token sequence, so it is
@@ -122,7 +122,7 @@ when every oriented hop is provably to-one.
 - THEN the order clause references the same column as the selected dimension
 
 #### Scenario: Inference and binding agree on a routed short form
-- WHEN a query without `source_model` uses a short-form dimension that inference resolved via a route
+- WHEN a query without `population` uses a short-form dimension that inference resolved via a route
   from the chosen population
 - THEN binding resolves the same short form through the same route, so the executed query matches the
   inference decision
@@ -204,7 +204,7 @@ qualifier SHALL be read before any join hop or query-level alias, so it wins ove
 - **WHEN** model `orders` declares a join to `customers` named `orders`, and a query rooted at `orders`
   selects `orders.status`
 - **THEN** it reads `orders`' own `status`, and the joined `customers` column is reached as
-  `orders.orders.<column>`
+  `orders.orders.<field>`
 
 #### Scenario: A root-qualified filter matches a selected dotted measure
 - **WHEN** a query rooted at `orders` selects the saved measure `customers.aov` and filters on
@@ -233,7 +233,7 @@ several columns' respellings SHALL fail as an unknown reference.
 
 #### Scenario: A query-backed model's consumer written against the old spelling keeps working
 - **WHEN** a query-backed model's query selects `customers.regions.rname`, and both a query on that model
-  and another model's `Column.sql` reference its column `customers__regions__rname`
+  and another model's `DatasetField.sql` reference its column `customers__regions__rname`
 - **THEN** both resolve to the canonical column with a `STALE_PATH_SPELLING` warning
 
 #### Scenario: An edge named later does not break an existing reference

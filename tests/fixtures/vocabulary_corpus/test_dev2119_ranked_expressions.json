@@ -1,0 +1,135 @@
+{
+ "source": "tests/test_dev2119_ranked_expressions.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "accounts",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "accounts",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "last(balance, coalesce(updated_at, created_at))",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "expression": "last(balance, coalesce(updated_at, created_at))",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "accounts",
+    "measures": [
+     {
+      "formula": "last(spend, coalesce(orders.created_at, signup_ts))",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "accounts",
+    "metrics": [
+     {
+      "expression": "last(spend, coalesce(orders.created_at, signup_ts))",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "order_facts",
+    "measures": [
+     {
+      "formula": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "order_facts",
+    "metrics": [
+     {
+      "expression": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(price, weight=quantity * 2)"
+   },
+   "new": {
+    "expression": "weighted_avg(price, weight=quantity * 2)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(price, quantity * 2)"
+   },
+   "new": {
+    "expression": "weighted_avg(price, quantity * 2)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  }
+ ]
+}

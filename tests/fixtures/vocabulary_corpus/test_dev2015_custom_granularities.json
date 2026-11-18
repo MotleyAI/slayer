@@ -1,0 +1,130 @@
+{
+ "source": "tests/test_dev2015_custom_granularities.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "order_date",
+      "granularity": "FISCAL_YEAR",
+      "date_range": [
+       "2024-04-01",
+       "2025-03-31"
+      ]
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "order_date",
+      "granularity": "FISCAL_YEAR",
+      "date_range": [
+       "2024-04-01",
+       "2025-03-31"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 179,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 206,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 227,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 283,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 293,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 297,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 313,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 353,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 360,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 377,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 382,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 402,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 407,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 427,
+   "reason": "not fully literal"
+  }
+ ]
+}

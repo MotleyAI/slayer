@@ -132,7 +132,7 @@ def test_missing_api_key_fails_without_requests() -> None:
     assert posthog.calls == []
 
 
-def test_http_error_reports_status_and_posthog_detail(monkeypatch, capsys) -> None:
+def test_http_error_reports_status_and_posthog_detail(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     def refuse(request, timeout: float) -> _Response:
         raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", email.message.Message(),
                                      io.BytesIO(b'{"detail": "API key missing required scope \'query:read\'"}'))
@@ -144,7 +144,7 @@ def test_http_error_reports_status_and_posthog_detail(monkeypatch, capsys) -> No
     assert "query:read" in err
 
 
-def test_requests_go_to_the_eu_project_with_the_personal_key(monkeypatch) -> None:
+def test_requests_go_to_the_eu_project_with_the_personal_key(monkeypatch: pytest.MonkeyPatch) -> None:
     seen = []
 
     def fake_urlopen(request, timeout: float) -> _Response:

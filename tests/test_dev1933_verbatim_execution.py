@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import sqlglot
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import client as sql_client
@@ -301,11 +301,11 @@ class TestRegexExpressionDimensionEndToEnd:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             ],
         ))
         return SlayerQueryEngine(storage=storage)
@@ -313,10 +313,10 @@ class TestRegexExpressionDimensionEndToEnd:
     async def test_regex_expression_dimension(self, tmp_path) -> None:
         engine = await self._seed_engine(tmp_path)
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=[ComputedDimension(expression=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
                                           name="rx")],
-            measures=[ModelMeasure(formula="count(*)")],
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await engine.execute(query=query)
         by_rx = {int(row["orders.rx"]): row["orders._count"] for row in result.data}

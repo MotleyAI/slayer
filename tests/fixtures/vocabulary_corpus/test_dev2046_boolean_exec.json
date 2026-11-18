@@ -1,0 +1,77 @@
+{
+ "source": "tests/test_dev2046_boolean_exec.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "sum(flag)",
+      "name": "fs"
+     },
+     {
+      "formula": "max(flag)",
+      "name": "fm"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(flag)",
+      "name": "fs"
+     },
+     {
+      "expression": "max(flag)",
+      "name": "fm"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "measures": [
+     {
+      "formula": "sum(fs)",
+      "name": "a"
+     },
+     {
+      "formula": "max(fm)",
+      "name": "b"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "metrics": [
+     {
+      "expression": "sum(fs)",
+      "name": "a"
+     },
+     {
+      "expression": "max(fm)",
+      "name": "b"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  }
+ ]
+}

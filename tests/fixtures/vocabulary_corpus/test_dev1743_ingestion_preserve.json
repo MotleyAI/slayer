@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_dev1743_ingestion_preserve.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 229,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  }
+ ]
+}

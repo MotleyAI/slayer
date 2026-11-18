@@ -27,7 +27,7 @@ import pytest
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1747_fixtures import dev1747_models
+from tests._dev1747_fixtures import dev1747_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import (
     GoldenSuite,
@@ -47,46 +47,46 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"dimension": "created_at", "granularity": "month"}]
+_MONTH = [{"field": "created_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    rev = [{"formula": "sum(amount)", "name": "rev"}]
+    rev = [{"expression": "sum(amount)", "name": "rev"}]
     return {
         # --- the five ORDER BY render paths ---
         "order/host_base_alias": _q(
-            dimensions=["status"], measures=rev,
-            order=[{"column": "rev", "direction": "desc"}],
+            dimensions=["status"], metrics=rev,
+            order=[{"field": "rev", "direction": "desc"}],
         ),
         "order/hidden_slot_outer_trim": _q(
-            dimensions=["status"], measures=rev,
-            order=[{"column": "max(amount)", "direction": "desc"}],
+            dimensions=["status"], metrics=rev,
+            order=[{"field": "max(amount)", "direction": "desc"}],
         ),
         "order/combined_cross_model": _q(
             to_many_handling="broadcast",
             dimensions=["status"],
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+            metrics=[
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
             ],
-            order=[{"column": "cs", "direction": "desc"}],
+            order=[{"field": "cs", "direction": "desc"}],
         ),
         "order/outer_composite": _q(
             to_many_handling="broadcast",
             dimensions=["status"],
-            measures=[{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
-            order=[{"column": "mix", "direction": "desc"}],
+            metrics=[{"expression": "sum(customers.spend) + sum(amount)", "name": "mix"}],
+            order=[{"field": "mix", "direction": "desc"}],
         ),
         "order/windowed_cte": _q(
             time_dimensions=_MONTH,
-            measures=[{"formula": "sum(amount, window='90d')", "name": "w"}],
-            order=[{"column": "w", "direction": "desc"}],
+            metrics=[{"expression": "sum(amount, window='90d')", "name": "w"}],
+            order=[{"field": "w", "direction": "desc"}],
         ),
         # A windowed measure WITH a well-formed date_range mints a
         # date-range filter routed via ``date_range_fids`` (the src-row-phase
@@ -94,120 +94,120 @@ def _cases() -> dict:
         # the minted fid set instead of re-deriving it stays byte-identical.
         "order/windowed_cte_date_range": _q(
             time_dimensions=[{
-                "dimension": "created_at", "granularity": "month",
+                "field": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-06-30"],
             }],
-            measures=[{"formula": "sum(amount, window='90d')", "name": "w"}],
-            order=[{"column": "w", "direction": "desc"}],
+            metrics=[{"expression": "sum(amount, window='90d')", "name": "w"}],
+            order=[{"field": "w", "direction": "desc"}],
         ),
         "order/transform_chain_wrap": _q(
             time_dimensions=_MONTH,
-            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
-            order=[{"column": "cs", "direction": "asc"}],
+            metrics=[{"expression": "cumsum(sum(amount))", "name": "cs"}],
+            order=[{"field": "cs", "direction": "asc"}],
         ),
         # --- D10: the wrap is direction-aware, so BOTH are pinned ---
         "order/grouped_local_row_asc": _q(
-            dimensions=["status"], measures=rev,
-            order=[{"column": "created_at", "direction": "asc"}],
+            dimensions=["status"], metrics=rev,
+            order=[{"field": "created_at", "direction": "asc"}],
         ),
         "order/grouped_local_row_desc": _q(
-            dimensions=["status"], measures=rev,
-            order=[{"column": "created_at", "direction": "desc"}],
+            dimensions=["status"], metrics=rev,
+            order=[{"field": "created_at", "direction": "desc"}],
         ),
         # --- D2: host-grain, where a target-rooted route would go scalar ---
         "order/grouped_joined_row_asc": _q(
-            dimensions=["status"], measures=rev,
-            order=[{"column": "customers.regions.name", "direction": "asc"}],
+            dimensions=["status"], metrics=rev,
+            order=[{"field": "customers.regions.name", "direction": "asc"}],
         ),
         "order/grouped_joined_row_desc": _q(
-            dimensions=["status"], measures=rev,
-            order=[{"column": "customers.regions.name", "direction": "desc"}],
+            dimensions=["status"], metrics=rev,
+            order=[{"field": "customers.regions.name", "direction": "desc"}],
         ),
         # --- D9: a derived column whose sql crosses, both groupings ---
         "order/grouped_derived_crossing": _q(
-            dimensions=["status"], measures=rev,
-            order=[{"column": "cust_region", "direction": "asc"}],
+            dimensions=["status"], metrics=rev,
+            order=[{"field": "cust_region", "direction": "asc"}],
         ),
         "order/ungrouped_derived_crossing": _q(
             dimensions=["status"], distinct_dimension_values=False,
-            order=[{"column": "cust_region", "direction": "asc"}],
+            order=[{"field": "cust_region", "direction": "asc"}],
         ),
         # --- B6: re-rooting, per filter reachability ---
         "reroot/reachable_filter": _q(
             dimensions=["customers.regions.name"],
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+            metrics=[
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
             ],
-            filters=["customers.regions.name == 'Alpha'"],
+            filter=["customers.regions.name == 'Alpha'"],
         ),
         # Both push into the producer by semi-join now (ids kept
         # stable; "unreachable" is historical — the inverted hop resolves now).
         "reroot/host_local_filter": _q(
             dimensions=["customers.regions.name"],
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+            metrics=[
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
             ],
-            filters=["status == 'A'"],
+            filter=["status == 'A'"],
         ),
         "reroot/unreachable_filter": _q(
             dimensions=["customers.regions.name"],
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+            metrics=[
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
             ],
-            filters=["order_tags.name == 'rush'"],
+            filter=["order_tags.name == 'rush'"],
         ),
         # --- D8: both assembled WITH chains ---
         "chain/local_multi_step": _q(
             time_dimensions=_MONTH,
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "cumsum(sum(amount))", "name": "cs"},
-                {"formula": "change(sum(amount))", "name": "ch"},
+            metrics=[
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "cumsum(sum(amount))", "name": "cs"},
+                {"expression": "change(sum(amount))", "name": "ch"},
             ],
         ),
         "chain/local_consecutive_periods": _q(
             time_dimensions=_MONTH,
-            measures=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "consecutive_periods(sum(amount))", "name": "streak"},
+            metrics=[
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "consecutive_periods(sum(amount))", "name": "streak"},
             ],
         ),
         "chain/cross_model_window": _q(
             to_many_handling="broadcast",
             time_dimensions=_MONTH,
-            measures=[
-                {"formula": "sum(customers.spend)", "name": "cs"},
-                {"formula": "cumsum(sum(customers.spend))", "name": "run"},
+            metrics=[
+                {"expression": "sum(customers.spend)", "name": "cs"},
+                {"expression": "cumsum(sum(customers.spend))", "name": "run"},
             ],
         ),
         # One transform key projected under TWO names — the
         # step CTE must surface both, not re-emit the first.
         "chain/transform_two_names": _q(
             time_dimensions=_MONTH,
-            measures=[
-                {"formula": "cumsum(sum(amount))", "name": "run_a"},
-                {"formula": "cumsum(sum(amount))", "name": "run_b"},
+            metrics=[
+                {"expression": "cumsum(sum(amount))", "name": "run_a"},
+                {"expression": "cumsum(sum(amount))", "name": "run_b"},
             ],
         ),
         # consecutive_periods (own cp_reset/cp_value CTE path) under
         # TWO names must surface both, not re-emit the first.
         "chain/consecutive_periods_two_names": _q(
             time_dimensions=_MONTH,
-            measures=[
-                {"formula": "consecutive_periods(sum(amount))", "name": "streak_a"},
-                {"formula": "consecutive_periods(sum(amount))", "name": "streak_b"},
+            metrics=[
+                {"expression": "consecutive_periods(sum(amount))", "name": "streak_a"},
+                {"expression": "consecutive_periods(sum(amount))", "name": "streak_b"},
             ],
         ),
         # Two aggregates of one column in the base CTE surface in
         # plan order, not hash-seed order.
         "chain/multi_agg_base_order": _q(
             time_dimensions=_MONTH,
-            measures=[
-                {"formula": "cumsum(sum(amount))", "name": "c1"},
-                {"formula": "cumsum(max(amount))", "name": "c2"},
+            metrics=[
+                {"expression": "cumsum(sum(amount))", "name": "c1"},
+                {"expression": "cumsum(max(amount))", "name": "c2"},
             ],
         ),
         # --- Dependency-split step-CTE shapes. ---
@@ -215,12 +215,12 @@ def _cases() -> dict:
         # (the dependency-split the extracted helper's ordering invariant guards).
         "chain/local_nested_window": _q(
             time_dimensions=_MONTH,
-            measures=[{"formula": "cumsum(cumsum(sum(amount)))", "name": "cc"}],
+            metrics=[{"expression": "cumsum(cumsum(sum(amount)))", "name": "cc"}],
         ),
         "chain/cross_model_nested_window": _q(
             to_many_handling="broadcast",
             time_dimensions=_MONTH,
-            measures=[{"formula": "cumsum(cumsum(sum(customers.spend)))", "name": "cc"}],
+            metrics=[{"expression": "cumsum(cumsum(sum(customers.spend)))", "name": "cc"}],
         ),
     }
 
@@ -232,10 +232,10 @@ async def _generate_one(query: SlayerQuery, dialect: str):
     name lets any NEW failure in the same case pass unnoticed, which is the
     blind spot this harness exists to close.
     """
-    models = dev1747_models()
+    models = dev1747_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

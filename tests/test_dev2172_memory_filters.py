@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.resolver import _field_entity_tokens, extract_entities_from_query
 from slayer.storage.yaml_storage import YAMLStorage
@@ -49,16 +49,16 @@ def test_unparseable_filter_is_one_token(text: str) -> None:
 async def storage(tmp_path: Path) -> YAMLStorage:
     store = YAMLStorage(base_dir=str(tmp_path))
     await store.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
-    await store.save_model(SlayerModel(
+    await store.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="status", type=DataType.TEXT),
-                 Column(name="amount", type=DataType.DOUBLE)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="status", datatype=DataType.TEXT),
+                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
     ))
     return store
 
 
 async def test_cast_filter_tags_only_the_column(storage: YAMLStorage) -> None:
-    query = SlayerQuery(source_model="orders", filters=["CAST(amount AS INT) > 1"],
-                        measures=[ModelMeasure(formula="count(*)")])
+    query = SlayerQuery(population="orders", filter=["CAST(amount AS INT) > 1"],
+                        metrics=[DatasetMetric(expression="count(*)")])
     result = await extract_entities_from_query(query, storage=storage)
     assert result.canonical_forms == ["mydb.orders", "mydb.orders.amount"]

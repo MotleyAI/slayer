@@ -28,6 +28,7 @@ import pytest
 import requests
 from pydantic import BaseModel, ConfigDict
 
+from slayer.storage.base import StorageBackend
 from tests.integration._pg_serve_helpers import start_pg_demo_server
 
 METABASE_IMAGE = "metabase/metabase:v0.62.1.5"
@@ -165,7 +166,7 @@ class MetabaseE2EEnv(BaseModel):
     pg_primary_password: str
     pg_auth: tuple[str, int, str]
     log_records: list[logging.LogRecord]
-    pg_primary_storage: Any
+    pg_primary_storage: StorageBackend | None
 
     def make_client(self, db_id: int) -> MetabaseClient:
         """Return a MetabaseClient bound to a different db_id (same session)."""
@@ -462,7 +463,7 @@ def metabase_e2e_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Metab
         pytest.skip("Docker is unavailable; the metabase_e2e suite needs a working Docker daemon")
 
     log_records: list[logging.LogRecord] = []
-    storage_sink: list = []
+    storage_sink: list[StorageBackend] = []
     loop_a = thread_a = None
     loop_b = thread_b = None
     container_id: str | None = None

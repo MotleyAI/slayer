@@ -1,0 +1,127 @@
+{
+ "source": "tests/test_dev1842_binder_measure_resolution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "cnt",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "cnt",
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "grp",
+    "formula": "status"
+   },
+   "new": {
+    "name": "grp",
+    "expression": "status"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "aov + 1"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "aov + 1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "a",
+    "formula": "b"
+   },
+   "new": {
+    "name": "a",
+    "expression": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "b",
+    "formula": "a"
+   },
+   "new": {
+    "name": "b",
+    "expression": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "m5",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "m5",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "m5",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "m5",
+    "expression": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 43,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 46,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 47,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 48,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 101,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "unclassifiable"
+  }
+ ]
+}

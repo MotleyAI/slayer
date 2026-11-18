@@ -1,0 +1,288 @@
+{
+ "source": "tests/test_dev1527_agg_kwargs.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=dbl_qty)"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=dbl_qty)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percentile(amount, p=0.95)"
+   },
+   "new": {
+    "expression": "percentile(amount, p=0.95)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=quantity)"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=quantity)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "corr(amount, other=quantity)"
+   },
+   "new": {
+    "expression": "corr(amount, other=quantity)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "corr(amount, other=region_weight)"
+   },
+   "new": {
+    "expression": "corr(amount, other=region_weight)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=region_weight) + sum(quantity)"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=region_weight) + sum(quantity)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=region_weight)"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=region_weight)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "scaled_sum(amount, scale=100)"
+   },
+   "new": {
+    "expression": "scaled_sum(amount, scale=100)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "line_items",
+    "join_pairs": [
+     [
+      "id",
+      "order_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "line_items",
+    "join_pairs": [
+     [
+      "id",
+      "order_id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=li_weight)"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=li_weight)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=region_weight)"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=region_weight)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 215,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 238,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 310,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 334,
+   "reason": "not fully literal"
+  }
+ ]
+}

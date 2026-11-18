@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 VERSION_PATTERN = r"^\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$"
 
 Count = Annotated[int, Field(ge=0)]
@@ -17,26 +17,26 @@ Version = Annotated[str, Field(pattern=VERSION_PATTERN, max_length=64)]
 UsageKey = Literal[
     # CLI leaf commands
     "cli:serve", "cli:flight-serve", "cli:pg-serve", "cli:mcp", "cli:query", "cli:ingest",
-    "cli:validate-models", "cli:recommend-root-model",
+    "cli:validate-datasets", "cli:recommend-population",
     "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi",
-    "cli:models.list", "cli:models.show", "cli:models.create", "cli:models.delete",
+    "cli:datasets.list", "cli:datasets.show", "cli:datasets.create", "cli:datasets.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
     "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
     "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
     "cli:other",
     # MCP tools
-    "mcp:create_datasource", "mcp:create_model", "mcp:delete_datasource", "mcp:delete_model",
-    "mcp:describe_datasource", "mcp:edit_datasource", "mcp:edit_model", "mcp:forget_memory",
-    "mcp:get_datasource_priority", "mcp:ingest_datasource_models", "mcp:inspect",
-    "mcp:list_datasources", "mcp:models_summary", "mcp:query",
-    "mcp:recommend_root_model", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
-    "mcp:validate_models", "mcp:other",
+    "mcp:create_datasource", "mcp:create_dataset", "mcp:delete_datasource", "mcp:delete_dataset",
+    "mcp:describe_datasource", "mcp:edit_datasource", "mcp:edit_dataset", "mcp:forget_memory",
+    "mcp:get_datasource_priority", "mcp:ingest_datasource", "mcp:inspect",
+    "mcp:list_datasources", "mcp:datasets_summary", "mcp:query",
+    "mcp:recommend_population", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
+    "mcp:validate_datasets", "mcp:other",
     # REST route templates
     "rest:/datasources", "rest:/datasources/priority", "rest:/datasources/{name}", "rest:/health",
-    "rest:/ingest", "rest:/inspect", "rest:/memories", "rest:/memories/{memory_id}", "rest:/models",
-    "rest:/models/{name}", "rest:/query", "rest:/recommend-root-model", "rest:/search",
-    "rest:/validate-models", "rest:other",
+    "rest:/ingest", "rest:/inspect", "rest:/memories", "rest:/memories/{memory_id}", "rest:/datasets",
+    "rest:/datasets/{name}", "rest:/query", "rest:/recommend-population", "rest:/search",
+    "rest:/validate-datasets", "rest:other",
     # wire protocols
     "flight:query", "flight:probe", "pg:query", "pg:probe",
 ]
@@ -45,7 +45,7 @@ ErrorToken = Literal[
     "other", "exit", "interrupted", "cancelled", "timeout", "connection", "file_not_found",
     "permission", "os_error", "import_error", "not_implemented", "key_error", "type_error",
     "value_error", "json_error", "validation_error", "db_operational", "db_programming",
-    "db_error", "slayer_error", "query_type", "ambiguous_model", "entity_resolution",
+    "db_error", "slayer_error", "query_type", "ambiguous_dataset", "entity_resolution",
     "memory_not_found", "schema_drift", "unknown_reference", "population_inference",
     "missing_driver", "translation", "tool_error", "http_4xx", "http_5xx",
 ]
@@ -83,7 +83,7 @@ DialectToken = Literal[
 ]
 
 DatasourceBucket = Literal["0", "1", "2-5", "6+"]
-ModelCountBucket = Literal["0", "1-10", "11-50", "51-200", "200+"]
+DatasetCountBucket = Literal["0", "1-10", "11-50", "51-200", "200+"]
 QueryCountBucket = Literal["0", "1", "2-5", "6-20", "21+"]
 StorageToken = Literal["yaml", "sqlite", "other"]
 
@@ -118,8 +118,35 @@ def known_usage_key(*, surface: str, key: str) -> str | None:
     return other if other in USAGE_KEYS else None
 
 
+#: Schema-2 usage keys and their schema-3 replacements.
+RENAMED_USAGE_KEYS: dict[str, str] = {
+    "cli:validate-models": "cli:validate-datasets", "cli:recommend-root-model": "cli:recommend-population",
+    "cli:models.list": "cli:datasets.list", "cli:models.show": "cli:datasets.show",
+    "cli:models.create": "cli:datasets.create", "cli:models.delete": "cli:datasets.delete",
+    "mcp:create_model": "mcp:create_dataset", "mcp:edit_model": "mcp:edit_dataset",
+    "mcp:delete_model": "mcp:delete_dataset", "mcp:models_summary": "mcp:datasets_summary",
+    "mcp:validate_models": "mcp:validate_datasets", "mcp:recommend_root_model": "mcp:recommend_population",
+    "mcp:ingest_datasource_models": "mcp:ingest_datasource", "rest:/models": "rest:/datasets",
+    "rest:/models/{name}": "rest:/datasets/{name}", "rest:/validate-models": "rest:/validate-datasets",
+    "rest:/recommend-root-model": "rest:/recommend-population",
+}
+
+
+def _schema_2_context(data: dict) -> dict:
+    context = data.get("context")
+    if not isinstance(context, dict) or not isinstance(context.get("model_count"), dict):
+        return data
+    buckets = dict(context.get("dataset_count") or {})
+    _add(buckets, context["model_count"])
+    rest = {k: v for k, v in context.items() if k != "model_count"}
+    return {**data, "context": {**rest, "dataset_count": buckets}}
+
+
 def fold_retired_usage_keys(data: Any) -> Any:
-    """Count a usage key this version no longer defines as its surface's ``other`` (or drop it)."""
+    """A schema-2 key counted under its replacement; a usage key this version no longer defines counted as its
+    surface's ``other`` (or dropped)."""
+    if isinstance(data, dict):
+        data = _schema_2_context(data)
     usage = data.get("usage") if isinstance(data, dict) else None
     if not isinstance(usage, dict) or all(key in USAGE_KEYS for key in usage):
         return data
@@ -130,6 +157,7 @@ def fold_retired_usage_keys(data: Any) -> Any:
         return data
     folded: dict[str, dict] = {}
     for key, entry in entries.items():
+        key = RENAMED_USAGE_KEYS.get(str(key), key)
         target = known_usage_key(surface=str(key).partition(":")[0], key=str(key))
         if target is None:
             continue
@@ -198,7 +226,7 @@ class Context(_Strict):
     """Histograms over processes."""
 
     storage: dict[StorageToken, Count] = Field(default_factory=dict)
-    model_count: dict[ModelCountBucket, Count] = Field(default_factory=dict)
+    dataset_count: dict[DatasetCountBucket, Count] = Field(default_factory=dict)
     demo: Count = 0
 
 
@@ -254,7 +282,7 @@ class UsageReport(Batch):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
 
-    schema_version: Literal[2] = Field(default=SCHEMA_VERSION, alias="schema")
+    schema_version: Literal[3] = Field(default=SCHEMA_VERSION, alias="schema")
     install_id: uuid.UUID | None
     first_query_ok: datetime.date | None = None
     batch_id: uuid.UUID
@@ -291,7 +319,7 @@ def merge(batches: list[Batch]) -> Batch:
         for dialect, buckets in batch.dialects.datasources.items():
             _add(dialects.datasources.setdefault(dialect, {}), buckets)
         _add(context.storage, batch.context.storage)
-        _add(context.model_count, batch.context.model_count)
+        _add(context.dataset_count, batch.context.dataset_count)
         context.demo += batch.context.demo
         for client in batch.mcp_clients:
             key = (client.client, client.major)

@@ -22,16 +22,16 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AmbiguousModelError, EntityResolutionError
+from slayer.core.errors import AmbiguousDatasetError, EntityResolutionError
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
 from slayer.memories.resolver import (
     EntityResolution,
@@ -57,43 +57,43 @@ async def storage() -> AsyncIterator[StorageBackend]:
             DatasourceConfig(name="other", type="postgres", host="x")
         )
         # ----------------------- mydb -----------------------
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="orders",
                 data_source="mydb",
                 sql_table="orders",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         primary_key=True,
                     ),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                    Column(name="status", sql="status", type=DataType.TEXT),
-                    Column(
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                    DatasetField(
                         name="customer_id",
                         sql="customer_id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                     ),
-                    Column(
+                    DatasetField(
                         name="ordered_at",
                         sql="ordered_at",
-                        type=DataType.TIMESTAMP,
+                        datatype=DataType.TIMESTAMP,
                     ),
                 ],
-                measures=[
-                    ModelMeasure(formula="sum(amount) / count(*)", name="aov"),
+                metrics=[
+                    DatasetMetric(expression="sum(amount) / count(*)", name="aov"),
                 ],
                 aggregations=[
                     Aggregation(
                         name="weighted_score",
-                        formula="SUM(amount * amount) / SUM(amount)",
+                        expression="SUM(amount * amount) / SUM(amount)",
                     ),
                 ],
-                joins=[
-                    ModelJoin(
-                        target_model="customers",
+                relationships=[
+                    DatasetRelationship(
+                        to="customers",
                         join_pairs=[["customer_id", "id"]],
                     ),
                 ],
@@ -101,103 +101,103 @@ async def storage() -> AsyncIterator[StorageBackend]:
         )
         # `customers` carries a column named "orders" — a model+column
         # collision used to exercise Case A.
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="customers",
                 data_source="mydb",
                 sql_table="customers",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         primary_key=True,
                     ),
-                    Column(name="name", sql="name", type=DataType.TEXT),
-                    Column(
+                    DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                    DatasetField(
                         name="region_id",
                         sql="region_id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                     ),
-                    Column(
+                    DatasetField(
                         name="orders",
                         sql="orders_count",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                     ),
                 ],
-                joins=[
-                    ModelJoin(
-                        target_model="regions",
+                relationships=[
+                    DatasetRelationship(
+                        to="regions",
                         join_pairs=[["region_id", "id"]],
                     ),
                 ],
             )
         )
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="regions",
                 data_source="mydb",
                 sql_table="regions",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         primary_key=True,
                     ),
-                    Column(name="name", sql="name", type=DataType.TEXT),
+                    DatasetField(name="name", sql="name", datatype=DataType.TEXT),
                 ],
             )
         )
         # `invoices` shares the "amount" column name with `orders` — both
         # live in mydb (the priority winner), so bare "amount" is
         # ambiguous (Case B1).
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="invoices",
                 data_source="mydb",
                 sql_table="invoices",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         primary_key=True,
                     ),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
                 ],
             )
         )
         # ---------------------- other -----------------------
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="users",
                 data_source="other",
                 sql_table="users",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         primary_key=True,
                     ),
-                    Column(name="name", sql="name", type=DataType.TEXT),
+                    DatasetField(name="name", sql="name", datatype=DataType.TEXT),
                 ],
             )
         )
         # A model literally named "mydb" living in datasource "other" —
         # exercises Case D (first-segment is both a datasource and a
         # model).
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="mydb",
                 data_source="other",
                 sql_table="mydb_data",
-                columns=[
-                    Column(
+                fields=[
+                    DatasetField(
                         name="id",
                         sql="id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         primary_key=True,
                     ),
                 ],
@@ -242,7 +242,7 @@ class TestResolveEntityBare:
         # the column.
         result = await resolve_entity("orders", storage=storage)
         assert result.canonical_forms == ["mydb.orders"]
-        assert any("column" in w.lower() for w in result.warnings), (
+        assert any("field" in w.lower() for w in result.warnings), (
             f"expected Case A column-collision warning, got "
             f"{result.warnings!r}"
         )
@@ -408,7 +408,7 @@ class TestResolveEntityCaseDDatasourceModelCollision:
         result = await resolve_entity("mydb", storage=storage)
         assert result.canonical_forms == ["mydb"]
         assert any(
-            "datasource" in w.lower() and "model" in w.lower()
+            "datasource" in w.lower() and "dataset" in w.lower()
             for w in result.warnings
         ), f"expected Case D warning, got {result.warnings!r}"
 
@@ -470,9 +470,9 @@ class TestResolveEntityStarCount:
     async def test_star_count_with_source_model_uses_it(
         self, storage: StorageBackend
     ) -> None:
-        orders = await storage.get_model("orders", data_source="mydb")
+        orders = await storage.get_dataset("orders", data_source="mydb")
         result = await resolve_entity(
-            "count(*)", storage=storage, source_model=orders
+            "count(*)", storage=storage, source_dataset=orders
         )
         assert result.canonical_forms == ["mydb.orders"]
 
@@ -484,11 +484,11 @@ class TestResolveEntityStarCount:
         previous code accepted any aggregation, which would corrupt the
         canonical-entity index for memories tagged via a query that
         used a malformed wildcard."""
-        orders = await storage.get_model("orders", data_source="mydb")
+        orders = await storage.get_dataset("orders", data_source="mydb")
         for bad in ("sum(*)", "avg(*)"):
             with pytest.raises(EntityResolutionError) as exc_info:
                 await resolve_entity(
-                    bad, storage=storage, source_model=orders
+                    bad, storage=storage, source_dataset=orders
                 )
             assert bad in str(exc_info.value)
 
@@ -513,9 +513,9 @@ class TestResolveEntityWithSourceModel:
     ) -> None:
         # "amount" is ambiguous globally (Case B1) but unambiguous in
         # the context of source_model=orders.
-        orders = await storage.get_model("orders", data_source="mydb")
+        orders = await storage.get_dataset("orders", data_source="mydb")
         result = await resolve_entity(
-            "amount", storage=storage, source_model=orders
+            "amount", storage=storage, source_dataset=orders
         )
         assert result.canonical_forms == ["mydb.orders.amount"]
         assert result.warnings == []
@@ -526,10 +526,10 @@ class TestResolveEntityWithSourceModel:
         # "name" isn't on orders, but is on customers, regions, users.
         # In mydb (priority winner), "name" exists on customers and
         # regions → ambiguous.
-        orders = await storage.get_model("orders", data_source="mydb")
+        orders = await storage.get_dataset("orders", data_source="mydb")
         with pytest.raises(EntityResolutionError):
             await resolve_entity(
-                "name", storage=storage, source_model=orders
+                "name", storage=storage, source_dataset=orders
             )
 
 
@@ -544,8 +544,8 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders" in result.canonical_forms
@@ -554,9 +554,9 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -565,9 +565,9 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="customers.name")],
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            dimensions=[FieldRef(name="customers.name")],
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.name" in result.canonical_forms
@@ -580,8 +580,8 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -590,14 +590,14 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
                 TimeDimension(
-                    dimension="ordered_at",
+                    field="ordered_at",
                     granularity=TimeGranularity.DAY,
                 )
             ],
-            measures=[ModelMeasure(formula="count(*)")],
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.ordered_at" in result.canonical_forms
@@ -606,9 +606,9 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["status = 'paid'", "amount > 100"],
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            filter=["status = 'paid'", "amount > 100"],
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -618,9 +618,9 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["status = '{status_val}'"],
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            filter=["status = '{status_val}'"],
+            metrics=[DatasetMetric(expression="count(*)")],
             variables={"status_val": "paid"},
         )
         result = await extract_entities_from_query(q, storage=storage)
@@ -632,10 +632,10 @@ class TestExtractEntitiesFromQuery:
 
     async def test_dedup(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="amount")],
-            filters=["amount > 100"],
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            dimensions=[FieldRef(name="amount")],
+            filter=["amount > 100"],
+            metrics=[DatasetMetric(expression="sum(amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert (
@@ -646,8 +646,8 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         # Pin the exact list — a regression that adds an extra entity
@@ -659,9 +659,9 @@ class TestExtractEntitiesFromQuery:
         self, storage: StorageBackend
     ) -> None:
         q = SlayerQuery(
-            source_model="orders",
-            filters=["nonexistent_col > 100"],
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders",
+            filter=["nonexistent_col > 100"],
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         with pytest.raises(EntityResolutionError):
             await extract_entities_from_query(q, storage=storage)
@@ -679,33 +679,33 @@ class TestExtractEntitiesFromQuery:
             await s.save_datasource(
                 DatasourceConfig(name="dev1500", type="postgres", host="x")
             )
-            await s.save_model(SlayerModel(
+            await s.save_dataset(SlayerDataset(
                 name="customers",
                 data_source="dev1500",
                 sql_table="customers",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(name="score", sql="score", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="score", sql="score", datatype=DataType.DOUBLE),
                 ],
                 aggregations=[
-                    Aggregation(name="rolling_avg", formula="AVG({value})"),
+                    Aggregation(name="rolling_avg", expression="AVG({value})"),
                 ],
             ))
-            await s.save_model(SlayerModel(
+            await s.save_dataset(SlayerDataset(
                 name="orders",
                 data_source="dev1500",
                 sql_table="orders",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(name="customer_id", sql="customer_id", type=DataType.INT),
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
                 ],
-                joins=[
-                    ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+                relationships=[
+                    DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
                 ],
             ))
             q = SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="rolling_avg(customers.score)")],
+                population="orders",
+                metrics=[DatasetMetric(expression="rolling_avg(customers.score)")],
             )
             result = await extract_entities_from_query(q, storage=s)
             # The joined column inside the transform surfaces as an entity
@@ -729,37 +729,37 @@ class TestResolveEntityAmbiguousModel:
             await s.save_datasource(
                 DatasourceConfig(name="dsb", type="postgres", host="x")
             )
-            await s.save_model(
-                SlayerModel(
+            await s.save_dataset(
+                SlayerDataset(
                     name="orders",
                     data_source="dsa",
                     sql_table="o",
-                    columns=[
-                        Column(
+                    fields=[
+                        DatasetField(
                             name="id",
                             sql="id",
-                            type=DataType.DOUBLE,
+                            datatype=DataType.DOUBLE,
                             primary_key=True,
                         )
                     ],
                 )
             )
-            await s.save_model(
-                SlayerModel(
+            await s.save_dataset(
+                SlayerDataset(
                     name="orders",
                     data_source="dsb",
                     sql_table="o",
-                    columns=[
-                        Column(
+                    fields=[
+                        DatasetField(
                             name="id",
                             sql="id",
-                            type=DataType.DOUBLE,
+                            datatype=DataType.DOUBLE,
                             primary_key=True,
                         )
                     ],
                 )
             )
-            with pytest.raises(AmbiguousModelError):
+            with pytest.raises(AmbiguousDatasetError):
                 await resolve_entity("orders", storage=s)
 
 

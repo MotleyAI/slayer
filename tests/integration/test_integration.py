@@ -13,20 +13,20 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import AmbiguousJoinPathError, UnresolvableDimensionJoinError
+from slayer.core.errors import AmbiguousRelationshipPathError, UnresolvableDimensionRelationshipError
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import (
-    ColumnRef,
+    FieldRef,
     ComputedDimension,
-    ModelExtension,
+    DatasetExtension,
     OrderItem,
     SlayerQuery,
     TimeDimension,
@@ -40,12 +40,14 @@ from slayer.search.service import SearchService
 from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
+from typing import Any
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-async def integration_env(tmp_path):
+async def integration_env(tmp_path) -> SlayerQueryEngine:
     """Create a real SQLite database with test data, configure storage, models, and engine."""
 
     # -- SQLite database --
@@ -107,37 +109,37 @@ async def integration_env(tmp_path):
     await storage.save_datasource(datasource)
 
     # -- Orders model --
-    orders_model = SlayerModel(
+    orders_model = SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="test_sqlite",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
 
-            Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="latest_amount", sql="amount", type=DataType.DOUBLE),
+            DatasetField(name="total_amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="latest_amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
-    await storage.save_model(orders_model)
+    await storage.save_dataset(orders_model)
 
     # -- Customers model --
-    customers_model = SlayerModel(
+    customers_model = SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="test_sqlite",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
 
         ],
     )
-    await storage.save_model(customers_model)
+    await storage.save_dataset(customers_model)
 
     engine = SlayerQueryEngine(storage=storage)
     return engine
@@ -148,8 +150,8 @@ async def test_count_query(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
     )
     response = await engine.execute(query)
 
@@ -163,8 +165,8 @@ async def test_sum_measure(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(total_amount)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
     )
     response = await engine.execute(query)
 
@@ -174,16 +176,16 @@ async def test_sum_measure(integration_env):
 
 async def test_functional_aggregation(integration_env):
     func = await integration_env.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(total_amount)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
     ))
     assert func.data[0]["orders.total_amount_sum"] == pytest.approx(750.0)
 
 
 async def test_functional_star_count(integration_env):
     func = await integration_env.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
     ))
     assert func.data[0]["orders._count"] == 6
 
@@ -193,8 +195,8 @@ async def test_expression_aggregation_executes(integration_env):
     engine = integration_env
 
     response = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(amount + amount)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(amount + amount)")],
     ))
 
     assert response.row_count == 1
@@ -206,9 +208,9 @@ async def test_dimensions_groupby(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[FieldRef(name="status")],
     )
     response = await engine.execute(query)
 
@@ -224,9 +226,9 @@ async def test_filter_equals(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["status == 'completed'"],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["status == 'completed'"],
     )
     response = await engine.execute(query)
 
@@ -239,9 +241,9 @@ async def test_filter_gt(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["amount > 50"],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["amount > 50"],
     )
     response = await engine.execute(query)
 
@@ -260,9 +262,9 @@ async def test_filter_in_tuple(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["status in ('completed', 'pending')"],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["status in ('completed', 'pending')"],
     )
     response = await engine.execute(query)
 
@@ -279,9 +281,9 @@ async def test_filter_not_in_tuple(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["status not in ('cancelled',)"],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["status not in ('cancelled',)"],
     )
     response = await engine.execute(query)
 
@@ -294,11 +296,11 @@ async def test_order_by(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[FieldRef(name="status")],
         order=[
-            OrderItem(column=ColumnRef(name="count"), direction="desc"),
+            OrderItem(field=FieldRef(name="count"), direction="desc"),
         ],
     )
     response = await engine.execute(query)
@@ -315,11 +317,11 @@ async def test_limit(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[FieldRef(name="status")],
         order=[
-            OrderItem(column=ColumnRef(name="count"), direction="desc"),
+            OrderItem(field=FieldRef(name="count"), direction="desc"),
         ],
         limit=2,
     )
@@ -333,10 +335,10 @@ async def test_multiple_measures(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="sum(total_amount)"),
+        population="orders",
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="sum(total_amount)"),
         ],
     )
     response = await engine.execute(query)
@@ -347,21 +349,21 @@ async def test_multiple_measures(integration_env):
 
 
 
-async def test_cumsum_change_identity(integration_env):
+async def test_cumsum_change_identity(integration_env: SlayerQueryEngine):
     """Mathematical identity: cumsum(change(x)) == x - x[0] for all rows after the first."""
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="cumsum(change(count(*)))", name="cumsum_change"),
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="cumsum(change(count(*)))", name="cumsum_change"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -383,17 +385,17 @@ async def test_nested_cumsum_of_cumsum(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="cumsum(count(*))", name="cs"),
-            ModelMeasure(formula="cumsum(cumsum(count(*)))", name="cs_cs"),
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="cumsum(count(*))", name="cs"),
+            DatasetMetric(expression="cumsum(cumsum(count(*)))", name="cs_cs"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -410,16 +412,16 @@ async def test_consecutive_periods_counts_trailing_true_run(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="consecutive_periods(sum(total_amount) > 200)", name="positive_run"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="consecutive_periods(sum(total_amount) > 200)", name="positive_run"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -438,16 +440,16 @@ async def test_consecutive_periods_with_non_boolean_argument(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="consecutive_periods(sum(total_amount))", name="any_revenue_run"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="consecutive_periods(sum(total_amount))", name="any_revenue_run"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -462,19 +464,19 @@ async def test_consecutive_periods_partitions_by_dimension(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="consecutive_periods(count(*) > 0)", name="status_run"),
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="consecutive_periods(count(*) > 0)", name="status_run"),
         ],
         order=[
-            OrderItem(column=ColumnRef(name="status"), direction="asc"),
-            OrderItem(column=ColumnRef(name="created_at"), direction="asc"),
+            OrderItem(field=FieldRef(name="status"), direction="asc"),
+            OrderItem(field=FieldRef(name="created_at"), direction="asc"),
         ],
     )
     response = await engine.execute(query)
@@ -494,15 +496,15 @@ async def test_consecutive_periods_comparison_is_selectable(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="consecutive_periods(sum(total_amount) > 0) >= 2", name="has_two_month_run"),
+        metrics=[
+            DatasetMetric(expression="consecutive_periods(sum(total_amount) > 0) >= 2", name="has_two_month_run"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -514,14 +516,14 @@ async def test_consecutive_periods_comparison_is_filterable(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
-        filters=["consecutive_periods(sum(total_amount) > 0) >= 2"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
+        filter=["consecutive_periods(sum(total_amount) > 0) >= 2"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -534,11 +536,11 @@ async def test_arithmetic_expression(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="sum(total_amount) / count(*)", name="avg_amount"),
+        population="orders",
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="sum(total_amount) / count(*)", name="avg_amount"),
         ],
     )
     response = await engine.execute(query)
@@ -560,19 +562,19 @@ async def test_time_shift_default_granularity_calendar(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="time_shift(sum(total_amount), -1)", name="prev"),
-            ModelMeasure(formula="time_shift(sum(total_amount), -2)", name="prev2"),
-            ModelMeasure(formula="time_shift(sum(total_amount), 1)", name="next"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="time_shift(sum(total_amount), -1)", name="prev"),
+            DatasetMetric(expression="time_shift(sum(total_amount), -2)", name="prev2"),
+            DatasetMetric(expression="time_shift(sum(total_amount), 1)", name="next"),
         ],
-        filters=["status == 'completed'"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        filter=["status == 'completed'"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -599,16 +601,16 @@ async def test_time_shift_calendar_based(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="time_shift(sum(total_amount), -1, 'month')", name="prev_month"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="time_shift(sum(total_amount), -1, 'month')", name="prev_month"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -633,23 +635,23 @@ async def test_multiple_time_shifts_in_one_query(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(
-                formula="sum(total_amount) - time_shift(sum(total_amount), -1, 'month')",
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(
+                expression="sum(total_amount) - time_shift(sum(total_amount), -1, 'month')",
                 name="growth_1m",
             ),
-            ModelMeasure(
-                formula="sum(total_amount) - time_shift(sum(total_amount), -2, 'month')",
+            DatasetMetric(
+                expression="sum(total_amount) - time_shift(sum(total_amount), -2, 'month')",
                 name="growth_2m",
             ),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -675,17 +677,17 @@ async def test_time_shift_with_date_range(integration_env):
 
     # Query only March, but ask for previous month's value (February)
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="time_shift(sum(total_amount), -1, 'month')", name="prev_month"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="time_shift(sum(total_amount), -1, 'month')", name="prev_month"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -702,17 +704,17 @@ async def test_change_with_date_range(integration_env):
 
     # Query only March, change should compare to February
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="change(sum(total_amount))", name="amount_change"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="change(sum(total_amount))", name="amount_change"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -726,17 +728,17 @@ async def test_change_pct_with_date_range(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-03-01", "2025-03-31"],
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="change_pct(sum(total_amount))", name="pct"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="change_pct(sum(total_amount))", name="pct"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -751,18 +753,18 @@ async def test_multiple_date_range_shifts(integration_env):
 
     # Query Feb only, ask for both previous (Jan) and next (Mar) month
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="time_shift(sum(total_amount), -1, 'month')", name="prev"),
-            ModelMeasure(formula="time_shift(sum(total_amount), 1, 'month')", name="next"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="time_shift(sum(total_amount), -1, 'month')", name="prev"),
+            DatasetMetric(expression="time_shift(sum(total_amount), 1, 'month')", name="next"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -780,17 +782,17 @@ async def test_forward_row_shift_with_date_range(integration_env):
 
     # Query Feb only, ask for the next period's value (March)
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2025-02-01", "2025-02-28"],
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="time_shift(sum(total_amount), 1)", name="next_period"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="time_shift(sum(total_amount), 1)", name="next_period"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -808,17 +810,17 @@ async def test_post_filter_on_change(integration_env):
     # change values: Jan=NULL, Feb=125-300=-175, Mar=325-125=200
     # Filter: change < 0 → only February
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="change(sum(total_amount))", name="amount_change"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="change(sum(total_amount))", name="amount_change"),
         ],
-        filters=["amount_change < 0"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        filter=["amount_change < 0"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -840,17 +842,17 @@ async def test_post_filter_with_base_filter(integration_env):
     # change: Jan=NULL, Feb=50-300=-250, Mar=325-50=275
     # Post-filter: amount_change > 0 → only March
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="change(sum(total_amount))", name="amount_change"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="change(sum(total_amount))", name="amount_change"),
         ],
-        filters=["status != 'cancelled'", "amount_change > 0"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        filter=["status != 'cancelled'", "amount_change > 0"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -867,14 +869,14 @@ async def test_inline_transform_filter(integration_env):
     # change: Jan=NULL, Feb=-175, Mar=200
     # Filter: change(total_amount) < 0 → only February
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
-        filters=["change(sum(total_amount)) < 0"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
+        filter=["change(sum(total_amount)) < 0"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -891,14 +893,14 @@ async def test_inline_last_change_filter(integration_env):
     # last(change) = 200 (March's change, broadcast to all rows)
     # Filter: last(change(total_amount)) > 0 → all rows pass (200 > 0)
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
-        filters=["last(change(sum(total_amount))) > 0"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
+        filter=["last(change(sum(total_amount))) > 0"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -907,14 +909,14 @@ async def test_inline_last_change_filter(integration_env):
 
     # Now filter for < 0 → no rows pass (last change is 200)
     query2 = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
-        filters=["last(change(sum(total_amount))) < 0"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
+        filter=["last(change(sum(total_amount))) < 0"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response2 = await engine.execute(query2)
     assert response2.row_count == 0
@@ -929,14 +931,14 @@ async def test_arithmetic_transform_filter(integration_env):
     # change / total_amount: Jan=NULL, Feb=-175/125=-1.4, Mar=200/325≈0.615
     # Filter: change(total_amount) / total_amount > 0 → only March
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
-        filters=["change(sum(total_amount)) / sum(total_amount) > 0"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
+        filter=["change(sum(total_amount)) / sum(total_amount) > 0"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -954,14 +956,14 @@ async def test_transform_on_filter_rhs(integration_env):
     # Filter: total_amount > time_shift(total_amount, -1) → months where value increased
     # Jan: 300 > NULL → NULL (filtered out), Feb: 125 > 300 → false, Mar: 325 > 125 → true
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
-        filters=["sum(total_amount) > time_shift(sum(total_amount), -1)"],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
+        filter=["sum(total_amount) > time_shift(sum(total_amount), -1)"],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -978,16 +980,16 @@ async def test_last_measure_type(integration_env):
     # latest_amount has type=last, so querying it as a bare measure
     # should auto-wrap with last() and return Mar's value (325) for all rows
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="last(latest_amount)"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="last(latest_amount)"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -1008,16 +1010,16 @@ async def test_last_function(integration_env):
     # 3 months: Jan(300), Feb(125), Mar(325)
     # last(total_amount) = March's total (325) broadcast to all rows
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="last(sum(total_amount))", name="latest"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="last(sum(total_amount))", name="latest"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -1035,11 +1037,11 @@ async def test_having_filter(integration_env):
     # Group by status: completed(3 orders), pending(2), cancelled(1)
     # Filter: _count > 1 → only completed and pending
     query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["_count > 1"],
-        order=[OrderItem(column=ColumnRef(name="_count"), direction="desc")],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["_count > 1"],
+        order=[OrderItem(field=FieldRef(name="_count"), direction="desc")],
     )
     response = await engine.execute(query)
 
@@ -1057,11 +1059,11 @@ async def test_having_filter_with_sum(integration_env):
     # Group by status: completed(100+200+300=600), pending(50+25=75), cancelled(75)
     # Filter: total_amount_sum > 100 → only completed
     query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
-        filters=["total_amount_sum > 100"],
-        order=[OrderItem(column=ColumnRef(name="total_amount_sum"), direction="desc")],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
+        filter=["total_amount_sum > 100"],
+        order=[OrderItem(field=FieldRef(name="total_amount_sum"), direction="desc")],
     )
     response = await engine.execute(query)
 
@@ -1076,13 +1078,13 @@ async def test_filter_mixing_measure_and_row_conjuncts_splits(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["_count > 1 and status == 'completed'"],
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["_count > 1 and status == 'completed'"],
     )
     response = await engine.execute(query)
 
@@ -1124,40 +1126,40 @@ async def joined_time_env(tmp_path):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="stores", sql_table="stores", data_source="db",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="opened_at", sql="opened_at", datatype=DataType.TIMESTAMP),
 
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="store_id", sql="store_id", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="store_id", sql="store_id", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
 
-            Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="latest_amount", sql="amount", type=DataType.DOUBLE),
+            DatasetField(name="total_amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="latest_amount", sql="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
+        relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="order_items", sql_table="order_items", data_source="db",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="order_id", sql="order_id", type=DataType.DOUBLE),
-            Column(name="qty", sql="qty", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="order_id", sql="order_id", datatype=DataType.DOUBLE),
+            DatasetField(name="qty", sql="qty", datatype=DataType.DOUBLE),
 
-            Column(name="qty_sum", sql="qty", type=DataType.DOUBLE),
-            Column(name="latest_qty", sql="qty", type=DataType.DOUBLE),
+            DatasetField(name="qty_sum", sql="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="latest_qty", sql="qty", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])],
+        relationships=[DatasetRelationship(to="orders", join_pairs=[["order_id", "id"]])],
     ))
 
     return SlayerQueryEngine(storage=storage)
@@ -1171,16 +1173,16 @@ async def test_last_with_joined_time_dimension(joined_time_env):
     # Query orders with stores.opened_at as time dimension and latest_amount (type=last).
     # The ORDER BY for ROW_NUMBER must reference stores.opened_at, not orders.opened_at.
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="stores.opened_at",
+            field="stores.opened_at",
             granularity=TimeGranularity.YEAR,
         )],
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="last(latest_amount)"),
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="last(latest_amount)"),
         ],
-        order=[OrderItem(column=ColumnRef(name="stores.opened_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="stores.opened_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -1200,16 +1202,16 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
     # Query order_items with orders.created_at as time dimension and latest_qty (type=last).
     # The ORDER BY for ROW_NUMBER must reference orders.created_at.
     query = SlayerQuery(
-        source_model="order_items",
+        population="order_items",
         time_dimensions=[TimeDimension(
-            dimension="orders.created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(qty_sum)"),
-            ModelMeasure(formula="last(latest_qty)"),
+        metrics=[
+            DatasetMetric(expression="sum(qty_sum)"),
+            DatasetMetric(expression="last(latest_qty)"),
         ],
-        order=[OrderItem(column=ColumnRef(name="orders.created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="orders.created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -1228,7 +1230,7 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-async def cross_model_env(tmp_path):
+async def cross_dataset_env(tmp_path):
     """SQLite env with orders + customers models and an explicit join."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
@@ -1248,46 +1250,46 @@ async def cross_model_env(tmp_path):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="db",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
 
-            Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
+            DatasetField(name="total_amount", sql="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="db",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
 
-            Column(name="avg_score", sql="score", type=DataType.DOUBLE),
-            Column(name="max_score", sql="score", type=DataType.DOUBLE),
+            DatasetField(name="avg_score", sql="score", datatype=DataType.DOUBLE),
+            DatasetField(name="max_score", sql="score", datatype=DataType.DOUBLE),
         ],
     ))
 
     return SlayerQueryEngine(storage=storage)
 
 
-async def test_cross_model_measure_monthly(cross_model_env):
+async def test_cross_model_measure_monthly(cross_dataset_env):
     """Cross-model measure: monthly order count + avg customer score from joined model."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="avg(customers.avg_score)"),
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="avg(customers.avg_score)"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -1296,20 +1298,20 @@ async def test_cross_model_measure_monthly(cross_model_env):
     assert [r["orders.customers.avg_score_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
-async def test_cross_model_measure_no_join_raises(cross_model_env):
+async def test_cross_model_measure_no_join_raises(cross_dataset_env):
     """An unreachable cross-model measure target is route-aware-rejected:
     ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(nonexistent.some_measure)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(nonexistent.some_measure)")],
     )
-    with pytest.raises(UnresolvableDimensionJoinError, match="no route to target"):
+    with pytest.raises(UnresolvableDimensionRelationshipError, match="no route to target"):
         await engine.execute(query)
 
 
-async def test_cross_model_measure_with_target_join_filters(cross_model_env):
+async def test_cross_model_measure_with_target_join_filters(cross_dataset_env):
     """Cross-model measure CTE must include filters reachable from the target model.
 
     Based on Q9 benchmark: policy_amount.total_policy_amount:sum with filters on
@@ -1318,7 +1320,7 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     policy_amount's join graph. Without the re-rooted subquery fix, these filters
     would be stripped from the cross-model CTE, producing wrong aggregates.
     """
-    engine = cross_model_env
+    engine = cross_dataset_env
     tmp = tempfile.mkdtemp()
     db_path = f"{tmp}/test.db"
     with transaction(db_path) as conn:
@@ -1351,42 +1353,42 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     storage = YAMLStorage(base_dir=storage_dir)
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=db_path))
 
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="policy", sql_table="policy", data_source="db",
-        columns=[
-            Column(name="policy_identifier", type=DataType.DOUBLE, primary_key=True),
-            Column(name="policy_number", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="policy_identifier", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="policy_number", datatype=DataType.TEXT),
 
         ],
-        joins=[
-            ModelJoin(target_model="policy_amount", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
-            ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+        relationships=[
+            DatasetRelationship(to="policy_amount", join_pairs=[["policy_identifier", "policy_identifier"]], join_type="inner"),
+            DatasetRelationship(to="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="policy_amount", sql_table="policy_amount", data_source="db",
-        columns=[
-            Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
-            Column(name="policy_identifier", type=DataType.DOUBLE),
-Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
+        fields=[
+            DatasetField(name="policy_amount_identifier", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="policy_identifier", datatype=DataType.DOUBLE),
+DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.DOUBLE)
         ],
-        joins=[
-            ModelJoin(target_model="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
-            ModelJoin(target_model="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
+        relationships=[
+            DatasetRelationship(to="premium", join_pairs=[["policy_amount_identifier", "policy_amount_identifier"]], join_type="inner"),
+            DatasetRelationship(to="agreement_party_role", join_pairs=[["policy_identifier", "agreement_identifier"]], join_type="inner"),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="premium", sql_table="premium", data_source="db",
-        columns=[
-            Column(name="policy_amount_identifier", type=DataType.DOUBLE, primary_key=True),
-            Column(name="has_premium", sql="1", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="policy_amount_identifier", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="has_premium", sql="1", datatype=DataType.TEXT),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="agreement_party_role", sql_table="agreement_party_role", data_source="db",
-        columns=[
-            Column(name="agreement_identifier", type=DataType.DOUBLE, primary_key=True),
-            Column(name="party_role_code", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="agreement_identifier", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="party_role_code", datatype=DataType.TEXT),
         ],
     ))
 
@@ -1394,10 +1396,10 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
 
     # Q9-style query: cross-model measure with filters on target's join graph
     query = SlayerQuery(
-        source_model="policy",
-        measures=[ModelMeasure(formula="sum(policy_amount.total_policy_amount)")],
-        dimensions=[ColumnRef(name="policy_number")],
-        filters=[
+        population="policy",
+        metrics=[DatasetMetric(expression="sum(policy_amount.total_policy_amount)")],
+        dimensions=[FieldRef(name="policy_number")],
+        filter=[
             "agreement_party_role.party_role_code = 'PH'",
             "policy_amount.premium.has_premium = 1",
         ],
@@ -1417,21 +1419,21 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)
     assert data_by_policy["POL-002"]["policy.policy_amount.total_policy_amount_sum"] == pytest.approx(300.0)
 
 
-async def test_transform_on_cross_model(cross_model_env):
+async def test_transform_on_cross_model(cross_dataset_env):
     """Transforms on cross-model measures work (applied after the cross-model join)."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     # cumsum of avg customer score per month
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="avg(customers.avg_score)"),
-            ModelMeasure(formula="cumsum(avg(customers.avg_score))", name="running"),
+        metrics=[
+            DatasetMetric(expression="avg(customers.avg_score)"),
+            DatasetMetric(expression="cumsum(avg(customers.avg_score))", name="running"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
     response = await engine.execute(query)
 
@@ -1450,15 +1452,15 @@ async def test_query_backed_model_count(integration_env):
     # Inner: monthly order counts (3 months), named for reference
     inner = SlayerQuery(
         name="monthly",
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total_amount)")],
+        metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total_amount)")],
     )
 
     # Outer: count how many months exist (references "monthly" by name)
-    outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="count(*)")])
+    outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
     response = await engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
@@ -1471,38 +1473,38 @@ async def test_query_backed_model_aggregate(integration_env):
 
     inner = SlayerQuery(
         name="monthly",
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
     )
 
-    outer = SlayerQuery(source_model="monthly", measures=[ModelMeasure(formula="sum(total_amount_sum)")])
+    outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="sum(total_amount_sum)")])
     response = await engine.execute(query=[inner, outer])
 
     assert response.row_count == 1
     assert response.data[0]["monthly.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
-async def test_create_model_from_query(integration_env):
+async def test_create_model_from_query(integration_env: SlayerQueryEngine):
     """A query can be saved as a permanent model and then queried by name."""
     engine = integration_env
 
     # Create a monthly summary model from a query
     source_query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="count(*)"), ModelMeasure(formula="sum(total_amount)")],
+        metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total_amount)")],
     )
-    saved = await engine.create_model_from_query(
+    saved = await engine.create_dataset_from_query(
         query=source_query, name="monthly_summary",
     )
 
     # Verify model structure
-    dim_names = [d.name for d in saved.columns]
+    dim_names = [d.name for d in saved.fields]
     assert "created_at" in dim_names
     assert "_count" in dim_names
     assert "total_amount_sum" in dim_names
@@ -1510,46 +1512,46 @@ async def test_create_model_from_query(integration_env):
 
     # Query the saved model by name
     result = await engine.execute(query=SlayerQuery(
-        source_model="monthly_summary", measures=[ModelMeasure(formula="count(*)")],
+        population="monthly_summary", metrics=[DatasetMetric(expression="count(*)")],
     ))
     assert result.data[0]["monthly_summary._count"] == 3
 
     # Re-aggregate over saved model
     result2 = await engine.execute(query=SlayerQuery(
-        source_model="monthly_summary", measures=[ModelMeasure(formula="sum(total_amount_sum)")],
+        population="monthly_summary", metrics=[DatasetMetric(expression="sum(total_amount_sum)")],
     ))
     assert result2.data[0]["monthly_summary.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
-async def test_query_list_with_joins(cross_model_env):
+async def test_query_list_with_joins(cross_dataset_env):
     """A query list where the main query joins to a named sub-query."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     # Sub-query: average customer score per customer
     sub = SlayerQuery(
         name="customer_scores",
-        source_model="customers",
-        dimensions=[ColumnRef(name="id")],
-        measures=[ModelMeasure(formula="avg(avg_score)")],
+        population="customers",
+        dimensions=[FieldRef(name="id")],
+        metrics=[DatasetMetric(expression="avg(avg_score)")],
     )
 
     # Main query: monthly orders joined to customer_scores
     # In the virtual model, inner measures become dimensions with auto-generated
     # SUM/AVG measures. Use avg_score_avg to re-average the inner avg_score.
     main = SlayerQuery(
-        source_model="orders",
-        extensions=[ModelExtension.model_validate({
+        population="orders",
+        extensions=[DatasetExtension.model_validate({
             "source_name": "orders",
-            "joins": [{"target_model": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
+            "relationships": [{"to": "customer_scores", "join_pairs": [["customer_id", "id"]]}],
         })],
         time_dimensions=[TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="avg(customer_scores.avg_score_avg)"),
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="avg(customer_scores.avg_score_avg)"),
         ],
-        order=[OrderItem(column=ColumnRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
 
     response = await engine.execute(query=[sub, main])
@@ -1559,7 +1561,7 @@ async def test_query_list_with_joins(cross_model_env):
     assert [r["orders.customer_scores.avg_score_avg_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
-async def test_sibling_stage_joins_dag(cross_model_env):
+async def test_sibling_stage_joins_dag(cross_dataset_env):
     """3-stage DAG: a non-final named stage joins a prior named stage.
 
     ``kpis`` aggregates per customer; ``tagged``
@@ -1572,28 +1574,28 @@ async def test_sibling_stage_joins_dag(cross_model_env):
     enrichment time because ``the legacy query-backed wrap`` dropped the named_queries
     dict when enriching a non-final stage.
     """
-    engine = cross_model_env
+    engine = cross_dataset_env
     queries = [
         SlayerQuery(
             name="kpis",
-            source_model="orders",
-            dimensions=[ColumnRef(name="customer_id")],
-            measures=[ModelMeasure(formula="sum(total_amount)")],
+            population="orders",
+            dimensions=[FieldRef(name="customer_id")],
+            metrics=[DatasetMetric(expression="sum(total_amount)")],
         ),
         SlayerQuery(
             name="tagged",
-            source_model="customers",
-            extensions=[ModelExtension.model_validate({
+            population="customers",
+            extensions=[DatasetExtension.model_validate({
                 "source_name": "customers",
-                "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}],
+                "relationships": [{"to": "kpis", "join_pairs": [["id", "customer_id"]]}],
             })],
             # ``kpis.total_amount_sum`` is a join-traversed dimension, so
             # each customer row carries their own kpis sum.
-            dimensions=[ColumnRef(name="name"), ColumnRef(name="kpis.total_amount_sum")],
+            dimensions=[FieldRef(name="name"), FieldRef(name="kpis.total_amount_sum")],
         ),
         SlayerQuery(
-            source_model="tagged",
-            measures=[ModelMeasure(formula="max(kpis__total_amount_sum)")],
+            population="tagged",
+            metrics=[DatasetMetric(expression="max(kpis__total_amount_sum)")],
         ),
     ]
     response = await engine.execute(query=queries)
@@ -1615,9 +1617,9 @@ async def test_sql_dimension_via_model_extension(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
-        measures=[ModelMeasure(formula="count(*)")],
+        metrics=[DatasetMetric(expression="count(*)")],
     )
     response = await engine.execute(query)
 
@@ -1631,9 +1633,9 @@ async def test_sql_dimension_with_regular(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status"), ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
-        measures=[ModelMeasure(formula="count(*)")],
+        population="orders",
+        dimensions=[FieldRef(name="status"), ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
+        metrics=[DatasetMetric(expression="count(*)")],
     )
     response = await engine.execute(query)
 
@@ -1650,18 +1652,18 @@ async def test_formula_dimension_via_query_list(integration_env):
     # Inner: compute monthly totals
     inner = SlayerQuery(
         name="monthly",
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
     )
 
     # Outer: group by amount tier computed over the inner query's result
     outer = SlayerQuery(
-        source_model="monthly",
+        population="monthly",
         dimensions=[ComputedDimension(expression="CASE WHEN total_amount_sum > 200 THEN 'high' ELSE 'low' END", name="amount_tier")],
-        measures=[ModelMeasure(formula="count(*)")],
+        metrics=[DatasetMetric(expression="count(*)")],
     )
 
     response = await engine.execute(query=[inner, outer])
@@ -1672,7 +1674,7 @@ async def test_formula_dimension_via_query_list(integration_env):
     assert by_tier["low"] == 1
 
 
-async def test_multistage_renamed_measure_returns_non_null(integration_env):
+async def test_multistage_renamed_measure_returns_non_null(integration_env: SlayerQueryEngine):
     """A 2-stage query-backed model where the inner stage
     renames its aggregated measure via ``name=`` must return non-NULL values
     for the renamed column when executed end-to-end.
@@ -1685,23 +1687,23 @@ async def test_multistage_renamed_measure_returns_non_null(integration_env):
     """
     engine = integration_env
 
-    saved = SlayerModel(
+    saved = SlayerDataset(
         name="renamed_metric",
         data_source="test_sqlite",
         source_queries=[
             SlayerQuery(
                 name="raw",
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(amount)", name="rev")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
             ),
             SlayerQuery(
-                source_model="raw",
-                measures=[ModelMeasure(formula="sum(rev)")],
+                population="raw",
+                metrics=[DatasetMetric(expression="sum(rev)")],
             ),
         ],
     )
-    await engine.save_model(saved)
+    await engine.save_dataset(saved)
 
     response = await engine.execute("renamed_metric")
     assert response.row_count == 1, (
@@ -1731,9 +1733,9 @@ async def test_circular_query_reference_raises(integration_env):
     """
     engine = integration_env
 
-    q1 = SlayerQuery(name="a", source_model="b", measures=[ModelMeasure(formula="count(*)")])
-    q2 = SlayerQuery(name="b", source_model="a", measures=[ModelMeasure(formula="count(*)")])
-    main = SlayerQuery(source_model="a", measures=[ModelMeasure(formula="count(*)")])
+    q1 = SlayerQuery(name="a", population="b", metrics=[DatasetMetric(expression="count(*)")])
+    q2 = SlayerQuery(name="b", population="a", metrics=[DatasetMetric(expression="count(*)")])
+    main = SlayerQuery(population="a", metrics=[DatasetMetric(expression="count(*)")])
     with pytest.raises(ValueError, match=r"[Cc]ycle in query list|cyclic dependency"):
         await engine.execute(query=[q1, q2, main])
 
@@ -1752,22 +1754,22 @@ async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
 
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="a", sql_table="a", data_source="db",
-        columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
-                    Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE),
+                    DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
 
         ],
-        joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]], name=ab_name)],
+        relationships=[DatasetRelationship(to="b", join_pairs=[["b_id", "id"]], name=ab_name)],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="b", sql_table="b", data_source="db",
-        columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
-                    Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
-                    Column(name="unique_b_field", sql="id", type=DataType.DOUBLE),
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE),
+                    DatasetField(name="a_id", sql="a_id", datatype=DataType.DOUBLE),
+                    DatasetField(name="unique_b_field", sql="id", datatype=DataType.DOUBLE),
 
         ],
-        joins=[ModelJoin(target_model="a", join_pairs=[["a_id", "id"]], name=ba_name)],
+        relationships=[DatasetRelationship(to="a", join_pairs=[["a_id", "id"]], name=ba_name)],
     ))
     return SlayerQueryEngine(storage=storage)
 
@@ -1775,9 +1777,9 @@ async def _mutual_join_engine(tmp_path, *, ab_name=None, ba_name=None):
 def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
     # "unique_b_field" only exists on model b, so translation can't short-circuit.
     return SlayerQuery(
-        source_model="a",
-        dimensions=[ColumnRef(name=f"{hop1}.{hop2}.unique_b_field")],
-        measures=[ModelMeasure(formula="count(*)")],
+        population="a",
+        dimensions=[FieldRef(name=f"{hop1}.{hop2}.unique_b_field")],
+        metrics=[DatasetMetric(expression="count(*)")],
     )
 
 
@@ -1785,7 +1787,7 @@ async def test_unnamed_parallel_edges_fail_closed(tmp_path):
     """Two unnamed edges between the same pair make the hop ambiguous."""
     engine = await _mutual_join_engine(tmp_path)
     query = _b_a_unique_field_query("b", "a")
-    with pytest.raises(AmbiguousJoinPathError, match="2 edges"):
+    with pytest.raises(AmbiguousRelationshipPathError, match="2 edges"):
         await engine.execute(query)
 
 
@@ -1794,7 +1796,7 @@ async def test_circular_join_graph_raises(tmp_path):
     engine = await _mutual_join_engine(tmp_path, ab_name="fwd", ba_name="back")
     # fwd.back walks a→b→a — a cycle.
     query = _b_a_unique_field_query("fwd", "back")
-    with pytest.raises(ValueError, match="Circular join"):
+    with pytest.raises(ValueError, match="Circular relationship"):
         await engine.execute(query)
 
 
@@ -1817,20 +1819,20 @@ async def test_model_filter_on_joined_column(tmp_path):
     storage_dir.mkdir()
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="db", type="sqlite", database=str(db_path)))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="db",
-        columns=[
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-Column(name="total", sql="amount", type=DataType.DOUBLE)
+        fields=[
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE)
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         filters=["customers.region == 'US'"],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="db",
-        columns=[Column(name="id", sql="id", type=DataType.DOUBLE),
-                    Column(name="name", sql="name", type=DataType.TEXT),
-                    Column(name="region", sql="region", type=DataType.TEXT),
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE),
+                    DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
 
         ],
     ))
@@ -1839,9 +1841,9 @@ Column(name="total", sql="amount", type=DataType.DOUBLE)
 
     # Model filter "customers.region == 'US'" should exclude Bob (EU)
     result = await engine.execute(SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="customers.name")],
-        measures=[ModelMeasure(formula="count(*)")],
+        population="orders",
+        dimensions=[FieldRef(name="customers.name")],
+        metrics=[DatasetMetric(expression="count(*)")],
     ))
 
     names = {r["orders.customers.name"] for r in result.data}
@@ -1899,18 +1901,19 @@ async def diamond_env(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
     models = await ingestion.ingest_datasource_async(ds, client=engine.client_for(ds))
     for m in models:
-        await storage.save_model(m)
+        await storage.save_dataset(m)
 
     return engine, storage
 
 
-async def test_diamond_joins_both_paths(diamond_env):
+async def test_diamond_joins_both_paths(diamond_env: tuple[SlayerQueryEngine, StorageBackend]):
     """Query both customer region and warehouse region in one query — must not collide."""
     engine, storage = diamond_env
 
     # Verify the ingested model has its own columns (not flattened joined dims)
-    shipments = await storage.get_model("shipments")
-    dim_names = {d.name for d in shipments.columns}
+    shipments = await storage.get_dataset("shipments")
+    assert shipments is not None
+    dim_names = {d.name for d in shipments.fields}
     assert "customer_id" in dim_names
     assert "warehouse_id" in dim_names
     # Joined dimensions are resolved via the join graph, not pre-flattened
@@ -1918,12 +1921,12 @@ async def test_diamond_joins_both_paths(diamond_env):
 
     # Query both region paths simultaneously — resolved via join graph
     result = await engine.execute(query=SlayerQuery(
-        source_model="shipments",
+        population="shipments",
         dimensions=[
-            ColumnRef(name="customers.regions.name"),
-            ColumnRef(name="warehouses.regions.name"),
+            FieldRef(name="customers.regions.name"),
+            FieldRef(name="warehouses.regions.name"),
         ],
-        measures=[ModelMeasure(formula="count(*)")],
+        metrics=[DatasetMetric(expression="count(*)")],
     ))
 
     # Should have 4 rows: (US, US), (US, Asia), (EU, US), (EU, Asia)
@@ -1938,16 +1941,18 @@ async def test_diamond_joins_both_paths(diamond_env):
     assert rows[("EU", "Asia")] == 1  # Bob from WH-West
 
     # SQL must have two different aliases for regions
+    assert result.sql is not None
     assert "customers__regions" in result.sql
     assert "warehouses__regions" in result.sql
 
 
-async def test_sqlite_ingest_has_no_descriptions(diamond_env):
+async def test_sqlite_ingest_has_no_descriptions(diamond_env: tuple[Any, StorageBackend]):
     """SQLite has no table/column comments — ingested descriptions stay None."""
     _, storage = diamond_env
-    shipments = await storage.get_model("shipments")
+    shipments = await storage.get_dataset("shipments")
+    assert shipments is not None
     assert shipments.description is None
-    assert all(c.description is None for c in shipments.columns)
+    assert all(c.description is None for c in shipments.fields)
 
 
 async def test_query_filter_on_joined_dimension(diamond_env):
@@ -1955,9 +1960,9 @@ async def test_query_filter_on_joined_dimension(diamond_env):
     engine, _ = diamond_env
 
     result = await engine.execute(query=SlayerQuery(
-        source_model="shipments",
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["customers.regions.name == 'US'"],
+        population="shipments",
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["customers.regions.name == 'US'"],
     ))
 
     assert result.data[0]["shipments._count"] == 2  # Alice's 2 shipments
@@ -1970,9 +1975,9 @@ async def test_diamond_joins_single_path(diamond_env):
     engine, _ = diamond_env
 
     result = await engine.execute(query=SlayerQuery(
-        source_model="shipments",
-        dimensions=[ColumnRef(name="customers.regions.name")],
-        measures=[ModelMeasure(formula="count(*)")],
+        population="shipments",
+        dimensions=[FieldRef(name="customers.regions.name")],
+        metrics=[DatasetMetric(expression="count(*)")],
     ))
 
     by_region = {r["shipments.customers.regions.name"]: r["shipments._count"] for r in result.data}
@@ -1985,23 +1990,24 @@ async def test_diamond_joins_single_path(diamond_env):
 # ---------------------------------------------------------------------------
 
 
-async def test_filtered_measure_sum(integration_env):
+async def test_filtered_measure_sum(integration_env: SlayerQueryEngine):
     """Measure with filter produces CASE WHEN — only matching rows aggregated."""
     engine = integration_env
     storage = engine.storage
 
     # Add a filtered measure: only sum completed orders' amounts
-    orders = await storage.get_model("orders")
-    orders.columns.append(
-        Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
+    orders = await storage.get_dataset("orders")
+    assert orders is not None
+    orders.fields.append(
+        DatasetField(name="completed_revenue", sql="amount", filter="status = 'completed'", datatype=DataType.DOUBLE)
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
 
     result = await engine.execute(query=SlayerQuery(
-        source_model="orders",
-        measures=[
-            ModelMeasure(formula="sum(total_amount)"),
-            ModelMeasure(formula="sum(completed_revenue)"),
+        population="orders",
+        metrics=[
+            DatasetMetric(expression="sum(total_amount)"),
+            DatasetMetric(expression="sum(completed_revenue)"),
         ],
     ))
     assert result.row_count == 1
@@ -2012,22 +2018,23 @@ async def test_filtered_measure_sum(integration_env):
     assert completed == pytest.approx(600.0)
 
 
-async def test_filtered_measure_count(integration_env):
+async def test_filtered_measure_count(integration_env: SlayerQueryEngine):
     """Filtered count measure counts only matching rows."""
     engine = integration_env
     storage = engine.storage
 
-    orders = await storage.get_model("orders")
-    orders.columns.append(
-        Column(name="completed_count", sql="id", filter="status = 'completed'", type=DataType.DOUBLE)
+    orders = await storage.get_dataset("orders")
+    assert orders is not None
+    orders.fields.append(
+        DatasetField(name="completed_count", sql="id", filter="status = 'completed'", datatype=DataType.DOUBLE)
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
 
     result = await engine.execute(query=SlayerQuery(
-        source_model="orders",
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="count(completed_count)"),
+        population="orders",
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="count(completed_count)"),
         ],
     ))
     row = result.data[0]
@@ -2037,21 +2044,22 @@ async def test_filtered_measure_count(integration_env):
     assert completed == 3
 
 
-async def test_filtered_measure_with_dimensions(integration_env):
+async def test_filtered_measure_with_dimensions(integration_env: SlayerQueryEngine):
     """Filtered measure works with GROUP BY dimensions."""
     engine = integration_env
     storage = engine.storage
 
-    orders = await storage.get_model("orders")
-    orders.columns.append(
-        Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
+    orders = await storage.get_dataset("orders")
+    assert orders is not None
+    orders.fields.append(
+        DatasetField(name="completed_revenue", sql="amount", filter="status = 'completed'", datatype=DataType.DOUBLE)
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
 
     result = await engine.execute(query=SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(completed_revenue)")],
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(completed_revenue)")],
+        dimensions=[FieldRef(name="status")],
     ))
     # Completed status row should have a value; others should be NULL
     for row in result.data:
@@ -2063,7 +2071,7 @@ async def test_filtered_measure_with_dimensions(integration_env):
             assert row["orders.completed_revenue_sum"] is None
 
 
-async def test_filtered_last_picks_correct_row(integration_env):
+async def test_filtered_last_picks_correct_row(integration_env: SlayerQueryEngine):
     """A ``Column.filter`` masks the value and never restricts the ranking: ``last``
     picks the globally latest row and reads its masked value (NULL when that row
     fails the filter).
@@ -2074,24 +2082,25 @@ async def test_filtered_last_picks_correct_row(integration_env):
     engine = integration_env
     storage = engine.storage
 
-    orders = await storage.get_model("orders")
-    orders.columns.append(
-        Column(name="completed_latest", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
+    orders = await storage.get_dataset("orders")
+    assert orders is not None
+    orders.fields.append(
+        DatasetField(name="completed_latest", sql="amount", filter="status = 'completed'", datatype=DataType.DOUBLE)
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
 
     # Query with monthly granularity so we get per-month last values
     result = await engine.execute(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[
             TimeDimension(
-                dimension="created_at",
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
-        measures=[
-            ModelMeasure(formula="last(completed_latest)"),
-            ModelMeasure(formula="last(latest_amount)"),
+        metrics=[
+            DatasetMetric(expression="last(completed_latest)"),
+            DatasetMetric(expression="last(latest_amount)"),
         ],
     ))
     rows_by_month = {row["orders.created_at"]: row for row in result.data}
@@ -2111,27 +2120,28 @@ async def test_filtered_last_picks_correct_row(integration_env):
     assert feb["orders.completed_latest_last"] is None
 
 
-async def test_time_dimension_label_fallback(integration_env):
+async def test_time_dimension_label_fallback(integration_env: SlayerQueryEngine):
     """Time dimension inherits label from model dimension definition."""
     engine = integration_env
     storage = engine.storage
 
-    orders = await storage.get_model("orders")
-    for d in orders.columns:
+    orders = await storage.get_dataset("orders")
+    assert orders is not None
+    for d in orders.fields:
         if d.name == "created_at":
             d.label = "Order Date"
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
 
     # Query with time dimension but no explicit label on TimeDimension
     result = await engine.execute(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[
             TimeDimension(
-                dimension="created_at",
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
             ),
         ],
-        measures=[ModelMeasure(formula="sum(total_amount)")],
+        metrics=[DatasetMetric(expression="sum(total_amount)")],
     ))
     # The model-level label should propagate through
     td_meta = result.attributes.dimensions.get("orders.created_at")
@@ -2139,31 +2149,32 @@ async def test_time_dimension_label_fallback(integration_env):
     assert td_meta.label == "Order Date"
 
 
-async def test_label_propagation_enrichment(integration_env):
+async def test_label_propagation_enrichment(integration_env: SlayerQueryEngine):
     """Model-level labels propagate through enrichment to query results."""
     engine = integration_env
     storage = engine.storage
 
-    orders = await storage.get_model("orders")
+    orders = await storage.get_dataset("orders")
+    assert orders is not None
     # Add labels to a dimension and measure
-    for d in orders.columns:
+    for d in orders.fields:
         if d.name == "status":
             d.label = "Order Status"
-    orders.columns.append(
-        Column(name="labeled_rev", sql="amount", label="Total Revenue", type=DataType.DOUBLE)
+    orders.fields.append(
+        DatasetField(name="labeled_rev", sql="amount", label="Total Revenue", datatype=DataType.DOUBLE)
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
 
     result = await engine.execute(query=SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(labeled_rev)")],
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(labeled_rev)")],
+        dimensions=[FieldRef(name="status")],
     ))
     # Labels should appear in result meta
     status_meta = result.attributes.dimensions.get("orders.status")
     assert status_meta is not None
     assert status_meta.label == "Order Status"
-    rev_meta = result.attributes.measures.get("orders.labeled_rev_sum")
+    rev_meta = result.attributes.metrics.get("orders.labeled_rev_sum")
     assert rev_meta is not None
     assert rev_meta.label == "Total Revenue"
 
@@ -2181,8 +2192,8 @@ async def test_median_sqlite(integration_env):
     """Median of order amounts: [25, 50, 75, 100, 200, 300] -> 87.5."""
     engine = integration_env
     response = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="median(total_amount)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="median(total_amount)")],
     ))
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_median"] == pytest.approx(87.5)
@@ -2192,10 +2203,10 @@ async def test_percentile_sqlite_quartiles(integration_env):
     """P25 and P75 of [25, 50, 75, 100, 200, 300] with linear interpolation."""
     engine = integration_env
     response = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[
-            ModelMeasure(formula="percentile(total_amount, p=0.25)"),
-            ModelMeasure(formula="percentile(total_amount, p=0.75)"),
+        population="orders",
+        metrics=[
+            DatasetMetric(expression="percentile(total_amount, p=0.25)"),
+            DatasetMetric(expression="percentile(total_amount, p=0.75)"),
         ],
     ))
     assert response.row_count == 1
@@ -2213,9 +2224,9 @@ async def test_median_grouped_sqlite(integration_env):
     """
     engine = integration_env
     response = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="median(total_amount)")],
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        metrics=[DatasetMetric(expression="median(total_amount)")],
+        dimensions=[FieldRef(name="status")],
     ))
     by_status = {
         row["orders.status"]: row["orders.total_amount_median"]
@@ -2230,9 +2241,9 @@ async def test_median_empty_result_sqlite(integration_env):
     """Median on a filter that matches no rows yields NULL."""
     engine = integration_env
     response = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="median(total_amount)")],
-        filters=["status == 'nonexistent'"],
+        population="orders",
+        metrics=[DatasetMetric(expression="median(total_amount)")],
+        filter=["status == 'nonexistent'"],
     ))
     assert response.row_count == 1
     assert response.data[0]["orders.total_amount_median"] is None
@@ -2245,7 +2256,7 @@ async def test_sqlite_udf_pool_reuse(integration_env):
     connection, which forces the connect listener to fire again.
     """
     engine = integration_env
-    q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="median(total_amount)")])
+    q = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="median(total_amount)")])
     r1 = await engine.execute(q)
     # Dispose the cached engine so the second execute opens a fresh physical
     # connection and the connect listener (UDF registration) fires again.
@@ -2298,20 +2309,20 @@ async def stat_env(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="stat_sqlite", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="samples",
             sql_table="samples",
             data_source="stat_sqlite",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="x", sql="x", type=DataType.DOUBLE),
-                Column(name="y", sql="y", type=DataType.DOUBLE),
-                Column(name="bucket", sql="bucket", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="x", sql="x", datatype=DataType.DOUBLE),
+                DatasetField(name="y", sql="y", datatype=DataType.DOUBLE),
+                DatasetField(name="bucket", sql="bucket", datatype=DataType.TEXT),
                 # Column.sql exercising scalar math UDFs
-                Column(name="ln_x", sql="ln(x)", type=DataType.DOUBLE),
-                Column(name="sqrt_x", sql="sqrt(x)", type=DataType.DOUBLE),
-                Column(name="x_squared", sql="pow(x, 2)", type=DataType.DOUBLE),
+                DatasetField(name="ln_x", sql="ln(x)", datatype=DataType.DOUBLE),
+                DatasetField(name="sqrt_x", sql="sqrt(x)", datatype=DataType.DOUBLE),
+                DatasetField(name="x_squared", sql="pow(x, 2)", datatype=DataType.DOUBLE),
             ],
         )
     )
@@ -2323,8 +2334,8 @@ async def test_stddev_samp_sqlite(stat_env):
     engine, statistics = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="stddev_samp(x)")],
+            population="samples",
+            metrics=[DatasetMetric(expression="stddev_samp(x)")],
         )
     )
     assert response.data[0]["samples.x_stddev_samp"] == pytest.approx(
@@ -2336,8 +2347,8 @@ async def test_stddev_pop_sqlite(stat_env):
     engine, statistics = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="stddev_pop(x)")],
+            population="samples",
+            metrics=[DatasetMetric(expression="stddev_pop(x)")],
         )
     )
     assert response.data[0]["samples.x_stddev_pop"] == pytest.approx(
@@ -2349,8 +2360,8 @@ async def test_var_samp_sqlite(stat_env):
     engine, statistics = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="var_samp(x)")],
+            population="samples",
+            metrics=[DatasetMetric(expression="var_samp(x)")],
         )
     )
     assert response.data[0]["samples.x_var_samp"] == pytest.approx(
@@ -2362,8 +2373,8 @@ async def test_var_pop_sqlite(stat_env):
     engine, statistics = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="var_pop(x)")],
+            population="samples",
+            metrics=[DatasetMetric(expression="var_pop(x)")],
         )
     )
     assert response.data[0]["samples.x_var_pop"] == pytest.approx(
@@ -2376,9 +2387,9 @@ async def test_corr_sqlite(stat_env):
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="corr(x, other=y)")],
-            dimensions=[ColumnRef(name="bucket")],
+            population="samples",
+            metrics=[DatasetMetric(expression="corr(x, other=y)")],
+            dimensions=[FieldRef(name="bucket")],
         )
     )
     by_bucket = {
@@ -2395,9 +2406,9 @@ async def test_covar_samp_sqlite(stat_env):
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="covar_samp(x, other=y)")],
-            dimensions=[ColumnRef(name="bucket")],
+            population="samples",
+            metrics=[DatasetMetric(expression="covar_samp(x, other=y)")],
+            dimensions=[FieldRef(name="bucket")],
         )
     )
     by_bucket = {
@@ -2417,9 +2428,9 @@ async def test_covar_pop_sqlite(stat_env):
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="covar_pop(x, other=y)")],
-            dimensions=[ColumnRef(name="bucket")],
+            population="samples",
+            metrics=[DatasetMetric(expression="covar_pop(x, other=y)")],
+            dimensions=[FieldRef(name="bucket")],
         )
     )
     by_bucket = {
@@ -2438,9 +2449,9 @@ async def test_stat_aggs_per_group_sqlite(stat_env):
     engine, statistics = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="stddev_samp(x)")],
-            dimensions=[ColumnRef(name="bucket")],
+            population="samples",
+            metrics=[DatasetMetric(expression="stddev_samp(x)")],
+            dimensions=[FieldRef(name="bucket")],
         )
     )
     by_bucket = {
@@ -2458,8 +2469,8 @@ async def test_scalar_ln_in_column_sql(stat_env):
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="sum(ln_x)")],
+            population="samples",
+            metrics=[DatasetMetric(expression="sum(ln_x)")],
         )
     )
     expected = sum(math.log(v) for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
@@ -2470,8 +2481,8 @@ async def test_scalar_sqrt_in_column_sql(stat_env):
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="sum(sqrt_x)")],
+            population="samples",
+            metrics=[DatasetMetric(expression="sum(sqrt_x)")],
         )
     )
     expected = sum(math.sqrt(v) for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
@@ -2483,8 +2494,8 @@ async def test_scalar_pow_in_column_sql(stat_env):
     engine, _ = stat_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="samples",
-            measures=[ModelMeasure(formula="sum(x_squared)")],
+            population="samples",
+            metrics=[DatasetMetric(expression="sum(x_squared)")],
         )
     )
     expected = sum(v ** 2 for v in [1, 2, 3, 4, 5, 1, 2, 3, 4, 5])
@@ -2506,36 +2517,36 @@ async def test_n_one_bucket_returns_postgres_semantics(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="one_sqlite", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="one",
             sql_table="one",
             data_source="one_sqlite",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="x", sql="x", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="x", sql="x", datatype=DataType.DOUBLE),
             ],
         )
     )
     engine = SlayerQueryEngine(storage=storage)
 
     r_samp = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="stddev_samp(x)")])
+        SlayerQuery(population="one", metrics=[DatasetMetric(expression="stddev_samp(x)")])
     )
     assert r_samp.data[0]["one.x_stddev_samp"] is None
 
     r_var_samp = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="var_samp(x)")])
+        SlayerQuery(population="one", metrics=[DatasetMetric(expression="var_samp(x)")])
     )
     assert r_var_samp.data[0]["one.x_var_samp"] is None
 
     r_pop = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="stddev_pop(x)")])
+        SlayerQuery(population="one", metrics=[DatasetMetric(expression="stddev_pop(x)")])
     )
     assert r_pop.data[0]["one.x_stddev_pop"] == 0
 
     r_var_pop = await engine.execute(
-        SlayerQuery(source_model="one", measures=[ModelMeasure(formula="var_pop(x)")])
+        SlayerQuery(population="one", metrics=[DatasetMetric(expression="var_pop(x)")])
     )
     assert r_var_pop.data[0]["one.x_var_pop"] == 0
 
@@ -2581,19 +2592,19 @@ async def planets_env(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="planets_db", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="planets",
             sql_table="planets",
             data_source="planets_db",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
-                Column(name="mass", sql="mass", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="mass", sql="mass", datatype=DataType.DOUBLE),
+                DatasetField(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         )
@@ -2610,9 +2621,9 @@ async def test_filter_on_windowed_column_sqlite_raises(planets_env):
     clear error with that suggestion."""
     engine = planets_env
     query = SlayerQuery(
-        source_model="planets",
+        population="planets",
         dimensions=["name"],
-        filters=["rn <= 3"],
+        filter=["rn <= 3"],
     )
     with pytest.raises(ValueError, match="(?i)window function|rank"):
         await engine.execute(query)
@@ -2646,21 +2657,21 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="hh_sqlite", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="households",
             sql_table="households",
             data_source="hh_sqlite",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="socioeconomic", sql="socioeconomic", type=DataType.TEXT),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="socioeconomic", sql="socioeconomic", datatype=DataType.TEXT),
+                DatasetField(
                     name="is_owner",
                     sql=(
                         "CASE LOWER(TRIM(json_extract(socioeconomic, '$.Tenure_Type'))) "
                         "WHEN 'owned' THEN 1 ELSE 0 END"
                     ),
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         )
@@ -2669,8 +2680,8 @@ async def test_json_extract_case_when_matches_in_sqlite(tmp_path):
 
     response = await engine.execute(
         SlayerQuery(
-            source_model="households",
-            measures=[ModelMeasure(formula="sum(is_owner)")],
+            population="households",
+            metrics=[DatasetMetric(expression="sum(is_owner)")],
         )
     )
     assert response.data[0]["households.is_owner_sum"] == 2
@@ -2708,47 +2719,47 @@ async def derived_chain_env(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="B",
             data_source="ds",
             sql_table="B",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE),
+                DatasetField(
                     name="foo_normalized",
                     sql="foo_raw / 100.0",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="A",
             data_source="ds",
             sql_table="A",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="bar", sql="bar", type=DataType.DOUBLE),
-                Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-                Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
+                DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
+                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
+                DatasetField(
                     name="ratio_using_base",
                     sql="A.bar / B.foo_raw",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
-                Column(
+                DatasetField(
                     name="ratio_using_derived",
                     sql="A.bar / B.foo_normalized",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
                 # Local derived chain: c1 derived; c2 references c1.
-                Column(name="c1", sql="raw_a + 1", type=DataType.DOUBLE),
-                Column(name="c2", sql="A.c1 * 2", type=DataType.DOUBLE),
+                DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.DOUBLE),
+                DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.DOUBLE),
             ],
-            joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+            relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
         )
     )
     engine = SlayerQueryEngine(storage=storage)
@@ -2761,12 +2772,12 @@ async def test_integration_cross_model_derived_columnsql(derived_chain_env):
     engine = derived_chain_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="A",
+            population="A",
             dimensions=[
-                ColumnRef(name="id"),
-                ColumnRef(name="ratio_using_derived"),
+                FieldRef(name="id"),
+                FieldRef(name="ratio_using_derived"),
             ],
-            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+            order=[OrderItem(field=FieldRef(name="id"), direction="asc")],
         )
     )
     assert response.row_count == 2
@@ -2780,9 +2791,9 @@ async def test_integration_local_derived_chain(derived_chain_env):
     engine = derived_chain_env
     response = await engine.execute(
         SlayerQuery(
-            source_model="A",
-            dimensions=[ColumnRef(name="id"), ColumnRef(name="c2")],
-            order=[OrderItem(column=ColumnRef(name="id"), direction="asc")],
+            population="A",
+            dimensions=[FieldRef(name="id"), FieldRef(name="c2")],
+            order=[OrderItem(field=FieldRef(name="id"), direction="asc")],
         )
     )
     # c2 = (raw_a + 1) * 2 → for raw_a=100 → 202; raw_a=5 → 12
@@ -2823,25 +2834,25 @@ async def orders_customers_env(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", data_source="ds", sql_table="customers",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region", sql="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", data_source="ds", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(
                 name="is_eu",
                 sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
     engine = SlayerQueryEngine(storage=storage)
     yield engine
@@ -2857,9 +2868,9 @@ async def test_filter_on_derived_column_with_cross_table_ref_executes(
     """
     engine = orders_customers_env
     response = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)", name="n")],
-        filters=["is_eu = 1"],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        filter=["is_eu = 1"],
     ))
     # Orders 10, 12, 13 hit EU customers → 3 rows.
     # Explicit ``name="n"`` overrides the canonical alias, so the result
@@ -2894,16 +2905,16 @@ async def test_log10_round_trip_sqlite(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="log_sqlite", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="players",
             sql_table="players",
             data_source="log_sqlite",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="raw_score", sql="raw_score", type=DataType.DOUBLE),
-                Column(name="log_score", sql="log10(raw_score)", type=DataType.DOUBLE),
-                Column(name="log2_score", sql="log2(raw_score)", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="raw_score", sql="raw_score", datatype=DataType.DOUBLE),
+                DatasetField(name="log_score", sql="log10(raw_score)", datatype=DataType.DOUBLE),
+                DatasetField(name="log2_score", sql="log2(raw_score)", datatype=DataType.DOUBLE),
             ],
         )
     )
@@ -2911,23 +2922,23 @@ async def test_log10_round_trip_sqlite(tmp_path):
 
     # Numeric correctness — log10
     r10 = await engine.execute(
-        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="max(log_score)")])
+        SlayerQuery(population="players", metrics=[DatasetMetric(expression="max(log_score)")])
     )
     assert r10.data[0]["players.log_score_max"] == pytest.approx(4.0)
 
     # Numeric correctness — log2 (8.0 → 3.0; pin against the new UDF)
     r2 = await engine.execute(
         SlayerQuery(
-            source_model="players",
-            measures=[ModelMeasure(formula="max(log2_score)")],
-            filters=["raw_score == 8.0"],
+            population="players",
+            metrics=[DatasetMetric(expression="max(log2_score)")],
+            filter=["raw_score == 8.0"],
         )
     )
     assert r2.data[0]["players.log2_score_max"] == pytest.approx(_math.log2(8.0))
 
     # SQL-shape: dry-run must contain the literal log10(...) / log2(...) form.
     dry10 = await engine.execute(
-        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="max(log_score)")]),
+        SlayerQuery(population="players", metrics=[DatasetMetric(expression="max(log_score)")]),
         dry_run=True,
     )
     assert dry10.sql is not None
@@ -2940,7 +2951,7 @@ async def test_log10_round_trip_sqlite(tmp_path):
     )
 
     dry2 = await engine.execute(
-        SlayerQuery(source_model="players", measures=[ModelMeasure(formula="max(log2_score)")]),
+        SlayerQuery(population="players", metrics=[DatasetMetric(expression="max(log2_score)")]),
         dry_run=True,
     )
     assert dry2.sql is not None
@@ -2958,17 +2969,17 @@ async def test_dev1341_count_over_nullif_max_executes(integration_env):
 
     filtered = SlayerQuery(
         name="filtered",
-        source_model="orders",
-        dimensions=[ColumnRef(name="status"), ColumnRef(name="amount")],
-        filters=["status == 'completed'"],
+        population="orders",
+        dimensions=[FieldRef(name="status"), FieldRef(name="amount")],
+        filter=["status == 'completed'"],
     )
     summary = SlayerQuery(
-        source_model="filtered",
-        measures=[
-            ModelMeasure(formula="count(*)"),
-            ModelMeasure(formula="max(amount)"),
-            ModelMeasure(
-                formula="count(*) / nullif(max(amount), 0)",
+        population="filtered",
+        metrics=[
+            DatasetMetric(expression="count(*)"),
+            DatasetMetric(expression="max(amount)"),
+            DatasetMetric(
+                expression="count(*) / nullif(max(amount), 0)",
                 name="violation_rate",
             ),
         ],
@@ -3022,17 +3033,17 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="blob_sqlite", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="blobs",
             sql_table="blobs",
             data_source="blob_sqlite",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(
                     name="score",
                     sql="json_extract(payload, '$.score')",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         )
@@ -3040,8 +3051,8 @@ async def test_json_extract_double_casts_to_real_in_sqlite(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
 
     query = SlayerQuery(
-        source_model="blobs",
-        measures=[ModelMeasure(formula="sum(score)")],
+        population="blobs",
+        metrics=[DatasetMetric(expression="sum(score)")],
     )
     response = await engine.execute(query)
     total = response.data[0]["blobs.score_sum"]
@@ -3078,21 +3089,21 @@ async def test_dense_rank_partition_by_customer_executes(integration_env):
     """
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="customer_id")],
+        population="orders",
+        dimensions=[FieldRef(name="customer_id")],
         time_dimensions=[
-            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
+            TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
         ],
-        measures=[
-            ModelMeasure(formula="sum(amount)"),
-            ModelMeasure(
-                formula="dense_rank(sum(amount), partition_by=customer_id, direction='desc')",
+        metrics=[
+            DatasetMetric(expression="sum(amount)"),
+            DatasetMetric(
+                expression="dense_rank(sum(amount), partition_by=customer_id, direction='desc')",
                 name="amt_rank",
             ),
         ],
         order=[
-            OrderItem(column=ColumnRef(name="customer_id"), direction="asc"),
-            OrderItem(column=ColumnRef(name="amt_rank"), direction="asc"),
+            OrderItem(field=FieldRef(name="customer_id"), direction="asc"),
+            OrderItem(field=FieldRef(name="amt_rank"), direction="asc"),
         ],
     )
     response = await engine.execute(query)
@@ -3191,15 +3202,16 @@ async def search_env(tmp_path):
     return engine, storage
 
 
-async def test_refresh_samples_populates_sampled(search_env):
+async def test_refresh_samples_populates_sampled(search_env: tuple[SlayerQueryEngine, StorageBackend]):
     """Ingest no longer profiles columns (samples are lazy). An explicit
     ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
     column. Categorical and numeric columns get different formats —
     spot-check one of each."""
     engine, storage = search_env
     # After ingest alone, samples are unpopulated.
-    orders = await storage.get_model("orders", data_source="test_sqlite")
-    assert next(c for c in orders.columns if c.name == "status").sampled is None
+    orders = await storage.get_dataset("orders", data_source="test_sqlite")
+    assert orders is not None
+    assert next(c for c in orders.fields if c.name == "status").sampled is None
 
     # Explicit refresh populates them.
     errors = await refresh_all_table_backed_sampled(
@@ -3207,23 +3219,27 @@ async def test_refresh_samples_populates_sampled(search_env):
     )
     assert errors == [], f"Unexpected refresh errors: {errors}"
 
-    orders = await storage.get_model("orders", data_source="test_sqlite")
-    customers = await storage.get_model("customers", data_source="test_sqlite")
+    orders = await storage.get_dataset("orders", data_source="test_sqlite")
+    assert orders is not None
+    customers = await storage.get_dataset("customers", data_source="test_sqlite")
+    assert customers is not None
     for model in (orders, customers):
-        for col in model.columns:
+        for col in model.fields:
             if col.primary_key or col.hidden:
                 continue
             assert col.sampled is not None, (
                 f"{model.name}.{col.name} sampled was not populated by refresh"
             )
 
-    status = next(c for c in orders.columns if c.name == "status")
+    status = next(c for c in orders.fields if c.name == "status")
+    assert status.sampled is not None
     assert "completed" in status.sampled
     assert "pending" in status.sampled
     assert "cancelled" in status.sampled
 
-    amount = next(c for c in orders.columns if c.name == "amount")
+    amount = next(c for c in orders.fields if c.name == "amount")
     # Numeric columns surface as "<min> .. <max>".
+    assert amount.sampled is not None
     assert ".." in amount.sampled
 
 
@@ -3235,7 +3251,7 @@ async def test_search_question_finds_column(search_env):
         question="amount",
         max_results=20,
     )
-    column_hits = [h for h in response.results if h.kind == "column"]
+    column_hits = [h for h in response.results if h.kind == "field"]
     assert column_hits, (
         "expected at least one column hit; got results="
         f"{[(h.id, h.kind) for h in response.results]}"
@@ -3267,41 +3283,42 @@ async def test_search_entity_filter_finds_memory(search_env):
     assert "refunds" in hit.text
 
 
-async def test_search_edit_model_filter_refreshes_sampled(search_env):
+async def test_search_edit_model_filter_refreshes_sampled(search_env: tuple[SlayerQueryEngine, StorageBackend]):
     """A model-level mutation (``SlayerModel.filters``) triggers
     ``handle_edit_refresh(model_level_change=True)`` which re-profiles
     every column. After the mutation, every column still has a
     ``sampled`` snapshot."""
     engine, storage = search_env
-    orders_before = await storage.get_model("orders", data_source="test_sqlite")
+    orders_before = await storage.get_dataset("orders", data_source="test_sqlite")
     assert orders_before is not None
-    before_sampled = {c.name: c.sampled for c in orders_before.columns}
+    before_sampled = {c.name: c.sampled for c in orders_before.fields}
 
     orders_before.filters = ["status != 'cancelled'"]
-    await storage.save_model(orders_before)
+    await storage.save_dataset(orders_before)
 
     errors = await handle_edit_refresh(
         engine=engine,
         storage=storage,
         data_source="test_sqlite",
-        model_name="orders",
-        changed_columns=set(),
-        model_level_change=True,
+        dataset_name="orders",
+        changed_fields=set(),
+        dataset_level_change=True,
     )
     assert errors == []
 
-    orders_after = await storage.get_model("orders", data_source="test_sqlite")
+    orders_after = await storage.get_dataset("orders", data_source="test_sqlite")
     assert orders_after is not None
-    for col in orders_after.columns:
+    for col in orders_after.fields:
         if col.primary_key or col.hidden:
             continue
         assert col.sampled is not None, (
             f"orders.{col.name} sampled was cleared without repopulation"
         )
 
-    status_after = next(c for c in orders_after.columns if c.name == "status")
+    status_after = next(c for c in orders_after.fields if c.name == "status")
     # The filter excludes 'cancelled', so the new sampled snapshot must
     # not list it.
+    assert status_after.sampled is not None
     assert "cancelled" not in status_after.sampled
     assert before_sampled["status"] != status_after.sampled
 
@@ -3337,22 +3354,22 @@ async def test_model_filter_with_lower_function_runs(tmp_path):
     enrichment time."""
     storage = await _setup_items_db(tmp_path)
 
-    model = SlayerModel(
+    model = SlayerDataset(
         name="items",
         sql_table="items",
         data_source="ds",
         filters=["lower(status) = 'active'"],
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="count(*)")])
+        SlayerQuery(population="items", metrics=[DatasetMetric(expression="count(*)")])
     )
     # Three rows match: "Active", "ACTIVE", "active" (case-folded match for "active").
     assert response.data[0]["items._count"] == 3
@@ -3363,27 +3380,27 @@ async def test_column_filter_with_lower_function_runs(tmp_path):
     CASE-WHEN measure-level filter against SQLite."""
     storage = await _setup_items_db(tmp_path)
 
-    model = SlayerModel(
+    model = SlayerDataset(
         name="items",
         sql_table="items",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(
                 name="active_amount",
                 sql="amount",
                 filter="lower(status) = 'active'",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="sum(active_amount)")])
+        SlayerQuery(population="items", metrics=[DatasetMetric(expression="sum(active_amount)")])
     )
     # Active rows total: 10 + 20 + 30 = 60
     assert response.data[0]["items.active_amount_sum"] == pytest.approx(60.0)
@@ -3417,45 +3434,45 @@ async def test_model_filter_with_double_underscore_join_path_runs(tmp_path):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
 
-    regions_model = SlayerModel(
+    regions_model = SlayerDataset(
         name="regions",
         sql_table="regions",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
         ],
     )
-    customers_model = SlayerModel(
+    customers_model = SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.INT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[("region_id", "id")])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[("region_id", "id")])],
     )
-    orders_model = SlayerModel(
+    orders_model = SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="ds",
         # Mode A SQL filter with __-delimited join path through customers→regions.
         filters=["customers.regions.name = 'EU'"],
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[("customer_id", "id")])],
     )
-    await storage.save_model(regions_model)
-    await storage.save_model(customers_model)
-    await storage.save_model(orders_model)
+    await storage.save_dataset(regions_model)
+    await storage.save_dataset(customers_model)
+    await storage.save_dataset(orders_model)
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])
+        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])
     )
     # Customers in EU: id=2 only. Their orders: id=2 (amount 50) and id=4 (amount 25) = 2 orders.
     assert response.data[0]["orders._count"] == 2
@@ -3485,22 +3502,22 @@ async def test_model_filter_with_json_extract_runs(tmp_path):
     storage = YAMLStorage(base_dir=str(storage_dir))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
 
-    model = SlayerModel(
+    model = SlayerDataset(
         name="items",
         sql_table="items",
         data_source="ds",
         filters=["json_extract(metadata, '$.active') = 1"],
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="metadata", sql="metadata", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="metadata", sql="metadata", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
     engine = SlayerQueryEngine(storage=storage)
     response = await engine.execute(
-        SlayerQuery(source_model="items", measures=[ModelMeasure(formula="count(*)")])
+        SlayerQuery(population="items", metrics=[DatasetMetric(expression="count(*)")])
     )
     # Two rows have active=1.
     assert response.data[0]["items._count"] == 2
@@ -3508,7 +3525,7 @@ async def test_model_filter_with_json_extract_runs(tmp_path):
 
 
 async def test_query_filter_with_lower_function_runs(integration_env):
-    """``SlayerQuery.filters`` accepts ``lower(...)`` via SCALAR_PASSTHROUGH
+    """``SlayerQuery.filter`` accepts ``lower(...)`` via SCALAR_PASSTHROUGH
     and matches case-insensitively at runtime."""
     engine = integration_env
 
@@ -3517,16 +3534,16 @@ async def test_query_filter_with_lower_function_runs(integration_env):
     # filter folds and compares against ``completed`` to confirm it
     # actually goes through the engine, not just round-trip.
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["lower(status) = 'completed'"],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["lower(status) = 'completed'"],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders._count"] == 3
 
 
 async def test_query_filter_with_replace_runs(integration_env):
-    """``replace(...)`` in a ``SlayerQuery.filters`` predicate
+    """``replace(...)`` in a ``SlayerQuery.filter`` predicate
     runs end-to-end on SQLite. Pre-fix, ``sqlglot.parse_one`` falls back
     to a ``Command`` (REPLACE INTO) parse and the emitted SQL is
     malformed; ``SQLGenerator._parse_predicate`` wraps in SELECT
@@ -3536,9 +3553,9 @@ async def test_query_filter_with_replace_runs(integration_env):
     # Replace any commas in `status` with empty string. None of the
     # statuses contain commas, so this is identity — match `completed`.
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
-        filters=["replace(status, ',', '') = 'completed'"],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
+        filter=["replace(status, ',', '') = 'completed'"],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders._count"] == 3
@@ -3553,12 +3570,12 @@ async def test_filter_renamed_measure_colon_syntax(integration_env):
     engine = integration_env
 
     query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[
-            ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
+        population="orders",
+        dimensions=[FieldRef(name="status")],
+        metrics=[
+            DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
         ],
-        filters=["count_distinct(customer_id) >= 2"],
+        filter=["count_distinct(customer_id) >= 2"],
     )
     response = await engine.execute(query)
 
@@ -3614,28 +3631,28 @@ async def test_dev1501_order_by_two_last_with_different_time_cols(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="dev1501_sqlite", type="sqlite", database=str(db_path))
     )
-    orders_model = SlayerModel(
+    orders_model = SlayerDataset(
         name="orders", sql_table="orders", data_source="dev1501_sqlite",
         # Intentionally no default_time_dimension — exercises the
         # no-default + explicit-time-arg branch end-to-end.
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="updated_at", sql="updated_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP),
         ],
     )
-    await storage.save_model(orders_model)
+    await storage.save_dataset(orders_model)
     engine = SlayerQueryEngine(storage=storage)
 
     query = SlayerQuery.model_validate({
-        "source_model": "orders",
-        "measures": ["count(*)"],
-        "dimensions": [ColumnRef(name="status")],
+        "population": "orders",
+        "metrics": ["count(*)"],
+        "dimensions": [FieldRef(name="status")],
         "order": [
-            OrderItem.model_validate({"column": "last(amount, created_at)", "direction": "desc"}),
-            OrderItem.model_validate({"column": "last(amount, updated_at)", "direction": "asc"}),
+            OrderItem.model_validate({"field": "last(amount, created_at)", "direction": "desc"}),
+            OrderItem.model_validate({"field": "last(amount, updated_at)", "direction": "asc"}),
         ],
     })
     response: SlayerResponse = await engine.execute(query)
@@ -3695,33 +3712,33 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="regions", data_source="ds", sql_table="regions",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", data_source="ds", sql_table="customers",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", data_source="ds", sql_table="orders",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(
                 name="region_pop",
                 sql="customers.regions.population",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
     engine = SlayerQueryEngine(storage=storage)
 
@@ -3732,8 +3749,8 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
     #   order 13 → customer 3 → region 2 (50)
     # Total: 350.
     response = await engine.execute(SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(region_pop)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(region_pop)")],
     ))
     assert response.row_count == 1
     assert response.data[0]["orders.region_pop_sum"] == pytest.approx(350.0), (
@@ -3747,7 +3764,7 @@ async def test_measure_source_sql_with_path_alias_executes_sqlite(tmp_path):
 #
 # Reproduces the vaccine_3 failure mode: a column declared
 # ``INTEGER`` storing mostly REAL values. Pre-fix, the auto-ingested
-# Column.type=INT propagates through downstream SQL generation and produces
+# Column.datatype=INT propagates through downstream SQL generation and produces
 # AVG values ~0 instead of ~0.9. Post-fix, the affinity probe widens to
 # DOUBLE at ingest time and the AVG is correct.
 # ---------------------------------------------------------------------------
@@ -3783,17 +3800,17 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
     await ingest_datasource_idempotent(datasource=ds, storage=storage, client=engine.client_for(ds))
 
-    # Persisted model carries Column.type=DOUBLE for tempstabidx.
-    persisted = await storage.get_model("sensordata", data_source="vac")
-    col = next(c for c in persisted.columns if c.name == "tempstabidx")
-    assert col.type is DataType.DOUBLE
+    # Persisted model carries Column.datatype=DOUBLE for tempstabidx.
+    persisted = await storage.get_dataset("sensordata", data_source="vac")
+    col = next(c for c in persisted.fields if c.name == "tempstabidx")
+    assert col.datatype is DataType.DOUBLE
 
     # AVG query — the canonical AVG result should be ~1.10 (the mean of
     # the actual stored values), not zero-truncated to ~0.
     query = SlayerQuery(
-        source_model="sensordata",
-        measures=[
-            ModelMeasure(formula="avg(tempstabidx)", name="avg_temp"),
+        population="sensordata",
+        metrics=[
+            DatasetMetric(expression="avg(tempstabidx)", name="avg_temp"),
         ],
     )
     response = await engine.execute(query)
@@ -3806,7 +3823,7 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
 
 
 @pytest.fixture
-async def composite_score_env(tmp_path):
+async def composite_score_env(tmp_path) -> SlayerQueryEngine:
     """A model whose ``Column.sql`` is a multi-term
     arithmetic expression. Used by both the WHERE-side and HAVING-side
     paren-wrap integration tests.
@@ -3838,22 +3855,22 @@ async def composite_score_env(tmp_path):
     # don't duplicate the column-list boilerplate (Sonar
     # ``new_duplicated_lines_density``). Score body is the canonical
     # multi-term arithmetic shape from the bug report.
-    bare_cols = [Column(name=n, sql=n, type=DataType.DOUBLE) for n in ("a", "b", "c", "d")]
-    model = SlayerModel(
+    bare_cols = [DatasetField(name=n, sql=n, datatype=DataType.DOUBLE) for n in ("a", "b", "c", "d")]
+    model = SlayerDataset(
         name="entities",
         sql_table="entities",
         data_source="score_sqlite",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
             *bare_cols,
-            Column(
+            DatasetField(
                 name="score",
                 sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -3876,9 +3893,9 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
 
     # First, the executable shape — confirms semantic correctness.
     query = SlayerQuery(
-        source_model="entities",
-        dimensions=[ColumnRef(name="id")],
-        filters=["score > 7"],
+        population="entities",
+        dimensions=[FieldRef(name="id")],
+        filter=["score > 7"],
     )
     response = await engine.execute(query)
     surviving_ids = {row["entities.id"] for row in response.data}
@@ -3907,7 +3924,7 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
         )
 
 
-async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
+async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env: SlayerQueryEngine):
     """HAVING-side: when a custom multi-term aggregation is
     referenced by name in a HAVING filter, the substituted SQL must be
     wrapped in outer parens before the comparator.
@@ -3917,21 +3934,22 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     # so the substituted ``agg_sql`` is a Binary at the AST root.
     engine = composite_score_env
     # Re-fetch and edit the model to add the custom aggregation.
-    model = await engine.storage.get_model("entities", data_source="score_sqlite")
+    model = await engine.storage.get_dataset("entities", data_source="score_sqlite")
+    assert model is not None
     model.aggregations = [
         Aggregation(
             name="wavg",
-            formula="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
+            expression="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
             params=[AggregationParam(name="weight", sql="d")],
         ),
     ]
-    await engine.storage.save_model(model)
+    await engine.storage.save_dataset(model)
 
     query = SlayerQuery(
-        source_model="entities",
-        dimensions=[ColumnRef(name="id")],
-        measures=[ModelMeasure(formula="wavg(a)", name="wavg_a")],
-        filters=["wavg_a > 0"],
+        population="entities",
+        dimensions=[FieldRef(name="id")],
+        metrics=[DatasetMetric(expression="wavg(a)", name="wavg_a")],
+        filter=["wavg_a > 0"],
     )
     response = await engine.execute(query)
     # Row 1: SUM(10*10)/NULLIF(SUM(10),0) = 100/10 = 10 > 0 ✓
@@ -3983,8 +4001,8 @@ async def test_round_two_args_executes(integration_env):
     """round(expr, ndigits) compiles and rounds the value."""
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="round(sum(total_amount) / 7.0, 2)", name="r")],
+        population="orders",
+        metrics=[DatasetMetric(expression="round(sum(total_amount) / 7.0, 2)", name="r")],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders.r"] == pytest.approx(107.14)
@@ -3993,8 +4011,8 @@ async def test_round_two_args_executes(integration_env):
 async def test_round_zero_ndigits_executes(integration_env):
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="round(sum(total_amount) / 7.0, 0)", name="r")],
+        population="orders",
+        metrics=[DatasetMetric(expression="round(sum(total_amount) / 7.0, 0)", name="r")],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders.r"] == pytest.approx(107.0)
@@ -4004,8 +4022,8 @@ async def test_abs_executes(integration_env):
     """abs(expr) compiles and returns the magnitude."""
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="abs(sum(total_amount) - 1000.0)", name="a")],
+        population="orders",
+        metrics=[DatasetMetric(expression="abs(sum(total_amount) - 1000.0)", name="a")],
     )
     response = await engine.execute(query)
     assert response.data[0]["orders.a"] == pytest.approx(250.0)
@@ -4015,8 +4033,8 @@ async def test_count_distinct_alias_executes(integration_env):
     """``countd(status)`` heals to count_distinct and executes."""
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="countd(status)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="countd(status)")],
     )
     response = await engine.execute(query)
     # completed / pending / cancelled → 3 distinct statuses.
@@ -4027,8 +4045,8 @@ async def test_stddev_alias_maps_to_sample_variant(integration_env):
     """``stddev(amount)`` heals to stddev_samp (sample, not population)."""
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="stddev(amount)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="stddev(amount)")],
     )
     response = await engine.execute(query)
     # Sample stddev of [100,200,50,75,300,25] = sqrt(55000/5) ≈ 104.88
@@ -4040,8 +4058,8 @@ async def test_round_over_bare_measure_raises(integration_env):
     """A bare (non-aggregated) measure inside round is rejected, not leaked."""
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="round(amount, 2)", name="r")],
+        population="orders",
+        metrics=[DatasetMetric(expression="round(amount, 2)", name="r")],
     )
     with pytest.raises(ValueError, match="needs an aggregation inside an expression"):
         await engine.execute(query)
@@ -4051,8 +4069,8 @@ async def test_abs_over_bare_measure_raises(integration_env):
     """Same guard for abs — a bare measure inside abs is rejected."""
     engine = integration_env
     query = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="abs(amount)", name="a")],
+        population="orders",
+        metrics=[DatasetMetric(expression="abs(amount)", name="a")],
     )
     with pytest.raises(ValueError, match="needs an aggregation inside an expression"):
         await engine.execute(query)

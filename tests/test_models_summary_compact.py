@@ -27,11 +27,11 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -55,29 +55,29 @@ async def _seed_orders(storage: YAMLStorage) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="h")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="Orders fact.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT, description="Order state."),
-            Column(name="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT, description="Order state."),
+            DatasetField(name="amount", datatype=DataType.DOUBLE,
                    description="USD amount."),
-            Column(name="customer_id", type=DataType.INT, hidden=True),
+            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
         ],
-        measures=[
-            ModelMeasure(name="revenue", formula="sum(amount)"),
-            ModelMeasure(name="orders_count", formula="count(*)"),
+        metrics=[
+            DatasetMetric(name="revenue", expression="sum(amount)"),
+            DatasetMetric(name="orders_count", expression="count(*)"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
 
 
@@ -93,7 +93,7 @@ async def test_compact_markdown_keeps_name_and_description(
     """The plan requires model name + description as the first two lines."""
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
     assert "## `orders`" in result
@@ -106,11 +106,11 @@ async def test_compact_markdown_drops_per_column_table(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
     # Today's verbose markdown shape — must NOT appear in compact mode.
-    assert "**Columns (3):**" not in result
+    assert "**Fields (3):**" not in result
     assert "| status |" not in result
     assert "USD amount." not in result
 
@@ -121,10 +121,10 @@ async def test_compact_markdown_emits_column_count_line(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
-    assert "Columns: 3" in result
+    assert "Fields: 3" in result
 
 
 @pytest.mark.asyncio
@@ -133,10 +133,10 @@ async def test_compact_markdown_emits_measure_names_only(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
-    assert "Measures: revenue, orders_count" in result
+    assert "Metrics: revenue, orders_count" in result
     # The formula must NOT leak into compact output.
     assert "sum(amount)" not in result
     assert "count(*)" not in result
@@ -150,11 +150,11 @@ async def test_compact_markdown_default_is_true(
     the compact shape."""
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb",
     })
-    assert "Columns: 3" in result
-    assert "**Columns (3):**" not in result
+    assert "Fields: 3" in result
+    assert "**Fields (3):**" not in result
 
 
 @pytest.mark.asyncio
@@ -163,10 +163,10 @@ async def test_compact_markdown_joins_to_rendered(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
-    assert "Joins to: `customers`" in result
+    assert "Relationships to: `customers`" in result
 
 
 @pytest.mark.asyncio
@@ -176,15 +176,15 @@ async def test_compact_markdown_no_joins_marker(
     await yaml_storage.save_datasource(
         DatasourceConfig(name="ds", type="postgres", host="h")
     )
-    await yaml_storage.save_model(SlayerModel(
+    await yaml_storage.save_dataset(SlayerDataset(
         name="solo", sql_table="t", data_source="ds",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "ds", "compact": True,
     })
-    assert "Joins to: _(none)_" in result
+    assert "Relationships to: _(none)_" in result
 
 
 # ---------------------------------------------------------------------------
@@ -196,20 +196,20 @@ async def test_compact_markdown_no_joins_marker(
 async def test_compact_json_shape(yaml_storage: YAMLStorage) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True, "format": "json",
     })
     data = json.loads(result)
     assert data["datasource_name"] == "mydb"
-    assert data["model_count"] == 3
-    orders = next(m for m in data["models"] if m["name"] == "orders")
+    assert data["dataset_count"] == 3
+    orders = next(m for m in data["datasets"] if m["name"] == "orders")
     assert set(orders.keys()) == {
-        "name", "description", "column_count", "measure_names", "joins_to",
+        "name", "description", "field_count", "metric_names", "relationships_to",
     }
     assert orders["description"] == "Orders fact."
-    assert orders["column_count"] == 3
-    assert orders["measure_names"] == ["revenue", "orders_count"]
-    assert orders["joins_to"] == ["customers"]
+    assert orders["field_count"] == 3
+    assert orders["metric_names"] == ["revenue", "orders_count"]
+    assert orders["relationships_to"] == ["customers"]
 
 
 @pytest.mark.asyncio
@@ -218,13 +218,13 @@ async def test_compact_json_no_columns_or_formulas(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True, "format": "json",
     })
     data = json.loads(result)
-    orders = next(m for m in data["models"] if m["name"] == "orders")
-    assert "columns" not in orders
-    assert "measures" not in orders
+    orders = next(m for m in data["datasets"] if m["name"] == "orders")
+    assert "fields" not in orders
+    assert "metrics" not in orders
 
 
 # ---------------------------------------------------------------------------
@@ -238,13 +238,13 @@ async def test_verbose_markdown_preserves_per_column_table(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": False,
     })
-    assert "**Columns (3):**" in result
+    assert "**Fields (3):**" in result
     assert "| status |" in result
     assert "USD amount." in result
-    assert "**Measures (2):**" in result
+    assert "**Metrics (2):**" in result
     assert "sum(amount)" in result
     assert "count(*)" in result
 
@@ -255,17 +255,17 @@ async def test_verbose_json_keeps_full_column_and_measure_payloads(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": False, "format": "json",
     })
     data = json.loads(result)
-    orders = next(m for m in data["models"] if m["name"] == "orders")
-    assert "columns" in orders
-    assert orders["columns"][0]["name"] == "id"
-    assert "type" in orders["columns"][0]
-    assert "measures" in orders
-    revenue = next(mm for mm in orders["measures"] if mm["name"] == "revenue")
-    assert revenue["formula"] == "sum(amount)"
+    orders = next(m for m in data["datasets"] if m["name"] == "orders")
+    assert "fields" in orders
+    assert orders["fields"][0]["name"] == "id"
+    assert "datatype" in orders["fields"][0]
+    assert "metrics" in orders
+    revenue = next(mm for mm in orders["metrics"] if mm["name"] == "revenue")
+    assert revenue["expression"] == "sum(amount)"
 
 
 # ---------------------------------------------------------------------------
@@ -281,14 +281,14 @@ async def test_empty_datasource_lists_only_the_spine_in_both_modes(
         DatasourceConfig(name="emptyds", type="postgres", host="h")
     )
     mcp = create_mcp_server(storage=yaml_storage)
-    compact = await _call(mcp, name="models_summary", arguments={
+    compact = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "emptyds", "compact": True,
     })
-    verbose = await _call(mcp, name="models_summary", arguments={
+    verbose = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "emptyds", "compact": False,
     })
     for out in (compact, verbose):
-        assert out.startswith("# Datasource: `emptyds` — 1 model(s)")
+        assert out.startswith("# Datasource: `emptyds` — 1 dataset(s)")
         assert "## `time_spine`" in out
 
 
@@ -303,6 +303,6 @@ async def test_tool_descriptor_lists_compact_arg(
 ) -> None:
     mcp = create_mcp_server(storage=yaml_storage)
     tools = await mcp.list_tools()
-    tool: Any = next(t for t in tools if t.name == "models_summary")
+    tool: Any = next(t for t in tools if t.name == "datasets_summary")
     schema = tool.inputSchema
     assert "compact" in schema["properties"]

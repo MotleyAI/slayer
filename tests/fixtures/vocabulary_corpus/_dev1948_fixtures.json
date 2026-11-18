@@ -1,0 +1,389 @@
+{
+ "source": "tests/_dev1948_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "total_spend"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "total_spend"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(total_spend)",
+    "name": "cspend"
+   },
+   "new": {
+    "expression": "sum(total_spend)",
+    "name": "cspend"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(tier)",
+    "name": "tr"
+   },
+   "new": {
+    "expression": "max(tier)",
+    "name": "tr"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt_c"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt_c"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "c",
+    "joins": [
+     {
+      "target_model": "x",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     },
+     {
+      "target_model": "o",
+      "join_pairs": [
+       [
+        "id",
+        "customer_id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "c",
+    "relationships": [
+     {
+      "to": "x",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     },
+     {
+      "to": "o",
+      "join_pairs": [
+       [
+        "id",
+        "customer_id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(o__amt_c)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(o__amt_c)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(cspend, partition_by=[tr])",
+    "name": "tier_total"
+   },
+   "new": {
+    "expression": "sum(cspend, partition_by=[tr])",
+    "name": "tier_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(tier_total)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "max(tier_total)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(cspend, partition_by=[tr])",
+    "name": "tier_total"
+   },
+   "new": {
+    "expression": "sum(cspend, partition_by=[tr])",
+    "name": "tier_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[status])",
+    "name": "st"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[status])",
+    "name": "st"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(st)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "max(st)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[status])",
+    "name": "st"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[status])",
+    "name": "st"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=[customer_id])",
+    "name": "ct"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=[customer_id])",
+    "name": "ct"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(st)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "max(st)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  }
+ ]
+}

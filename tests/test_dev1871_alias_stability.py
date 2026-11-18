@@ -13,7 +13,7 @@ from decimal import Decimal
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     LiteralKey,
     ScalarCallKey,
@@ -27,8 +27,8 @@ from slayer.core.refs import (
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, regroup_producer_identity
 from slayer.sql.naming import canonical_aggregate_alias, expression_source_leaf
 
-_AMOUNT = ColumnKey(leaf="amount")
-_CITY = ColumnKey(leaf="city")
+_AMOUNT = FieldKey(leaf="amount")
+_CITY = FieldKey(leaf="city")
 
 
 def _iif_partition_key() -> ScalarCallKey:
@@ -66,7 +66,7 @@ class TestPinnedSpellings:
             partition_keys=Grain.of({_iif_partition_key()}),
         )
         assert (
-            canonical_aggregate_alias(key, profile="stage_formula")
+            canonical_aggregate_alias(key, profile="stage_expression")
             == "amount_sum" + _IIF_SUFFIX
         )
 
@@ -108,7 +108,7 @@ class TestProducerInterningStability:
         return RegroupAttachPlan(
             producer_plan=PlannedQuery(source_relation=relation),
             alias_hint=alias_hint,
-            producer_root_model="orders",
+            producer_root_dataset="orders",
         )
 
     def test_equal_producers_intern_to_one_identity(self) -> None:

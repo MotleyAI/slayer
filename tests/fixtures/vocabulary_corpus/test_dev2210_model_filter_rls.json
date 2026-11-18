@@ -1,0 +1,173 @@
+{
+ "source": "tests/test_dev2210_model_filter_rls.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "shipments",
+    "join_pairs": [
+     [
+      "id",
+      "order_ref"
+     ]
+    ]
+   },
+   "new": {
+    "to": "shipments",
+    "join_pairs": [
+     [
+      "id",
+      "order_ref"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "ups_orders",
+    "join_pairs": [
+     [
+      "order_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "ups_orders",
+    "join_pairs": [
+     [
+      "order_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns",
+    "dimensions": [
+     "id",
+     "ups_orders.id"
+    ]
+   },
+   "new": {
+    "population": "returns",
+    "dimensions": [
+     "id",
+     "ups_orders.id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns",
+    "dimensions": [
+     "id",
+     "ups_orders.id"
+    ]
+   },
+   "new": {
+    "population": "returns",
+    "dimensions": [
+     "id",
+     "ups_orders.id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "ups_orders",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns",
+    "dimensions": [
+     "id",
+     "ups_orders.id"
+    ]
+   },
+   "new": {
+    "population": "returns",
+    "dimensions": [
+     "id",
+     "ups_orders.id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  }
+ ]
+}

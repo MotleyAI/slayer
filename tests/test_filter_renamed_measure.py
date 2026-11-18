@@ -18,28 +18,28 @@ Companion tickets surfaced during spec'ing:
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery
 
 from tests._engine_helpers import _dataset_where_text, _engine_generate, _having_text, _where_text
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
 
 
-async def _generate(query: SlayerQuery, model: SlayerModel) -> str:
-    return await _engine_generate(query=query, model=model)
+async def _generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
+    return await _engine_generate(query=query, dataset=dataset)
 
 
 class TestFilterRenamedMeasureRemap:
@@ -51,14 +51,14 @@ class TestFilterRenamedMeasureRemap:
         actual aggregate (HAVING COUNT(DISTINCT customer_id) >= 5), NOT to a
         non-existent canonical alias `customer_id_count_distinct`.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
             ],
-            filters=["count_distinct(customer_id) >= 5"],
+            filter=["count_distinct(customer_id) >= 5"],
         )
         sql = await _generate(query, model)
 
@@ -79,14 +79,14 @@ class TestFilterRenamedMeasureRemap:
         """Regression: the documented workaround (`filter` references the
         user alias directly) keeps producing the same correct SQL.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
             ],
-            filters=["num_customers >= 5"],
+            filter=["num_customers >= 5"],
         )
         sql = await _generate(query, model)
 
@@ -99,12 +99,12 @@ class TestFilterRenamedMeasureRemap:
         """Regression: when the measure is NOT renamed, filter on the
         aggregation resolves to the canonical alias as before.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="count_distinct(customer_id)")],
-            filters=["count_distinct(customer_id) >= 5"],
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[DatasetMetric(expression="count_distinct(customer_id)")],
+            filter=["count_distinct(customer_id) >= 5"],
         )
         sql = await _generate(query, model)
 
@@ -118,15 +118,15 @@ class TestFilterRenamedMeasureRemap:
         one. The renamed half remaps; the unrenamed half stays
         canonical.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="revenue"),
-                ModelMeasure(formula="count_distinct(customer_id)"),
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="revenue"),
+                DatasetMetric(expression="count_distinct(customer_id)"),
             ],
-            filters=["sum(amount) / count_distinct(customer_id) > 100"],
+            filter=["sum(amount) / count_distinct(customer_id) > 100"],
         )
         sql = await _generate(query, model)
 
@@ -151,14 +151,14 @@ class TestFilterRenamedMeasureRemap:
         ``COUNT(DISTINCT ...)`` lands in the HAVING clause and the WHERE
         clause carries no such predicate.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
             ],
-            filters=["count_distinct(customer_id) >= 5"],
+            filter=["count_distinct(customer_id) >= 5"],
         )
         sql = await _generate(query, model)
         having = _having_text(sql)
@@ -182,14 +182,14 @@ class TestOrderByRenamedMeasureRemap:
         measure must resolve to the user alias, not to a non-existent
         canonical column.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
             ],
-            order=[OrderItem.model_validate({"column": "count_distinct(customer_id)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "count_distinct(customer_id)", "direction": "desc"})],
         )
         sql = await _generate(query, model)
 
@@ -204,14 +204,14 @@ class TestOrderByRenamedMeasureRemap:
 
     async def test_order_by_renamed_measure_alias_form(self) -> None:
         """Regression: ORDER BY referencing the user alias directly still works."""
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
             ],
-            order=[OrderItem(column=ColumnRef(name="num_customers"), direction="desc")],
+            order=[OrderItem(field=FieldRef(name="num_customers"), direction="desc")],
         )
         sql = await _generate(query, model)
         assert "ORDER BY" in sql
@@ -232,23 +232,23 @@ class TestRemapEdgeCases:
         ``'country_first'`` alone, otherwise the filter compares the
         renamed-alias column to itself instead of the original constant.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-                Column(name="country", sql="country", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="country", sql="country", datatype=DataType.TEXT),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
-            measures=[
-                ModelMeasure(formula="first(country)", name="primary_country"),
+            population="orders",
+            metrics=[
+                DatasetMetric(expression="first(country)", name="primary_country"),
             ],
-            filters=["first(country) = 'country_first'"],
+            filter=["first(country) = 'country_first'"],
         )
         sql = await _generate(query, model)
         # The literal 'country_first' must still appear in the emitted
@@ -283,23 +283,23 @@ class TestRemapEdgeCases:
         aggregates, cross-model aggregates, or arithmetic /
         transform expressions.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="profit", sql="profit", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="profit", sql="profit", datatype=DataType.DOUBLE),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula=formula_a, name="metric"),
-                ModelMeasure(formula=formula_b, name="metric"),
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression=formula_a, name="metric"),
+                DatasetMetric(expression=formula_b, name="metric"),
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -318,25 +318,25 @@ class TestRemapEdgeCases:
         Example: ``sum(revenue)`` renamed to ``profit_avg`` AND a separate
         ``avg(profit)`` measure both end up at ``<model>.profit_avg``.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
-                Column(name="profit", sql="profit", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="profit", sql="profit", datatype=DataType.DOUBLE),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
                 # Rename to a name that collides with the second measure's
                 # auto-canonical (``profit_avg``).
-                ModelMeasure(formula="sum(revenue)", name="profit_avg"),
-                ModelMeasure(formula="avg(profit)"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
+                DatasetMetric(expression="sum(revenue)", name="profit_avg"),
+                DatasetMetric(expression="avg(profit)"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -352,27 +352,27 @@ class TestRemapEdgeCases:
         the query at enrichment time rather than silently picking one and
         producing surprising SQL.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
                 # Pathological: a real column whose name happens to equal
                 # the canonical alias of ``sum(amount)``.
-                Column(name="amount_sum", sql="amount_sum", type=DataType.DOUBLE),
+                DatasetField(name="amount_sum", sql="amount_sum", datatype=DataType.DOUBLE),
             ],
         )
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            dimensions=[FieldRef(name="status")],
             # Rename triggers the collision check: canonical
             # ``amount_sum`` already names a source column.
-            measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="revenue")],
         )
-        with pytest.raises(ValueError, match=r"shadows a source column"):
+        with pytest.raises(ValueError, match=r"shadows a source field"):
             await _generate(query, model)
 
     async def test_model_level_filter_unaffected_by_query_measure_rename(
@@ -385,26 +385,26 @@ class TestRemapEdgeCases:
         helper is only invoked for query filters; model filters go through
         ``parse_sql_predicate`` and never see canonical-agg aliases.
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="deleted_at", sql="deleted_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="deleted_at", sql="deleted_at", datatype=DataType.TIMESTAMP),
             ],
             # Plain Mode A model filter.
             filters=["deleted_at IS NULL"],
         )
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[
                 # Triggers the rename branch — populates canonical_to_user_name.
-                ModelMeasure(formula="count_distinct(customer_id)", name="num_customers"),
+                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
             ],
         )
         sql = await _generate(query, model)
@@ -430,11 +430,11 @@ class TestRemapEdgeCases:
         message — otherwise alias-form filters silently bind to the source
         column instead of the renamed measure.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="id")],
-            measures=[ModelMeasure(formula="sum(amount)", name="status")],
+            population="orders",
+            dimensions=[FieldRef(name="id")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="status")],
         )
-        with pytest.raises(ValueError, match=r"matches a source column"):
+        with pytest.raises(ValueError, match=r"matches a source field"):
             await _generate(query, model)

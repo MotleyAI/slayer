@@ -1,0 +1,63 @@
+{
+ "source": "tests/test_dev2102_stored_upgrade.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev2_q",
+    "dimensions": [
+     "customers__region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev2)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "rev2_q",
+    "dimensions": [
+     "customers__region"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev2)",
+      "name": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_x",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_x",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_x",
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_x",
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev2120_json.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  }
+ ]
+}

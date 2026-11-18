@@ -1,0 +1,350 @@
+{
+ "source": "tests/test_filter_renamed_measure.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count_distinct(customer_id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "count_distinct(customer_id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(country)",
+    "name": "primary_country"
+   },
+   "new": {
+    "expression": "first(country)",
+    "name": "primary_country"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "profit_avg"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "profit_avg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(profit)"
+   },
+   "new": {
+    "expression": "avg(profit)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(customer_id)",
+    "name": "num_customers"
+   },
+   "new": {
+    "expression": "count_distinct(customer_id)",
+    "name": "num_customers"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "status"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "status"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 214,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 242,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 291,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 292,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 293,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 294,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 297,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 301,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 302,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 321,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 326,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 327,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 328,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 329,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 355,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 360,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 361,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 365,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 368,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 388,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 394,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 395,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 402,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 434,
+   "reason": "not fully literal"
+  }
+ ]
+}

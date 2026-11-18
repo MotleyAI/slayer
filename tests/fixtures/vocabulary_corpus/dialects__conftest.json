@@ -1,0 +1,30 @@
+{
+ "source": "tests/dialects/conftest.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  }
+ ]
+}

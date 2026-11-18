@@ -25,7 +25,7 @@ def fusion_blockers(
     *,
     has_combined_phase: bool,
     has_transform_steps: bool,
-    trims_hidden_columns: bool,
+    trims_hidden_fields: bool,
 ) -> List[str]:
     """Reasons the base node cannot fuse into the final statement (empty = one SELECT)."""
     blockers: List[str] = []
@@ -35,7 +35,7 @@ def fusion_blockers(
         )
     if has_transform_steps:
         blockers.append("step CTEs consume the base schema by name")
-    if trims_hidden_columns:
+    if trims_hidden_fields:
         blockers.append(
             "hidden-column trim boundary: the post wrap re-projects the "
             "public schema",

@@ -5,8 +5,8 @@
 # It describes a small retail shop over four tables (orders, customers,
 # products, regions) and exercises:
 #   * ai_context on the model, datasets, fields, relationships and metrics
-#   * nonportable_extensions carried into column meta
-#   * relationships that become SLayer joins (incl. a multi-hop chain)
+#   * nonportable_extensions carried into field meta
+#   * relationships that become SLayer relationships (incl. a multi-hop chain)
 #   * dataset-scoped metrics, a FILTER metric, and cross-dataset / multi-hop
 #     model-scoped metrics (which reference fields as dataset.field)
 #

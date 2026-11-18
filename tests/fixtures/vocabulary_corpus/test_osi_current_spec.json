@@ -1,0 +1,63 @@
+{
+ "source": "tests/test_osi_current_spec.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "total_amount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "total_amount"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.segment"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "s"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.segment"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "s"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "total_amount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "total_amount"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

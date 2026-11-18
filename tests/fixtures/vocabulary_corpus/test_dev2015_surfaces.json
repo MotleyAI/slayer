@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_dev2015_surfaces.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 317,
+   "reason": "unclassifiable"
+  }
+ ]
+}

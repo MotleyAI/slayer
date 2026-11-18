@@ -11,7 +11,7 @@ docker compose up -d
 
 This starts:
 - **MySQL 8** (port 3307) with sample e-commerce data
-- **SLayer API** (port 5143) with auto-ingested models
+- **SLayer API** (port 5143) with auto-ingested datasets
 
 ## Verify
 
@@ -24,13 +24,13 @@ Runs assertions against the seeded data to validate SLayer is working correctly.
 ## Try Yourself
 
 ```bash
-# List models
-curl http://localhost:5143/models
+# List datasets
+curl http://localhost:5143/datasets
 
 # Query: orders by status
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}'
+  -d '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}'
 ```
 
 ## Clean Up

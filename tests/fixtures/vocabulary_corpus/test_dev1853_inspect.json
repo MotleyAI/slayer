@@ -1,0 +1,97 @@
+{
+ "source": "tests/test_dev1853_inspect.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "billing_customer_id",
+      "id"
+     ]
+    ],
+    "name": "billing"
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "billing_customer_id",
+      "id"
+     ]
+    ],
+    "name": "billing"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "shipping_customer_id",
+      "id"
+     ]
+    ],
+    "name": "shipping"
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "shipping_customer_id",
+      "id"
+     ]
+    ],
+    "name": "shipping"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  }
+ ]
+}

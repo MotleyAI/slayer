@@ -9,16 +9,16 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.errors import CastTypeError
 from slayer.core.keys import ScalarCallKey, ValueKey, is_list_call, list_element_type
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import Cast, parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import dimension_key_metadata
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._cast_fixtures import check_array_cast, duckdb_tags_engine
-from tests._dev2101_fixtures import TIER1, customers_model, emit, orders_model, q
+from tests._dev2101_fixtures import TIER1, customers_dataset, emit, orders_dataset, q
 
-ORDERS = orders_model()
+ORDERS = orders_dataset()
 
 
 def _dim(expr: str):
@@ -43,18 +43,18 @@ async def _refused(expr: str, *, dialect: str, needle: str) -> None:
 
 
 def _bind(text: str, *, dialect: str) -> ValueKey:
-    bundle = ResolvedSourceBundle(dialect=dialect, source_model=ORDERS, referenced_models=[customers_model()])
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=ORDERS), bundle=bundle,
-                     allow_measures=True).value_key
+    bundle = ResolvedSourceBundle(dialect=dialect, population=ORDERS, referenced_datasets=[customers_dataset()])
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=ORDERS), bundle=bundle,
+                     allow_metrics=True).value_key
 
 
 def _planned_type(text: str, *, dialect: str) -> DataType | None:
-    bundle = ResolvedSourceBundle(dialect=dialect, source_model=ORDERS, referenced_models=[customers_model()])
-    return dimension_key_metadata(model=ORDERS, key=_bind(text, dialect=dialect), bundle=bundle)[0]
+    bundle = ResolvedSourceBundle(dialect=dialect, population=ORDERS, referenced_datasets=[customers_dataset()])
+    return dimension_key_metadata(dataset=ORDERS, key=_bind(text, dialect=dialect), bundle=bundle)[0]
 
 
 def _element_type(text: str, *, dialect: str) -> DataType | None:
-    return list_element_type(_bind(text, dialect=dialect), column_type=lambda _k: None, column_element=lambda _k: None)
+    return list_element_type(_bind(text, dialect=dialect), field_type=lambda _k: None, field_element=lambda _k: None)
 
 
 class TestTypeGrammar:
@@ -208,7 +208,7 @@ class TestArrayTyping:
     def test_contains_binds_as_a_list_call(self) -> None:
         key = _bind("contains(CAST(code AS INT[]), 3)", dialect="postgres")
         assert isinstance(key, ScalarCallKey)
-        assert is_list_call(key, column_type=lambda _k: None)
+        assert is_list_call(key, field_type=lambda _k: None)
 
     def test_scalar_cast_is_not_a_list(self) -> None:
         assert _planned_type("CAST(code AS INT)", dialect="postgres") is DataType.INT

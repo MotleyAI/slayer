@@ -14,7 +14,7 @@ resolution over an inspector that happens to see attached catalogs.
 from __future__ import annotations
 
 import io
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
@@ -28,20 +28,21 @@ from slayer import cli
 from slayer.api.server import IngestRequest, create_app
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema import ingestion as mod
 from slayer.live_schema import schema_drift as drift_mod
 from slayer.live_schema.ingestion import (
+    IngestionScanReport,
     _print_ingest_addition,
     ingest_datasource_idempotent,
-    introspect_table_to_model,
+    introspect_table_to_dataset,
     list_ingestable_objects,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
     LiveTable,
-    ModelAddition,
+    DatasetAddition,
     _live_schema_refs,
     _resolve_live_table,
     validate_datasource,
@@ -59,6 +60,7 @@ from slayer.live_schema.type_refinement import _parse_sql_table_with_default_sch
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine
+from slayer.storage.base import StorageBackend
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -221,7 +223,7 @@ def attached_paths(tmp_path_factory) -> tuple[str, str]:
 
 
 @contextmanager
-def _open_attached(paths: tuple[str, str]) -> Iterator[sa.Engine]:
+def _open_attached(paths: tuple[str, str]) -> Generator[sa.Engine, None, None]:
     main_path, aaa_path = paths
     with disposable_engine(f"duckdb:///{main_path}") as engine:
 
@@ -240,7 +242,7 @@ def _ds(path: str, **kw) -> DatasourceConfig:
 
 
 @asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client
@@ -250,7 +252,7 @@ async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
 
 
 @asynccontextmanager
-async def _attached_client(paths: tuple[str, str]) -> AsyncIterator[SlayerSQLClient]:
+async def _attached_client(paths: tuple[str, str]) -> AsyncGenerator[SlayerSQLClient, None]:
     """A client over ``att_main`` whose every connection attaches ``aaa``."""
     main_path, aaa_path = paths
     ds = _ds(main_path)
@@ -291,8 +293,8 @@ async def _idempotent(*, datasource: DatasourceConfig, storage: YAMLStorage, **k
         return await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=client, **kwargs)
 
 
-def _sql_tables(report) -> dict[str, str]:
-    return {m.name: m.sql_table for m in report.models}
+def _sql_tables(report: IngestionScanReport) -> dict[str, str | None]:
+    return {m.name: m.sql_table for m in report.datasets}
 
 
 def _skip_labels(report) -> list[str]:
@@ -300,10 +302,10 @@ def _skip_labels(report) -> list[str]:
     return [s.table_name for s in report.skipped]
 
 
-async def _query_count(storage: YAMLStorage, model_name: str) -> int:
+async def _query_count(storage: YAMLStorage, dataset_name: str) -> int:
     engine = SlayerQueryEngine(storage=storage)
     resp = await engine.execute(
-        SlayerQuery.model_validate({"source_model": model_name, "measures": [{"formula": "count(*)", "name": "n"}]})
+        SlayerQuery.model_validate({"population": dataset_name, "metrics": [{"expression": "count(*)", "name": "n"}]})
     )
     assert resp.row_count == 1, resp.data
     return next(iter(resp.data[0].values()))
@@ -346,8 +348,8 @@ class TestReportedRegression:
         await _idempotent(
             datasource=ds, storage=storage, all_schemas=True
         )
-        in_default = await storage.get_model("in_default", data_source="ds")
-        reports = await storage.get_model("reports", data_source="ds")
+        in_default = await storage.get_dataset("in_default", data_source="ds")
+        reports = await storage.get_dataset("reports", data_source="ds")
         assert in_default.sql_table == "in_default"
         assert reports.sql_table == "openfda_rest.reports"
         assert await _query_count(storage, "in_default") == 1
@@ -364,13 +366,13 @@ class TestColumnCorruption:
         """The default ``reports`` must carry exactly its own column, never the
         union of every schema's ``reports``."""
         report = await _report(_ds(same_name_db))
-        reports = next(m for m in report.models if m.name == "reports")
-        assert {c.name for c in reports.columns} == {"a"}
+        reports = next(m for m in report.datasets if m.name == "reports")
+        assert {c.name for c in reports.fields} == {"a"}
 
     async def test_explicit_non_default_gets_its_own_columns(self, same_name_db) -> None:
         report = await _report(_ds(same_name_db), schemas=["s2"])
-        reports = next(m for m in report.models if m.name == "reports")
-        assert {c.name for c in reports.columns} == {"b", "c"}
+        reports = next(m for m in report.datasets if m.name == "reports")
+        assert {c.name for c in reports.fields} == {"b", "c"}
         assert reports.sql_table == "s2.reports"
 
 
@@ -481,12 +483,12 @@ class TestAttachedCatalogs:
         lowest-sorted-wins explicitly rejected)."""
         async with _attached_client(attached_paths) as client:
             try:
-                model = await introspect_table_to_model(
+                model = await introspect_table_to_dataset(
                     client=client, table_name="shared", ref=None, data_source="ds",
                 )
             except ValueError:
                 return                 # refusing to guess is acceptable
-            assert {c.name for c in model.columns} == {"m"}  # the default group; never the union
+            assert {c.name for c in model.fields} == {"m"}  # the default group; never the union
 
     async def test_discovery_ref_none_does_not_sweep_the_attached_catalog(
         self, attached_paths
@@ -503,15 +505,15 @@ class TestAttachedCatalogs:
     ) -> None:
         """schema=None probes the qualified default: {m} not {m,o}, bare sql_table."""
         async with _attached_client(attached_paths) as client:
-            model = await introspect_table_to_model(
+            model = await introspect_table_to_dataset(
                 client=client, table_name="shared",
                 ref=None, data_source="ds",
             )
-            assert {c.name for c in model.columns} == {"m"}
+            assert {c.name for c in model.fields} == {"m"}
             assert model.sql_table == "shared"      # default stays bare
 
     async def test_introspect_table_schema_none_never_unions_a_bare_result(
-        self, attached_paths, monkeypatch
+        self, attached_paths, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Even when the Inspector RETURNS a bare-schema union, schema=None probes
         the qualified default and keeps only {m}."""
@@ -529,11 +531,11 @@ class TestAttachedCatalogs:
                 return real_get_columns(self, table_name, schema=schema, **kw)
 
             monkeypatch.setattr(Inspector, "get_columns", _bare_returns_union)
-            model = await introspect_table_to_model(
+            model = await introspect_table_to_dataset(
                 client=client, table_name="shared",
                 ref=None, data_source="ds",
             )
-            assert {c.name for c in model.columns} == {"m"}
+            assert {c.name for c in model.fields} == {"m"}
 
     async def test_requested_foreign_catalog_is_skipped_not_ingested(self, attached_paths) -> None:
         """Codex-review: explicitly requesting a foreign attached catalog
@@ -609,7 +611,7 @@ class TestScopeResolution:
         assert any("pg_catalog" in (s.token or "") for s in scope.skipped)
 
     async def test_all_schemas_raises_when_enumeration_fails(
-        self, basic_db, monkeypatch
+        self, basic_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """--all-schemas raises rather than returning a silent empty scope."""
         async with _client(_ds(basic_db)) as client:
@@ -621,7 +623,7 @@ class TestScopeResolution:
                 )
 
     async def test_default_scope_survives_enumeration_failure(
-        self, basic_db, monkeypatch
+        self, basic_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The implicit default request still resolves when enumeration fails."""
         async with _client(_ds(basic_db)) as client:
@@ -640,7 +642,7 @@ class TestSkippedSchemasReported:
     async def test_report_surfaces_a_requested_system_schema(self, basic_db) -> None:
         report = await _report(_ds(basic_db), schemas=["information_schema"]
         )
-        assert report.models == []
+        assert report.datasets == []
         assert any(
             "information_schema" in s.token for s in report.skipped_schemas
         )
@@ -651,7 +653,7 @@ class TestSkippedSchemasReported:
 # ===========================================================================
 
 
-def _reversed_scan(monkeypatch):
+def _reversed_scan(monkeypatch: pytest.MonkeyPatch):
     """Reverse the per-schema discovery order to prove order-independence."""
     real = mod.list_ingestable_objects
 
@@ -666,21 +668,21 @@ class TestCollisions:
         """main wins; BOTH s2 and s3 losers are reported — and under a
         multi-schema scan the labels are fully disambiguated (§3.5)."""
         report = await _report(_ds(same_name_db), all_schemas=True)
-        reports = [m for m in report.models if m.name == "reports"]
+        reports = [m for m in report.datasets if m.name == "reports"]
         assert len(reports) == 1
-        assert {c.name for c in reports[0].columns} == {"a"}      # main won
+        assert {c.name for c in reports[0].fields} == {"a"}      # main won
         labels = _skip_labels(report)
         assert "s2.reports" in labels                              # qualified label
         assert "s3.reports" in labels                             # BOTH losers, no collapse
 
     async def test_non_default_collision_picks_the_lower_schema(self, same_name_db) -> None:
         report = await _report(_ds(same_name_db), schemas=["s2", "s3"])
-        reports = next(m for m in report.models if m.name == "reports")
+        reports = next(m for m in report.datasets if m.name == "reports")
         assert reports.sql_table == "s2.reports"                  # s2 < s3
         assert "s3.reports" in _skip_labels(report)
 
     async def test_collision_winner_is_independent_of_discovery_order(
-        self, same_name_db, monkeypatch
+        self, same_name_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Reverse ONLY the discovery order (requested order held fixed) so a
         failure isolates to discovery nondeterminism."""
@@ -729,7 +731,7 @@ class TestCollisions:
             "CREATE TABLE a__b(x INTEGER)",
         ])
         report = await _report(_ds(path))
-        assert {"a_b", "a__b"} <= {m.name for m in report.models}
+        assert {"a_b", "a__b"} <= {m.name for m in report.datasets}
         assert _skip_labels(report) == []
 
 
@@ -755,9 +757,9 @@ class TestWinnersOnlyStructures:
         """``s1.y``'s FK targets ``s1.x`` which lost the model name to
         ``main.x``; the join must be dropped, never repointed cross-schema."""
         report = await _report(_ds(loser_fk_db), all_schemas=True)
-        models = {m.name: m for m in report.models}
+        models = {m.name: m for m in report.datasets}
         y = models["y"]
-        assert y.joins == []
+        assert y.relationships == []
 
 
 # ===========================================================================
@@ -768,11 +770,11 @@ class TestWinnersOnlyStructures:
 class TestForeignKeysAreSchemaAware:
     async def test_join_is_generated_for_a_non_default_schema(self, fk_db) -> None:
         report = await _report(_ds(fk_db), schemas=["ofr"])
-        models = {m.name: m for m in report.models}
+        models = {m.name: m for m in report.datasets}
         child = models["child"]
         assert child.sql_table == "ofr.child"
-        assert [j.target_model for j in child.joins] == ["parent"]
-        assert child.joins[0].join_pairs == [["parent_id", "id"]]
+        assert [j.to for j in child.relationships] == ["parent"]
+        assert child.relationships[0].join_pairs == [["parent_id", "id"]]
 
 
 # ===========================================================================
@@ -781,31 +783,31 @@ class TestForeignKeysAreSchemaAware:
 
 
 class TestSelfHeal:
-    async def _persist_bare(self, storage, ds, columns, *, extra=None):
-        model = SlayerModel(
+    async def _persist_bare(self, storage: StorageBackend, ds, columns, *, extra=None):
+        model = SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            columns=columns,
+            fields=columns,
         )
         if extra:
             model = model.model_copy(update=extra)
         await storage.save_datasource(ds)
-        await storage.save_model(model)
+        await storage.save_dataset(model)
 
     async def test_missing_qualifier_is_healed(self, basic_db, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         # Pretend an older run stored ``reports`` unqualified with hand metadata.
-        col = Column(name="id", sql="id", type=DataType.INT, description="hand id")
+        col = DatasetField(name="id", sql="id", datatype=DataType.INT, description="hand id")
         await self._persist_bare(storage, ds, [col],
                                  extra={"description": "hand table"})
         result = await _idempotent(
             datasource=ds, storage=storage, schemas=["openfda_rest"]
         )
-        healed = await storage.get_model("reports", data_source="ds")
+        healed = await storage.get_dataset("reports", data_source="ds")
         assert healed.sql_table == "openfda_rest.reports"
         # Hand-authored metadata survives the heal.
         assert healed.description == "hand table"
-        assert next(c for c in healed.columns if c.name == "id").description == "hand id"
+        assert next(c for c in healed.fields if c.name == "id").description == "hand id"
         # The change is reported.
         assert any(getattr(a, "sql_table_change", None) == "reports → openfda_rest.reports"
                    for a in result.additions)
@@ -813,16 +815,16 @@ class TestSelfHeal:
     async def test_existing_qualifier_is_never_rewritten(self, basic_db, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="reports", sql_table="prod.reports", data_source="ds",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
         )
         await storage.save_datasource(ds)
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         await _idempotent(
             datasource=ds, storage=storage, schemas=["openfda_rest"]
         )
-        kept = await storage.get_model("reports", data_source="ds")
+        kept = await storage.get_dataset("reports", data_source="ds")
         assert kept.sql_table == "prod.reports"
 
     async def test_qualifier_repair_alone_triggers_a_save(self, basic_db, tmp_path) -> None:
@@ -834,19 +836,19 @@ class TestSelfHeal:
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
         # openfda_rest.reports is (id INT, val INT); mirror it exactly but bare.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT,
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT,
                        format={"type": "integer"}),
-                Column(name="val", sql="val", type=DataType.INT,
+                DatasetField(name="val", sql="val", datatype=DataType.INT,
                        format={"type": "integer"}),
             ],
         ))
         result = await _idempotent(
             datasource=ds, storage=storage, schemas=["openfda_rest"]
         )
-        healed = await storage.get_model("reports", data_source="ds")
+        healed = await storage.get_dataset("reports", data_source="ds")
         assert healed.sql_table == "openfda_rest.reports"        # saved
         assert any(getattr(a, "sql_table_change", None)
                    == "reports → openfda_rest.reports"
@@ -861,24 +863,24 @@ class TestSelfHeal:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
         await storage.save_datasource(ds)
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            columns=[Column(name="a", sql="a", type=DataType.INT)],
+            fields=[DatasetField(name="a", sql="a", datatype=DataType.INT)],
         ))
         await _idempotent(
             datasource=ds, storage=storage, schemas=["main"],   # verbatim → main.reports
         )
-        healed = await storage.get_model("reports", data_source="ds")
+        healed = await storage.get_dataset("reports", data_source="ds")
         assert healed.sql_table == "main.reports"
-        assert {c.name for c in healed.columns} == {"a"}         # still main's table
+        assert {c.name for c in healed.fields} == {"a"}         # still main's table
 
 
 class TestAdditionRendering:
     def test_updated_line_names_the_qualifier_repair(self) -> None:
         """A qualifier repair adds no columns, so the ``Updated:`` line must be
         driven by ``sql_table_change`` alone (§3.7 rendering)."""
-        addition = ModelAddition(
-            model_name="reports", data_source="ds", created=False,
+        addition = DatasetAddition(
+            dataset_name="reports", data_source="ds", created=False,
             sql_table_change="reports → openfda_rest.reports",
         )
         buf = io.StringIO()
@@ -901,20 +903,20 @@ class TestCrossSchemaMergeGuard:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
         await storage.save_datasource(ds)
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            columns=[Column(name="a", sql="a", type=DataType.INT)],
+            fields=[DatasetField(name="a", sql="a", datatype=DataType.INT)],
         ))
         result = await _idempotent(
             datasource=ds, storage=storage, schemas=["s2"]
         )
-        kept = await storage.get_model("reports", data_source="ds")
+        kept = await storage.get_dataset("reports", data_source="ds")
         assert kept.sql_table == "reports"
-        assert {c.name for c in kept.columns} == {"a"}
+        assert {c.name for c in kept.fields} == {"a"}
         assert any("reports" in s.table_name for s in result.skipped)
 
     async def test_guard_fails_closed_when_default_membership_unknown(
-        self, same_name_db, tmp_path, monkeypatch
+        self, same_name_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If the default-schema object listing fails, membership is UNKNOWN and
         the merge is refused (never repoint on a guess)."""
@@ -922,9 +924,9 @@ class TestCrossSchemaMergeGuard:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
         await storage.save_datasource(ds)
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            columns=[Column(name="a", sql="a", type=DataType.INT)],
+            fields=[DatasetField(name="a", sql="a", datatype=DataType.INT)],
         ))
 
         real = mod.list_ingestable_objects
@@ -939,9 +941,9 @@ class TestCrossSchemaMergeGuard:
         await _idempotent(
             datasource=ds, storage=storage, schemas=["s2"]
         )
-        kept = await storage.get_model("reports", data_source="ds")
+        kept = await storage.get_dataset("reports", data_source="ds")
         assert kept.sql_table == "reports"
-        assert {c.name for c in kept.columns} == {"a"}
+        assert {c.name for c in kept.fields} == {"a"}
 
 
 # ===========================================================================
@@ -950,9 +952,9 @@ class TestCrossSchemaMergeGuard:
 
 
 class TestValidateModels:
-    async def _validate(self, ds, models):
+    async def _validate(self, ds, datasets):
         async with _client(ds) as client:
-            return await validate_datasource(datasource=ds, models=models, client=client)
+            return await validate_datasource(datasource=ds, datasets=datasets, client=client)
 
     async def test_no_whole_model_delete_after_multi_schema_ingest(
         self, basic_db, tmp_path
@@ -964,11 +966,11 @@ class TestValidateModels:
             datasource=ds, storage=storage, all_schemas=True
         )
         models = [
-            await storage.get_model("in_default", data_source="ds"),
-            await storage.get_model("reports", data_source="ds"),
+            await storage.get_dataset("in_default", data_source="ds"),
+            await storage.get_dataset("reports", data_source="ds"),
         ]
         to_delete = await self._validate(ds, models)
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_legacy_bare_model_survives_a_new_same_named_schema(
         self, legacy_db, tmp_path
@@ -979,13 +981,13 @@ class TestValidateModels:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db)
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_missing_non_default_table_is_reported_deleted_not_masked(
         self, tmp_path
@@ -1000,16 +1002,16 @@ class TestValidateModels:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(path)
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders", sql_table="analytics.orders", data_source="ds",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert [e for e in to_delete if e.tool == "delete_model"]
+        assert [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_failed_schema_listing_does_not_mass_delete(
-        self, basic_db, tmp_path, monkeypatch
+        self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """CodeRabbit: if one in-scope schema fails to list, validate must NOT
         report that schema's models for deletion — a transient error would hand
@@ -1018,11 +1020,11 @@ class TestValidateModels:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="reports", sql_table="openfda_rest.reports", data_source="ds",
-            columns=[Column(name="id", sql="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         real = mod.list_ingestable_objects
 
         async def _maybe_raise(**kwargs):
@@ -1033,7 +1035,7 @@ class TestValidateModels:
 
         monkeypatch.setattr(mod, "list_ingestable_objects", _maybe_raise)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_qualified_model_diffs_against_the_correct_twin(
         self, same_name_db, tmp_path
@@ -1044,16 +1046,16 @@ class TestValidateModels:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(same_name_db)
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="reports", sql_table="s2.reports", data_source="ds",
-            columns=[
-                Column(name="b", sql="b", type=DataType.INT),
-                Column(name="c", sql="c", type=DataType.INT),
+            fields=[
+                DatasetField(name="b", sql="b", datatype=DataType.INT),
+                DatasetField(name="c", sql="c", datatype=DataType.INT),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_pinned_schema_name_still_covers_other_own_schemas(
         self, legacy_db, tmp_path
@@ -1062,34 +1064,34 @@ class TestValidateModels:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="analytics_orders", sql_table="analytics.orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT),
-                Column(name="note", sql="note", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT),
+                DatasetField(name="note", sql="note", datatype=DataType.TEXT),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_validate_falls_back_when_enumeration_fails(
-        self, legacy_db, tmp_path, monkeypatch
+        self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Enumeration fails, yet a pinned-schema model still gets a real drift
         verdict via the configured-schema fallback, not a silent skip."""
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT),
-                Column(name="ghost", sql="ghost", type=DataType.INT),  # not live
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT),
+                DatasetField(name="ghost", sql="ghost", datatype=DataType.INT),  # not live
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
 
         real = drift_mod.resolve_ingest_scope
 
@@ -1101,10 +1103,10 @@ class TestValidateModels:
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, [model])
         assert to_delete                                              # verdict, not a skip
-        assert not [e for e in to_delete if e.tool == "delete_model"]  # table resolved
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]  # table resolved
 
     async def test_fallback_covers_a_non_pinned_model_schema(
-        self, legacy_db, tmp_path, monkeypatch
+        self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Enumeration fails, but a model qualified to a NON-pinned own schema
         still resolves — the fallback scopes to the models' own schemas, so it is
@@ -1112,15 +1114,15 @@ class TestValidateModels:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(legacy_db, schema_name="main")
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="analytics_orders", sql_table="analytics.orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT),
-                Column(name="note", sql="note", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT),
+                DatasetField(name="note", sql="note", datatype=DataType.TEXT),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
 
         real = drift_mod.resolve_ingest_scope
 
@@ -1131,10 +1133,10 @@ class TestValidateModels:
 
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_fallback_default_stays_bare_keyed_past_catalog_token(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Fallback: a model token equal to the catalog-qualified default
         (``cat.main.x``) must not un-bare-key the default, or a bare model
@@ -1150,16 +1152,16 @@ class TestValidateModels:
         ds = _ds(path)
         await storage.save_datasource(ds)
         models = [
-            SlayerModel(name="orders", sql_table="orders", data_source="ds",
-                        columns=[Column(name="id", sql="id", type=DataType.INT)]),
-            SlayerModel(name="customers", sql_table="cat.main.customers",
+            SlayerDataset(name="orders", sql_table="orders", data_source="ds",
+                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)]),
+            SlayerDataset(name="customers", sql_table="cat.main.customers",
                         data_source="ds",
-                        columns=[Column(name="id", sql="id", type=DataType.INT)]),
-            SlayerModel(name="foo", sql_table="analytics.foo", data_source="ds",
-                        columns=[Column(name="id", sql="id", type=DataType.INT)]),
+                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)]),
+            SlayerDataset(name="foo", sql_table="analytics.foo", data_source="ds",
+                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)]),
         ]
         for m in models:
-            await storage.save_model(m)
+            await storage.save_dataset(m)
 
         real = drift_mod.resolve_ingest_scope
 
@@ -1170,7 +1172,7 @@ class TestValidateModels:
 
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, models)
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
 
 class TestLiveTableResolution:
@@ -1242,17 +1244,17 @@ class TestLiveTableResolution:
 class TestCommentComposition:
     async def test_comments_are_read_from_the_named_schema(self, comment_db) -> None:
         report = await _report(_ds(comment_db), schemas=["ofr"])
-        reports = next(m for m in report.models if m.name == "reports")
+        reports = next(m for m in report.datasets if m.name == "reports")
         assert reports.description == "openfda report rows"
-        val = next(c for c in reports.columns if c.name == "val")
+        val = next(c for c in reports.fields if c.name == "val")
         assert val.description == "the measured value"
 
     async def test_comments_do_not_bleed_from_the_default_schema(self, comment_db) -> None:
         """The non-default ``val`` comment must win — never the default
         schema's same-named column comment."""
         report = await _report(_ds(comment_db), schemas=["ofr"])
-        reports = next(m for m in report.models if m.name == "reports")
-        val = next(c for c in reports.columns if c.name == "val")
+        reports = next(m for m in report.datasets if m.name == "reports")
+        val = next(c for c in reports.fields if c.name == "val")
         assert val.description != "DEFAULT SCHEMA COMMENT"
 
 
@@ -1336,14 +1338,14 @@ class TestIncludeExcludeAcrossSchemas:
         report = await _report(_ds(same_name_db), all_schemas=True,
             include_tables=["reports"],
         )
-        reports = next(m for m in report.models if m.name == "reports")
-        assert {c.name for c in reports.columns} == {"a"}        # main still wins
+        reports = next(m for m in report.datasets if m.name == "reports")
+        assert {c.name for c in reports.fields} == {"a"}        # main still wins
 
     async def test_exclude_removes_the_name_in_every_schema(self, same_name_db) -> None:
         report = await _report(_ds(same_name_db), all_schemas=True,
             exclude_tables=["reports"],
         )
-        assert "reports" not in {m.name for m in report.models}
+        assert "reports" not in {m.name for m in report.datasets}
         assert report.skipped == []                              # excluded, not skipped
 
 
@@ -1352,7 +1354,7 @@ class TestIncludeExcludeAcrossSchemas:
 # ===========================================================================
 
 
-def _run_cli(monkeypatch, argv: list[str]) -> None:
+def _run_cli(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> None:
     """Drive the real ``slayer`` CLI by argv (``main`` reads ``sys.argv``)."""
     monkeypatch.setattr("sys.argv", ["slayer", *argv])
     cli.main()
@@ -1360,7 +1362,7 @@ def _run_cli(monkeypatch, argv: list[str]) -> None:
 
 class TestSchemaNamePersistence:
     async def test_create_persists_schema_name_and_bare_ingest_uses_it(
-        self, basic_db, tmp_path, monkeypatch
+        self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``datasources create --schema X --ingest`` persists ``schema_name``;
         a subsequent bare ``slayer ingest`` scans X (D-3 fix, D-7)."""
@@ -1380,7 +1382,7 @@ class TestSchemaNamePersistence:
         assert _sql_tables(report).get("reports") == "openfda_rest.reports"
 
     def test_all_schemas_does_not_persist_schema_name(
-        self, basic_db, tmp_path, monkeypatch
+        self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = str(tmp_path / "store")
         storage = YAMLStorage(base_dir=store)
@@ -1461,7 +1463,7 @@ class TestRestParity:
                 "datasource": "ds", "schemas": ["openfda_rest"],
             })
             assert ok.status_code == 200, ok.text
-            reports = await storage.get_model("reports", data_source="ds")
+            reports = await storage.get_dataset("reports", data_source="ds")
             assert reports is not None
             assert reports.sql_table == "openfda_rest.reports"
 
@@ -1483,9 +1485,9 @@ class TestMcpParity:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         await storage.save_datasource(_ds(basic_db))
         server = await self._server(storage)
-        await self._text(server, "ingest_datasource_models",
+        await self._text(server, "ingest_datasource",
                          {"datasource_name": "ds", "schemas": "openfda_rest"})
-        reports = await storage.get_model("reports", data_source="ds")
+        reports = await storage.get_dataset("reports", data_source="ds")
         assert reports is not None
         assert reports.sql_table == "openfda_rest.reports"
 
@@ -1493,7 +1495,7 @@ class TestMcpParity:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         await storage.save_datasource(_ds(basic_db))
         server = await self._server(storage)
-        text = await self._text(server, "ingest_datasource_models",
+        text = await self._text(server, "ingest_datasource",
                                 {"datasource_name": "ds", "schemas": "a", "all_schemas": True})
         assert "all_schemas" in text                             # actionable error string
         assert "schema" in text
@@ -1507,7 +1509,7 @@ class TestMcpParity:
         })
         stored = await storage.get_datasource("ds")
         assert stored.schema_name == "openfda_rest"
-        reports = await storage.get_model("reports", data_source="ds")
+        reports = await storage.get_dataset("reports", data_source="ds")
         assert reports is not None
         assert reports.sql_table == "openfda_rest.reports"
 
@@ -1540,14 +1542,14 @@ class TestCliArgumentParsing:
     unknown-argument one — so the test fails for the right reason before the
     flag exists."""
 
-    def test_ingest_rejects_schema_with_all_schemas(self, monkeypatch, capsys) -> None:
+    def test_ingest_rejects_schema_with_all_schemas(self, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         with pytest.raises(SystemExit):
             _run_cli(monkeypatch, ["ingest", "--datasource", "d",
                                    "--schema", "a", "--all-schemas"])
         assert "not allowed with" in capsys.readouterr().err
 
     def test_datasources_create_rejects_schema_with_all_schemas(
-        self, monkeypatch, capsys
+        self, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         with pytest.raises(SystemExit):
             _run_cli(monkeypatch, ["datasources", "create", "duckdb:///x.db",

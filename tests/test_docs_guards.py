@@ -129,8 +129,8 @@ def _texts(markdown: str) -> list[str]:
 def test_mixed_sql_and_query_fences() -> None:
     page = (
         "Run this:\n\n```sql\nSELECT sum(amount) FROM orders WHERE status = 'paid'\n```\n\n"
-        '```json\n{"source_model": "orders", "measures": ["sum(amount)"], "filters": ["status = \'paid\'"]}\n```\n'
-        "\n```bash\nslayer query '{\"measures\": [\"count(*)\"]}'\n```\n"
+        '```json\n{"population": "orders", "metrics": ["sum(amount)"], "filter": ["status = \'paid\'"]}\n```\n'
+        "\n```bash\nslayer query '{\"metrics\": [\"count(*)\"]}'\n```\n"
     )
     assert _texts(page) == ["sum(amount)", "status = 'paid'"]
 
@@ -138,15 +138,15 @@ def test_mixed_sql_and_query_fences() -> None:
 def test_multiline_lists_fragments_json_lines_and_comments() -> None:
     page = (
         "```json\n"
-        '"measures": [\n'
+        '"metrics": [\n'
         '  "count(*)",\n'
-        '  {"formula": "sum(amount) / count(*)", "name": "aov"}\n'
+        '  {"expression": "sum(amount) / count(*)", "name": "aov"}\n'
         "]\n"
         "```\n\n"
         "```json\n"
         "// two queries\n"
-        '{"source_model": "orders", "dimensions": ["status"]}  // by status\n'
-        '{"source_model": "orders", "time_dimensions": ["month(order_date)"]}\n'
+        '{"population": "orders", "dimensions": ["status"]}  // by status\n'
+        '{"population": "orders", "time_dimensions": ["month(order_date)"]}\n'
         "```\n"
     )
     assert _texts(page) == ["count(*)", "sum(amount) / count(*)", "status", "month(order_date)"]
@@ -154,12 +154,12 @@ def test_multiline_lists_fragments_json_lines_and_comments() -> None:
 
 def test_every_query_field_is_read() -> None:
     query = {
-        "source_model": "orders",
-        "measures": ["count(*)", {"formula": "sum(amount)", "name": "total"}, {"name": "revenue"}],
+        "population": "orders",
+        "metrics": ["count(*)", {"expression": "sum(amount)", "name": "total"}, {"name": "revenue"}],
         "dimensions": ["status", {"expression": "upper(status)", "name": "s"}, {"name": "status", "label": "S"}],
-        "time_dimensions": ["month(order_date)", {"dimension": "order_date", "granularity": "week"}],
-        "filters": ["amount > 10"],
-        "order": [{"column": "sum(amount)", "direction": "desc"}],
+        "time_dimensions": ["month(order_date)", {"field": "order_date", "granularity": "week"}],
+        "filter": ["amount > 10"],
+        "order": [{"field": "sum(amount)", "direction": "desc"}],
         "variables": {"v": "x"},
     }
     assert mode_b_values(query) == [
@@ -169,73 +169,73 @@ def test_every_query_field_is_read() -> None:
 
 
 def test_time_dimension_column_alias_is_read() -> None:
-    query = {"time_dimensions": [{"column": "bad((", "granularity": "month"}]}
+    query = {"time_dimensions": [{"field": "bad((", "granularity": "month"}]}
     assert mode_b_values(query) == ["bad(("]
 
 
 def test_stage_lists_and_refinements() -> None:
     stages = [
-        {"name": "per_customer", "source_model": "orders", "dimensions": ["customers.name"],
-         "measures": [{"formula": "sum(amount)", "name": "total"}]},
-        {"source_model": "per_customer", "measures": ["avg(total)"], "filters": ["total > 100"]},
+        {"name": "per_customer", "population": "orders", "dimensions": ["customers.name"],
+         "metrics": [{"expression": "sum(amount)", "name": "total"}]},
+        {"population": "per_customer", "metrics": ["avg(total)"], "filter": ["total > 100"]},
     ]
-    call = {"query": "monthly_revenue", "refine": {"dimensions": ["region"], "filters": ["region = 'EU'"]}}
+    call = {"query": "monthly_revenue", "refine": {"dimensions": ["region"], "filter": ["region = 'EU'"]}}
     assert mode_b_values(stages) == ["customers.name", "sum(amount)", "avg(total)", "total > 100"]
     assert mode_b_values(call) == ["region", "region = 'EU'"]
 
 
-def test_models_keep_only_measure_formulas() -> None:
-    model = {
+def test_datasets_keep_only_metric_expressions() -> None:
+    dataset = {
         "name": "orders", "sql_table": "orders", "data_source": "db",
         "filters": ["deleted_at IS NULL"],
-        "columns": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "type": "DOUBLE"}],
-        "measures": [{"name": "aov", "formula": "sum(amount) / count(*)"}],
-        "aggregations": [{"name": "wavg", "formula": "SUM({value} * {weight}) / SUM({weight})"}],
-        "source_queries": [{"source_model": "raw", "filters": ["amount > 0"]}],
+        "fields": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "datatype": "DOUBLE"}],
+        "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
+        "aggregations": [{"name": "wavg", "expression": "SUM({value} * {weight}) / SUM({weight})"}],
+        "source_queries": [{"population": "raw", "filter": ["amount > 0"]}],
     }
-    assert mode_b_values(model) == ["sum(amount) / count(*)", "amount > 0"]
+    assert mode_b_values(dataset) == ["sum(amount) / count(*)", "amount > 0"]
 
 
 def test_inline_extension_and_standalone_objects() -> None:
-    query = {"source_model": "orders",
-             "extensions": [{"source_name": "orders", "columns": [{"name": "big", "sql": "amount > 100"}]}],
-             "measures": ["count(*)"]}
+    query = {"population": "orders",
+             "extensions": [{"source_name": "orders", "fields": [{"name": "big", "sql": "amount > 100"}]}],
+             "metrics": ["count(*)"]}
     assert mode_b_values(query) == ["count(*)"]
-    assert mode_b_values({"formula": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]
-    assert mode_b_values({"dimension": "created_at", "granularity": "month", "date_range": "2025"}) == ["created_at"]
-    assert mode_b_values({"name": "wavg", "formula": "SUM({value})", "params": [{"name": "w", "sql": "1"}]}) == []
+    assert mode_b_values({"expression": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]
+    assert mode_b_values({"field": "created_at", "granularity": "month", "date_range": "2025"}) == ["created_at"]
+    assert mode_b_values({"name": "wavg", "expression": "SUM({value})", "params": [{"name": "w", "sql": "1"}]}) == []
     assert mode_b_values({"orders.status": "paid", "orders._count": 3}) == []
 
 
 def test_yaml_fences_and_files() -> None:
-    page = "```yaml\nsource_model: orders\nmeasures:\n  - sum(amount)\nfilters:\n  - amount > 5\n```\n"
+    page = "```yaml\npopulation: orders\nmetrics:\n  - sum(amount)\nfilter:\n  - amount > 5\n```\n"
     assert _texts(page) == ["sum(amount)", "amount > 5"]
-    model = "name: orders\nsql_table: orders\nmeasures:\n  - name: total\n    formula: sum(amount)\n"
-    assert [s.text for s in extract_yaml_file(model, path="m.yaml").snippets] == ["sum(amount)"]
+    dataset = "name: orders\nsql_table: orders\nmetrics:\n  - name: total\n    expression: sum(amount)\n"
+    assert [s.text for s in extract_yaml_file(dataset, path="m.yaml").snippets] == ["sum(amount)"]
 
 
 def test_malformed_block_is_reported_with_its_line() -> None:
-    page = "Intro\n\n```json\n{\"measures\": [\n  \"count(*)\",\n  ...\n]}\n```\n"
+    page = "Intro\n\n```json\n{\"metrics\": [\n  \"count(*)\",\n  ...\n]}\n```\n"
     extraction = extract_markdown(page, path="page.md")
     assert [(m.path, m.line) for m in extraction.malformed] == [("page.md", 4)]
     assert extraction.snippets == []
 
 
 def test_snippet_line_points_at_its_value() -> None:
-    page = "# T\n\n```json\n{\n  \"source_model\": \"orders\",\n  \"filters\": [\"amount > 1\"]\n}\n```\n"
+    page = "# T\n\n```json\n{\n  \"population\": \"orders\",\n  \"filter\": [\"amount > 1\"]\n}\n```\n"
     assert [(s.line, s.text) for s in extract_markdown(page, path="p.md").snippets] == [(6, "amount > 1")]
 
 
 def test_repeated_and_overlapping_values_get_their_own_lines() -> None:
     page = (
         "```json\n"
-        '{"source_model": "orders",\n'
+        '{"population": "orders",\n'
         ' "dimensions": ["status_name"],\n'
-        ' "measures": ["count(*)"],\n'
-        ' "filters": ["status"],\n'
-        ' "order": [{"column": "count(*)"}]}\n'
+        ' "metrics": ["count(*)"],\n'
+        ' "filter": ["status"],\n'
+        ' "order": [{"field": "count(*)"}]}\n'
         "```\n\n"
-        "```yaml\nname: status\nsql_table: t\nmeasures:\n  - name: n\n    formula: status\n```\n"
+        "```yaml\nname: status\nsql_table: t\nmetrics:\n  - name: n\n    expression: status\n```\n"
     )
     assert [(s.line, s.text) for s in extract_markdown(page, path="p.md").snippets] == [
         (3, "status_name"), (4, "count(*)"), (5, "status"), (6, "count(*)"), (14, "status"),
@@ -244,9 +244,9 @@ def test_repeated_and_overlapping_values_get_their_own_lines() -> None:
 
 def test_prose_and_untagged_fences_are_ignored() -> None:
     page = (
-        "Use `sum(amount) / count(*)` or \"measures\": [\"bad((\"] in prose.\n\n"
-        "```\n{\"measures\": [\"bad((\"]}\n```\n\n"
-        "```text\n{\"filters\": [\"bad((\"]}\n```\n"
+        "Use `sum(amount) / count(*)` or \"metrics\": [\"bad((\"] in prose.\n\n"
+        "```\n{\"metrics\": [\"bad((\"]}\n```\n\n"
+        "```text\n{\"filter\": [\"bad((\"]}\n```\n"
     )
     assert _texts(page) == []
 
@@ -254,7 +254,7 @@ def test_prose_and_untagged_fences_are_ignored() -> None:
 def test_skip_marker_drops_a_rejected_example() -> None:
     page = (
         f"Rejected:\n\n{SKIP_MARKER}\n\n"
-        "```json\n{\"filters\": [\"row_number() over (...)\"]}\n```\n\n"
-        "```json\n{\"filters\": [\"amount > 0\"]}\n```\n"
+        "```json\n{\"filter\": [\"row_number() over (...)\"]}\n```\n\n"
+        "```json\n{\"filter\": [\"amount > 0\"]}\n```\n"
     )
     assert _texts(page) == ["amount > 0"]

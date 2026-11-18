@@ -84,7 +84,7 @@ def _single_cell(text: str, *, fmt: str) -> str:
     assert row.startswith("| "), row
     assert row.endswith(" |"), row
     return row[2:-2]
-UIDS = {"source_model": "things", "measures": ["uids"]}
+UIDS = {"population": "things", "metrics": ["uids"]}
 
 
 @pytest.mark.parametrize("wire", WIRES)
@@ -125,7 +125,7 @@ class TestCollectOverUuid:
 class TestCollectOverExactDecimals:
     async def test_mcp_json_keeps_every_digit(self, store: FacadeStore) -> None:
         text = await mcp_text(create_mcp_server(storage=store.storage),
-                              {"source_model": "things", "measures": ["prices"]}, fmt="json")
+                              {"population": "things", "metrics": ["prices"]}, fmt="json")
         assert str(BIG) in text
         assert f'"{BIG}"' not in text
         assert sorted(mcp_rows(text)[0]["things.prices"]) == sorted([BIG, Decimal("0.50")])

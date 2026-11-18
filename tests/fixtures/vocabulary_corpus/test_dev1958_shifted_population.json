@@ -1,0 +1,48 @@
+{
+ "source": "tests/test_dev1958_shifted_population.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
+    "name": "t"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  }
+ ]
+}

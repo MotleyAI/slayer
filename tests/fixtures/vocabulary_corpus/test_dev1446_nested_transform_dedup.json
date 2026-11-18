@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_dev1446_nested_transform_dedup.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  }
+ ]
+}

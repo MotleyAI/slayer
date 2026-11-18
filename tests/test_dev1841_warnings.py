@@ -21,7 +21,7 @@ from slayer.core.errors import (
 
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     assoc_q,
     associated_warnings,
@@ -32,7 +32,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 #: SLayer's own to-many warnings — scope past incidental (e.g. 3.14) warnings.
 _SLAYER_TO_MANY_WARNINGS = (
@@ -53,7 +53,7 @@ class TestBroadcastReason:
         (fanning) hop, so its reason must not say 'unreachable'."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], measures=[CM], to_many_handling="broadcast"))
+            dimensions=["status"], metrics=[CM], to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         reason = " ".join(d.reason for d in w.dimensions).lower()
         assert "unreachable" not in reason
@@ -68,9 +68,9 @@ class TestDiceSliceHint:
         """Scenario: broadcast warning carries the dice–slice hint — present
         whether or not the query contains a filter, naming associate mode."""
         _, engine = exec_backend
-        kw = {"dimensions": ["status"], "measures": [CM], "to_many_handling": "broadcast"}
+        kw = {"dimensions": ["status"], "metrics": [CM], "to_many_handling": "broadcast"}
         if filters:
-            kw["filters"] = filters
+            kw["filter"] = filters
         resp = await engine.execute(q(**kw))
         (w,) = broadcast_warnings(resp)
         hint = getattr(w, "hint", None)
@@ -87,9 +87,9 @@ class TestAssociatedWarning:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(
-                assoc_q(dimensions=["status"], measures=[CM]))
+                assoc_q(dimensions=["status"], metrics=[CM]))
         (w,) = associated_warnings(resp)
-        assert "cm" in w.measure or "spend" in w.measure
+        assert "cm" in w.metric or "spend" in w.metric
         assert "status" in " ".join(getattr(w, "dimensions", []) or []) \
             or "status" in w.human_message()
         assert caught, "the associated event must also surface as a Python warning"
@@ -100,8 +100,8 @@ class TestAssociatedWarning:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=status)", name="cm")]))
+            metrics=[DatasetMetric(
+                expression="sum(customers.spend, partition_by=status)", name="cm")]))
         assert associated_warnings(resp) == []
         by = status_key(resp)
         for status, spend in ASSOC_SPEND_BY_STATUS.items():
@@ -118,8 +118,8 @@ class TestPushedFilterInformational:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(SlayerQuery(
-                source_model="orders", dimensions=["customers.tier"],
-                measures=[CM], filters=["channel = 'app'"],
+                population="orders", dimensions=["customers.tier"],
+                metrics=[CM], filter=["channel = 'app'"],
                 to_many_handling=mode))
         (info,) = pushed_filter_infos(resp)
         assert "channel" in info.human_message() or "channel" in str(

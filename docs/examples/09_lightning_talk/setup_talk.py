@@ -3,10 +3,10 @@
 Like ``docs/examples/jaffle_data/setup_jaffle.py``, but with an isolated
 ``YAMLStorage`` rooted next to the notebook so ``save_memory`` calls in
 the talk don't bleed into the other example notebooks. The Jaffle Shop
-DuckDB itself is shared across notebooks — only the SLayer model /
+DuckDB itself is shared across notebooks — only the SLayer dataset /
 memory store is local.
 
-Returns ``(engine, storage, client, models)``. Idempotent: re-runs reuse
+Returns ``(engine, storage, client, datasets)``. Idempotent: re-runs reuse
 the existing DuckDB file and YAML store. Pre-deletes the two stable
 memory ids the notebook saves so partial prior runs cannot leave stale
 state behind.
@@ -18,7 +18,7 @@ from typing import List, Tuple
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import MemoryNotFoundError
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.demo.jaffle_shop import ensure_demo_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -46,24 +46,24 @@ def _pre_clean_memories(client: SlayerClient) -> None:
 
 def ensure_lightning_talk_demo(
     years: int = 3,
-) -> Tuple[SlayerQueryEngine, YAMLStorage, SlayerClient, List[SlayerModel]]:
+) -> Tuple[SlayerQueryEngine, YAMLStorage, SlayerClient, List[SlayerDataset]]:
     """Ensure the isolated lightning-talk YAML store is populated and return
-    a ready-to-use ``(engine, storage, client, models)`` 4-tuple.
+    a ready-to-use ``(engine, storage, client, datasets)`` 4-tuple.
 
     - DuckDB lives at ``docs/examples/jaffle_data/demo/jaffle_shop.duckdb``
       (shared with the other example notebooks).
-    - Models live at ``docs/examples/09_lightning_talk/slayer_models/``
+    - Datasets live at ``docs/examples/09_lightning_talk/slayer_models/``
       (isolated; ``save_memory`` calls only affect this dir).
     - Both stable memory ids are pre-deleted (best-effort) so re-running
       the notebook is idempotent after partial prior runs.
     """
     storage = YAMLStorage(base_dir=LIGHTNING_MODELS_DIR)
 
-    _ds, models, _db_built = ensure_demo_datasource(
+    _ds, datasets, _db_built = ensure_demo_datasource(
         storage=storage,
         storage_path=_JAFFLE_DATA_DIR,
         years=years,
-        ingest_models=True,
+        ingest_datasets=True,
         assume_yes=True,
     )
 
@@ -71,4 +71,4 @@ def ensure_lightning_talk_demo(
     client = SlayerClient(storage=storage)
     _pre_clean_memories(client)
 
-    return engine, storage, client, models
+    return engine, storage, client, datasets

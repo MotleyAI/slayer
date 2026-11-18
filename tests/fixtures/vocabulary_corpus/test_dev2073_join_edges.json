@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_dev2073_join_edges.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "addresses",
+    "join_pairs": [
+     [
+      "legacy_addr",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "addresses",
+    "join_pairs": [
+     [
+      "legacy_addr",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 60,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 65,
+   "reason": "unclassifiable"
+  }
+ ]
+}

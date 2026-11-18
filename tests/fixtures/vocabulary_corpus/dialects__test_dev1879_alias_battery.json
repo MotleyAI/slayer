@@ -1,0 +1,45 @@
+{
+ "source": "tests/dialects/test_dev1879_alias_battery.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(logo_churn) / sum(logo_bop)"
+   },
+   "new": {
+    "expression": "sum(logo_churn) / sum(logo_bop)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(cmrr_eop), -1, 'year')"
+   },
+   "new": {
+    "expression": "time_shift(sum(cmrr_eop), -1, 'year')"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 137,
+   "reason": "not fully literal"
+  }
+ ]
+}

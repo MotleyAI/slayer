@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev1966_localize_stages.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 40,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 48,
+   "reason": "unclassifiable"
+  }
+ ]
+}

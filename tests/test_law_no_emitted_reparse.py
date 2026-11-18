@@ -187,7 +187,7 @@ class TestTargets:
 
     def test_every_public_engine_method_is_an_execution(self) -> None:
         names = law.entry_points()
-        assert {"execute", "evict", "refresh", "detect_join_cardinality", "save_model"} <= set(names)
+        assert {"execute", "evict", "refresh", "detect_relationship_cardinality", "save_dataset"} <= set(names)
         for name in names:
             assert getattr(inspect.getattr_static(SlayerQueryEngine, name), law.GUARD_MARK, None) == "entry", name
 
@@ -267,9 +267,9 @@ async def _every_operation(engine: SlayerQueryEngine) -> None:
     await engine.execute(SHAPES["query_backed"])
     assert await engine.get_result_column_types("orders")
     assert await engine.get_result_column_types("spend")
-    await engine.detect_join_cardinality(data_source="test", model="customers")
-    await engine.create_model_from_query(
-        {"source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"]}, name="by_status",
+    await engine.detect_relationship_cardinality(data_source="test", dataset="customers")
+    await engine.create_dataset_from_query(
+        {"population": "orders", "dimensions": ["status"], "metrics": ["sum(amount)"]}, name="by_status",
     )
 
 

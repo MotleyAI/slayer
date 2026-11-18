@@ -1,0 +1,106 @@
+{
+ "source": "tests/test_heal_date_parts.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "weekday",
+    "formula": "MAX({value})"
+   },
+   "new": {
+    "name": "weekday",
+    "expression": "MAX({value})"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "weekday(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "weekday(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "isodow(created_at, 1) = 1"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "isodow(created_at, 1) = 1"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "extract(epoch from created_at) > 0"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "extract(epoch from created_at) > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "status == 'extract(day from x)'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "status == 'extract(day from x)'"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 203,
+   "reason": "not fully literal"
+  }
+ ]
+}

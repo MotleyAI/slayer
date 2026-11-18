@@ -29,7 +29,7 @@ from slayer.sql.scope_check import (
 )
 
 from tests._dev1832_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     gen,
     make_exec_engine,
     month_td,
@@ -111,8 +111,8 @@ class TestDualPhaseEmissionOrder:
     def _dual_q(self):
         return monthly_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=REAGG_STANDALONE, name="a"),
-                      ModelMeasure(formula=HANDWRITTEN_MIN, name="b")],
+            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
+                      DatasetMetric(expression=HANDWRITTEN_MIN, name="b")],
             time_dimensions=month_td())
 
     @pytest.mark.parametrize("dialect", DIALECTS)
@@ -132,10 +132,10 @@ class TestDualPhaseEmissionOrder:
         # distinct re-keyed edges, not one global position).
         sql = await gen(monthly_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=REAGG_STANDALONE, name="a"),
-                      ModelMeasure(formula=HANDWRITTEN_MIN, name="b"),
-                      ModelMeasure(formula=REAGG_MAX_STANDALONE, name="c"),
-                      ModelMeasure(formula=HANDWRITTEN_MAX, name="d")],
+            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
+                      DatasetMetric(expression=HANDWRITTEN_MIN, name="b"),
+                      DatasetMetric(expression=REAGG_MAX_STANDALONE, name="c"),
+                      DatasetMetric(expression=HANDWRITTEN_MAX, name="d")],
             time_dimensions=month_td()), dialect="duckdb")
         ctes = _cm_ctes_in_order(sql)
         assert len(ctes) == 4, ctes
@@ -154,9 +154,9 @@ class TestDualPhaseEmissionOrder:
         _, engine = exec_backend
         query = monthly_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=REAGG_STANDALONE, name="a"),
-                      ModelMeasure(formula=HANDWRITTEN_MIN, name="b"),
-                      ModelMeasure(formula="cumsum(sum(amount))", name="c")],
+            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
+                      DatasetMetric(expression=HANDWRITTEN_MIN, name="b"),
+                      DatasetMetric(expression="cumsum(sum(amount))", name="c")],
             time_dimensions=month_td())
         resp = await engine.execute(query)
         assert resp.data

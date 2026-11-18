@@ -1,0 +1,959 @@
+{
+ "source": "tests/test_projection_trim.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(expensenet)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(expensenet)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   },
+   "new": {
+    "expression": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(expensenet) + avg(benchmarkexp)",
+    "name": "combined_avg"
+   },
+   "new": {
+    "expression": "avg(expensenet) + avg(benchmarkexp)",
+    "name": "combined_avg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "z_total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "z_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "a_count"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "a_count"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "rows"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "rows"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(revenue) > 0)",
+    "name": "streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(revenue) > 0)",
+    "name": "streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(expensenet) + avg(benchmarkexp)",
+    "name": "combined_avg"
+   },
+   "new": {
+    "expression": "avg(expensenet) + avg(benchmarkexp)",
+    "name": "combined_avg"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   },
+   "new": {
+    "expression": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "rows"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "rows"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), direction='desc') + 1",
+    "name": "rank_plus_one"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), direction='desc') + 1",
+    "name": "rank_plus_one"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), direction='desc')",
+    "name": "rev_rank"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), direction='desc')",
+    "name": "rev_rank"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(rev_rank)",
+    "name": "top_rank"
+   },
+   "new": {
+    "expression": "max(rev_rank)",
+    "name": "top_rank"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   },
+   "new": {
+    "expression": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   },
+   "new": {
+    "expression": "rank(sum(expensenet), direction='desc')",
+    "name": "expense_rank"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), direction='desc')",
+    "name": "r"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), direction='desc')",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(r)",
+    "name": "top_r"
+   },
+   "new": {
+    "expression": "max(r)",
+    "name": "top_r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(quantity)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(quantity)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / count(*)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / count(*)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "cum"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "cum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(quantity)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(quantity)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(expensenet) + avg(benchmarkexp)",
+    "name": "combined_avg"
+   },
+   "new": {
+    "expression": "avg(expensenet) + avg(benchmarkexp)",
+    "name": "combined_avg"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(expensenet)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(expensenet)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(revenue), direction='desc')",
+    "name": "r"
+   },
+   "new": {
+    "expression": "rank(sum(revenue), direction='desc')",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(rank(sum(revenue), direction='desc'), direction='desc')",
+    "name": "r2"
+   },
+   "new": {
+    "expression": "rank(rank(sum(revenue), direction='desc'), direction='desc')",
+    "name": "r2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(quantity)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(quantity)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "revenue1"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "revenue1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "revenue2"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "revenue2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "other"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "other"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.revenue)",
+    "name": "cust_rev"
+   },
+   "new": {
+    "expression": "sum(customers.revenue)",
+    "name": "cust_rev"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 198,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 276,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 333,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 335,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 341,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 374,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 399,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 403,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 479,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 503,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 532,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 534,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 571,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 590,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 607,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 609,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 631,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 646,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 661,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 663,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 687,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 718,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 724,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 756,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 790,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 820,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 826,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 856,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 862,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 880,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 894,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 896,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 915,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 933,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 936,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 968,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1002,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1023,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1048,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1050,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1283,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1313,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1363,
+   "reason": "not fully literal"
+  }
+ ]
+}

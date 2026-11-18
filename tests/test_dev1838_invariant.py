@@ -8,33 +8,43 @@ in the same commit as the checker."""
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import pytest
 
+from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
 from tests._dev1838_fixtures import (
     BAND,
-    ColumnRef,
-    ModelMeasure,
+    FieldRef,
+    DatasetMetric,
     OrderItem,
-    dev1838_models,
+    dev1838_datasets,
     month_td,
     q,
 )
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = DatasetMetric(expression="sum(amount)", name="m")
+
+
+class _LegacyCrossModelPlan(Protocol):
+    cte_root_model: str | None
+    target_model: str
+    aggregate_slot_id: str
+    rerooted_plan: PlannedQuery | None
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1838_models()
+    models = dev1838_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
-def _walk_cmas(planned, out) -> None:
+def _walk_cmas(planned: PlannedQuery, out: list[_LegacyCrossModelPlan]) -> None:
     # getattr-guarded: task 2.5 deleted the CMA field, so the sweep
     # degenerates to "no cross-model aggregate plans at all" and stays green.
     for plan in getattr(planned, "cross_model_aggregate_plans", None) or ():
@@ -46,24 +56,24 @@ def _walk_cmas(planned, out) -> None:
 
 
 SHAPES = {
-    "cross_model_sum": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="sum(customers.spend)", name="cm")]),
-    "cross_model_last": q(dimensions=["status"], measures=[
-        ModelMeasure(formula="last(customers.spend)", name="sl")],
+    "cross_model_sum": q(dimensions=["status"], metrics=[
+        M, DatasetMetric(expression="sum(customers.spend)", name="cm")]),
+    "cross_model_last": q(dimensions=["status"], metrics=[
+        DatasetMetric(expression="last(customers.spend)", name="sl")],
         to_many_handling="broadcast"),
-    "filtered_local": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="sum(gold_amount)", name="g")]),
-    "crossing_arg": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="wscaled_sum(amount)", name="w")]),
-    "host_grain_wrap": q(dimensions=["status"], measures=[M],
+    "filtered_local": q(dimensions=["status"], metrics=[
+        M, DatasetMetric(expression="sum(gold_amount)", name="g")]),
+    "crossing_arg": q(dimensions=["status"], metrics=[
+        M, DatasetMetric(expression="wscaled_sum(amount)", name="w")]),
+    "host_grain_wrap": q(dimensions=["status"], metrics=[M],
                          order=[OrderItem(
-                             column=ColumnRef(name="tier", model="customers"),
+                             field=FieldRef(name="tier", dataset="customers"),
                              direction="asc")]),
     "windowed": q(dimensions=["region"], time_dimensions=month_td(),
-                  measures=[ModelMeasure(formula="sum(amount, window='90d')",
+                  metrics=[DatasetMetric(expression="sum(amount, window='90d')",
                                          name="w")]),
-    "band_cross_model": q(dimensions=["status", BAND], measures=[
-        M, ModelMeasure(formula="sum(customers.spend)", name="cm")]),
+    "band_cross_model": q(dimensions=["status", BAND], metrics=[
+        M, DatasetMetric(expression="sum(customers.spend)", name="cm")]),
 }
 
 
@@ -71,7 +81,7 @@ class TestNoUnrootedCrossModelPlan:
     @pytest.mark.parametrize("shape", sorted(SHAPES))
     def test_every_surviving_plan_is_host_rooted(self, shape: str) -> None:
         planned = plan_query(query=SHAPES[shape], bundle=_bundle())
-        cmas = []
+        cmas: list[_LegacyCrossModelPlan] = []
         _walk_cmas(planned, cmas)
         unrooted = [p for p in cmas if p.cte_root_model is None]
         assert not unrooted, [

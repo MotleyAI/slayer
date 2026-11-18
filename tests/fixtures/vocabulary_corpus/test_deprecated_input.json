@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_deprecated_input.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 62,
+   "reason": "the respelled literal keeps a deprecated form"
+  },
+  {
+   "line": 69,
+   "reason": "the respelled literal keeps a deprecated form"
+  },
+  {
+   "line": 74,
+   "reason": "the respelled literal keeps a deprecated form"
+  },
+  {
+   "line": 90,
+   "reason": "the respelled literal keeps a deprecated form"
+  },
+  {
+   "line": 99,
+   "reason": "the respelled literal keeps a deprecated form"
+  }
+ ]
+}

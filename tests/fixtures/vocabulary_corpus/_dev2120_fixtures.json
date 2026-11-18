@@ -1,0 +1,34 @@
+{
+ "source": "tests/_dev2120_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 679,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 796,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 894,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 895,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 898,
+   "reason": "not fully literal"
+  }
+ ]
+}

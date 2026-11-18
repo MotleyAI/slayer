@@ -1,0 +1,81 @@
+{
+ "source": "tests/test_formula.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "rolling_avg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "rolling_avg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(*)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "count(*)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "revenue_sum",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "revenue_sum",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(revenue, ordered_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(revenue, ordered_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "weighted_avg(price, weight=qty)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "weighted_avg(price, weight=qty)",
+    "direction": "asc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 89,
+   "reason": "not a standalone aggregation: ValidationError"
+  },
+  {
+   "line": 93,
+   "reason": "not a standalone aggregation: ValidationError"
+  }
+ ]
+}

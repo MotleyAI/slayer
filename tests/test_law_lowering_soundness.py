@@ -16,9 +16,9 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
-from tests._dev1739_fixtures import dev1739_models
+from tests._dev1739_fixtures import dev1739_datasets
 from tests._law_harness import (
-    ModelMeasure,
+    DatasetMetric,
     make_law_engine,
     month_key,
     month_td,
@@ -57,8 +57,8 @@ class TestAssocInline:
             kwargs["time_dimensions"] = month_td()
         resp = await engine.execute(q(
             **kwargs,
-            filters=["customers.tier = 'gold'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            filter=["customers.tier = 'gold'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         ))
         month_col = f", {_MONTH_EXPR[dialect]}" if with_month else ""
         oracle = raw_rows(dialect=dialect, db_path=db_path, sql=(
@@ -87,14 +87,14 @@ class TestAssocInline:
 class TestFusionParity:
     @staticmethod
     def _planned():
-        models = dev1739_models()
+        models = dev1739_datasets()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=models[0], referenced_models=list(models[1:]),
+            population=models[0], referenced_datasets=list(models[1:]),
         )
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         return plan_query(query=query, bundle=bundle), bundle
 

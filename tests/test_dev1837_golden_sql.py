@@ -21,7 +21,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from tests._dev1837_fixtures import (
     BAND35,
     BARE_DIM,
-    ModelMeasure,
+    DatasetMetric,
     dev1837_models,
     month_td,
     q,
@@ -42,39 +42,39 @@ def _cases() -> dict:
     return {
         "lift/band_time_shift_plain": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
             ],
         ),
         "lift/band_part_time_shift_cross": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
             ],
         ),
         "lift/band_cumsum": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="cumsum(sum(amount))", name="c"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="cumsum(sum(amount))", name="c"),
             ],
         ),
         "lift/bare_cumsum": q(
             dimensions=["region", {"expression": BARE_DIM, "name": "ct"}],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="cumsum(sum(amount))", name="c"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="cumsum(sum(amount))", name="c"),
             ],
         ),
         "lift/part_time_shift_fixed": q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
             ],
         ),
     }
@@ -84,7 +84,7 @@ async def _generate_one(query, dialect: str):
     models = dev1837_models()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

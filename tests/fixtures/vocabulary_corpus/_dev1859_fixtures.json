@@ -1,0 +1,14 @@
+{
+ "source": "tests/_dev1859_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  }
+ ]
+}

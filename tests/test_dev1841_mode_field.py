@@ -13,7 +13,7 @@ from tests._deprecated_input_helpers import deprecations, recorded
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 

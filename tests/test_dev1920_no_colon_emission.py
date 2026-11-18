@@ -7,14 +7,14 @@ import re
 import pytest
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.syntax import canonical_measure_text, parse_expr
+from slayer.core.syntax import canonical_metric_text, parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.translator import QueryResult, translate
 from slayer.live_schema.broken_dependents import _Dependent, _probe
-from slayer.memories.resolver import _field_entity_tokens, _formula_entity_tokens, extract_entities_from_query
+from slayer.memories.resolver import _field_entity_tokens, _expression_entity_tokens, extract_entities_from_query
 from slayer.memories.service import MemoryService
 from tests._dev1920_fixtures import DS, StoreFactory, make_store  # noqa: F401 — fixture
 
@@ -32,7 +32,7 @@ class TestCanonicalText:
         "percentile(price, p=0.9)", "last(balance, updated_at)", "sum(amount, window='30d')",
     ])
     def test_single_aggregation_renders_as_written(self, text: str) -> None:
-        assert canonical_measure_text(parse_expr(text)) == text
+        assert canonical_metric_text(parse_expr(text)) == text
 
     @pytest.mark.parametrize("text", [
         "sum(amount) / count(*)", "cumsum(sum(amount))", "sum(amount) FILTER (WHERE status = 'paid')",
@@ -41,32 +41,32 @@ class TestCanonicalText:
         "sum(amount::INT) / max(price)",
     ])
     def test_renders_functional_and_round_trips(self, text: str) -> None:
-        rendered = canonical_measure_text(parse_expr(text))
+        rendered = canonical_metric_text(parse_expr(text))
         assert not _has_colon_span(rendered), rendered
         assert parse_expr(rendered) == parse_expr(text)
 
 
 def _catalog() -> FacadeCatalog:
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
-        measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)", type=DataType.DOUBLE)],
-        joins=[ModelJoin.model_validate({
-            "target_model": "customers",
+        metrics=[DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.DOUBLE)],
+        relationships=[DatasetRelationship.model_validate({
+            "to": "customers",
             "join_pairs": [["customer_id", "id"]],
             "cardinality": "many_to_one",
         })],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="region", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="region", datatype=DataType.TEXT)],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
 
 
 def _translated(sql: str, *, catalog: FacadeCatalog | None = None) -> QueryResult:
@@ -76,25 +76,25 @@ def _translated(sql: str, *, catalog: FacadeCatalog | None = None) -> QueryResul
 
 
 def _stores_catalog(*, configured: bool) -> FacadeCatalog:
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="store_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
-        joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]], join_type=JoinType.LEFT)]
+        relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]], join_type=JoinType.LEFT)]
         if configured else [],
     )
-    stores = SlayerModel(
+    stores = SlayerDataset(
         name="stores", data_source="jaffle", sql_table="stores",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="tax_rate", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="tax_rate", datatype=DataType.DOUBLE),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, stores]})
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})
 
 
 def _joined_having(metric: str) -> str:
@@ -110,7 +110,7 @@ def _joined_having(metric: str) -> str:
 class TestFacade:
     def test_catalog_formulas_are_functional(self) -> None:
         tables = [t for schema in _catalog().schemas for t in schema.tables]
-        formulas = [m.measure_formula for t in tables for m in t.metrics]
+        formulas = [m.metric_expression for t in tables for m in t.metrics]
         assert formulas
         assert [f for f in formulas if _has_colon_span(f)] == []
         for formula in formulas:
@@ -118,7 +118,7 @@ class TestFacade:
 
     def test_catalog_joined_metrics(self) -> None:
         [orders] = [t for schema in _catalog().schemas for t in schema.tables if t.name == "orders"]
-        by_name = {m.name: m.measure_formula for m in orders.metrics}
+        by_name = {m.name: m.metric_expression for m in orders.metrics}
         assert by_name["row_count"] == "count(*)"
         assert by_name["revenue_sum"] == "sum(revenue)"
         assert by_name["customers.row_count"] == "count(customers.*)"
@@ -127,9 +127,9 @@ class TestFacade:
     def test_aggregates_and_having(self) -> None:
         result = _translated(
             "SELECT status, COUNT(*), SUM(revenue) FROM orders GROUP BY status HAVING SUM(revenue) > 1000")
-        assert [m.formula for m in result.query.measures or []] == ["count(*)", "sum(revenue)"]
-        assert result.query.filters == ["sum(revenue) > 1000"]
-        assert dict(result.column_name_mapping) == {
+        assert [m.expression for m in result.query.metrics or []] == ["count(*)", "sum(revenue)"]
+        assert result.query.filter == ["sum(revenue) > 1000"]
+        assert dict(result.field_name_mapping) == {
             "orders.status": "status", "orders.row_count": "row_count", "orders.revenue_sum": "revenue_sum"}
 
     @pytest.mark.parametrize(("sql", "formula"), [
@@ -140,7 +140,7 @@ class TestFacade:
         ("SELECT revenue_sum FROM orders", "sum(revenue)"),
     ])
     def test_projected_metric(self, sql: str, formula: str) -> None:
-        assert [m.formula for m in _translated(sql).query.measures or []] == [formula]
+        assert [m.expression for m in _translated(sql).query.metrics or []] == [formula]
 
     @pytest.mark.parametrize(("sql", "filters"), [
         ("SELECT status FROM orders WHERE revenue_sum > 1000", ["sum(revenue) > 1000"]),
@@ -148,12 +148,12 @@ class TestFacade:
         ("SELECT status, COUNT(*) FROM orders GROUP BY status HAVING COUNT(*) >= 5", ["count(*) >= 5"]),
     ])
     def test_metric_filters(self, sql: str, filters: list[str]) -> None:
-        assert _translated(sql).query.filters == filters
+        assert _translated(sql).query.filter == filters
 
     def test_order_by_aggregate(self) -> None:
         result = _translated("SELECT status, SUM(revenue) FROM orders GROUP BY status ORDER BY SUM(revenue) DESC")
-        assert [(o.column.name, o.raw_formula) for o in result.query.order or []] == [("revenue_sum", None)]
-        assert [m.formula for m in result.query.measures or []] == ["sum(revenue)"]
+        assert [(o.field.name, o.raw_expression) for o in result.query.order or []] == [("revenue_sum", None)]
+        assert [m.expression for m in result.query.metrics or []] == ["sum(revenue)"]
 
     @pytest.mark.parametrize("configured", [True, False], ids=["configured-join", "dynamic-join"])
     @pytest.mark.parametrize(("metric", "filter_"), [
@@ -163,13 +163,13 @@ class TestFacade:
     ])
     def test_joined_metric_filter(self, configured: bool, metric: str, filter_: str) -> None:
         result = _translated(_joined_having(metric), catalog=_stores_catalog(configured=configured))
-        assert result.query.filters == [filter_]
+        assert result.query.filter == [filter_]
 
 
 class TestBrokenDependentsProbe:
     def test_filter_dependant_probes_with_a_functional_row_count(self) -> None:
-        probe = _probe(_Dependent(model="orders", kind="filter", name="f"))
-        assert probe == {"source_model": "orders", "measures": ["count(*)"]}
+        probe = _probe(_Dependent(dataset="orders", kind="filter", name="f"))
+        assert probe == {"population": "orders", "metrics": ["count(*)"]}
 
 
 class TestMemoryTokens:
@@ -183,7 +183,7 @@ class TestMemoryTokens:
         ("status", ["status"]),
     ])
     def test_formula_tokens(self, formula: str, tokens: list) -> None:
-        assert list(_formula_entity_tokens(parse_expr(formula))) == tokens
+        assert list(_expression_entity_tokens(parse_expr(formula))) == tokens
 
     def test_filter_tokens_carry_no_colon_text(self) -> None:
         tokens = _field_entity_tokens("filter", "count(*) FILTER (WHERE amount > 0) > 1 AND sum(price) > 2")
@@ -194,8 +194,8 @@ class TestMemoryTokens:
     async def test_query_entities(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         query = SlayerQuery.model_validate({
-            "source_model": "orders", "filters": ["max(price) > 1"],
-            "measures": ["sum(amount) / count(*)", "count(customers.*)", "sum(customers.regions.population)"],
+            "population": "orders", "filter": ["max(price) > 1"],
+            "metrics": ["sum(amount) / count(*)", "count(customers.*)", "sum(customers.regions.population)"],
         })
         resolved = await extract_entities_from_query(query, storage=storage)
         assert resolved.canonical_forms == [
@@ -212,11 +212,11 @@ async def test_recommendation_paths(make_store: StoreFactory) -> None:  # noqa: 
     storage = await make_store()
     engine = SlayerQueryEngine(storage=storage)
     try:
-        rec = await engine.recommend_root_model(
+        rec = await engine.recommend_population(
             ["sum(orders.amount)", "percentile(orders.amount, p=0.9)", "sum(customers.regions.population)"],
             data_source=DS)
     finally:
         engine.close()
-    assert rec.root_model == "orders"
+    assert rec.population == "orders"
     assert [p.path for p in rec.item_paths] == [
         "sum(amount)", "percentile(amount, p=0.9)", "sum(customers.regions.population)"]

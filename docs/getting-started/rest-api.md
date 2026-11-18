@@ -52,7 +52,7 @@ curl -X POST http://localhost:5143/datasources \
   -H "Content-Type: application/json" \
   -d '{"name": "my_pg", "type": "postgres", "host": "localhost", "database": "myapp", "username": "analyst", "password": "secret"}'
 
-# Ingest models
+# Ingest datasets
 curl -X POST http://localhost:5143/ingest \
   -H "Content-Type: application/json" \
   -d '{"datasource": "my_pg"}'
@@ -65,8 +65,8 @@ curl -X POST http://localhost:5143/ingest \
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
-    "source_model": "orders",
-    "measures": ["count(*)"],
+    "population": "orders",
+    "metrics": ["count(*)"],
     "dimensions": ["status"]
   }'
 ```
@@ -92,27 +92,27 @@ Response:
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
-    "source_model": "orders",
-    "measures": ["sum(order_total)"],
-    "time_dimensions": [{"dimension": "ordered_at", "granularity": "month", "date_range": "last 12 months"}]
+    "population": "orders",
+    "metrics": ["sum(order_total)"],
+    "time_dimensions": [{"field": "ordered_at", "granularity": "month", "date_range": "last 12 months"}]
   }'
 
 # Top 5 customers
 curl -X POST http://localhost:5143/query \
   -H "Content-Type: application/json" \
   -d '{
-    "source_model": "orders",
-    "measures": ["sum(order_total)"],
+    "population": "orders",
+    "metrics": ["sum(order_total)"],
     "dimensions": ["customers.name"],
-    "order": [{"column": "sum(order_total)", "direction": "desc"}],
+    "order": [{"field": "sum(order_total)", "direction": "desc"}],
     "limit": 5
   }'
 
-# List models
-curl http://localhost:5143/models
+# List datasets
+curl http://localhost:5143/datasets
 
-# Get model details
-curl http://localhost:5143/models/orders
+# Get dataset details
+curl http://localhost:5143/datasets/orders
 ```
 
 ## Verify it works
@@ -122,11 +122,11 @@ curl http://localhost:5143/models/orders
 curl http://localhost:5143/health
 # {"status": "ok"}
 
-# List models (should return your ingested models)
-curl http://localhost:5143/models
+# List datasets (should return your ingested datasets)
+curl http://localhost:5143/datasets
 ```
 
-If `/models` returns an empty list, restart with `slayer serve --ingest-on-startup` or run `slayer ingest --datasource my_pg`.
+If `/datasets` returns an empty list, restart with `slayer serve --ingest-on-startup` or run `slayer ingest --datasource my_pg`.
 
 ## Search & memories
 
@@ -159,7 +159,7 @@ curl -X POST http://localhost:5143/memories \
 curl -X DELETE http://localhost:5143/memories/kb.orders.refunds
 ```
 
-Each hit in the response carries a `kind` discriminator (`"memory"` for prior notes, `"datasource"` / `"model"` / `"column"` / `"measure"` / `"aggregation"` for entity discovery hits) and a `score`. `cypher_filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges); without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted — anything richer returns HTTP 400. See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [REST API Reference](../reference/rest-api.md#memories-semantic-search).
+Each hit in the response carries a `kind` discriminator (`"memory"` for prior notes, `"datasource"` / `"dataset"` / `"field"` / `"metric"` / `"aggregation"` for entity discovery hits) and a `score`. `cypher_filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Dataset` / `DatasetField` / `Metric` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `RELATIONSHIPS` edges); without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted — anything richer returns HTTP 400. See [Search](../concepts/search.md), [Memories](../concepts/memories.md), and the [REST API Reference](../reference/rest-api.md#memories-semantic-search).
 
 ## Using from other languages
 
@@ -171,8 +171,8 @@ const res = await fetch("http://localhost:5143/query", {
   method: "POST",
   headers: {"Content-Type": "application/json"},
   body: JSON.stringify({
-    "source_model": "orders",
-    "measures": ["count(*)"],
+    "population": "orders",
+    "metrics": ["count(*)"],
     "dimensions": ["status"],
   }),
 });
@@ -181,7 +181,7 @@ const {data} = await res.json();
 
 **Go:**
 ```go
-body := `{"source_model": "orders", "measures": ["count(*)"]}`
+body := `{"population": "orders", "metrics": ["count(*)"]}`
 resp, _ := http.Post("http://localhost:5143/query", "application/json", strings.NewReader(body))
 ```
 

@@ -13,7 +13,7 @@ async def test_query_schema_and_help_list_time_point_forms(tmp_path) -> None:
     defs = tools["query"].inputSchema["$defs"]
     help_time = next(t for t in HELP_TOPICS if t.id == "help.time")
     doc = "\n".join((
-        defs["SlayerQuery"]["properties"]["filters"].get("description") or "",
+        defs["SlayerQuery"]["properties"]["filter"].get("description") or "",
         defs["TimeDimension"]["properties"]["date_range"].get("description") or "",
         help_time.learning,
     ))

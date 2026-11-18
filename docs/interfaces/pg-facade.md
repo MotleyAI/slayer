@@ -34,7 +34,7 @@ Flags:
 ## The `database` selects a datasource
 
 A SLayer datasource maps to a Postgres **database**. The `database` you connect with
-scopes the whole connection to that one datasource; its models appear under the
+scopes the whole connection to that one datasource; its datasets appear under the
 Postgres schema `public`.
 
 ```bash
@@ -49,7 +49,7 @@ psql "host=127.0.0.1 port=5145 dbname=jaffle_shop"
 
 Cross-datasource queries are not supported — one connection sees exactly one datasource.
 
-## View your models from a BI dashboard
+## View your datasets from a BI dashboard
 
 Any tool with a PostgreSQL connector works. End-to-end with the bundled demo and
 [Metabase](https://www.metabase.com/):
@@ -102,9 +102,9 @@ jdbc:postgresql://host.docker.internal:5145/jaffle_shop?user=metabase&password=p
 >    compose network and daemon config, so don't hard-code it).
 
 Metabase introspects the schema (via `INFORMATION_SCHEMA` + `pg_catalog`), lists each
-SLayer model as a table under schema `public`, and lets you build questions/dashboards
+SLayer dataset as a table under schema `public`, and lets you build questions/dashboards
 against them. Project named metrics (`revenue_sum`) or write `SUM(amount)` /
-`COUNT(*)` — both map to SLayer measures.
+`COUNT(*)` — both map to SLayer metrics.
 
 > Phase-1 note: BI tools may issue `pg_catalog` queries beyond the six tables the SQL API
 > implements; if a tool trips on one, that's the set to extend.
@@ -128,8 +128,8 @@ the query surface is identical:
   `SELECT revenue_sum, status FROM orders`.
 * Project **raw SQL aggregates over base columns** — `SUM(amount)`, `AVG(price)`,
   `MIN`/`MAX`, `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)` — which map to the
-  matching metric. (Aggregating over a *saved measure* or a non-column expression is not
-  supported yet; project the saved measure by name instead.)
+  matching metric. (Aggregating over a *saved metric* or a non-column expression is not
+  supported yet; project the saved metric by name instead.)
 * Wrap a time dimension in a grain: `date_trunc('month', ordered_at)`; `month(ordered_at)`, `EXTRACT(MONTH FROM ordered_at)` and `date_part('month', ordered_at)` project the month of year.
 * `WHERE`, `GROUP BY`, `ORDER BY`, `LIMIT` / `OFFSET`.
 * A projection with no aggregate, metric, `GROUP BY`, `HAVING` or `DISTINCT` (and no metric in `WHERE`)
@@ -138,7 +138,7 @@ the query surface is identical:
   text; grouping on a list groups by its element set (`["go","sql"]` for `['sql', 'go', 'sql']`), and ordering by one is refused.
 * Other values are encoded as on every SLayer output: a UUID as its string, bytes as `\x` followed by
   lowercase hex, an interval as an ISO-8601 duration (`P1DT2H`), and a decimal with its exact digits.
-* `SELECT *` is rejected on models (project named columns), but allowed on
+* `SELECT *` is rejected on datasets (project named columns), but allowed on
   `INFORMATION_SCHEMA.*` and `pg_catalog.*`.
 
 Postgres-specific predicates that aren't valid SLayer DSL (`ILIKE`, `::cast`, regex `~`,
@@ -305,7 +305,7 @@ unavailable.
 
 Known limitations (each a strict `xfail` — the day the gap is fixed, the test XPASSes and
 CI flips red, prompting a lift): LEFT JOIN-with-subquery projection, CAST(col AS type)
-projection, catalog fingerprint measure leak, MBQL aggregation-ordinal refs in HAVING /
+projection, catalog fingerprint metric leak, MBQL aggregation-ordinal refs in HAVING /
 ORDER BY and per-connection `SET` state.
 
 Metabase week breakouts emit a Sunday-anchored week wrapper

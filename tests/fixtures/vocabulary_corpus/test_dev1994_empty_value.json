@@ -1,0 +1,77 @@
+{
+ "source": "tests/test_dev1994_empty_value.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "count",
+    "formula": "COUNT({value})"
+   },
+   "new": {
+    "name": "count",
+    "expression": "COUNT({value})"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(orders.id)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "count(orders.id)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "name",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "name",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(orders.id)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "count(orders.id)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "name",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "name",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_count",
+    "formula": "COUNT({value})"
+   },
+   "new": {
+    "name": "my_count",
+    "expression": "COUNT({value})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 46,
+   "reason": "unclassifiable"
+  }
+ ]
+}

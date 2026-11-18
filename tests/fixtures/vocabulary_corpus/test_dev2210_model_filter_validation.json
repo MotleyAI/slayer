@@ -1,0 +1,118 @@
+{
+ "source": "tests/test_dev2210_model_filter_validation.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "bad_done",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "bad_done",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns_bad",
+    "dimensions": [
+     "id",
+     "bad_done.status"
+    ]
+   },
+   "new": {
+    "population": "returns_bad",
+    "dimensions": [
+     "id",
+     "bad_done.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns_bad_filtered",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "returns_bad_filtered",
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "returns_bad_derived",
+    "dimensions": [
+     "id",
+     "bad_status"
+    ]
+   },
+   "new": {
+    "population": "returns_bad_derived",
+    "dimensions": [
+     "id",
+     "bad_status"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 17,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 33,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  }
+ ]
+}

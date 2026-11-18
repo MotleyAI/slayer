@@ -1,0 +1,50 @@
+{
+ "source": "tests/integration/test_integration_bigquery.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stale",
+    "dimensions": [
+     "skills"
+    ]
+   },
+   "new": {
+    "population": "stale",
+    "dimensions": [
+     "skills"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 415,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 421,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 438,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 439,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 439,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  }
+ ]
+}

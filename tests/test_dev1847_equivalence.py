@@ -11,38 +11,39 @@ import pytest
 
 from tests._dev1847_fixtures import (
     INNER_CR,
-    ColumnRef,
-    ModelMeasure,
-    SlayerModel,
+    FieldRef,
+    DatasetMetric,
+    SlayerDataset,
     SlayerQuery,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     make_exec_engine,
     reagg,
     sales_q,
 )
+from slayer.engine.query_engine import SlayerResponse
 
 OUTER_AGGS = ["avg", "count", "min", "max", "median"]
 
 
-def _sq_model(outer: str) -> SlayerModel:
+def _sq_dataset(outer: str) -> SlayerDataset:
     """Two-stage encoding of ``<outer>(sum(amount, partition_by=[city,region]))``
     grouped by region."""
-    return SlayerModel(
+    return SlayerDataset(
         name=f"sq_{outer}", data_source="test",
         source_queries=[
             SlayerQuery(
-                name=f"s1_{outer}", source_model="sales",
-                dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
-                measures=[ModelMeasure(formula="sum(amount)", name="ct")]),
+                name=f"s1_{outer}", population="sales",
+                dimensions=[FieldRef(name="region"), FieldRef(name="city")],
+                metrics=[DatasetMetric(expression="sum(amount)", name="ct")]),
             SlayerQuery(
-                source_model=f"s1_{outer}",
-                dimensions=[ColumnRef(name="region")],
-                measures=[ModelMeasure(formula=f"{outer}(ct)", name="v")]),
+                population=f"s1_{outer}",
+                dimensions=[FieldRef(name="region")],
+                metrics=[DatasetMetric(expression=f"{outer}(ct)", name="v")]),
         ])
 
 
-def _by_region_suffix(resp, suffix):
+def _by_region_suffix(resp: SlayerResponse, suffix):
     rcol = next(c for c in resp.columns if c.endswith(".region"))
     vcol = next(c for c in resp.columns if c.endswith(suffix))
     return {row[rcol]: row[vcol] for row in resp.data}
@@ -50,8 +51,8 @@ def _by_region_suffix(resp, suffix):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_engine(request):
-    models = dev1847_models() + [_sq_model(o) for o in OUTER_AGGS]
-    async for engine in make_exec_engine(request, models=models):
+    models = dev1847_datasets() + [_sq_dataset(o) for o in OUTER_AGGS]
+    async for engine in make_exec_engine(request, datasets=models):
         yield engine
 
 
@@ -61,7 +62,7 @@ class TestEquivalenceVsSourceQueries:
         """Each re-aggregation returns the manual multi-stage encoding's values,
         region by region."""
         reagg_resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg(outer, INNER_CR, name="v")]))
+            dimensions=["region"], metrics=[reagg(outer, INNER_CR, name="v")]))
         manual_resp = await exec_engine.execute(f"sq_{outer}")
         got = _by_region_suffix(reagg_resp, ".v")
         want = _by_region_suffix(manual_resp, ".v")
@@ -80,5 +81,5 @@ class TestNoPlaceholderLeak:
         """The emitted SQL never leaks a ``__regroup__`` placeholder column."""
         sql = await gen(sales_q(
             dimensions=["region"],
-            measures=[reagg("avg", INNER_CR, name="acr")]), dialect=dialect)
+            metrics=[reagg("avg", INNER_CR, name="acr")]), dialect=dialect)
         assert "__regroup__" not in sql, sql

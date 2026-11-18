@@ -14,7 +14,7 @@ from sqlglot import exp
 
 from slayer.core.errors import SlayerError
 from slayer.core.keys import AggregateKey
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
@@ -41,16 +41,16 @@ from tests._dev1901_fixtures import (
     WSUM_FAN,
     bundle1901,
     derive_oracles,
-    dev1901_models,
+    dev1901_datasets,
     make_exec_engine,
     orders_q,
-    window_param_models,
+    window_param_datasets,
 )
 from tests import _dev1954_fixtures
 from tests._dev1954_fixtures import RNAME, WPOP_BY_RNAME, by_key
 from tests._engine_helpers import _engine_generate
 
-TD = [{"dimension": "customers.signup_at", "granularity": "month"}]
+TD = [{"field": "customers.signup_at", "granularity": "month"}]
 CASE_C_Q = CASE_C.replace("spend", "customers.spend")
 
 
@@ -64,29 +64,29 @@ async def engine(request):
         yield e
 
 
-async def _value(engine, formula: str) -> float:
-    resp = await engine.execute(orders_q(measures=[{"formula": formula, "name": "w"}]))
+async def _value(engine, expression: str) -> float:
+    resp = await engine.execute(orders_q(metrics=[{"expression": expression, "name": "w"}]))
     return float(resp.data[0]["orders.w"])
 
 
-async def _by(engine, formula: str, *, dim: str, **kw) -> dict:
+async def _by(engine, expression: str, *, dim: str, **kw) -> dict:
     resp = await engine.execute(orders_q(
-        dimensions=[dim], measures=[{"formula": formula, "name": "w"}], **kw))
+        dimensions=[dim], metrics=[{"expression": expression, "name": "w"}], **kw))
     return {r[f"orders.{dim}"]: float(r["orders.w"]) for r in resp.data}
 
 
-async def _by_month(engine, formula: str) -> dict:
+async def _by_month(engine, expression: str) -> dict:
     resp = await engine.execute(orders_q(
-        time_dimensions=TD, measures=[{"formula": formula, "name": "w"}]))
+        time_dimensions=TD, metrics=[{"expression": expression, "name": "w"}]))
     return {month_key(r["orders.customers.signup_at"]): float(r["orders.w"])
             for r in resp.data if r["orders.customers.signup_at"] is not None}
 
 
-def _home_path(formula: str) -> tuple:
+def _home_path(expression: str) -> tuple:
     elab = elaborate_query(
-        query=orders_q(measures=[{"formula": formula, "name": "m"}]), bundle=bundle1901())
+        query=orders_q(metrics=[{"expression": expression, "name": "m"}]), bundle=bundle1901())
     assert elab.prebound is not None
-    root = elab.prebound.declared_measures[-1].bound.value_key
+    root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
     term = elab.terms[root]
     assert isinstance(term, Aggregate), term
@@ -96,7 +96,7 @@ def _home_path(formula: str) -> tuple:
 class TestDefaultEqualsTwin:
     async def test_one_query_both_spellings(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            measures=["wsum(amount)", "wsum(amount, weight=store_no)"]))
+            metrics=["wsum(amount)", "wsum(amount, weight=store_no)"]))
         row = resp.data[0]
         assert float(row["orders.amount_wsum"]) == pytest.approx(WSUM)
         assert float(row["orders.amount_wsum_weight_store_no"]) == pytest.approx(WSUM)
@@ -145,8 +145,8 @@ class TestDefaultInFilterAndOrder:
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_filter_position(self, engine, agg: str) -> None:
         threshold = (WCS_BY_STATUS["ok"] + WCS_BY_STATUS["new"]) / 2
-        query = orders_q(dimensions=["status"], measures=[{"formula": "sum(amount)", "name": "s"}],
-                         filters=[f"{agg}(amount) > {threshold}"])
+        query = orders_q(dimensions=["status"], metrics=[{"expression": "sum(amount)", "name": "s"}],
+                         filter=[f"{agg}(amount) > {threshold}"])
         resp = await engine.execute(query)
         assert {r["orders.status"]: float(r["orders.s"]) for r in resp.data} \
             == {"ok": AMOUNT_BY_STATUS["ok"]}
@@ -156,8 +156,8 @@ class TestDefaultInFilterAndOrder:
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_order_key(self, engine, agg: str) -> None:
-        query = orders_q(dimensions=["status"], measures=[{"formula": "sum(amount)", "name": "s"}],
-                         order=[{"column": f"{agg}(amount)", "direction": "asc"}])
+        query = orders_q(dimensions=["status"], metrics=[{"expression": "sum(amount)", "name": "s"}],
+                         order=[{"field": f"{agg}(amount)", "direction": "asc"}])
         resp = await engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == sorted(
             WCS_BY_STATUS, key=WCS_BY_STATUS.__getitem__)
@@ -225,26 +225,26 @@ class TestFanningDefaultHomesLikeItsTwin:
 
 class TestFailClosed:
     async def test_local_kwarg_on_a_fanning_path_stays_refused(self) -> None:
-        with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
-            await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_model="regions")
+        with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
+            await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_dataset="regions")
         assert "region_events" in str(ei.value)
 
 
-async def _gen(formula: str, *, source_model: str = "orders") -> str:
-    models = sorted(dev1901_models(), key=lambda m: m.name != source_model)
+async def _gen(expression: str, *, source_dataset: str = "orders") -> str:
+    models = sorted(dev1901_datasets(), key=lambda m: m.name != source_dataset)
     return await _engine_generate(
-        query=SlayerQuery(source_model=source_model,
-                          measures=[ModelMeasure(formula=formula, name="w")]),
-        model=models[0], extra_models=models[1:], dialect="sqlite", validate=False)
+        query=SlayerQuery(population=source_dataset,
+                          metrics=[DatasetMetric(expression=expression, name="w")]),
+        dataset=models[0], extra_datasets=models[1:], dialect="sqlite", validate=False)
 
 
 class TestWindowReservedAtSave:
     @pytest.mark.parametrize("placeholder", [True, False])
     async def test_save_rejects(self, tmp_path, placeholder: bool) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
-        model = window_param_models(placeholder=placeholder)[0]
+        model = window_param_datasets(placeholder=placeholder)[0]
         with pytest.raises(SlayerError, match="(?s)wwin.*trailing|trailing.*wwin"):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -256,9 +256,9 @@ async def engine1954(request):
 class TestDefaultAndTwinOneProducer:
     """``weight`` defaults to ``customers.hr.pop``: default and twin share one producer."""
 
-    QUERY = {"source_model": "orders", "dimensions": ["customers.hr.rname"],
-             "measures": [{"formula": "wpop(amount)", "name": "a"},
-                          {"formula": "wpop(amount, weight=customers.hr.pop)", "name": "b"}]}
+    QUERY = {"population": "orders", "dimensions": ["customers.hr.rname"],
+             "metrics": [{"expression": "wpop(amount)", "name": "a"},
+                          {"expression": "wpop(amount, weight=customers.hr.pop)", "name": "b"}]}
 
     async def test_both_names_one_value(self, engine1954) -> None:
         resp = await engine1954.execute(SlayerQuery.model_validate(self.QUERY))

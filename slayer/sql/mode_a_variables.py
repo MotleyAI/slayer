@@ -1,4 +1,4 @@
-"""Mode-A ``{var}`` binding: each placeholder of a model's raw SQL binds as a literal node, never as spliced text."""
+"""Mode-A ``{var}`` binding: each placeholder of a dataset's raw SQL binds as a literal node, never as spliced text."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 LITERAL_VALUES = "variables supply literal values"
 
 SlotKind = Literal["string", "bare", "in"]
-#: Binds one Mode-A text of a model: ``(text, field) -> bound text``.
+#: Binds one Mode-A text of a dataset: ``(text, field) -> bound text``.
 ModeABinder = Callable[[str, str], str]
 
 
@@ -75,14 +75,14 @@ def _slots(tree: exp.Expr, *, masked: _Masked, field: str) -> Dict[int, _Slot]:
                           for sentinel, i in by_sentinel.items() if sentinel in node.this})
         elif isinstance(node, exp.Column) and node.name in by_sentinel:
             i = by_sentinel[node.name]
-            found[i] = _column_slot(node, name=masked.names[i], field=field)
+            found[i] = _field_slot(node, name=masked.names[i], field=field)
     missing = next((name for i, name in enumerate(masked.names) if i not in found), None)
     if missing is not None:
         raise _refused(field, missing, "an identifier, function, type, comment or other non-literal position")
     return found
 
 
-def _column_slot(node: exp.Column, *, name: str, field: str) -> _Slot:
+def _field_slot(node: exp.Column, *, name: str, field: str) -> _Slot:
     """The slot of a placeholder parsed as a bare column."""
     if node.this.quoted or node.table:
         raise _refused(field, name, "an identifier position")

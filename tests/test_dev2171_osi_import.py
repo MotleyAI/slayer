@@ -15,7 +15,7 @@ from slayer.osi.parser import parse_osi_path
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import ListFn
 from tests._dev2171_fixtures import (
-    MASKED, by_id, column, convert_osi, counts_by, entries, has_column, import_osi, models_of, rows, seed, value,
+    MASKED, by_id, column, convert_osi, counts_by, entries, has_column, import_osi, datasets_of, rows, seed, value,
 )
 from tests._osi_helpers import ds, f, flat, legacy, m, mentions, unconverted, visible, write_yaml
 
@@ -52,16 +52,16 @@ class TestPhysicalReferences:
         fields = [ID, f("status", "state"), f("status_upper", "UPPER(status)")]
         result = convert_osi(documents(kind, [orders(fields)], directory=tmp_path), db=db)
         if kind == "current":
-            assert visible(models_of(result)["orders"]) == {"id", "status", "status_upper"}
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="status_upper") == {
+            assert visible(datasets_of(result)["orders"]) == {"id", "status", "status_upper"}
+        assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status_upper") == {
             "PAID": 2, "OPEN": 1}
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == {
+        assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status") == {
             "open": 1, "paid": 1, "x": 1}
 
     @KINDS
     async def test_self_named_field(self, db: Path, tmp_path: Path, kind: str) -> None:
         result = convert_osi(documents(kind, [orders([ID, f("status", "UPPER(status)")])], directory=tmp_path), db=db)
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == {
+        assert await counts_by(datasets=result.datasets, db=db, dataset="orders", dimension="status") == {
             "PAID": 2, "OPEN": 1}
 
 
@@ -87,7 +87,7 @@ class TestListAggregations:
 
     async def test_count_of_a_list(self, db: Path) -> None:
         result = import_osi(flat([orders(LIST_FIELDS, metrics=[m("tag_cnt", "COUNT(tags)")])]), db=db)
-        assert await value(models=result.models, db=db, model="orders", formula="tag_cnt") == 2
+        assert await value(datasets=result.datasets, db=db, dataset="orders", expression="tag_cnt") == 2
 
 
 class TestArrayFunctions:
@@ -95,29 +95,29 @@ class TestArrayFunctions:
     async def test_membership_in_a_metric(self, db: Path, predicate: str) -> None:
         metric = m("with_b", f"COUNT(*) FILTER (WHERE {predicate})")
         result = import_osi(flat([orders(LIST_FIELDS, metrics=[metric])]), db=db)
-        assert await value(models=result.models, db=db, model="orders", formula="with_b") == 2
+        assert await value(datasets=result.datasets, db=db, dataset="orders", expression="with_b") == 2
 
     @pytest.mark.parametrize("sql", ["ARRAY_CONTAINS(tags, 'a')", "'a' = ANY(tags)"])
     async def test_membership_in_a_field(self, db: Path, sql: str) -> None:
         result = import_osi(flat([orders([*LIST_FIELDS, f("has_a", sql)])]), db=db)
-        assert await by_id(models=result.models, db=db, model="orders", dimension="has_a") == [True, False, None]
+        assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="has_a") == [True, False, None]
 
     @pytest.mark.parametrize("sql", ["CARDINALITY(tags)", "ARRAY_LENGTH(tags)"])
     async def test_length_in_a_field(self, db: Path, sql: str) -> None:
         result = import_osi(flat([orders([*LIST_FIELDS, f("n_tags", sql)])]), db=db)
-        assert await by_id(models=result.models, db=db, model="orders", dimension="n_tags") == [2, 1, None]
+        assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="n_tags") == [2, 1, None]
 
     async def test_distinct_values_collected(self, db: Path) -> None:
         result = import_osi(flat([orders(LIST_FIELDS)], metrics=[m("statuses", "ARRAY_AGG(DISTINCT orders.status)")]),
                             db=db)
-        assert sorted(await value(models=result.models, db=db, model="orders", formula="statuses")) == [
+        assert sorted(await value(datasets=result.datasets, db=db, dataset="orders", expression="statuses")) == [
             "open", "paid"]
 
     async def test_collect_of_no_inputs_is_empty(self, db: Path) -> None:
         result = import_osi(flat([orders(LIST_FIELDS)], metrics=[m("notes", "ARRAY_AGG(DISTINCT orders.note)")]),
                             db=db)
-        out = await rows(models=result.models, db=db, payload={
-            "source_model": "orders", "dimensions": ["id"], "measures": ["notes"], "order": [{"column": "id"}]})
+        out = await rows(datasets=result.datasets, db=db, payload={
+            "population": "orders", "dimensions": ["id"], "metrics": ["notes"], "order": [{"field": "id"}]})
         assert [r["orders.notes"] for r in out] == [["O'Brien\\x"], [], ["plain"]]
 
     @pytest.mark.parametrize(("sql", "expected"), [
@@ -126,20 +126,20 @@ class TestArrayFunctions:
     async def test_null_elements(self, tmp_path: Path, sql: str, expected: list[Any]) -> None:
         db = seed(tmp_path, statements=NULL_ELEMENTS)
         result = import_osi(flat([orders([ID, f("tags"), f("listed", sql)])]), db=db)
-        assert await by_id(models=result.models, db=db, model="orders", dimension="listed") == expected
+        assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="listed") == expected
 
     async def test_nested_list_calls_are_all_mapped(self, tmp_path: Path) -> None:
         db = seed(tmp_path, statements=("CREATE TABLE orders (id INTEGER PRIMARY KEY, tags VARCHAR[])",
                                         "INSERT INTO orders VALUES (1, ['1', NULL]), (2, ['2', 'x']), (3, NULL)"))
         sql = "ARRAY_CONTAINS(tags, CAST(CARDINALITY(tags) AS VARCHAR))"
         result = import_osi(flat([orders([ID, f("tags"), f("holds_length", sql)])]), db=db)
-        assert await by_id(models=result.models, db=db, model="orders", dimension="holds_length") == [
+        assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="holds_length") == [
             True, True, None]
 
     async def test_any_over_a_subquery_stays_sql(self, db: Path) -> None:
         sql = "id = ANY(SELECT id FROM orders WHERE status = 'paid')"
         result = import_osi(flat([orders([*LIST_FIELDS, f("paid_id", sql)])]), db=db)
-        assert await by_id(models=result.models, db=db, model="orders", dimension="paid_id") == [True, True, False]
+        assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="paid_id") == [True, True, False]
 
     def test_array_length_with_a_dimension_is_reported(self, db: Path) -> None:
         result = import_osi(flat([orders([*LIST_FIELDS, f("n_dim", "ARRAY_LENGTH(tags, 1)")])]), db=db)
@@ -167,7 +167,7 @@ class TestArrayFunctions:
                                                               args: tuple[Expression, ...]) -> None:
         dialect = dialect_for_ds_type(target)
         result = import_osi(flat([orders([*LIST_FIELDS, f("listed", sql)])]), db=db, target_dialect=target)
-        stored = column(models_of(result)["orders"], "listed").sql
+        stored = column(datasets_of(result)["orders"], "listed").sql
         assert stored is not None
         expected = dialect.build_list_call(fn, args).sql(dialect=dialect.sqlglot_name)
         assert _unquoted(stored, dialect.sqlglot_name) == _unquoted(expected, dialect.sqlglot_name)
@@ -183,7 +183,7 @@ def _unquoted(sql: str, dialect: str) -> str:
 async def test_quote_and_backslash_in_a_literal(db: Path) -> None:
     metric = m("obrien", "COUNT(*) FILTER (WHERE note = 'O''Brien\\x')")
     result = import_osi(flat([orders(LIST_FIELDS, metrics=[metric])]), db=db)
-    found = models_of(result)["orders"].get_measure("obrien")
+    found = datasets_of(result)["orders"].get_metric("obrien")
     assert found is not None
-    assert "O''Brien\\x" in found.formula
-    assert await value(models=result.models, db=db, model="orders", formula="obrien") == 1
+    assert "O''Brien\\x" in found.expression
+    assert await value(datasets=result.datasets, db=db, dataset="orders", expression="obrien") == 1

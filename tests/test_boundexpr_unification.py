@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import slayer.ir.planned
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey, walk_value_keys
-from slayer.core.models import Column, SlayerModel
+from slayer.core.keys import AggregateKey, FieldKey, walk_value_keys
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.ir.bound import BoundExpr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -34,15 +34,15 @@ from slayer.core.keys import ArithmeticKey
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
     )
 
@@ -50,7 +50,7 @@ def _orders_model() -> SlayerModel:
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders_model(), referenced_models=[],
+        population=_orders_dataset(), referenced_datasets=[],
     )
 
 
@@ -74,7 +74,7 @@ class TestTypeUnification:
 
 class TestValueSlotExpressionPopulated:
     def test_measure_slot_carries_expression(self) -> None:
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         assert len(planned.aggregate_slots) == 1
         slot = planned.aggregate_slots[0]
@@ -85,14 +85,14 @@ class TestValueSlotExpressionPopulated:
 
     def test_dimension_slot_carries_expression(self) -> None:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount)"}],
             "dimensions": ["status"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         row_slot = next(
             s for s in planned.row_slots
-            if isinstance(s.key, ColumnKey) and s.key.leaf == "status"
+            if isinstance(s.key, FieldKey) and s.key.leaf == "status"
         )
         assert row_slot.expression is not None
         assert row_slot.expression.value_key == row_slot.key
@@ -101,15 +101,15 @@ class TestValueSlotExpressionPopulated:
         # Hidden slots (filter dep) also get expression populated so
         # the generator can render them without re-binding.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "filters": ["amount > 0"],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount)"}],
+            "filter": ["amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         # The 'amount' ColumnKey is now a hidden slot dep.
         hidden_slots = [
             s for s in planned.row_slots
-            if isinstance(s.key, ColumnKey) and s.key.leaf == "amount"
+            if isinstance(s.key, FieldKey) and s.key.leaf == "amount"
         ]
         assert len(hidden_slots) == 1
         assert hidden_slots[0].hidden is True
@@ -139,9 +139,9 @@ class TestMaskExpressionPopulated:
         # DEV-1865: every filter conjunct compiles to a hidden slot whose
         # key IS the binder-produced predicate (not just date_range filters).
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "filters": ["amount > 0"],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount)"}],
+            "filter": ["amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         assert len(planned.masks) == 1
@@ -152,9 +152,9 @@ class TestMaskExpressionPopulated:
         # produced. Comparing equality is enough — value_key is frozen,
         # so structural equality implies equivalence.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "filters": ["amount > 0"],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount)"}],
+            "filter": ["amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         key = _sole_mask_key(planned)
@@ -167,9 +167,9 @@ class TestMaskExpressionPopulated:
         # An aggregate-bearing (measure-typed) mask carries the
         # expression too.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
-            "filters": ["sum(amount) > 100"],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount)"}],
+            "filter": ["sum(amount) > 100"],
         })
         planned = plan_query(query=q, bundle=_bundle())
         key = _sole_mask_key(planned)

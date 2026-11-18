@@ -1,0 +1,17 @@
+{
+ "source": "tests/test_dev1900_dimensions.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=customers.regions.bad_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=customers.regions.bad_pop)",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": []
+}

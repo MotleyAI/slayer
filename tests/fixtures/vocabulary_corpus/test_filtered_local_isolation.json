@@ -1,0 +1,803 @@
+{
+ "source": "tests/test_filtered_local_isolation.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "claim_amount_id"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "claim_amount_id"
+     ]
+    ],
+    "join_type": "inner"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "loss_reserve",
+    "join_pairs": [
+     [
+      "id",
+      "claim_amount_id"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "loss_reserve",
+    "join_pairs": [
+     [
+      "id",
+      "claim_amount_id"
+     ]
+    ],
+    "join_type": "inner"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "claim",
+    "join_pairs": [
+     [
+      "claim_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "claim",
+    "join_pairs": [
+     [
+      "claim_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "claim_amount",
+    "measures": [
+     {
+      "formula": "sum(total_amount)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   },
+   "new": {
+    "population": "claim_amount",
+    "metrics": [
+     {
+      "expression": "sum(total_amount)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "claim_amount",
+    "measures": [
+     {
+      "formula": "sum(paid_amount)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   },
+   "new": {
+    "population": "claim_amount",
+    "metrics": [
+     {
+      "expression": "sum(paid_amount)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "claim_amount",
+    "measures": [
+     {
+      "formula": "sum(loss_payment_amt)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   },
+   "new": {
+    "population": "claim_amount",
+    "metrics": [
+     {
+      "expression": "sum(loss_payment_amt)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(eu_amount)"
+     }
+    ],
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(eu_amount)"
+     }
+    ],
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "claim_amount",
+    "measures": [
+     {
+      "formula": "sum(loss_payment.has_flag)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   },
+   "new": {
+    "population": "claim_amount",
+    "metrics": [
+     {
+      "expression": "sum(loss_payment.has_flag)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(customers.premium_rev)"
+     }
+    ],
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(customers.premium_rev)"
+     }
+    ],
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "claim_amount",
+    "measures": [
+     {
+      "formula": "sum(loss_payment_amt)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   },
+   "new": {
+    "population": "claim_amount",
+    "metrics": [
+     {
+      "expression": "sum(loss_payment_amt)"
+     }
+    ],
+    "dimensions": [
+     "claim.claim_number"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "claim_amount_id"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "claim_amount_id"
+     ]
+    ],
+    "join_type": "inner"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "claim_amount",
+    "measures": [
+     {
+      "formula": "sum(loss_payment_amt)"
+     }
+    ],
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "claim_amount",
+    "metrics": [
+     {
+      "expression": "sum(loss_payment_amt)"
+     }
+    ],
+    "dimensions": [
+     "id"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.weight)",
+    "name": "m0"
+   },
+   "new": {
+    "expression": "sum(customers.weight)",
+    "name": "m0"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(region_pay)"
+     },
+     {
+      "formula": "sum(region_pay) + sum(amount)",
+      "name": "combo"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(region_pay)"
+     },
+     {
+      "expression": "sum(region_pay) + sum(amount)",
+      "name": "combo"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(region_pay)"
+     },
+     {
+      "formula": "sum(cust_weight_d)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(region_pay)"
+     },
+     {
+      "expression": "sum(cust_weight_d)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(region_pay)"
+     }
+    ],
+    "filters": [
+     "amount > 50"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(region_pay)"
+     }
+    ],
+    "filter": [
+     "amount > 50"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(region_pay)"
+     }
+    ],
+    "filters": [
+     "customers.weight > 1"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(region_pay)"
+     }
+    ],
+    "filter": [
+     "customers.weight > 1"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 149,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 246,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 255,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 266,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 323,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 325,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 364,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 369,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 389,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 414,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 417,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 418,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 419,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 425,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 429,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 439,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 442,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 443,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 444,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 445,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 448,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 451,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 453,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 458,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 470,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 649,
+   "reason": "not fully literal"
+  }
+ ]
+}

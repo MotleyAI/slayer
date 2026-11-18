@@ -2,7 +2,7 @@
 
 Everything the converter cannot map cleanly is recorded as a
 ``CubeConversionIssue`` rather than silently dropped or raised. The full
-``CubeConversionResult`` (models + report) is returned by the converter and the
+``CubeConversionResult`` (datasets + report) is returned by the converter and the
 report is also written to JSON by the CLI.
 """
 
@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 
 
 class CubeIssueCategory(str, Enum):
@@ -61,7 +61,7 @@ class CubeConversionIssue(BaseModel):
 
 class CubeConversionReport(BaseModel):
     issues: list[CubeConversionIssue] = Field(default_factory=list)
-    model_count: int = 0
+    dataset_count: int = 0
     hidden_count: int = 0
     view_count: int = 0
 
@@ -82,5 +82,5 @@ class CubeConversionReport(BaseModel):
 class CubeConversionResult(BaseModel):
     """Return value of ``CubeToSlayerConverter.convert``."""
 
-    models: list[SlayerModel] = Field(default_factory=list)
+    datasets: list[SlayerDataset] = Field(default_factory=list)
     report: CubeConversionReport = Field(default_factory=CubeConversionReport)

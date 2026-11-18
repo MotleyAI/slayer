@@ -207,7 +207,7 @@ def test_build_engine_recognizes_sentinel_in_connection_string_field() -> None:
         connect_mock.assert_called_once_with(connection_name="prod")
 
 
-def test_build_engine_missing_connector_extra_raises_actionable_error(monkeypatch) -> None:
+def test_build_engine_missing_connector_extra_raises_actionable_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Calling the creator when snowflake.connector isn't installed raises ``MissingDriverError`` with the extra."""
     ds = DatasourceConfig(name="sf", type="snowflake", connection_name="default")
     with patch("slayer.sql.dialects.snowflake.sa.create_engine") as create_engine_mock:

@@ -1,0 +1,244 @@
+{
+ "source": "tests/test_dev1920_colon_refusal.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "amount:sum"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "amount:sum"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "name": "t",
+      "formula": "amount:sum"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "name": "t",
+      "expression": "amount:sum"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "*:count"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "*:count"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "customers.*:count"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "customers.*:count"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "price:percentile(p=0.9)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "price:percentile(p=0.9)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "balance:last(updated_at)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "balance:last(updated_at)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "amount:sum(window='30d')"
+    ],
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "amount:sum(window='30d')"
+    ],
+    "time_dimensions": [
+     "date_trunc('month', created_at)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "amount:sum > 100"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "amount:sum > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     {
+      "name": "d",
+      "expression": "amount:sum(partition_by=region)"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     {
+      "name": "d",
+      "expression": "amount:sum(partition_by=region)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "note = 'a:sum'"
+    ],
+    "measures": [
+     {
+      "name": "total",
+      "formula": "sum(amount::INT)"
+     },
+     {
+      "name": "tagged",
+      "formula": "sum(amount) FILTER (WHERE note = 'x:count')"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "note = 'a:sum'"
+    ],
+    "metrics": [
+     {
+      "name": "total",
+      "expression": "sum(amount::INT)"
+     },
+     {
+      "name": "tagged",
+      "expression": "sum(amount) FILTER (WHERE note = 'x:count')"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "amount:sum"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "amount:sum"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 121,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 124,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 127,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 129,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 131,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 133,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 136,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 139,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 144,
+   "reason": "the respelled literal keeps a deprecated form"
+  },
+  {
+   "line": 166,
+   "reason": "not a standalone query: ValidationError"
+  }
+ ]
+}

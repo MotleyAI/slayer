@@ -17,8 +17,8 @@ import contextlib
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from typing import Any, Optional
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Aggregation, Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -78,82 +78,82 @@ FISCAL_YEAR = {"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}
 DS_FIELDS = {"granularities": [FISCAL_YEAR]}
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test", default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="credit", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="credit", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
 
-def orders_model(
-    *, measures: Sequence[ModelMeasure] = (), aggregations: Sequence[Aggregation] = (),
-) -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(
+    *, metrics: Sequence[DatasetMetric] = (), aggregations: Sequence[Aggregation] = (),
+) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
         ],
-        measures=list(measures),
+        metrics=list(metrics),
         aggregations=list(aggregations),
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(
-                target_model="order_items", join_pairs=[["id", "order_id"]],
-                cardinality=JoinCardinality.ONE_TO_MANY,
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(
+                to="order_items", join_pairs=[["id", "order_id"]],
+                cardinality=RelationshipCardinality.ONE_TO_MANY,
             ),
         ],
     )
 
 
-def order_items_model() -> SlayerModel:
-    return SlayerModel(
+def order_items_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="order_items", sql_table="order_items", data_source="test", default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="product_id", type=DataType.INT),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INT),
+            DatasetField(name="product_id", datatype=DataType.INT),
+            DatasetField(name="price", datatype=DataType.DOUBLE),
+            DatasetField(name="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="products", join_pairs=[["product_id", "id"]])],
+        relationships=[DatasetRelationship(to="products", join_pairs=[["product_id", "id"]])],
     )
 
 
-def products_model() -> SlayerModel:
-    return SlayerModel(
+def products_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="products", sql_table="products", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="category", type=DataType.TEXT),
-            Column(name="list_price", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="category", datatype=DataType.TEXT),
+            DatasetField(name="list_price", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def heal_models(*, orders: Optional[SlayerModel] = None) -> list[SlayerModel]:
-    return [orders or orders_model(), customers_model(), order_items_model(), products_model()]
+def heal_datasets(*, orders: Optional[SlayerDataset] = None) -> list[SlayerDataset]:
+    return [orders or orders_dataset(), customers_dataset(), order_items_dataset(), products_dataset()]
 
 
 @contextlib.asynccontextmanager
 async def heal_engine(
-    backend: str, *, models: Optional[Iterable[SlayerModel]] = None,
+    backend: str, *, datasets: Optional[Iterable[SlayerDataset]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the heal seed, with the ``fiscal_year`` custom granularity declared."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
-        models=list(models) if models is not None else heal_models(), datasource_fields=DS_FIELDS,
+        datasets=list(datasets) if datasets is not None else heal_datasets(), datasource_fields=DS_FIELDS,
     ) as (engine, _):
         yield engine
 

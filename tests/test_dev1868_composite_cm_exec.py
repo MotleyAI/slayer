@@ -10,7 +10,7 @@ import pytest
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BAND,
     SPEND_BY_BAND,
     make_exec_engine,
@@ -50,7 +50,7 @@ class TestCompositeShapes:
     async def test_local_and_cross_model_in_one_expression(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="sum(amount) / sum(customers.spend)",
+            metrics=[DatasetMetric(expression="sum(amount) / sum(customers.spend)",
                                    name="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=RATIO_BY_TIER)
@@ -60,23 +60,23 @@ class TestCompositeShapes:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(
-                formula="round(sum(customers.spend) / sum(amount), 2)", name="r")],
+            metrics=[DatasetMetric(
+                expression="round(sum(customers.spend) / sum(amount), 2)", name="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=ROUND_BY_TIER)
 
     async def test_cross_model_operand_with_literal(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="sum(customers.spend) * 2", name="r")],
+            metrics=[DatasetMetric(expression="sum(customers.spend) * 2", name="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=TIMES2_BY_TIER)
 
     async def test_two_cross_model_operands_same_model(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend) - max(customers.spend)", name="r")],
+            metrics=[DatasetMetric(
+                expression="sum(customers.spend) - max(customers.spend)", name="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=SUM_MINUS_MAX_BY_TIER)
 
@@ -85,8 +85,8 @@ class TestCompositeShapes:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend) / sum(customers.regions.pop)",
+            metrics=[DatasetMetric(
+                expression="sum(customers.spend) / sum(customers.regions.pop)",
                 name="r")],
         ))
         by = rows_by(resp, REGION)
@@ -102,8 +102,8 @@ class TestComputedDimensionCoexistence:
     async def test_band_dimension_with_cross_model_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s"),
-                      ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s"),
+                      DatasetMetric(expression="sum(customers.spend)", name="sp")],
         ))
         by = rows_by(resp, "orders.band")
         for band in ("hi", "lo"):

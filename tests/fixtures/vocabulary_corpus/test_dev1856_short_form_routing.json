@@ -1,0 +1,558 @@
+{
+ "source": "tests/test_dev1856_short_form_routing.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "Target.aov"
+   },
+   "new": {
+    "expression": "Target.aov"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Root",
+    "dimensions": [
+     "tgt_grp"
+    ],
+    "filters": [
+     "Target.aov > 0"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "Root",
+    "dimensions": [
+     "tgt_grp"
+    ],
+    "filter": [
+     "Target.aov > 0"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Root",
+    "dimensions": [
+     "tgt_grp"
+    ],
+    "order": [
+     {
+      "Target.aov": "asc"
+     }
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "Root",
+    "dimensions": [
+     "tgt_grp"
+    ],
+    "order": [
+     {
+      "Target.aov": "asc"
+     }
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(Consumer.amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(Consumer.amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(Consumer.*)",
+    "name": "c"
+   },
+   "new": {
+    "expression": "count(Consumer.*)",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(Subscription.Customer.Consumer.amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(Subscription.Customer.Consumer.amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(Subscription.Customer.Consumer.*)",
+    "name": "c"
+   },
+   "new": {
+    "expression": "count(Subscription.Customer.Consumer.*)",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "dimensions": [
+     "Consumer.email"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "dimensions": [
+     "Consumer.email"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "dimensions": [
+     "Subscription.Customer.Consumer.email"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "dimensions": [
+     "Subscription.Customer.Consumer.email"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "Consumer.aov"
+   },
+   "new": {
+    "expression": "Consumer.aov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "Subscription.Customer.Consumer.aov"
+   },
+   "new": {
+    "expression": "Subscription.Customer.Consumer.aov"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "Consumer.aov"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "Consumer.aov"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "dimensions": [
+     "Consumer.name"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "dimensions": [
+     "Consumer.name"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "qb",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "Consumer.aov",
+      "name": "a"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "Consumer.aov",
+      "name": "a"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "qb",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "Invoice",
+    "dimensions": [
+     "Subscription.Customer.Consumer.name"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "Invoice",
+    "dimensions": [
+     "Subscription.Customer.Consumer.name"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "Consumer.email"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "Consumer.email"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "dimensions": [
+     "Consumer.email"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "dimensions": [
+     "Consumer.email"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 184,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 284,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 292,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 295,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 299,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 330,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 346,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 350,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 360,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 398,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 402,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 426,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 429,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 583,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 584,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 594,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 599,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 714,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 754,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 843,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 847,
+   "reason": "not fully literal"
+  }
+ ]
+}

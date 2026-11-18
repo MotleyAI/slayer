@@ -47,7 +47,7 @@ async def engine() -> AsyncGenerator[SlayerQueryEngine]:
 
 
 def _q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
 def _typed(exc: BaseException) -> UnrecognizedStrictValueError:
@@ -97,7 +97,7 @@ class TestPythonConversion:
 
     @pytest.mark.parametrize("version", [None, 4, 3.9])
     def test_unrecognized_token_is_a_typed_error(self, version: Any) -> None:
-        payload = {"source_model": "orders", "strict": "maybe"}
+        payload = {"population": "orders", "strict": "maybe"}
         if version is not None:
             payload["version"] = version
         with pytest.raises(ValueError) as ei:

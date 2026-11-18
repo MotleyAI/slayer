@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_result_column_types.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 206,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 211,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 212,
+   "reason": "not fully literal"
+  }
+ ]
+}

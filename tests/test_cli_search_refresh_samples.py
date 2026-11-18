@@ -81,29 +81,29 @@ class TestSearchPositionalQuestion:
 class TestDatasourcesRefreshSamples:
     def test_refresh_one_model_text(self, default_shop: str) -> None:
         result = run_cli_in_process(
-            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--model", "orders"],
+            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "orders"],
         )
         assert result.returncode == 0, result.stderr
         assert "Sample-value refresh completed successfully." in result.stdout
-        orders = run_sync(YAMLStorage(base_dir=default_shop).get_model("orders", data_source=SHOP_DS))
+        orders = run_sync(YAMLStorage(base_dir=default_shop).get_dataset("orders", data_source=SHOP_DS))
         assert orders is not None
-        status = orders.get_column("status")
+        status = orders.get_field("status")
         assert status is not None
         assert status.sampled is not None
 
     def test_refresh_json_envelope(self, default_shop: str) -> None:
         result = run_cli_in_process(
-            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--model", "orders", "--format", "json"],
+            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "orders", "--format", "json"],
         )
         assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == {"errors": [], "unresolved_models": []}
+        assert json.loads(result.stdout) == {"errors": [], "unresolved_datasets": []}
 
     def test_unknown_model_listed_and_exits_1(self, default_shop: str) -> None:
         result = run_cli_in_process(
-            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--model", "nope", "--format", "json"],
+            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "nope", "--format", "json"],
         )
         assert result.returncode == 1
-        assert json.loads(result.stdout)["unresolved_models"] == [f"{SHOP_DS}.nope"]
+        assert json.loads(result.stdout)["unresolved_datasets"] == [f"{SHOP_DS}.nope"]
 
     def test_never_seeds_help_memories(self, default_shop: str) -> None:
         result = run_cli_in_process(["datasources", "refresh-samples", "--data-source", SHOP_DS])

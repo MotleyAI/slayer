@@ -1,0 +1,44 @@
+{
+ "source": "tests/test_dev1900_home_path.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum_cust_spend(customers.regions.pop, weight=customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum_cust_spend(customers.regions.pop, weight=customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum_cust_spend(customers.regions.pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum_cust_spend(customers.regions.pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum_cust_spend(pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum_cust_spend(pop)",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  }
+ ]
+}

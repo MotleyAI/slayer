@@ -1,0 +1,26 @@
+{
+ "source": "tests/_cast_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  }
+ ]
+}

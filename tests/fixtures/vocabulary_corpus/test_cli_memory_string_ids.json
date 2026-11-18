@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_cli_memory_string_ids.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  }
+ ]
+}

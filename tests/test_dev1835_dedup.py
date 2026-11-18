@@ -21,7 +21,7 @@ from tests._dev1835_fixtures import (
     COL_WM,
     LAST_BY_ORDERED,
     LAST_BY_SHIPPED,
-    ModelMeasure,
+    DatasetMetric,
     OK_W90,
     REGION_LAST,
     REGION_TOTAL,
@@ -84,9 +84,9 @@ class TestDedupPositive:
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
         )
         resp = await engine.execute(query)
@@ -111,10 +111,10 @@ class TestDedupPositive:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='1y')", name="wb"),
-                ModelMeasure(
-                    formula="sum(amount, window='1y', partition_by=region)",
+            metrics=[
+                DatasetMetric(expression="sum(amount, window='1y')", name="wb"),
+                DatasetMetric(
+                    expression="sum(amount, window='1y', partition_by=region)",
                     name="we",
                 ),
             ],
@@ -131,9 +131,9 @@ class TestDedupPositive:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="last(amount)", name="lb"),
-                ModelMeasure(formula="last(amount, partition_by=region)", name="le"),
+            metrics=[
+                DatasetMetric(expression="last(amount)", name="lb"),
+                DatasetMetric(expression="last(amount, partition_by=region)", name="le"),
             ],
         )
         resp = await engine.execute(query)
@@ -152,9 +152,9 @@ class TestDedupPositive:
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            metrics=[
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
         )
         resp = await engine.execute(query)
@@ -174,9 +174,9 @@ class TestDedupNegative:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='90d')", name="w90"),
-                ModelMeasure(formula="sum(amount, window='45d')", name="w45"),
+            metrics=[
+                DatasetMetric(expression="sum(amount, window='90d')", name="w90"),
+                DatasetMetric(expression="sum(amount, window='45d')", name="w45"),
             ],
         )
         resp = await engine.execute(query)
@@ -191,9 +191,9 @@ class TestDedupNegative:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
-                ModelMeasure(formula="sum(ok_amount, window='90d')", name="wok"),
+            metrics=[
+                DatasetMetric(expression="sum(amount, window='90d')", name="w"),
+                DatasetMetric(expression="sum(ok_amount, window='90d')", name="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -210,9 +210,9 @@ class TestDedupNegative:
         dialect, engine = shipped_backend
         query = q(
             dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="last(amount)", name="lo"),
-                ModelMeasure(formula="last(amount, shipped_at)", name="ls"),
+            metrics=[
+                DatasetMetric(expression="last(amount)", name="lo"),
+                DatasetMetric(expression="last(amount, shipped_at)", name="ls"),
             ],
         )
         resp = await engine.execute(query)

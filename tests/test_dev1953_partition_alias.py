@@ -11,17 +11,17 @@ from typing import Callable, Dict, Optional, Tuple
 import pytest
 
 from slayer.core.errors import PartitionKeyError, UnknownReferenceError
-from slayer.core.keys import AggregateKey, ColumnKey, Grain, TransformKey
-from slayer.core.scope import ModelScope
+from slayer.core.keys import AggregateKey, FieldKey, Grain, TransformKey
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
     SPEND_BAND_EXPR,
-    ModelMeasure,
+    DatasetMetric,
     _SALES_ROWS_WIDE,
-    dev1847_models,
+    dev1847_datasets,
     make_exec_engine,
     rows_by,
     sales_q,
@@ -121,14 +121,14 @@ async def engine(request):
 
 
 def _scope_bundle():
-    models = dev1847_models()
-    return (ModelScope(source_model=models[0]),
-            ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:]))
+    models = dev1847_datasets()
+    return (DatasetScope(population=models[0]),
+            ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:]))
 
 
-def _bind(formula: str, alias_map: Optional[Dict] = None):
+def _bind(expression: str, alias_map: Optional[Dict] = None):
     scope, bundle = _scope_bundle()
-    return bind_expr(parsed=parse_expr(formula), scope=scope, bundle=bundle,
+    return bind_expr(parsed=parse_expr(expression), scope=scope, bundle=bundle,
                      dimension_alias_map=alias_map).value_key
 
 
@@ -151,24 +151,24 @@ class TestOracleSelfCheck:
 class TestBindingSymmetry:
     def test_alias_resolves_identically(self):
         amap = _alias(name="ureg", expr="upper(region)")
-        agg = _bind(formula="sum(amount, partition_by=ureg)", alias_map=amap)
-        rank = _bind(formula=RANK_UREG, alias_map=amap)
+        agg = _bind(expression="sum(amount, partition_by=ureg)", alias_map=amap)
+        rank = _bind(expression=RANK_UREG, alias_map=amap)
         assert isinstance(rank, TransformKey)
         assert isinstance(agg, AggregateKey)
         assert rank.partition_keys == agg.partition_keys == Grain.of([amap["ureg"]])
 
     def test_mixed_list(self):
         amap = _alias(name="ureg", expr="upper(region)")
-        agg = _bind(formula="sum(amount, partition_by=[ureg, product])", alias_map=amap)
-        rank = _bind(formula="rank(sum(amount), partition_by=[ureg, product], direction='desc')", alias_map=amap)
-        want = Grain.of([amap["ureg"], ColumnKey(path=(), leaf="product")])
+        agg = _bind(expression="sum(amount, partition_by=[ureg, product])", alias_map=amap)
+        rank = _bind(expression="rank(sum(amount), partition_by=[ureg, product], direction='desc')", alias_map=amap)
+        want = Grain.of([amap["ureg"], FieldKey(path=(), leaf="product")])
         assert isinstance(rank, TransformKey)
         assert isinstance(agg, AggregateKey)
         assert rank.partition_keys == agg.partition_keys == want
 
     def test_attach_carrying_alias_binds_to_dimension_value(self):
         amap = _alias(name="spend_band", expr=SPEND_BAND_EXPR)
-        rank = _bind(formula=RANK_BAND, alias_map=amap)
+        rank = _bind(expression=RANK_BAND, alias_map=amap)
         assert isinstance(rank, TransformKey)
         assert rank.partition_keys == Grain.of([amap["spend_band"]])
 
@@ -179,7 +179,7 @@ class TestBindingSymmetry:
     def test_aggregate_element_names_the_computed_dimension_remedy(self, formula):
         amap = _alias(name="ureg", expr="upper(region)")
         with pytest.raises(PartitionKeyError, match=r"(?s)'sum\(amount\)'.*computed dimension"):
-            _bind(formula=formula, alias_map=amap)
+            _bind(expression=formula, alias_map=amap)
 
     @pytest.mark.parametrize(argnames="formula", argvalues=[
         "sum(amount, partition_by=upper(region))",
@@ -187,8 +187,8 @@ class TestBindingSymmetry:
     ])
     def test_expression_element_equal_to_an_alias_binds_to_it(self, formula):
         amap = _alias(name="ureg", expr="upper(region)")
-        expression = _bind(formula=formula, alias_map=amap)
-        named = _bind(formula=formula.replace("upper(region)", "ureg"), alias_map=amap)
+        expression = _bind(expression=formula, alias_map=amap)
+        named = _bind(expression=formula.replace("upper(region)", "ureg"), alias_map=amap)
         assert isinstance(expression, (AggregateKey, TransformKey))
         assert isinstance(named, (AggregateKey, TransformKey))
         assert expression.partition_keys == named.partition_keys
@@ -200,26 +200,26 @@ class TestBindingSymmetry:
 class TestExecutedPositions:
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], measures=[ModelMeasure(formula=RANK_UREG, name="r")]))
+            dimensions=[UREG, "city"], metrics=[DatasetMetric(expression=RANK_UREG, name="r")]))
         got = {k: v["sales.r"] for k, v in rows_by(resp, "sales.ureg", "sales.city").items()}
         assert got == MEASURE_RANKS
 
     async def test_aggregation_parameter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG], measures=[ModelMeasure(formula=PARAM_UREG, name="w")]))
+            dimensions=[UREG], metrics=[DatasetMetric(expression=PARAM_UREG, name="w")]))
         got = {k[0]: v["sales.w"] for k, v in rows_by(resp, "sales.ureg").items()}
         approx_map(got=got, want=PARAM_BY_UREG)
 
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], measures=[AMOUNT],
-            filters=[f"{RANK_UREG} <= 1"]))
+            dimensions=[UREG, "city"], metrics=[AMOUNT],
+            filter=[f"{RANK_UREG} <= 1"]))
         assert set(rows_by(resp, "sales.ureg", "sales.city")) == FILTER_RANK1
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], measures=[AMOUNT],
-            order=[{"column": RANK_UREG, "direction": "asc"}]))
+            dimensions=[UREG, "city"], metrics=[AMOUNT],
+            order=[{"field": RANK_UREG, "direction": "asc"}]))
         keys = [(r["sales.ureg"], r["sales.city"]) for r in resp.data]
         pos = {MEASURE_RANKS[k]: [] for k in keys}
         for i, k in enumerate(keys):
@@ -228,13 +228,13 @@ class TestExecutedPositions:
         assert max(pos[1]) < min(pos[2])
 
     async def test_dimension_position_member_key(self, engine):
-        resp = await engine.execute(sales_q(dimensions=[UREG, DIM_R], measures=[AMOUNT]))
+        resp = await engine.execute(sales_q(dimensions=[UREG, DIM_R], metrics=[AMOUNT]))
         got = {k: v["sales.a"] for k, v in rows_by(resp, "sales.ureg", "sales.r").items()}
         approx_map(got=got, want=DIM_CELLS)
 
     async def test_undeclared_name_stays_unknown(self, engine):
         query = sales_q(
-            dimensions=["city"], measures=[ModelMeasure(formula=RANK_UREG, name="r")])
+            dimensions=["city"], metrics=[DatasetMetric(expression=RANK_UREG, name="r")])
         with pytest.raises(UnknownReferenceError, match="ureg"):
             await engine.execute(query)
 
@@ -245,20 +245,20 @@ class TestExecutedPositions:
 class TestAttachCarryingKey:
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], measures=[AMOUNT], filters=[f"{RANK_BAND} <= 1"]))
+            dimensions=[BAND, "city"], metrics=[AMOUNT], filter=[f"{RANK_BAND} <= 1"]))
         got = {k: v["sales.a"] for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
         approx_map(got=got, want=BAND_RANK1)
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], measures=[AMOUNT],
-            order=[{"column": RANK_BAND, "direction": "asc"}]))
+            dimensions=[BAND, "city"], metrics=[AMOUNT],
+            order=[{"field": RANK_BAND, "direction": "asc"}]))
         keys = [(r["sales.spend_band"], r["sales.city"]) for r in resp.data]
         assert set(keys[:2]) == set(BAND_RANK1)
 
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], measures=[ModelMeasure(formula=RANK_BAND, name="r")]))
+            dimensions=[BAND, "city"], metrics=[DatasetMetric(expression=RANK_BAND, name="r")]))
         got = {k: v["sales.r"]
                for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
         assert got == _band_city_ranks()
@@ -267,7 +267,7 @@ class TestAttachCarryingKey:
     async def test_parameter(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[BAND],
-            measures=[ModelMeasure(
-                formula=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
+            metrics=[DatasetMetric(
+                expression=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
         approx_map(got={r["sales.spend_band"]: r["sales.w"] for r in resp.data},
                    want=_param_by_band())

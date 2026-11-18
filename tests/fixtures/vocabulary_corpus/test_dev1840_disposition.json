@@ -1,0 +1,50 @@
+{
+ "source": "tests/test_dev1840_disposition.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(stores.rent)",
+    "name": "rm"
+   },
+   "new": {
+    "expression": "sum(stores.rent)",
+    "name": "rm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(agents.score)",
+    "name": "sm"
+   },
+   "new": {
+    "expression": "sum(agents.score)",
+    "name": "sm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(reviews.stars)",
+    "name": "rv"
+   },
+   "new": {
+    "expression": "sum(reviews.stars)",
+    "name": "rv"
+   }
+  }
+ ],
+ "skipped": []
+}

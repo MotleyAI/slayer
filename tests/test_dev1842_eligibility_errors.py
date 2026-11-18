@@ -25,9 +25,9 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-def _assert_names_saved_measure(message: str) -> None:
+def _assert_names_saved_metric(message: str) -> None:
     low = message.lower()
-    assert "saved measure" in low, message
+    assert "saved metric" in low, message
     assert "aov" in message, message
 
 
@@ -37,54 +37,54 @@ class TestIneligiblePositions:
     async def test_aggregation_suffix_errors(self) -> None:
         """``sum(customers.aov)`` — a saved measure takes no aggregation; the
         message mirrors the bare-name form and points at ``customers.aov``."""
-        query = q(measures=[{"formula": "sum(customers.aov)", "name": "x"}])
+        query = q(metrics=[{"expression": "sum(customers.aov)", "name": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value)
-        _assert_names_saved_measure(message)
+        _assert_names_saved_metric(message)
         assert "takes no aggregation" in message
         assert "customers.aov" in message
 
     async def test_plain_dimension_entry_errors(self) -> None:
         query = q(dimensions=["customers.aov"],
-                  measures=[{"formula": "sum(amount)", "name": "a"}])
+                  metrics=[{"expression": "sum(amount)", "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_unselected_filter_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  measures=[{"formula": "sum(amount)", "name": "a"}],
-                  filters=["customers.aov > 100"])
+                  metrics=[{"expression": "sum(amount)", "name": "a"}],
+                  filter=["customers.aov > 100"])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_order_by_formula_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  measures=[{"formula": "sum(amount)", "name": "a"}],
-                  order=[{"column": "customers.aov", "direction": "desc"}])
+                  metrics=[{"expression": "sum(amount)", "name": "a"}],
+                  order=[{"field": "customers.aov", "direction": "desc"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_partition_by_member_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
-                  measures=[{"formula": "sum(amount, partition_by=customers.aov)",
+                  metrics=[{"expression": "sum(amount, partition_by=customers.aov)",
                              "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_legal_positions_are_named(self) -> None:
         """At least one ineligible-position error must say WHERE the reference is
         legal (measure formulas / computed dimensions)."""
         query = q(dimensions=["customers.aov"],
-                  measures=[{"formula": "sum(amount)", "name": "a"}])
+                  metrics=[{"expression": "sum(amount)", "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         low = str(ei.value).lower()
-        assert "measure formula" in low or "computed dimension" in low, ei.value
+        assert "metric expression" in low or "computed dimension" in low, ei.value
 
 
 class TestRawRowQueries:
@@ -94,20 +94,20 @@ class TestRawRowQueries:
         and names the specific measure (the filter branch quotes the predicate)."""
         query = q(distinct_dimension_values=False,
                   dimensions=["customers.tier"],
-                  filters=["customers.aov > 0"])
+                  filter=["customers.aov > 0"])
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await gen(query)
         message = str(ei.value)
         assert "customers.aov" in message
-        assert "measure" in message.lower()
+        assert "metric" in message.lower()
 
     async def test_raw_row_order_dotted_measure_targeted_error(self) -> None:
         query = q(distinct_dimension_values=False,
                   dimensions=["customers.tier"],
-                  order=[{"column": "customers.aov", "direction": "desc"}])
+                  order=[{"field": "customers.aov", "direction": "desc"}])
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
 
 class TestUnresolvableDottedLeaf:
@@ -115,19 +115,19 @@ class TestUnresolvableDottedLeaf:
         """``customers.zzz`` matches nothing: the error names ``customers`` and
         mentions BOTH namespaces (a real column AND the measure namespace), and
         never suggests an aggregation suffix for a non-column."""
-        query = q(measures=[{"formula": "customers.zzz", "name": "x"}])
+        query = q(metrics=[{"expression": "customers.zzz", "name": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value)
         low = message.lower()
         assert "customers" in message
-        assert "measure" in low, "must mention the saved-measure namespace"
+        assert "metric" in low, "must mention the saved-measure namespace"
         # The column namespace is present too — either the word or a real column.
-        assert "column" in low or "spend" in message or "tier" in message
+        assert "field" in low or "spend" in message or "tier" in message
         assert ":sum" not in message, "must not suggest an aggregation suffix"
 
     async def test_close_measure_name_is_suggested(self) -> None:
-        query = q(measures=[{"formula": "customers.aovv", "name": "x"}])
+        query = q(metrics=[{"expression": "customers.aovv", "name": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value)
@@ -137,7 +137,7 @@ class TestUnresolvableDottedLeaf:
     async def test_close_column_name_is_suggested(self) -> None:
         """A near-miss to a COLUMN suggests it — both namespaces feed the
         suggester, not just measures."""
-        query = q(measures=[{"formula": "customers.tierr", "name": "x"}])
+        query = q(metrics=[{"expression": "customers.tierr", "name": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value)
@@ -154,8 +154,8 @@ class TestSelectedMeasureAddressable:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.aov"}],
-            filters=["customers.aov > 100"]))
+            metrics=[{"expression": "customers.aov"}],
+            filter=["customers.aov > 100"]))
         rows = [r for r in resp.data if r.get("orders.customers.aov") is not None]
         assert rows, "filter removed everything — it did not bind to the aov slot"
         for r in rows:
@@ -165,8 +165,8 @@ class TestSelectedMeasureAddressable:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.aov"}],
-            order=[{"column": "customers.aov", "direction": "desc"}]))
+            metrics=[{"expression": "customers.aov"}],
+            order=[{"field": "customers.aov", "direction": "desc"}]))
         vals = [float(r["orders.customers.aov"]) for r in resp.data
                 if r.get("orders.customers.aov") is not None]
         assert vals == sorted(vals, reverse=True)
@@ -176,8 +176,8 @@ class TestSelectedMeasureAddressable:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.aov", "name": "myaov"}],
-            filters=["myaov > 100"]))
+            metrics=[{"expression": "customers.aov", "name": "myaov"}],
+            filter=["myaov > 100"]))
         rows = [r for r in resp.data if r.get("orders.myaov") is not None]
         assert rows
         for r in rows:

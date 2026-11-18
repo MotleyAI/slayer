@@ -21,11 +21,11 @@ async def engine(request):
 
 
 def _q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "lib", **kw})
+    return SlayerQuery.model_validate({"population": "lib", **kw})
 
 
 def _explicit(unit: str, **kw: Any) -> SlayerQuery:
-    return _q(time_dimensions=[{"dimension": "ts", "granularity": unit}], **kw)
+    return _q(time_dimensions=[{"field": "ts", "granularity": unit}], **kw)
 
 
 class TestParse:
@@ -53,12 +53,12 @@ class TestParse:
             await engine.execute(query)
 
     def test_shadowable(self) -> None:
-        assert Aggregation(name="date_trunc", formula="SUM({value})").name == "date_trunc"
+        assert Aggregation(name="date_trunc", expression="SUM({value})").name == "date_trunc"
 
 
 class TestPositions:
     async def test_row_value_filter(self, engine: SlayerQueryEngine) -> None:
-        trunc = lib_ids(await engine.execute(lib_query(filters=["date_trunc('month', ts) = '2025-03'"])))
+        trunc = lib_ids(await engine.execute(lib_query(filter=["date_trunc('month', ts) = '2025-03'"])))
         assert trunc == {1, 2, 7, 10}
 
     async def test_time_dimension(self, engine: SlayerQueryEngine) -> None:
@@ -70,17 +70,17 @@ class TestPositions:
 
     async def test_order_key(self, engine: SlayerQueryEngine) -> None:
         trunc = await engine.execute(_q(dimensions=["date_trunc('month', ts)"],
-                                        order=[{"column": "date_trunc('month', ts)", "direction": "desc"}]))
-        explicit = await engine.execute(_explicit("month", order=[{"column": "ts", "direction": "desc"}]))
+                                        order=[{"field": "date_trunc('month', ts)", "direction": "desc"}]))
+        explicit = await engine.execute(_explicit("month", order=[{"field": "ts", "direction": "desc"}]))
         assert trunc.sql == explicit.sql
 
     async def test_aggregation_source(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_q(measures=[{"formula": "max(date_trunc('month', ts))", "name": "v"}]))
+        resp = await engine.execute(_q(metrics=[{"expression": "max(date_trunc('month', ts))", "name": "v"}]))
         assert str(resp.data[0]["lib.v"])[:10] == "2025-06-01"
 
     async def test_arithmetic(self, engine: SlayerQueryEngine) -> None:
         values = lib_values(await engine.execute(lib_query("date_diff('day', date_trunc('month', ts), ts)",
-                                                           filters=["id IN (1, 2)"])))
+                                                           filter=["id IN (1, 2)"])))
         assert {k: int(v) for k, v in values.items()} == {1: 4, 2: 30}
 
     async def test_same_sql_as_the_explicit_time_dimension(self) -> None:

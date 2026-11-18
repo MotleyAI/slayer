@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_dev2015_transforms.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  }
+ ]
+}

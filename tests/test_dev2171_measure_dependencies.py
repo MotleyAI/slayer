@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from slayer.core.syntax import measure_dependency_problems
+from slayer.core.syntax import metric_dependency_problems
 
 COLUMNS = frozenset({"amount", "status"})
 
@@ -15,8 +15,8 @@ def _joins(parts: Sequence[str]) -> bool:
     return tuple(parts) == ("customers", "discount")
 
 
-def _problem(formula: str) -> str | None:
-    (problem,) = measure_dependency_problems([("m", formula)], columns=COLUMNS, join_path=_joins)
+def _problem(expression: str) -> str | None:
+    (problem,) = metric_dependency_problems([("m", expression)], fields=COLUMNS, relationship_path=_joins)
     return problem
 
 
@@ -39,11 +39,11 @@ def test_unresolvable_input_names_the_reference(formula: str, name: str) -> None
 
 
 def test_without_columns_aggregation_inputs_are_not_checked() -> None:
-    assert measure_dependency_problems([("m", "sum(missing)")]) == [None]
+    assert metric_dependency_problems([("m", "sum(missing)")]) == [None]
 
 
 def test_a_peer_with_an_unresolvable_input_poisons_its_dependants() -> None:
-    problems = measure_dependency_problems([("a", "sum(missing)"), ("b", "a * 2")], columns=COLUMNS,
-                                           join_path=_joins)
+    problems = metric_dependency_problems([("a", "sum(missing)"), ("b", "a * 2")], fields=COLUMNS,
+                                           relationship_path=_joins)
     assert problems[0] is not None
     assert problems[1] is not None

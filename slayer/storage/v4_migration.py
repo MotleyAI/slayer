@@ -42,7 +42,7 @@ from slayer.storage.sqlite_conn import transaction
 
 
 @register_migration("SlayerModel", 3)
-def _model_v3_to_v4(data: dict) -> dict:
+def _dataset_v3_to_v4(data: dict) -> dict:
     """Reject orphan SlayerModel dicts at the schema-migration boundary.
 
     Query-backed models (``source_queries`` set) are exempt: their
@@ -102,7 +102,7 @@ def _yaml_list_datasource_names(datasources_dir: str) -> list[str]:
 
 def _check_layout_case_collisions(
     *,
-    models_dir: str,
+    datasets_dir: str,
     planned: list[tuple[str, dict, str, str]],
 ) -> None:
     """Refuse the migration when two targets differ only by case (the
@@ -110,8 +110,8 @@ def _check_layout_case_collisions(
     each other and against existing v4 entries, before anything moves."""
     ds_by_key: dict[str, str] = {}
     file_by_key: dict[tuple[str, str], str] = {}
-    for entry in os.listdir(models_dir):
-        entry_path = os.path.join(models_dir, entry)
+    for entry in os.listdir(datasets_dir):
+        entry_path = os.path.join(datasets_dir, entry)
         if not os.path.isdir(entry_path):
             continue
         ds_by_key[entry.casefold()] = entry
@@ -175,7 +175,7 @@ def migrate_yaml_layout(base_dir: str) -> None:
             data["data_source"] = ds
         planned.append((path, data, ds, filename))
 
-    _check_layout_case_collisions(models_dir=models_dir, planned=planned)
+    _check_layout_case_collisions(datasets_dir=models_dir, planned=planned)
 
     # Pass 2: perform the moves.
     for path, data, ds, filename in planned:
@@ -210,7 +210,7 @@ def migrate_yaml_layout(base_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _sqlite_models_has_data_source_column(conn: sqlite3.Connection) -> bool:
+def _sqlite_datasets_has_data_source_field(conn: sqlite3.Connection) -> bool:
     rows = conn.execute("PRAGMA table_info(models)").fetchall()
     return any(r[1] == "data_source" for r in rows)
 
@@ -238,7 +238,7 @@ def migrate_sqlite_schema(db_path: str) -> None:
             # Fresh DB — the regular CREATE in SQLiteStorage._init_db will
             # produce the v4 shape directly.
             return
-        if _sqlite_models_has_data_source_column(conn):
+        if _sqlite_datasets_has_data_source_field(conn):
             return  # Already v4.
 
         rows = conn.execute("SELECT name, data FROM models").fetchall()

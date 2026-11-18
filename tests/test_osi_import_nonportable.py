@@ -11,7 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from slayer.core.enums import JoinType
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.ingest_report import ConversionResult
 from slayer.osi.models import OSIDataset
 from tests._osi_export_helpers import convert_document, make_env
@@ -44,14 +44,14 @@ def _entity(doc: dict[str, Any], level: str) -> dict[str, Any]:
     }[level]
 
 
-def _stored(models: dict[str, SlayerModel], level: str) -> list[Any]:
+def _stored(datasets: dict[str, SlayerDataset], level: str) -> list[Any]:
     """The foreign entries recorded for ``level``'s entity of ``_shop``."""
-    orders = models["orders"]
+    orders = datasets["orders"]
     if level == "document":
         return (orders.meta or {})["osi_semantic_model"]["nonportable_extensions"]
     owner: Any = {
-        "dataset": orders, "field": orders.get_column("amount"), "metric": orders.get_measure("revenue"),
-        "relationship": orders.joins[0] if orders.joins else None,
+        "dataset": orders, "field": orders.get_field("amount"), "metric": orders.get_metric("revenue"),
+        "relationship": orders.relationships[0] if orders.relationships else None,
     }[level]
     assert owner is not None, level
     return (owner.meta or {}).get("osi_nonportable_extensions", [])
@@ -64,7 +64,7 @@ def _legacy_notes(result: ConversionResult) -> list:
 
 def _reports(result: ConversionResult, *, entity: str, vendor: str) -> list:
     return [e for e in result.entries
-            if (entity in (e.model_name, e.metric_name) or entity in e.message) and vendor in e.message]
+            if (entity in (e.dataset_name, e.metric_name) or entity in e.message) and vendor in e.message]
 
 
 # ─────────────────────────── current documents ─────────────────────────────
@@ -160,7 +160,7 @@ async def test_legacy_string_that_is_not_an_object(env, data: str) -> None:
     assert _stored(models, "field") == []
     assert _reports(result, entity="amount", vendor="ACME")
     assert set(models) == {"orders", "customers"}
-    assert models["orders"].get_measure("revenue") is not None
+    assert models["orders"].get_metric("revenue") is not None
 
 
 # ────────────────────────────── invalid data ───────────────────────────────
@@ -192,7 +192,7 @@ async def test_invalid_data_drops_only_its_entry(env, data_yaml: str) -> None:
     models = by_name(result)
     assert _stored(models, "dataset") == [ACME]
     assert _reports(result, entity="orders", vendor="BAD")
-    assert {"id", "customer_id", "amount"} <= {c.name for c in models["orders"].columns}
+    assert {"id", "customer_id", "amount"} <= {c.name for c in models["orders"].fields}
 
 
 _DEEP = 20000
@@ -272,15 +272,15 @@ def test_legacy_fixture_is_a_legacy_export() -> None:
 async def test_slayer_18_export_restores(env) -> None:
     legacy = convert_document(env, _legacy_document())
     current = convert_document(env, _current_twin(_legacy_document()))
-    assert [x.model_dump() for x in legacy.models] == [x.model_dump() for x in current.models]
+    assert [x.model_dump() for x in legacy.datasets] == [x.model_dump() for x in current.datasets]
     assert not _legacy_notes(current)
     [note] = _legacy_notes(legacy)
     assert [e for e in legacy.entries if e is not note] == current.entries
     orders = by_name(legacy)["orders"]
     assert orders.hidden
-    [join] = orders.joins
+    [join] = orders.relationships
     assert (join.name, join.join_type) == ("buyer", JoinType.INNER)
-    aov = orders.get_measure("aov")
+    aov = orders.get_metric("aov")
     assert aov is not None
-    assert aov.formula == "revenue / n"
-    assert orders.get_measure("revenue_growth") is not None
+    assert aov.expression == "revenue / n"
+    assert orders.get_metric("revenue_growth") is not None

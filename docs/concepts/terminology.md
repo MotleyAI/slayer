@@ -4,39 +4,39 @@ Key terms used throughout SLayer documentation and code.
 
 ## Data Structure
 
-**Model** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable columns. Defined as YAML files or auto-generated via ingestion.
+**Dataset** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable fields. Defined as YAML files or auto-generated via ingestion.
 
-**Column** — The unified row-level building block of a model (`SlayerModel.columns`). Each column has a `name`, `sql` expression, and `type` (`TEXT`/`INT`/`DOUBLE`/`BOOLEAN`/`DATE`/`TIMESTAMP`/`UNKNOWN`, or `ARRAY` with an `element_type`). At query time a column can be used as a group-by key (a dimension), as the input to an aggregation (a measure), or both; a list column has rules of its own, see [List columns](queries.md#list-columns). Columns can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal column is already truncated to), `format`, `label`, and `meta`. `ModelMeasure` (named formula) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
+**Field** — The unified row-level building block of a dataset (`SlayerDataset.fields`). Each field has a `name`, `sql` expression, and `datatype` (`TEXT`/`INT`/`DOUBLE`/`BOOLEAN`/`DATE`/`TIMESTAMP`/`UNKNOWN`, or `ARRAY` with an `element_type`). At query time a field can be used as a group-by key (a dimension), as the input to an aggregation (a metric), or both; a list field has rules of its own, see [List fields](queries.md#list-fields). Fields can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal field is already truncated to), `format`, `label`, and `meta`. `DatasetMetric` (named expression) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
 
-**Dimension** — How a column is *used* in a query when it's a GROUP BY key. The column itself isn't a dimension or measure intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the columns to group/filter by.
+**Dimension** — How a field is *used* in a query when it's a GROUP BY key. The field itself isn't a dimension or metric intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the fields to group/filter by.
 
-**Measure (in a query)** — A formula entry in `SlayerQuery.measures`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"formula": "sum(revenue) / count(*)", "name": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
+**Metric (in a query)** — An expression entry in `SlayerQuery.metrics`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"expression": "sum(revenue) / count(*)", "name": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
 
-**Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
+**Metric (named expression)** — A saved expression stored on a dataset (`SlayerDataset.metrics: List[DatasetMetric]`). Shape `{expression, name, label, description}` — same as a query's inline `metrics` entry. Queries reference saved metrics by bare name in any expression context (`{"expression": "aov"}`).
 
-**Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`, `collect`. Custom aggregations can be defined at model level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
+**Aggregation** — How a field is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`, `collect`. Custom aggregations can be defined at dataset level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
 
-**Join** — A LEFT JOIN relationship between two models. Defined by a target model name and join key pairs (from the model's own foreign keys). Each model only stores direct joins — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate model's own joins.
+**Relationship** — A LEFT JOIN edge between two datasets. Defined by a target dataset name (`to`) and join key pairs (from the dataset's own foreign keys). Each dataset only stores direct relationships — multi-hop paths like `customers.regions.name` are resolved at query time by walking each intermediate dataset's own relationships.
 
-**Cross-model measure** — An aggregation over a joined model's column, referenced with a dotted path inside the aggregation (`avg(customers.score)`, or multi-hop: `sum(customers.regions.population)`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-model measures: `cumsum(avg(customers.score))`.
+**Cross-dataset metric** — An aggregation over a joined dataset's field, referenced with a dotted path inside the aggregation (`avg(customers.score)`, or multi-hop: `sum(customers.regions.population)`). Computed as a sub-query to avoid row multiplication. Transforms work on cross-dataset metrics: `cumsum(avg(customers.score))`.
 
-**Query extension** (an `extensions` entry, a `ModelExtension`) — Adds `columns`, `measures` (named formulas) and `joins` to any model a query object reads, visible only in that query object, without modifying the stored model. Used for ad-hoc expression columns, derived buckets, or one-off joins.
+**Query extension** (an `extensions` entry, a `DatasetExtension`) — Adds `metrics` (named expressions) and `relationships` to any dataset a query object reads, visible only in that query object, without modifying the stored dataset. Used for derived buckets or one-off relationships; a per-query field is an expression in the position that uses it.
 
-**Model filter** — A WHERE filter defined on a model, applied wherever the model's rows are read, including as a join target (e.g., `"deleted_at IS NULL"`).
+**Dataset filter** — A WHERE filter defined on a dataset, applied wherever the dataset's rows are read, including as a relationship target (e.g., `"deleted_at IS NULL"`).
 
-**Query-as-model** — Using a query's result as the source for another query, or saving it as a permanent model. Useful for materializing complex aggregations.
+**Query-as-dataset** — Using a query's result as the source for another query, or saving it as a permanent dataset. Useful for materializing complex aggregations.
 
 **Datasource** — A database connection configuration: host, port, credentials, database type. SLayer supports Postgres, MySQL/MariaDB, ClickHouse, SQLite, BigQuery, and Snowflake.
 
 ## Queries
 
-**Measure entry** — A formula entry in `SlayerQuery.measures` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated measures (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
+**Metric entry** — An expression entry in `SlayerQuery.metrics`. Defined by an expression string. Examples: aggregated field reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated metrics (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-expression reference (`{"expression": "aov"}`). Supports an optional `label` for human-readable display. See [Expressions](formulas.md).
 
-**Label** — An optional human-readable display name for a measure entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}`.
+**Label** — An optional human-readable display name for a metric entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"expression": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}`.
 
-**Filter** — A condition that restricts which rows are included. Defined as a formula string: `"status = 'completed'"`, `"amount > 100"`. See [Filters](queries.md#filters).
+**Filter** — A condition that restricts which rows are included. Defined as an expression string: `"status = 'completed'"`, `"amount > 100"`. See [Filters](queries.md#filters).
 
-**Time dimension** — A dimension of type `time` or `date`, used for time-based grouping. When specified in `time_dimensions`, SLayer truncates it to the given granularity (e.g., monthly buckets). The same column can also be used as a regular dimension (without truncation).
+**Time dimension** — A dimension of type `time` or `date`, used for time-based grouping. When specified in `time_dimensions`, SLayer truncates it to the given granularity (e.g., monthly buckets). The same field can also be used as a regular dimension (without truncation).
 
 **Granularity** — The level of time truncation applied to a time dimension, to determine the size of each time bucket (one row's time span) in the result, or as an argument in time related functions. Available granularities: `second`, `minute`, `hour`, `day`, `week`, `week_sunday`, `month`, `quarter`, `year`. (`week` is Monday-anchored; `week_sunday` is Sunday-anchored.)
 
@@ -46,19 +46,19 @@ Key terms used throughout SLayer documentation and code.
 
 **Period** — Refers to either **time bucket** of a single row or **date range** of the whole query. Due to this ambiguity, we tend to avoid using this term.
 
-## Formulas
+## Expressions
 
-**Transform function** — A function applied to a measure, computing values across time buckets or partitions. Examples: `cumsum` (running total), `time_shift`/`change`/`change_pct` (self-join-based), `lag`/`lead` (window-function-based), and the rank family `rank`/`percent_rank`/`dense_rank`/`ntile` (timeless ranking; optional `partition_by=`).
+**Transform function** — A function applied to a metric, computing values across time buckets or partitions. Examples: `cumsum` (running total), `time_shift`/`change`/`change_pct` (self-join-based), `lag`/`lead` (window-function-based), and the rank family `rank`/`percent_rank`/`dense_rank`/`ntile` (timeless ranking; optional `partition_by=`).
 
 **Self-join vs window-function transforms:**
 
 - `time_shift`, `change`, and `change_pct` use self-join CTEs — they can reach outside the current result set (no edge NULLs) and handle gaps in data correctly. The join matches on all non-time dimensions as well as the shifted time column, so grouped comparisons are partition-safe and reset per group. `time_shift(revenue, -1, 'year')` (with granularity) joins on calendar date arithmetic for comparisons like year-over-year.
 - `lag(revenue, 1)` / `lead(revenue, 1)` use SQL `LAG`/`LEAD` window functions directly — more efficient, but produce NULLs at the edges and are sensitive to gaps in data.
 
-**Nesting** — Formulas can be nested: `change(cumsum(revenue))` applies `change` to the result of `cumsum`. Each level of nesting generates an additional CTE layer in the SQL.
+**Nesting** — Expressions can be nested: `change(cumsum(revenue))` applies `change` to the result of `cumsum`. Each level of nesting generates an additional CTE layer in the SQL.
 
 ## Ingestion
 
-**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates models with direct joins (one per FK on the source table). Columns from transitively reachable tables appear as dotted references (e.g., `customers.name`, `customers.regions.name`) usable as dimensions or in formulas. Multi-hop JOINs are resolved dynamically at query time by walking each intermediate model's own joins.
+**Rollup** — During auto-ingestion, SLayer follows foreign key relationships and creates datasets with direct relationships (one per FK on the source table). Fields from transitively reachable tables appear as dotted references (e.g., `customers.name`, `customers.regions.name`) usable as dimensions or in expressions. Multi-hop JOINs are resolved dynamically at query time by walking each intermediate dataset's own relationships.
 
-**Default time dimension** — An optional model-level setting (`default_time_dimension`) that specifies which dimension to use for time ordering in transform functions, when no time dimension is explicitly provided in the query.
+**Default time dimension** — An optional dataset-level setting (`default_time_dimension`) that specifies which dimension to use for time ordering in transform functions, when no time dimension is explicitly provided in the query.

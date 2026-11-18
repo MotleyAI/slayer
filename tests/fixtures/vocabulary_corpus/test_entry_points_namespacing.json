@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_entry_points_namespacing.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  }
+ ]
+}

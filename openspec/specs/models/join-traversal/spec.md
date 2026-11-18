@@ -207,7 +207,7 @@ traversable hop.
 ### Requirement: Paths resolve to one canonical spelling
 Every resolved join path SHALL be spelled canonically: per hop, the traversed edge's
 declared name, else its traversal-target model's name. Query references, saved
-measures, auto-routed short forms, model SQL (`Column.sql`, `Column.filter`, model
+measures, auto-routed short forms, model SQL (`DatasetField.sql`, `DatasetField.filter`, model
 filters) and definition defaults SHALL all resolve to that spelling, so two spellings
 of one edge denote one value: one join, one slot, one home, and identical results.
 Persisted models SHALL keep their authored spelling; error messages SHALL quote the
@@ -260,7 +260,7 @@ typed spelling.
 ### Requirement: Join mutations address one edge
 Model-editing surfaces SHALL address a join by its edge reference — the target model's name when it is
 the only join from the model to that target, else the edge name — or by an exact reference
-(`target_model`, `name`, `join_pairs`). A reference matching several joins SHALL fail with an error
+(`to`, `name`, `join_pairs`). A reference matching several joins SHALL fail with an error
 listing the candidates; it MUST NOT act on the first match or on every match. A join upsert SHALL
 update the join matching its name, else its target and key pairs, else the sole join to its target;
 an unnamed upsert matching none of these whose target the model already joins SHALL be rejected,
@@ -268,20 +268,20 @@ asking for a name.
 
 #### Scenario: Remove one of two parallel edges
 - **WHEN** `orders` joins `addresses` twice, named `billing_address` and `shipping_address`, and
-  `edit_model` removes the join `billing_address`
+  `edit_dataset` removes the join `billing_address`
 - **THEN** only the billing edge is removed
 
 #### Scenario: Ambiguous target reference fails
-- **WHEN** `orders` holds two unnamed joins to `addresses` and `edit_model` removes the join `addresses`
+- **WHEN** `orders` holds two unnamed joins to `addresses` and `edit_dataset` removes the join `addresses`
 - **THEN** the edit fails listing both candidates with their key pairs, and no join is removed
 
 #### Scenario: Name an unnamed parallel edge
-- **WHEN** an upsert carries `target_model` `addresses`, the key pairs of one of two unnamed joins to
+- **WHEN** an upsert carries `to` `addresses`, the key pairs of one of two unnamed joins to
   `addresses`, and `name` `billing_address`
 - **THEN** that join receives the name and the other join is unchanged
 
 #### Scenario: Exact reference removes exactly one edge
-- **WHEN** `edit_model` removes `{target_model: addresses, join_pairs: [[shipping_address_id, id]]}`
+- **WHEN** `edit_dataset` removes `{to: addresses, join_pairs: [[shipping_address_id, id]]}`
   from a model with two unnamed joins to `addresses`
 - **THEN** only the matching join is removed
 
@@ -321,8 +321,8 @@ directed cycle SHALL fail closed when every candidate root is blocked by a fanni
 - **THEN** it sums over the `z` rows referencing each `x`, not the `z` reached via `y`
 
 #### Scenario: Rootless query across a directed 3-cycle fails closed
-- **WHEN** a query without `source_model` selects `x.v`, `y.v` and `z.v` over `x → y → z → x`
-- **THEN** it fails with the no-viable-candidate error, and succeeds once `source_model` is given
+- **WHEN** a query without `population` selects `x.v`, `y.v` and `z.v` over `x → y → z → x`
+- **THEN** it fails with the no-viable-candidate error, and succeeds once `population` is given
 
 ### Requirement: An extension join repeating a stored edge is that edge
 
@@ -351,7 +351,7 @@ A join declared by a query extension of model `M` towards `T` SHALL be matched a
 
 #### Scenario: Declared join type does not split the edge
 - **WHEN** the stored `orders → customers` edge is LEFT and an extension of `orders` declares it INNER with the same pairs
-- **THEN** it is the stored edge, traversed as LEFT, and `customers.<column>` stays unambiguous
+- **THEN** it is the stored edge, traversed as LEFT, and `customers.<field>` stays unambiguous
 
 #### Scenario: Alias resolves to the stored edge under its canonical spelling
 - **WHEN** an extension declares the stored `orders → customers` edge under the name `c`, and the query selects both `c.name` and `customers.region`
@@ -386,5 +386,5 @@ A join declared by a query extension of model `M` towards `T` SHALL be matched a
 - **THEN** the query fails naming both names
 
 #### Scenario: Multi-hop and cyclic query-local chains
-- **WHEN** extensions add `a → b` and `b → c` as new edges and a query rooted at `a` selects `b.c.<column>`, or extensions close a cycle `a → b → a` on different pairs
+- **WHEN** extensions add `a → b` and `b → c` as new edges and a query rooted at `a` selects `b.c.<field>`, or extensions close a cycle `a → b → a` on different pairs
 - **THEN** the chain resolves over the query-local edges, and the cycle's hops resolve by their names exactly as stored edges in a cycle do

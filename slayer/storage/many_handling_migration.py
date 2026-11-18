@@ -16,7 +16,7 @@ def _stamp_stage(stage: Any) -> Any:
     return stage
 
 
-def stamp_model_stages(data: dict) -> dict:
+def stamp_dataset_stages(data: dict) -> dict:
     if isinstance(data.get("source_queries"), list):
         data["source_queries"] = [_stamp_stage(q) for q in data["source_queries"]]
     return data
@@ -31,5 +31,5 @@ def drop_stored_broadcast(data: dict) -> dict:
     return data
 
 
-register_migration(entity="SlayerModel", source_version=20, stored_only=True)(stamp_model_stages)
+register_migration(entity="SlayerModel", source_version=20, stored_only=True)(stamp_dataset_stages)
 register_migration(entity="SlayerQuery", source_version=11, stored_only=True)(drop_stored_broadcast)

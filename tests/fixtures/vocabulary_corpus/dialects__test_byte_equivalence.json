@@ -1,0 +1,152 @@
+{
+ "source": "tests/dialects/test_byte_equivalence.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "median(revenue)"
+   },
+   "new": {
+    "expression": "median(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percentile(revenue, p=0.95)"
+   },
+   "new": {
+    "expression": "percentile(revenue, p=0.95)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "corr(revenue, other=quantity)"
+   },
+   "new": {
+    "expression": "corr(revenue, other=quantity)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'month')",
+    "name": "rev_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'month')",
+    "name": "rev_prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "cum_rev"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "cum_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 326,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 398,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 455,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 511,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 546,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 552,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 553,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 554,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 563,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.retrievers.bm25 import BM25Retriever
 from slayer.storage.base import StorageBackend
@@ -33,11 +33,11 @@ async def storage() -> AsyncIterator[StorageBackend]:
         await s.save_datasource(DatasourceConfig(
             name="mydb", type="sqlite", database=":memory:",
         ))
-        await s.save_model(SlayerModel(
+        await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
         ))
         yield s
@@ -146,17 +146,17 @@ async def test_default_no_op_write_hooks() -> None:
     ABC default empty/None value."""
     retriever = BM25Retriever()
     memory = Memory(id="1", learning="x", entities=[])
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     )
     assert await retriever.upsert_memory(memory) == []
-    assert await retriever.refresh_model_subtree(model) == []
+    assert await retriever.refresh_dataset_subtree(model) == []
     assert await retriever.refresh_datasource(
-        name="mydb", models=[model],
+        name="mydb", datasets=[model],
     ) == []
     assert await retriever.delete_memory("1") is None
-    assert await retriever.delete_model(
+    assert await retriever.delete_dataset(
         data_source="mydb", name="orders",
     ) is None
     assert await retriever.delete_datasource("mydb") is None

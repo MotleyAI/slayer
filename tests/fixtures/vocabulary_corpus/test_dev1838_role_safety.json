@@ -1,0 +1,147 @@
+{
+ "source": "tests/test_dev1838_role_safety.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(alpha_amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(alpha_amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(rush_amount)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "sum(rush_amount)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(alpha_amount)",
+    "name": "al"
+   },
+   "new": {
+    "expression": "last(alpha_amount)",
+    "name": "al"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(rush_amount, window='90d')",
+    "name": "rw"
+   },
+   "new": {
+    "expression": "sum(rush_amount, window='90d')",
+    "name": "rw"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "tscaled_sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "tscaled_sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, customers.segments.updated_at)",
+    "name": "lu"
+   },
+   "new": {
+    "expression": "last(amount, customers.segments.updated_at)",
+    "name": "lu"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(gold_amount)",
+    "name": "g"
+   },
+   "new": {
+    "expression": "sum(gold_amount)",
+    "name": "g"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(gold_amount)",
+    "name": "gl"
+   },
+   "new": {
+    "expression": "last(gold_amount)",
+    "name": "gl"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(gold_amount)",
+    "name": "gl"
+   },
+   "new": {
+    "expression": "last(gold_amount)",
+    "name": "gl"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wscaled_sum(amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wscaled_sum(amount)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, customers.signup_at)",
+    "name": "ls"
+   },
+   "new": {
+    "expression": "last(amount, customers.signup_at)",
+    "name": "ls"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  }
+ ]
+}

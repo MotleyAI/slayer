@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_usage_reporting_isolation.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "no_such_model",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "no_such_model",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

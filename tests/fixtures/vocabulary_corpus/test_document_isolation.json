@@ -1,0 +1,21 @@
+{
+ "source": "tests/test_document_isolation.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

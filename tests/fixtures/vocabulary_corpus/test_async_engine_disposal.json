@@ -1,0 +1,110 @@
+{
+ "source": "tests/test_async_engine_disposal.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "sum(val)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "sum(val)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "missing",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "missing",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)",
+     "sum(v)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)",
+     "sum(v)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "count(*)",
+     "sum(v)"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "count(*)",
+     "sum(v)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 206,
+   "reason": "not fully literal"
+  }
+ ]
+}

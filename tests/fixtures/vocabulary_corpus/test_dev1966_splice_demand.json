@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_dev1966_splice_demand.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "unclassifiable"
+  }
+ ]
+}

@@ -1,0 +1,22 @@
+{
+ "source": "tests/dialects/test_dev1737_date_add_parity.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  }
+ ]
+}

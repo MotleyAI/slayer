@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, ModelJoin
+from slayer.core.models import DatasourceConfig, DatasetRelationship
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -29,16 +29,16 @@ async def decimal_engine(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
     models = await ingestion.ingest_datasource_async(datasource, client=engine.client_for(datasource))
     model = next(model for model in models if model.name == "orders")
-    amount = model.get_column("amount")
+    amount = model.get_field("amount")
     assert amount is not None
-    assert amount.type is DataType.DOUBLE
+    assert amount.datatype is DataType.DOUBLE
     assert amount.db_type == "DECIMAL(18,2)"
 
     await storage.save_datasource(datasource)
-    customers = model.model_copy(update={"name": "customers", "joins": []})
-    model.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
-    await storage.save_model(model)
-    await storage.save_model(customers)
+    customers = model.model_copy(update={"name": "customers", "relationships": []})
+    model.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    await storage.save_dataset(model)
+    await storage.save_dataset(customers)
     return engine
 
 
@@ -47,12 +47,12 @@ async def decimal_engine(tmp_path):
     argvalues=[
         ("sum(amount)", {}, [Decimal("90071992547409.93")]),
         (
-            {"formula": "sum(amount, window='2d')", "name": "total"},
-            {"time_dimensions": [{"dimension": "created_at", "granularity": "day"}]},
+            {"expression": "sum(amount, window='2d')", "name": "total"},
+            {"time_dimensions": [{"field": "created_at", "granularity": "day"}]},
             [Decimal("90071992547409.91"), Decimal("90071992547409.93")],
         ),
         (
-            {"formula": "sum(amount, partition_by=created_at)", "name": "total"},
+            {"expression": "sum(amount, partition_by=created_at)", "name": "total"},
             {"dimensions": ["id", "created_at"]},
             [Decimal("0.02"), Decimal("90071992547409.91")],
         ),
@@ -64,7 +64,7 @@ async def test_inferred_decimal_aggregates_preserve_native_precision(
     query_fields,
     expected,
 ):
-    query = {"source_model": "orders", "measures": [measure], **query_fields}
+    query = {"population": "orders", "metrics": [measure], **query_fields}
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
 
@@ -76,8 +76,8 @@ async def test_inferred_decimal_aggregates_preserve_native_precision(
 
 async def test_explicit_double_measure_still_casts(decimal_engine):
     query = {
-        "source_model": "orders",
-        "measures": [{"formula": "sum(amount)", "type": "DOUBLE"}],
+        "population": "orders",
+        "metrics": [{"expression": "sum(amount)", "datatype": "DOUBLE"}],
     }
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
@@ -87,7 +87,7 @@ async def test_explicit_double_measure_still_casts(decimal_engine):
 
 
 async def test_cross_model_decimal_aggregate_preserves_native_precision(decimal_engine):
-    query = {"source_model": "orders", "measures": ["sum(customers.amount)"]}
+    query = {"population": "orders", "metrics": ["sum(customers.amount)"]}
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
 

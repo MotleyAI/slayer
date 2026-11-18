@@ -241,11 +241,11 @@ def _column_specs(table: FacadeTable):
     """Yield ``(name, DataType)`` for every projectable column (dims +
     metrics).
 
-    cross-model entries are excluded so ``pg_attribute`` /
-    ``pg_class.relnatts`` advertise only the same-model column list. BI
+    cross-dataset entries are excluded so ``pg_attribute`` /
+    ``pg_class.relnatts`` advertise only the same-dataset column list. BI
     tools that flatten the catalog into a column view (Metabase, dbt
     schema scan) discover only base columns and don't issue fingerprint
-    queries that would lead to dotted ``SlayerQuery.measures[*].name``.
+    queries that would lead to dotted ``SlayerQuery.metrics[*].name``.
     """
     for d in local_dimensions(table):
         yield d.name, d.data_type
@@ -326,9 +326,9 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
         oid = _table_oid(ds, tbl)
         _check_collision(seen_oids, oid, f"{ds}.{tbl.name}")
         natts = sum(1 for _ in _column_specs(tbl))
-        # SQL-backed models are advertised as views (relkind='v') so
+        # SQL-backed datasets are advertised as views (relkind='v') so
         # ``pg_views`` discovery and JDBC view-specific paths see them;
-        # ``sql_table``-mode models stay as regular tables ('r').
+        # ``sql_table``-mode datasets stay as regular tables ('r').
         relkind = "v" if tbl.table_type == "VIEW" else "r"
         rows.append({
             "oid": oid, "relname": tbl.name,
@@ -519,7 +519,7 @@ def _build_pg_tables(catalog: FacadeCatalog) -> CatalogRelation:
     ]
     rows = []
     for ds, tbl in _all_tables(catalog):
-        # M1 — VIEW-typed models are excluded from pg_tables.
+        # M1 — VIEW-typed datasets are excluded from pg_tables.
         if tbl.table_type != "TABLE":
             continue
         rows.append({
@@ -538,7 +538,7 @@ def _build_pg_views(catalog: FacadeCatalog) -> CatalogRelation:
         FacadeColumn(name="viewowner", type=DataType.TEXT),
         FacadeColumn(name="definition", type=DataType.TEXT),
     ]
-    # SQL-backed models surface here so view-aware clients
+    # SQL-backed datasets surface here so view-aware clients
     # (pgAdmin, dbeaver view category, JDBC ``getTables`` with
     # ``types=['VIEW']``) discover them as views. We do NOT include the
     # underlying SQL definition — it's a SLayer abstraction detail and
@@ -684,7 +684,7 @@ def _build_pg_trigger() -> CatalogRelation:
 
 def _build_pg_inherits() -> CatalogRelation:
     """Inheritance — empty. Read by ``\\d`` to render parent/child
-    relationships. SLayer models are flat."""
+    relationships. SLayer datasets are flat."""
     return CatalogRelation(
         name="pg_inherits",
         columns=[
@@ -744,7 +744,7 @@ def _build_pg_publication_tables() -> CatalogRelation:
 
 
 def _build_pg_partitioned_table() -> CatalogRelation:
-    """Partitioning metadata — empty. SLayer has no partitioned models."""
+    """Partitioning metadata — empty. SLayer has no partitioned datasets."""
     return CatalogRelation(
         name="pg_partitioned_table",
         columns=[
@@ -908,7 +908,7 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
         FacadeColumn(name="label", type=DataType.TEXT),
     ]
     rows: list[dict[str, Any]] = []
-    # exclude cross-model entries — they leak as dotted "columns"
+    # exclude cross-dataset entries — they leak as dotted "columns"
     # that Metabase fingerprint scans then project (see local_metrics
     # docstring in slayer/facade/catalog.py).
     for ds, tbl in _all_tables(catalog):
@@ -1110,7 +1110,7 @@ def _is_known_catalog_table(tbl: exp.Table) -> bool:
 
     Bare table names still require an explicit allowlist match — bare
     ``columns`` / ``tables`` from ``information_schema`` would otherwise
-    hijack user models with the same name.
+    hijack user datasets with the same name.
     """
     name = str(tbl.name).lower()
     schema_part = tbl.args.get("db")
@@ -1137,7 +1137,7 @@ def _is_known_catalog_table(tbl: exp.Table) -> bool:
         return True
     if schema is None:
         # Bare names — only well-known pg_catalog relations. Unknown bare
-        # names would shadow user models with the same name, so they
+        # names would shadow user datasets with the same name, so they
         # never route to the catalog executor.
         return name in _PG_CATALOG_NAMES
     return False
@@ -1246,7 +1246,7 @@ def _has_catalog_function_call(parsed: exp.Expression) -> bool:
         # (``current_role``, ``current_user``, ``current_catalog`` …) as
         # an unqualified ``Column``. Treat those as catalog-only too so
         # ``SELECT current_role`` routes to the executor instead of
-        # falling through to the SLayer model-query path (which then
+        # falling through to the SLayer dataset-query path (which then
         # errors with "no FROM clause"). CR/Codex review.
         if isinstance(node, exp.Column) and not node.table:
             ident = node.this

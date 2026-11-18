@@ -39,7 +39,7 @@ async def _mcp_query_ids(server) -> set[int]:
     return row_ids(decoded["data"] if isinstance(decoded, dict) else decoded)
 
 
-async def test_mcp_query_tool_honours_pin(monkeypatch, ev_storage) -> None:
+async def test_mcp_query_tool_honours_pin(monkeypatch: pytest.MonkeyPatch, ev_storage) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     server: Any = create_mcp_server(storage=ev_storage)
     try:
@@ -48,7 +48,7 @@ async def test_mcp_query_tool_honours_pin(monkeypatch, ev_storage) -> None:
         await server._slayer_engine.aclose()
 
 
-def test_rest_and_embedded_mcp_honour_pin(monkeypatch, ev_storage) -> None:
+def test_rest_and_embedded_mcp_honour_pin(monkeypatch: pytest.MonkeyPatch, ev_storage) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     servers: list[Any] = []
 
@@ -69,7 +69,7 @@ def test_rest_and_embedded_mcp_honour_pin(monkeypatch, ev_storage) -> None:
 
 
 @pytest.mark.parametrize("factory", ["mcp", "rest"])
-def test_server_factories_fail_before_side_effects(monkeypatch, tmp_path, factory) -> None:
+def test_server_factories_fail_before_side_effects(monkeypatch: pytest.MonkeyPatch, tmp_path, factory) -> None:
     monkeypatch.setenv("SLAYER_NOW", "yesterday-ish")
     calls: list[str] = []
 
@@ -90,7 +90,7 @@ def test_server_factories_fail_before_side_effects(monkeypatch, tmp_path, factor
 
 
 @pytest.mark.parametrize("command", ["mcp", "serve"])
-def test_cli_fails_before_running_a_command(monkeypatch, tmp_path, command) -> None:
+def test_cli_fails_before_running_a_command(monkeypatch: pytest.MonkeyPatch, tmp_path, command) -> None:
     monkeypatch.setenv("SLAYER_NOW", "yesterday-ish")
     calls: list[str] = []
 
@@ -107,7 +107,7 @@ def test_cli_fails_before_running_a_command(monkeypatch, tmp_path, command) -> N
     assert calls == []
 
 
-def test_cli_fails_before_a_non_server_command(monkeypatch, tmp_path) -> None:
+def test_cli_fails_before_a_non_server_command(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("SLAYER_NOW", "yesterday-ish")
     calls: list[str] = []
     monkeypatch.setattr(cli, "_run_query", lambda args: calls.append("query"))

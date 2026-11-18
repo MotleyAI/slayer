@@ -1,0 +1,42 @@
+"""A read-only view of a store with some datasets replaced, for planning against datasets not yet saved."""
+
+from __future__ import annotations
+
+from collections.abc import Hashable, Iterable
+
+from slayer.core.models import SlayerDataset
+from slayer.storage.access_filtered import AccessFilteredStorage
+from slayer.storage.base import StorageBackend
+from slayer.storage.document_loading import DocumentLoadFailures
+
+
+class DatasetOverlayStorage(AccessFilteredStorage):
+    """``backend`` read with ``datasets`` in place of their stored namesakes; it never writes or closes ``backend``."""
+
+    def __init__(self, backend: StorageBackend, *, datasets: Iterable[SlayerDataset]) -> None:
+        super().__init__(backend, tags=(), bypass=True)
+        self._overlay = {(m.data_source, m.name): m for m in datasets}
+
+    async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
+        target = await self._resolve_target_or_none(name, data_source=data_source)
+        dataset = self._overlay.get(target) if target is not None else None
+        if dataset is not None:
+            return dataset.model_copy(deep=True)
+        return await self._inner.get_dataset(name, data_source=data_source)
+
+    async def graph_fingerprint(self) -> str | None:
+        return None
+
+    async def cache_identity(self) -> Hashable:
+        return await StorageBackend.cache_identity(self)
+
+    async def aclose(self) -> None:
+        """No-op: the backend outlives the view."""
+
+    async def save_dataset(
+        self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
+    ) -> None:
+        raise PermissionError(f"dataset overlay is read-only: cannot save {dataset.name!r}")
+
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        raise PermissionError(f"dataset overlay is read-only: cannot save {dataset.name!r}")

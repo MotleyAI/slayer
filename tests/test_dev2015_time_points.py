@@ -15,7 +15,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev1737_fixtures import seed_backend
 from tests._dev2015_fixtures import BACKENDS, DS_GRANULARITIES, bucket_key, cg_engine, m, value
 from tests._engine_helpers import seeded_exec_engine
-from tests._time_points_fixtures import CUSTOMERS, EV, PinnedClock, all_models, ids, ids_in, ids_with_range, tp_engine
+from tests._time_points_fixtures import CUSTOMERS, EV, PinnedClock, all_datasets, ids, ids_in, ids_with_range, tp_engine
 
 D = datetime
 FAR_PAST, FAR_FUTURE = D(1900, 1, 1), D(2100, 1, 1)
@@ -24,7 +24,7 @@ FAR_PAST, FAR_FUTURE = D(1900, 1, 1), D(2100, 1, 1)
 @contextlib.asynccontextmanager
 async def _engine(backend: str) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [EV, CUSTOMERS]), models=all_models(),
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [EV, CUSTOMERS]), datasets=all_datasets(),
         clock=PinnedClock(), datasource_fields=DS_GRANULARITIES,
     ) as (engine, _db):
         yield engine
@@ -79,8 +79,8 @@ class TestWholePeriodsOnly:
 
     async def test_snapping_to_custom_boundaries(self, cg) -> None:
         resp = await cg.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")], "whole_periods_only": True,
-            "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year",
+            "population": "orders", "metrics": [m("sum(amount)", "s")], "whole_periods_only": True,
+            "time_dimensions": [{"field": "order_date", "granularity": "fiscal_year",
                                  "date_range": ["2024-05-01", "2025-12-31"]}],
         }))
         assert {bucket_key(value(r, "order_date"), width=10): float(value(r, "s")) for r in resp.data} == {
@@ -89,10 +89,10 @@ class TestWholePeriodsOnly:
 
     async def test_month_with_a_mid_month_custom_granularity_warns(self, cg) -> None:
         resp = await cg.execute(SlayerQuery.model_validate({
-            "source_model": "events", "measures": [m("sum(amount)", "s")], "whole_periods_only": True,
-            "time_dimensions": [{"dimension": "ts", "granularity": "month"},
-                                {"dimension": "ts", "granularity": "billing_month"}],
-            "filters": ["ts >= '2025-01-01'"],
+            "population": "events", "metrics": [m("sum(amount)", "s")], "whole_periods_only": True,
+            "time_dimensions": [{"field": "ts", "granularity": "month"},
+                                {"field": "ts", "granularity": "billing_month"}],
+            "filter": ["ts >= '2025-01-01'"],
         }))
         assert resp.data
         dumps = [w.model_dump_json() for w in resp.warnings]

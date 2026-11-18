@@ -61,7 +61,7 @@ def translate(sql: str, catalog: FacadeCatalog) -> TranslatorResult:
     surfaces a clean ``TranslationError`` instead of an opaque
     ``ArrowTypeError`` at materialisation.
     """
-    result = _shared_translate(sql, catalog, dialect=None, allow_column_cast=False)
+    result = _shared_translate(sql, catalog, dialect=None, allow_field_cast=False)
     if isinstance(result, _SharedProbeResult):
         return ProbeResult(table=row_batch_to_arrow(result.batch))
     if isinstance(result, _SharedInfoSchemaResult):

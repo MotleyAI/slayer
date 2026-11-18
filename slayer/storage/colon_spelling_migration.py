@@ -11,7 +11,7 @@ from typing import Any
 from slayer.core.syntax import rewrite_colon_spans
 from slayer.storage.migrations import document_label, register_migration
 from slayer.storage.rank_direction_migration import (
-    rewrite_model_texts_at,
+    rewrite_dataset_texts_at,
     rewrite_query_texts_at,
     stamp_memory_query,
 )
@@ -58,8 +58,8 @@ def _rewrite_order(order: Any, fn: FieldRewrite) -> Any:
     return _order_item(order, fn, "order")
 
 
-def upgrade_model_colons(data: dict) -> dict:
-    return rewrite_model_texts_at(data, _rewriter(document_label(data)))
+def upgrade_dataset_colons(data: dict) -> dict:
+    return rewrite_dataset_texts_at(data, _rewriter(document_label(data)))
 
 
 def upgrade_query_colons(data: dict) -> dict:
@@ -72,6 +72,6 @@ def upgrade_query_colons(data: dict) -> dict:
     return data
 
 
-register_migration(entity="SlayerModel", source_version=18, stored_only=True)(upgrade_model_colons)
+register_migration(entity="SlayerModel", source_version=18, stored_only=True)(upgrade_dataset_colons)
 register_migration(entity="SlayerQuery", source_version=9, stored_only=True)(upgrade_query_colons)
 register_migration(entity="Memory", source_version=7, stored_only=True)(stamp_memory_query)

@@ -20,8 +20,8 @@ from slayer.core.query import SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1832_fixtures import (
-    ModelMeasure,
-    dev1832_models,
+    DatasetMetric,
+    dev1832_datasets,
     month_td,
     monthly_q,
 )
@@ -32,16 +32,16 @@ SERIES = "time_shift(cumsum(sum(amount)), -1)"
 
 
 def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
-    models = dev1832_models()
+    models = dev1832_datasets()
     root = next(m for m in models if m.name == root_name)
-    return ResolvedSourceBundle(dialect="postgres", source_model=root,
-                                referenced_models=[m for m in models if m is not root])
+    return ResolvedSourceBundle(dialect="postgres", population=root,
+                                referenced_datasets=[m for m in models if m is not root])
 
 
 def _plan(*formulas: str) -> PlannedQuery:
     return plan_query(query=monthly_q(
         dimensions=["region"], time_dimensions=month_td(),
-        measures=[ModelMeasure(formula=f, name=f"t{i}") for i, f in enumerate(formulas)]),
+        metrics=[DatasetMetric(expression=f, name=f"t{i}") for i, f in enumerate(formulas)]),
         bundle=_bundle())
 
 
@@ -54,7 +54,7 @@ def _shift_slots(pq: PlannedQuery, *, series: bool) -> list:
             and s.key.op == "time_shift" and s.series is series]
 
 
-def _shifted(pq: PlannedQuery) -> list:
+def _shifted(pq: PlannedQuery) -> list[RegroupAttachPlan]:
     return [a for a in pq.regroup_attach_plans if a.attach_phase == "shifted"]
 
 
@@ -93,11 +93,11 @@ class TestShiftedAttachShape:
 
     def test_join_pairs_cover_secondary_time_dimension(self) -> None:
         pq = plan_query(query=SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["status"],
-            "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"},
-                                {"dimension": "customers.signup_at", "granularity": "month"}],
+            "population": "orders", "dimensions": ["status"],
+            "time_dimensions": [{"field": "ordered_at", "granularity": "month"},
+                                {"field": "customers.signup_at", "granularity": "month"}],
             "main_time_dimension": "ordered_at",
-            "measures": [{"formula": "time_shift(sum(amount) / 2, -1)", "name": "t"}]}),
+            "metrics": [{"expression": "time_shift(sum(amount) / 2, -1)", "name": "t"}]}),
             bundle=_bundle("orders"))
         [attach] = _shifted(pq)
         grain = {s.key for s in pq.row_slots if not s.hidden}

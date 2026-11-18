@@ -1,0 +1,69 @@
+{
+ "source": "tests/test_dev1908_default_cancellation.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amount_sum"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amount_sum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(amount_sum)",
+    "name": "mx"
+   },
+   "new": {
+    "expression": "max(amount_sum)",
+    "name": "mx"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 229,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 244,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 266,
+   "reason": "not fully literal"
+  }
+ ]
+}

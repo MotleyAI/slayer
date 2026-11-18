@@ -1,0 +1,440 @@
+{
+ "source": "tests/test_default_result_order.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status",
+     "date_trunc('month', ordered_at)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status",
+     "date_trunc('month', ordered_at)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "per_customer",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "per_customer",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "stores",
+    "join_pairs": [
+     [
+      "store_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "stores",
+    "join_pairs": [
+     [
+      "store_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status",
+     "region"
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "ordered_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status",
+     "region"
+    ],
+    "time_dimensions": [
+     {
+      "field": "ordered_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status",
+     "region"
+    ],
+    "order": [
+     {
+      "column": "count(*)",
+      "direction": "desc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status",
+     "region"
+    ],
+    "order": [
+     {
+      "field": "count(*)",
+      "direction": "desc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status",
+     "region"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status",
+     "region"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "limit": 2,
+    "offset": 1
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "limit": 2,
+    "offset": 1
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "order": [
+     {
+      "column": "count(*)",
+      "direction": "desc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "region"
+    ],
+    "order": [
+     {
+      "field": "count(*)",
+      "direction": "desc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "size_label",
+     "customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "size_label",
+     "customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "per_customer_m",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "per_customer_m",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "by_region",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     "sum(total)"
+    ]
+   },
+   "new": {
+    "population": "by_region",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     "sum(total)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  }
+ ]
+}

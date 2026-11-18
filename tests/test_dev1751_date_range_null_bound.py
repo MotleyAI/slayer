@@ -11,41 +11,41 @@ import pydantic
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from tests._engine_helpers import _engine_generate
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
 
-def _daily() -> SlayerModel:
-    return SlayerModel(
+def _daily() -> SlayerDataset:
+    return SlayerDataset(
         name="daily", data_source="test",
         source_queries=[
             SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["created_at"],
-                "measures": [{"formula": "sum(amount)", "name": "rev"}],
+                "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             })
         ],
     )
 
 
-def _query(*, source_model: str, measure: str, date_range: list) -> SlayerQuery:
-    return SlayerQuery(
-        source_model=source_model,
-        time_dimensions=[TimeDimension(dimension="created_at", granularity="month", date_range=date_range)],
-        measures=[{"formula": measure, "name": "m0"}],
-    )
+def _query(*, source_dataset: str, metric: str, date_range: list) -> SlayerQuery:
+    return SlayerQuery.model_validate({
+        "population": source_dataset,
+        "time_dimensions": [TimeDimension(field="created_at", granularity="month", date_range=date_range)],
+        "metrics": [{"expression": metric, "name": "m0"}],
+    })
 
 
 ONE_SIDED = [
@@ -64,13 +64,13 @@ class TestOneSidedRangePlans:
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_plain_model(self, date_range, bound) -> None:
-        query = _query(source_model="orders", measure="sum(amount)", date_range=date_range)
-        _assert_one_sided(await _engine_generate(query=query, model=_orders()), bound)
+        query = _query(source_dataset="orders", metric="sum(amount)", date_range=date_range)
+        _assert_one_sided(await _engine_generate(query=query, dataset=_orders()), bound)
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_source_queries_model(self, date_range, bound) -> None:
-        query = _query(source_model="daily", measure="max(rev)", date_range=date_range)
-        sql = await _engine_generate(query=query, model=_orders(), extra_models=[_daily()])
+        query = _query(source_dataset="daily", metric="max(rev)", date_range=date_range)
+        sql = await _engine_generate(query=query, dataset=_orders(), extra_datasets=[_daily()])
         _assert_one_sided(sql, bound)
 
 
@@ -78,7 +78,7 @@ class TestBothBoundsMissing:
 
     def test_rejected_at_construction_naming_the_dimension(self) -> None:
         with pytest.raises(pydantic.ValidationError) as exc_info:
-            _query(source_model="orders", measure="sum(amount)", date_range=[None, None])
+            _query(source_dataset="orders", metric="sum(amount)", date_range=[None, None])
         assert "created_at" in str(exc_info.value), exc_info.value
 
 
@@ -86,9 +86,9 @@ class TestWellFormedRangeStillPlans:
 
     async def test_two_string_bounds_emit_the_half_open_range(self) -> None:
         query = _query(
-            source_model="orders", measure="sum(amount)",
+            source_dataset="orders", metric="sum(amount)",
             date_range=["2024-01-01", "2024-12-31"],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "2024-01-01" in sql
         assert "2025-01-01" in sql

@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.retriever import RetrievalResult, Retriever
 from slayer.search.retrievers.bm25 import BM25Retriever
@@ -75,19 +75,19 @@ async def test_default_no_op_write_hooks_return_documented_empties() -> None:
     the documented no-op values. BM25 and Tantivy use these defaults
     for every write hook this PR."""
     memory = Memory(id="1", learning="hello", entities=[])
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     )
 
     for retriever in (BM25Retriever(), TantivyRetriever()):
         assert await retriever.upsert_memory(memory) == []
-        assert await retriever.refresh_model_subtree(model) == []
+        assert await retriever.refresh_dataset_subtree(model) == []
         assert await retriever.refresh_datasource(
-            name="mydb", models=[model],
+            name="mydb", datasets=[model],
         ) == []
         assert await retriever.delete_memory("1") is None
-        assert await retriever.delete_model(
+        assert await retriever.delete_dataset(
             data_source="mydb", name="orders",
         ) is None
         assert await retriever.delete_datasource("mydb") is None

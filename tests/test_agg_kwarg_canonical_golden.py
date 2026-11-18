@@ -15,33 +15,33 @@ from decimal import Decimal
 
 import pytest
 
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, Grain
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, Grain
 from slayer.core.refs import agg_kwarg_canonical_str
 
 
 def test_columnkey_local() -> None:
-    assert agg_kwarg_canonical_str(ColumnKey(leaf="net")) == "net"
+    assert agg_kwarg_canonical_str(FieldKey(leaf="net")) == "net"
 
 
 def test_columnkey_joined() -> None:
     assert agg_kwarg_canonical_str(
-        ColumnKey(path=("customers",), leaf="net")) == "customers.net"
+        FieldKey(path=("customers",), leaf="net")) == "customers.net"
 
 
 def test_columnkey_multi_hop() -> None:
     assert agg_kwarg_canonical_str(
-        ColumnKey(path=("customers", "regions"), leaf="net")
+        FieldKey(path=("customers", "regions"), leaf="net")
     ) == "customers.regions.net"
 
 
 def test_columnsqlkey_local() -> None:
     assert agg_kwarg_canonical_str(
-        ColumnSqlKey(model="orders", column_name="net")) == "net"
+        FieldSqlKey(dataset="orders", field_name="net")) == "net"
 
 
 def test_columnsqlkey_joined() -> None:
     assert agg_kwarg_canonical_str(
-        ColumnSqlKey(path=("customers",), model="customers", column_name="net")
+        FieldSqlKey(path=("customers",), dataset="customers", field_name="net")
     ) == "customers.net"
 
 
@@ -69,8 +69,8 @@ def test_none_raises() -> None:
 
 def test_aggregate_key_carries_source_kwargs_and_partition() -> None:
     key = AggregateKey(
-        source=ColumnKey(leaf="w"), agg="sum",
-        partition_keys=Grain.of([ColumnKey(leaf="city")]),
+        source=FieldKey(leaf="w"), agg="sum",
+        partition_keys=Grain.of([FieldKey(leaf="city")]),
     )
     frag = agg_kwarg_canonical_str(key)
     assert frag.startswith("sum_w")
@@ -80,10 +80,10 @@ def test_aggregate_key_carries_source_kwargs_and_partition() -> None:
 def test_aggregate_key_positional_args_disambiguate() -> None:
     # Positional args must enter the fragment, else nested aggs alias-collide.
     first_ts1 = AggregateKey(
-        source=ColumnKey(leaf="x"), agg="first", args=(ColumnKey(leaf="ts1"),),
+        source=FieldKey(leaf="x"), agg="first", args=(FieldKey(leaf="ts1"),),
     )
     first_ts2 = AggregateKey(
-        source=ColumnKey(leaf="x"), agg="first", args=(ColumnKey(leaf="ts2"),),
+        source=FieldKey(leaf="x"), agg="first", args=(FieldKey(leaf="ts2"),),
     )
     assert "ts1" in agg_kwarg_canonical_str(first_ts1)
     assert agg_kwarg_canonical_str(first_ts1) != agg_kwarg_canonical_str(first_ts2)

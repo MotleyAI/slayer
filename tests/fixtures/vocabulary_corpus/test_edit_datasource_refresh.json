@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_edit_datasource_refresh.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -5,8 +5,8 @@ Schema (per ``tests/test_search_index.py``):
 * ``id`` — raw exact-match: ``"memory:<int>"`` for memories, the
   canonical entity string otherwise. Used internally for hit
   identification.
-* ``kind`` — raw exact-match: ``"memory"`` / ``"datasource"`` / ``"model"``
-  / ``"column"`` / ``"measure"`` / ``"aggregation"``.
+* ``kind`` — raw exact-match: ``"memory"`` / ``"datasource"`` / ``"dataset"``
+  / ``"field"`` / ``"metric"`` / ``"aggregation"``.
 * ``canonical`` — raw exact-match. Same value as ``id`` for entities;
   for memories, the stringified memory id. Lets agents search the
   literal canonical string and get the doc back.
@@ -23,10 +23,10 @@ from __future__ import annotations
 import tantivy
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.render import (
-    collect_model_entity_pairs,
+    collect_dataset_entity_pairs,
     render_datasource_pair,
     render_memory_text,
 )
@@ -83,14 +83,14 @@ def _add_doc(
 def build_in_memory_index(
     *,
     memories: list[Memory],
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     datasources: list[str],
     datasource_descriptions: dict[str, str | None] | None = None,
 ) -> tantivy.Index:
     """Build a fresh in-RAM tantivy index covering the corpus.
 
-    Hidden models and hidden columns are skipped entirely. The caller is
-    expected to pass datasource names + every model in scope; this
+    Hidden datasets and hidden fields are skipped entirely. The caller is
+    expected to pass datasource names + every dataset in scope; this
     function does *not* call into storage.
 
     DEV-1549: ``datasource_descriptions`` mirrors the symmetric kwarg on
@@ -102,7 +102,7 @@ def build_in_memory_index(
     """
     corpus = build_in_memory_corpus(
         memories=memories,
-        models=models,
+        datasets=datasets,
         datasources=datasources,
         datasource_descriptions=datasource_descriptions,
     )
@@ -131,14 +131,14 @@ class Corpus(BaseModel):
 def _collect_render_pairs(
     *,
     memories: list[Memory],
-    visible_models: list[SlayerModel],
+    visible_datasets: list[SlayerDataset],
     datasources: list[str],
     datasource_descriptions: dict[str, str | None] | None = None,
 ) -> list[tuple[str, str, str, str | None]]:
     """Return ``[(canonical_id, kind, rendered_text, description), ...]``
     for every doc that goes into the index. Routes through the unified
     dispatch helpers in ``slayer.search.render`` (DEV-1513). Hidden
-    models and hidden columns are skipped inside the helpers.
+    datasets and hidden fields are skipped inside the helpers.
 
     DEV-1549: the fourth tuple element carries the entity's structured
     ``description`` field (``None`` when absent) so callers can build a
@@ -146,19 +146,19 @@ def _collect_render_pairs(
     canonical-text map.
     """
     out: list[tuple[str, str, str, str | None]] = []
-    models_by_ds: dict[str, list[SlayerModel]] = {}
-    for m in visible_models:
-        models_by_ds.setdefault(m.data_source, []).append(m)
+    datasets_by_ds: dict[str, list[SlayerDataset]] = {}
+    for m in visible_datasets:
+        datasets_by_ds.setdefault(m.data_source, []).append(m)
     descriptions = datasource_descriptions or {}
     for ds in datasources:
         pair = render_datasource_pair(
             name=ds,
-            models=models_by_ds.get(ds, []),
+            datasets=datasets_by_ds.get(ds, []),
             description=descriptions.get(ds),
         )
         out.append((pair.canonical_id, pair.kind, pair.text, pair.description))
-    for model in visible_models:
-        for re in collect_model_entity_pairs(model=model):
+    for dataset in visible_datasets:
+        for re in collect_dataset_entity_pairs(dataset=dataset):
             out.append((re.canonical_id, re.kind, re.text, re.description))
     for memory in memories:
         # Memories surface ``Memory.description`` directly so the search
@@ -175,7 +175,7 @@ def _collect_render_pairs(
 def build_in_memory_corpus(
     *,
     memories: list[Memory],
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     datasources: list[str],
     datasource_descriptions: dict[str, str | None] | None = None,
 ) -> Corpus:
@@ -202,10 +202,10 @@ def build_in_memory_corpus(
     # processing within microseconds.
     writer = index.writer(num_threads=1)
 
-    visible_models = [m for m in models if not m.hidden]
+    visible_datasets = [m for m in datasets if not m.hidden]
     pairs = _collect_render_pairs(
         memories=memories,
-        visible_models=visible_models,
+        visible_datasets=visible_datasets,
         datasources=datasources,
         datasource_descriptions=datasource_descriptions,
     )
@@ -291,7 +291,7 @@ def search_index(
             Pass ``["canonical"]`` for an exact-match canonical lookup.
         kind_filter: When set, restrict results to docs whose ``kind``
             field exactly equals this value (e.g. ``"memory"``,
-            ``"model"``). Combined with the text query via ``Must``.
+            ``"dataset"``). Combined with the text query via ``Must``.
         exclude_kind: When set, exclude docs whose ``kind`` field equals
             this value. Combined with the text query via ``MustNot``.
         ``kind_filter`` and ``exclude_kind`` are mutually exclusive

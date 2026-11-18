@@ -83,7 +83,7 @@ class TestParseCliVariables:
 
 
 class TestRunDatasources:
-    def test_show_masks_all_credentials(self, monkeypatch, capsys):
+    def test_show_masks_all_credentials(self, monkeypatch: pytest.MonkeyPatch, capsys):
         datasource = DatasourceConfig(
             name="mydb",
             type="bigquery",

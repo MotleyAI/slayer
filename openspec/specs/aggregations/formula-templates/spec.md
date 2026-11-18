@@ -89,9 +89,9 @@ stored before this rule — when a query uses the aggregation.
 
 ### Requirement: A model formula overriding a built-in renders
 
-When a model's aggregation definition for a built-in name supplies a `formula`, that formula
+When a model's aggregation definition for a built-in name supplies a `expression`, that formula
 SHALL render wherever the aggregation renders, windowed included, and SHALL accept only the
-parameters it references; a definition without a `formula` SHALL keep the built-in's own
+parameters it references; a definition without a `expression` SHALL keep the built-in's own
 rendering and only supply parameter defaults.
 
 #### Scenario: A model formula overriding a built-in is rendered

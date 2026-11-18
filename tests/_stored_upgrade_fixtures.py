@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 import yaml
 
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerResponse
 from slayer.storage.base import StorageBackend
@@ -197,14 +197,14 @@ def stored_bytes(*, backend: str, base: str, name: str) -> str:
     return row[0]
 
 
-def column_of(model: SlayerModel, name: str) -> Column:
-    by_name = {c.name: c for c in model.columns}
+def column_of(model: SlayerDataset, name: str) -> DatasetField:
+    by_name = {c.name: c for c in model.fields}
     assert name in by_name, sorted(by_name)
     return by_name[name]
 
 
 async def raw_doc(storage: StorageBackend, name: str) -> dict:
-    doc = await storage._load_raw_model_dict(name=name, data_source=DS)
+    doc = await storage._load_raw_dataset_dict(name=name, data_source=DS)
     assert doc is not None
     return doc
 

@@ -8,23 +8,23 @@ queries/cross-model-aggregates — "Producer filter routing".
 
 from __future__ import annotations
 
-from slayer.core.keys import ColumnKey
+from slayer.core.keys import FieldKey
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import AssociationProducerKernel, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1840_fixtures import bundle, dev1840_models
-from tests._dev1841_fixtures import ModelMeasure, assoc_q
-from tests._dev1900_fixtures import dev1900_models, orders_q
+from tests._dev1840_fixtures import bundle, dev1840_datasets
+from tests._dev1841_fixtures import DatasetMetric, assoc_q
+from tests._dev1900_fixtures import dev1900_datasets, orders_q
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 HEADLINE = ("weighted_avg(customers.spend, "
             "weight=sum(amount, partition_by=customers.regions.name))")
 
 
 def _bundle1900():
-    models = dev1900_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    models = dev1900_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
 def _assoc(planned):
@@ -38,7 +38,7 @@ def _akernel(att) -> AssociationProducerKernel:
     return att.kernel
 
 
-def _rerooted_paths(att, leaf: str):
+def _rerooted_paths(att: RegroupAttachPlan, leaf: str):
     """Producer-side (home-rooted) grain key paths for ``leaf`` — the producer
     slot each join_pair points at, where the reroot shows."""
     slots = {s.id: s for s in att.producer_plan.row_slots}
@@ -50,13 +50,13 @@ def _rerooted_paths(att, leaf: str):
 class TestHomeRooting:
     def test_producer_roots_at_the_home(self):
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM]), bundle=bundle()))
-        assert att.producer_root_model == "customers"
+            query=assoc_q(dimensions=["status"], metrics=[CM]), bundle=bundle()))
+        assert att.producer_root_dataset == "customers"
 
     def test_entity_keys_are_in_root_coordinates(self):
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM]), bundle=bundle()))
-        assert _akernel(att).entity_keys == [ColumnKey(path=(), leaf="id")]
+            query=assoc_q(dimensions=["status"], metrics=[CM]), bundle=bundle()))
+        assert _akernel(att).entity_keys == [FieldKey(path=(), leaf="id")]
 
 
 class TestReachableConjunctIsInlined:
@@ -64,9 +64,9 @@ class TestReachableConjunctIsInlined:
         """The weak-plans conjunct inlines (no semi-join); its text rides the
         attach's restricted-filter list so the informational entry is kept."""
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM],
-                          filters=["customers.plans.level = 'basic'"]),
-            bundle=bundle(dev1840_models(strong_plans=False))))
+            query=assoc_q(dimensions=["status"], metrics=[CM],
+                          filter=["customers.plans.level = 'basic'"]),
+            bundle=bundle(dev1840_datasets(strong_plans=False))))
         assert list(att.producer_plan.semi_join_filters) == []
         assert any("basic" in t for t in att.association_restricted_filter_texts)
 
@@ -77,11 +77,11 @@ class TestTwoHopHome:
         the two-hop reverse path ('customers', 'orders')."""
         att = _assoc(plan_query(
             query=orders_q(dimensions=["status"],
-                           measures=[ModelMeasure(formula="sum(customers.regions.pop)",
+                           metrics=[DatasetMetric(expression="sum(customers.regions.pop)",
                                                   name="rp")],
                            to_many_handling="associate"),
             bundle=_bundle1900()))
-        assert att.producer_root_model == "regions"
+        assert att.producer_root_dataset == "regions"
         assert ("customers", "orders") in _rerooted_paths(att, "status")
 
 
@@ -90,9 +90,9 @@ class TestSerialization:
         """association_restricted_filter_texts (attach) round-trips through
         model_dump / model_validate."""
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM],
-                          filters=["customers.plans.level = 'basic'"]),
-            bundle=bundle(dev1840_models(strong_plans=False))))
+            query=assoc_q(dimensions=["status"], metrics=[CM],
+                          filter=["customers.plans.level = 'basic'"]),
+            bundle=bundle(dev1840_datasets(strong_plans=False))))
         restored = RegroupAttachPlan.model_validate(att.model_dump())
         assert (restored.association_restricted_filter_texts
                 == att.association_restricted_filter_texts)
@@ -105,8 +105,8 @@ class TestNestedAttachedParameterProducer:
         amount-sum parameter's own orders-rooted producer, not a host-rooted one."""
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"],
-                          measures=[ModelMeasure(formula=HEADLINE, name="w")]),
+                          metrics=[DatasetMetric(expression=HEADLINE, name="w")]),
             bundle=bundle()))
-        nested_roots = [n.producer_root_model
+        nested_roots = [n.producer_root_dataset
                         for n in att.producer_plan.regroup_attach_plans]
         assert "orders" in nested_roots

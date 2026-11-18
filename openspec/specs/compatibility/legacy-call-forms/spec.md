@@ -24,7 +24,7 @@ Defines the client-taking Python entry points that replaced the SLayer 1.5.0 cal
 `ingest_datasource`, `ingest_datasource_report`, `ingest_datasource_async`, `ingest_datasource_report_async`, `ingest_datasource_idempotent` and `validate_datasource` SHALL require a keyword `client` and SHALL read the database only through it; a call without one SHALL raise a `TypeError` before reading anything. `ingest_datasource` and `ingest_datasource_report` SHALL be synchronous and keep their positional scope parameters; `ingest_datasource_idempotent` and `validate_datasource` SHALL be coroutine functions; `validate_datasource` SHALL NOT accept `sql_clients`. A synchronous ingestion call SHALL leave its client usable afterwards. `DbtToSlayerConverter` and `OsiToSlayerConverter` SHALL take every parameter after `data_source` by keyword only and SHALL NOT accept `sa_engine`; their `convert()` SHALL read no database and SHALL use only the metadata a prior `collect_metadata(client=...)` gathered.
 
 #### Scenario: A call without a client is refused
-- **WHEN** `ingest_datasource(ds)`, `ingest_datasource_report(ds)`, `ingest_datasource_idempotent(datasource=ds, storage=storage)` or `validate_datasource(datasource=ds, models=models)` is called without `client`
+- **WHEN** `ingest_datasource(ds)`, `ingest_datasource_report(ds)`, `ingest_datasource_idempotent(datasource=ds, storage=storage)` or `validate_datasource(datasource=ds, datasets=datasets)` is called without `client`
 - **THEN** it raises a `TypeError` and no database is read
 
 #### Scenario: A client survives a sync call

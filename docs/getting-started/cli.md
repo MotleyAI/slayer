@@ -20,16 +20,16 @@ If you just want to kick the tyres, spin up the bundled Jaffle Shop dataset in o
 
 ```bash
 slayer datasources create demo --ingest
-slayer query '{"source_model": "orders", "measures": ["count(*)"]}'
+slayer query '{"population": "orders", "metrics": ["count(*)"]}'
 ```
 
-This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the models (`customers`, `orders`, `items`, `products`, `regions`, `stores`, `supplies`, `tweets`). The demo models come pre-enriched with a curated semantic layer: column labels and descriptions, currency/percent formats, ready-made measures (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `models_summary` / `inspect` output is informative out of the box and there are saved measures to query by name:
+This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the datasets (`customers`, `orders`, `items`, `products`, `regions`, `stores`, `supplies`, `tweets`). The demo datasets come pre-enriched with a curated semantic layer: field labels and descriptions, currency/percent formats, ready-made metrics (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `datasets_summary` / `inspect` output is informative out of the box and there are saved metrics to query by name:
 
 ```bash
-slayer query '{"source_model": "orders", "measures": [{"formula": "total_revenue"}, {"formula": "avg_order_value"}], "dimensions": ["stores.name"]}'
+slayer query '{"population": "orders", "metrics": [{"expression": "total_revenue"}, {"expression": "avg_order_value"}], "dimensions": ["stores.name"]}'
 ```
 
-Monetary columns (`price`, `subtotal`, `tax_paid`, `order_total`, `cost`) are stored as exact `DECIMAL(12,2)` dollars, so revenue sums carry no floating-point noise. Re-running is idempotent — an up-to-date DuckDB is reused (one built with an older schema is regenerated), and ingestion plus enrichment are additive-only (missing joins are added; your edits to labels, descriptions, or measures are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
+Monetary columns (`price`, `subtotal`, `tax_paid`, `order_total`, `cost`) are stored as exact `DECIMAL(12,2)` dollars, so revenue sums carry no floating-point noise. Re-running is idempotent — an up-to-date DuckDB is reused (one built with an older schema is regenerated), and ingestion plus enrichment are additive-only (missing relationships are added; your edits to labels, descriptions, or metrics are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.
 
 Pre-populate once and `--demo` is instant afterwards:
 
@@ -49,7 +49,7 @@ slayer mcp --demo           # MCP server with the demo ready for your agent
 
 ## Connect a database
 
-Point `slayer datasources create` at a connection URL. The datasource name is derived from the database portion of the URL (override with `--name`). Pass `--ingest` to also auto-generate models in one shot:
+Point `slayer datasources create` at a connection URL. The datasource name is derived from the database portion of the URL (override with `--name`). Pass `--ingest` to also auto-generate datasets in one shot:
 
 ```bash
 # Postgres (use ${ENV_VAR} to keep secrets out of shell history)
@@ -69,15 +69,15 @@ slayer datasources test myapp
 # OK — connected to 'myapp' (postgres).
 ```
 
-## Ingest models
+## Ingest datasets
 
 `--ingest` on `create` is shorthand for creating the datasource and immediately running ingestion. To re-ingest an existing datasource later:
 
 ```bash
 slayer ingest --datasource myapp
-# Ingested: orders (6 dims, 12 measures)
-# Ingested: customers (4 dims, 5 measures)
-# Ingested: regions (3 dims, 2 measures)
+# Ingested: orders (6 dims, 12 metrics)
+# Ingested: customers (4 dims, 5 metrics)
+# Ingested: regions (3 dims, 2 metrics)
 ```
 
 Optionally filter tables:
@@ -93,7 +93,7 @@ The same `--schema`, `--include`, and `--exclude` flags work on `datasources cre
 
 ```bash
 # Count orders by status
-slayer query '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}'
+slayer query '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}'
 
 # From a file
 slayer query @query.json
@@ -108,11 +108,11 @@ slayer query @query.json --dry-run
 slayer query @query.json --explain
 ```
 
-## Explore models
+## Explore datasets
 
 ```bash
-slayer models list
-slayer models show orders
+slayer datasets list
+slayer datasets show orders
 slayer datasources list
 ```
 
@@ -121,7 +121,7 @@ slayer datasources list
 After install + ingest, this should return data:
 
 ```bash
-slayer query '{"source_model": "orders", "measures": ["count(*)"]}'
+slayer query '{"population": "orders", "metrics": ["count(*)"]}'
 ```
 
 Expected output:
@@ -134,11 +134,11 @@ orders._count
 1 row(s)
 ```
 
-If you see "Model 'orders' not found", check that `slayer ingest` ran successfully and that `--storage` points to the right location.
+If you see "Dataset 'orders' not found", check that `slayer ingest` ran successfully and that `--storage` points to the right location.
 
 ## Search & memories
 
-`slayer search` runs semantic retrieval over memories and canonical entities (models, columns, named measures, custom aggregations). Three channels run in parallel — BM25 over memory entity tags, Tantivy full-text, and (with `motley-slayer[advanced_search]` plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list.
+`slayer search` runs semantic retrieval over memories and canonical entities (datasets, fields, named metrics, custom aggregations). Three channels run in parallel — BM25 over memory entity tags, Tantivy full-text, and (with `motley-slayer[advanced_search]` plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list.
 
 ```bash
 # Entity-driven
@@ -152,7 +152,7 @@ slayer search --question "Brooklyn POS" \
   --cypher-filter 'MATCH (n:Memory) RETURN n.id AS id'
 ```
 
-`--cypher-filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted; richer Cypher raises with an install hint. Without the extra (or a provider API key) the embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy.
+`--cypher-filter` accepts full openCypher when `advanced_search` is installed (LadybugDB property graph with `Memory` / `Datasource` / `Dataset` / `DatasetField` / `Metric` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `RELATIONSHIPS` edges). Without the extra, only the naive `MATCH (n:Label) RETURN n.id AS id` kind-filter form is accepted; richer Cypher raises with an install hint. Without the extra (or a provider API key) the embedding channel emits a single warning into `SearchResponse.warnings` and search degrades to BM25 + Tantivy.
 
 Persist a note with `slayer memory save` so the next session inherits it:
 

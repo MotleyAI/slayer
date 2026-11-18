@@ -26,7 +26,7 @@ from slayer.sql.generator import SQLGenerator
 
 from tests._dev1837_fixtures import (
     BAND35,
-    ModelMeasure,
+    DatasetMetric,
     dev1837_models,
     gen,
     month_td,
@@ -89,7 +89,7 @@ def _bundle() -> ResolvedSourceBundle:
     models = dev1837_models()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
@@ -101,9 +101,9 @@ class TestLiftedDirection:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula=formula, name="x"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression=formula, name="x"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -114,10 +114,10 @@ class TestLiftedDirection:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -133,9 +133,9 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -144,9 +144,9 @@ class TestRemainingArmsExactMessages:
         """Lifted direction: the former ranked-arm shape renders."""
         sql = await gen(q(
             dimensions=["region", BAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="last(amount)", name="l"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="last(amount)", name="l"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -157,9 +157,9 @@ class TestRemainingArmsExactMessages:
         is gone from the sources."""
         sql = await gen(q(
             dimensions=["region", BAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(customers.spend)", name="cm"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -191,7 +191,7 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
@@ -199,8 +199,8 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            metrics=[
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
@@ -229,7 +229,7 @@ class TestStalePlannerRefsRepointed:
         )
         query = q(
             dimensions=["region", {"expression": cband, "name": "cband"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

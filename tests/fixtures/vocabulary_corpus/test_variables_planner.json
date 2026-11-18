@@ -1,0 +1,503 @@
+{
+ "source": "tests/test_variables_planner.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{status}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{status}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "amount > {min_amt}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "amount > {min_amt}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "rate >= {r}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "rate >= {r}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{s}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{s}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "data = '{{literal}}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "data = '{{literal}}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "label = '{{{x}}}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "label = '{{{x}}}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "note = '{literal' AND x = 1"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "note = '{literal' AND x = 1"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{undefined_var}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{undefined_var}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{bad-name}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{bad-name}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "a in ({b})"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "a in ({b})"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "a in ({b})"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "a in ({b})"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "a = {b}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "a = {b}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "a = {b}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "a = {b}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": []
+   },
+   "new": {
+    "population": "orders",
+    "filter": []
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = 'active'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = 'active'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = 'active'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = 'active'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{s}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{s}'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": []
+   },
+   "new": {
+    "population": "orders",
+    "filter": []
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{s}'",
+     "amount > {m}",
+     "literal_only = 1"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{s}'",
+     "amount > {m}",
+     "literal_only = 1"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{s}' AND amount > {m}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{s}' AND amount > {m}"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev",
+    "label": "display_{x}"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev",
+    "label": "display_{x}"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) * {x}",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount) * {x}",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "filters": [
+     "status = '{s}'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "filter": [
+     "status = '{s}'"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) * {k}",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) * {k}",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount) * {? {k} ?}"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount) * {? {k} ?}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     "sum(amount) * {k}"
+    ]
+   },
+   "new": {
+    "metrics": [
+     "sum(amount) * {k}"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "x",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "x",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "refinement",
+   "old": {
+    "filters": [
+     "status == '{s}'"
+    ]
+   },
+   "new": {
+    "filter": [
+     "status == '{s}'"
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) * {o}"
+   },
+   "new": {
+    "field": "sum(amount) * {o}"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "ordered_at",
+    "granularity": "month",
+    "date_range": [
+     "{s}",
+     null
+    ]
+   },
+   "new": {
+    "field": "ordered_at",
+    "granularity": "month",
+    "date_range": [
+     "{s}",
+     null
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 305,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 330,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 351,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 400,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 408,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 416,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 450,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 472,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 519,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 520,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 522,
+   "reason": "not fully literal"
+  }
+ ]
+}

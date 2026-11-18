@@ -10,22 +10,23 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, q
+from tests._dev1865_fixtures import DatasetMetric, q
+from slayer.engine.query_engine import SlayerQueryEngine
 
 RK_REGION = "orders.customers.regions.name"
 RK_TIER = "orders.customers.tier"
 
 
 class TestDuplicateOppositeDirection:
-    async def test_min_and_max_wrap_the_same_column(self, exec_engine) -> None:
+    async def test_min_and_max_wrap_the_same_column(self, exec_engine: SlayerQueryEngine) -> None:
         # ASC wraps per-group MIN, DESC per-group MAX — two hidden slots for one
         # column must coexist, and neither leaks into the projection.
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[
-                {"column": "ordered_at", "direction": "asc"},
-                {"column": "ordered_at", "direction": "desc"},
+                {"field": "ordered_at", "direction": "asc"},
+                {"field": "ordered_at", "direction": "desc"},
             ],
         )
         resp = await exec_engine.execute(query)
@@ -46,7 +47,7 @@ class TestNullsSortLast:
         resp = await exec_engine.execute(q(
             dimensions=["city"],
             distinct_dimension_values=False,
-            order=[{"column": "city", "direction": direction}],
+            order=[{"field": "city", "direction": direction}],
         ))
         cities = [r["orders.city"] for r in resp.data]
         assert None in cities
@@ -56,22 +57,22 @@ class TestNullsSortLast:
 
 
 class TestOrderOnlyTrimmed:
-    async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine) -> None:
+    async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
-            order=[{"column": "min(amount)", "direction": "asc"}],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            order=[{"field": "min(amount)", "direction": "asc"}],
         ))
         assert resp.columns == ["orders.region", "orders.s"]
 
 
 class TestOrderByCrossModelPartitioned:
-    async def test_sorts_by_partition_value_and_stays_hidden(self, exec_engine) -> None:
+    async def test_sorts_by_partition_value_and_stays_hidden(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
             order=[{
-                "column": "sum(customers.spend, partition_by=customers.regions.name)",
+                "field": "sum(customers.spend, partition_by=customers.regions.name)",
                 "direction": "desc",
             }],
         ))
@@ -85,9 +86,9 @@ class TestOrderByCrossModelPartitioned:
         # ASC flips to RegS-first — value order, not region-name order.
         asc = await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
             order=[{
-                "column": "sum(customers.spend, partition_by=customers.regions.name)",
+                "field": "sum(customers.spend, partition_by=customers.regions.name)",
                 "direction": "asc",
             }],
         ))

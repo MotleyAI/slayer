@@ -6,7 +6,7 @@ which response to send; raises ``TranslationError`` on user-visible failures
 (parse error, unknown table, ``SELECT *``, DML/DDL). Never touches the engine
 or storage — it produces a ``SlayerQuery`` and lets the handler execute it.
 ``dialect`` affects only the parse step; WHERE conjuncts are emitted verbatim
-into ``SlayerQuery.filters`` for the engine's Mode B DSL.
+into ``SlayerQuery.filter`` for the engine's Mode B DSL.
 """
 
 from __future__ import annotations
@@ -24,24 +24,24 @@ from sqlglot.expressions.core import Expression
 from sqlglot.expressions.datatypes import DType
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType, TimeGranularity
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality, JoinType, TimeGranularity
+from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.core.refs import functional_agg_text
 from slayer.core.query import (
-    ColumnRef,
+    FieldRef,
     computed_dimension_name,
-    ModelExtension,
+    DatasetExtension,
     OrderItem,
     SlayerQuery,
     TimeDimension,
 )
-from slayer.core.syntax import measure_text_at_path
+from slayer.core.syntax import metric_text_at_path
 from slayer.engine.cardinality.inference import declares_solo_unique
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
     FacadeDimension,
-    FacadeJoin,
+    FacadeRelationship,
     FacadeMetric,
     FacadeTable,
     build_local_view,
@@ -151,18 +151,18 @@ class NoOpResult(TranslatorResult):
 class QueryResult(TranslatorResult):
     """Translated SlayerQuery for engine execution.
 
-    ``column_name_mapping`` (ordered to match the projection list) rewrites the
-    response's ``model.column`` keys back to the BI tool's flat names.
+    ``field_name_mapping`` (ordered to match the projection list) rewrites the
+    response's ``dataset.field`` keys back to the BI tool's flat names.
     ``projection_types`` is the catalog-declared ``DataType`` per item, ``None``
     → text at wire-schema build time.
     """
 
     query: SlayerQuery
-    column_name_mapping: list[tuple[str, str]]
+    field_name_mapping: list[tuple[str, str]]
     facade_table: FacadeTable
     schema_name: str
     projection_types: "list[DataType | None]"
-    # Datasource to execute against, from the FROM (and joined) table's model;
+    # Datasource to execute against, from the FROM (and joined) table's dataset;
     # ``None`` → facade falls back to its connection datasource.
     data_source: str | None = None
 
@@ -211,7 +211,7 @@ def _expand_select_star(
 ) -> list[Expression]:
     """Replace each top-level ``exp.Star`` with one column ref per non-hidden
     column on ``table``, preserving the order of any non-Star projections.
-    Only row-preserving dims expand — a fan-out join path would multiply the
+    Only row-preserving dims expand — a fan-out relationship path would multiply the
     browse-mode row grain; those dims stay individually addressable."""
     column_names = [d.name for d in table.dimensions if d.row_preserving]
     out: list[Expression] = []
@@ -225,10 +225,10 @@ def _expand_select_star(
     return out
 
 
-AGG_OVER_MEASURE_MESSAGE = (
-    "Aggregating over a saved measure or a non-column expression is not "
+AGG_OVER_METRIC_MESSAGE = (
+    "Aggregating over a saved metric or a non-column expression is not "
     "supported yet (only aggregates over base/joined columns are mapped). "
-    "Project the saved measure by its name instead."
+    "Project the saved metric by its name instead."
 )
 
 
@@ -347,7 +347,7 @@ def _is_admitted_cast(source: DataType | None, target: DataType) -> bool:
     return target in _CAST_ADMITTED_TARGETS.get(source, frozenset())
 
 
-def _column_to_dotted(
+def _field_to_dotted(
     col: exp.Column,
     *,
     strip_prefix: tuple[str, str] | None = None,
@@ -359,7 +359,7 @@ def _column_to_dotted(
     ``strip_prefix=(schema, table)`` drops a leading ``schema.table.`` qualifier
     (case-insensitive, ``public`` accepted) so ``"public"."orders"."customer_id"``
     resolves to bare ``customer_id``. ``alias_map`` rewrites a leading join-alias
-    qualifier to its SLayer model name first (``"Stores"."name"`` → ``stores.name``).
+    qualifier to its SLayer dataset name first (``"Stores"."name"`` → ``stores.name``).
     """
     parts: list[str] = []
     for key in ("catalog", "db", "table"):
@@ -377,7 +377,7 @@ def _apply_alias_remap(
     parts: list[str], alias_map: dict[str, str] | None,
 ) -> list[str]:
     """Rewrite the table-qualifier (2nd-to-last part) to its ``alias_map`` target
-    model name (case-insensitive), mapping ``<JoinAlias>.<col>`` → ``<model>.<col>``;
+    dataset name (case-insensitive), mapping ``<JoinAlias>.<col>`` → ``<dataset>.<col>``;
     return ``parts`` unchanged if no entry matches."""
     if not alias_map or len(parts) < 2:
         return parts
@@ -574,7 +574,7 @@ def _alias_for_extraction(
     part: str, col: exp.Column, *, strip_prefix: tuple[str, str] | None = None, alias_map: dict[str, str] | None = None,
 ) -> str:
     """The canonical projection name every spelling of one extraction shares."""
-    return f"date_part('{part}', {_column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
+    return f"date_part('{part}', {_field_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
 
 
 def _detect_time_grain(node: Expression) -> tuple[TimeGranularity, exp.Column] | None:
@@ -605,7 +605,7 @@ def _alias_for_time_grain(
 ) -> str:
     """The flat projection name for ``month(ordered_at)`` etc.: lowercased
     ``"<grain>(<column-ref>)"`` so it round-trips through GROUP BY / ORDER BY."""
-    return f"{grain.value}({_column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
+    return f"{grain.value}({_field_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)})"
 
 
 # --- aggregate-call detection -------------------------
@@ -618,7 +618,7 @@ class _AggCall(BaseModel):
 
     agg: str  # SLayer aggregation name: sum/avg/min/max/count/count_distinct
     inner_ref: str | None = None  # dotted column ref, or None for COUNT(*)
-    inner_is_column: bool = False  # False → COUNT(*) or non-column arg
+    inner_is_field: bool = False  # False → COUNT(*) or non-column arg
     is_count_star: bool = False  # True only for the literal COUNT(*)
 
 
@@ -631,89 +631,89 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
     """If ``node`` is a SQL aggregate call, classify it into an ``_AggCall``; else
     ``None``. ``COUNT(*)`` → count/no ref; ``COUNT(DISTINCT col)`` → count_distinct;
     ``SUM/AVG/MIN/MAX(col)`` → the matching agg. A non-column argument sets
-    ``inner_is_column=False`` (caller raises the saved-measure error). ``strip_prefix``
-    / ``alias_map`` normalise the inner column ref as in ``_column_to_dotted``.
+    ``inner_is_field=False`` (caller raises the saved-metric error). ``strip_prefix``
+    / ``alias_map`` normalise the inner column ref as in ``_field_to_dotted``.
     """
     def _dot(col: exp.Column) -> str:
-        return _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
+        return _field_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     if isinstance(node, exp.Count):
         inner = node.this
         if isinstance(inner, exp.Star):
-            return _AggCall(agg="count", inner_is_column=False, is_count_star=True)
+            return _AggCall(agg="count", inner_is_field=False, is_count_star=True)
         if isinstance(inner, exp.Distinct):
             exprs = inner.expressions
             if len(exprs) == 1 and isinstance(exprs[0], exp.Column):
                 return _AggCall(
                     agg="count_distinct",
                     inner_ref=_dot(exprs[0]),
-                    inner_is_column=True,
+                    inner_is_field=True,
                 )
-            return _AggCall(agg="count_distinct", inner_is_column=False)
+            return _AggCall(agg="count_distinct", inner_is_field=False)
         if isinstance(inner, exp.Column):
             return _AggCall(
-                agg="count", inner_ref=_dot(inner), inner_is_column=True,
+                agg="count", inner_ref=_dot(inner), inner_is_field=True,
             )
         # COUNT(<non-column expression>) — not the row-count star.
-        return _AggCall(agg="count", inner_is_column=False)
+        return _AggCall(agg="count", inner_is_field=False)
     for cls, name in _AGG_CLASS_TO_NAME.items():
         if isinstance(node, cls):
             inner = node.this
             if isinstance(inner, exp.Column):
                 return _AggCall(
-                    agg=name, inner_ref=_dot(inner), inner_is_column=True,
+                    agg=name, inner_ref=_dot(inner), inner_is_field=True,
                 )
-            return _AggCall(agg=name, inner_ref=None, inner_is_column=False)
+            return _AggCall(agg=name, inner_ref=None, inner_is_field=False)
     return None
 
 
-def _agg_formula(call: _AggCall) -> str:
-    """The functional measure formula for a recognised aggregate."""
+def _agg_expression(call: _AggCall) -> str:
+    """The functional metric expression for a recognised aggregate."""
     if call.is_count_star:
         return "count(*)"
     return functional_agg_text(source=call.inner_ref or "", suffix=call.agg)
 
 
-def _saved_measure_names(table: FacadeTable) -> set[str]:
-    """Names of saved ``ModelMeasure`` metrics (formula == name)."""
-    return {m.name for m in table.metrics if m.measure_formula == m.name}
+def _saved_metric_names(table: FacadeTable) -> set[str]:
+    """Names of saved ``DatasetMetric`` metrics (expression == name)."""
+    return {m.name for m in table.metrics if m.metric_expression == m.name}
 
 
 def _assert_local_metric(metric: FacadeMetric) -> None:
-    """Reject cross-model metric projection (dotted name) in a flat SELECT.
+    """Reject cross-dataset metric projection (dotted name) in a flat SELECT.
 
-    The catalog pre-expands cross-model metrics into dotted-name entries a
+    The catalog pre-expands cross-dataset metrics into dotted-name entries a
     hand-written ref can still resolve to; letting one into
-    ``SlayerQuery.measures[*].name`` trips the validator or mis-keys the engine
+    ``SlayerQuery.metrics[*].name`` trips the validator or mis-keys the engine
     result. Guard mirrors ``catalog.py:local_metrics``.
     """
     if "." in metric.name:
         raise TranslationError(
-            f"Cross-model metric {metric.name!r} cannot be projected in "
+            f"Cross-dataset metric {metric.name!r} cannot be projected in "
             f"a flat SELECT. Use a saved metric or rewrite as a multi-"
             f"stage query."
         )
 
 
 def _metric_for_aggregate(
-    call: _AggCall, table: FacadeTable, metrics_by_formula: dict[str, FacadeMetric],
+    call: _AggCall, table: FacadeTable, metrics_by_expression: dict[str, FacadeMetric],
 ) -> FacadeMetric:
     """Resolve an aggregate call to its catalog ``FacadeMetric``. The catalog
-    pre-expands every eligible column × aggregation, so a formula lookup
+    pre-expands every eligible column × aggregation, so an expression lookup
     validates column existence + aggregation eligibility in one step; failures
     raise ``TranslationError``.
     """
     # Only literal COUNT(*) is the row-count star; other non-column args need a
     # multi-stage rewrite.
-    if not call.is_count_star and not call.inner_is_column:
-        raise TranslationError(AGG_OVER_MEASURE_MESSAGE)
-    formula = _agg_formula(call)
-    metric = metrics_by_formula.get(formula)
+    if not call.is_count_star and not call.inner_is_field:
+        raise TranslationError(AGG_OVER_METRIC_MESSAGE)
+    formula = _agg_expression(call)
+    metric = metrics_by_expression.get(formula)
     if metric is not None:
         _assert_local_metric(metric)
         return metric
-    # Distinguish the saved-measure case for a clearer message.
-    if call.inner_ref is not None and call.inner_ref in _saved_measure_names(table):
-        raise TranslationError(AGG_OVER_MEASURE_MESSAGE)
+    # Distinguish the saved-metric case for a clearer message.
+    if call.inner_ref is not None and call.inner_ref in _saved_metric_names(table):
+        raise TranslationError(AGG_OVER_METRIC_MESSAGE)
     raise TranslationError(
         f"Aggregate {formula!r} is not available on table {table.name!r} — "
         f"the column may not exist or the aggregation may not be allowed for it."
@@ -724,7 +724,7 @@ def _metric_for_aggregate(
 
 
 def _flatten_catalog(catalog: FacadeCatalog) -> dict[str, list[tuple[str, FacadeTable]]]:
-    """Build a (model_name → [(schema, table), …]) index for bare-name lookup."""
+    """Build a (dataset_name → [(schema, table), …]) index for bare-name lookup."""
     by_name: dict[str, list[tuple[str, FacadeTable]]] = {}
     for sch in catalog.schemas:
         for tbl in sch.tables:
@@ -782,14 +782,14 @@ def _resolve_query_datasource(
     query (FROM and an explicitly joined table resolving to different sources),
     which SLayer cannot execute."""
     sources: set[str] = set()
-    if table.model_ref is not None and table.model_ref.data_source:
-        sources.add(table.model_ref.data_source)
+    if table.dataset_ref is not None and table.dataset_ref.data_source:
+        sources.add(table.dataset_ref.data_source)
     if (
         join_plan is not None
-        and join_plan.target_table.model_ref is not None
-        and join_plan.target_table.model_ref.data_source
+        and join_plan.target_table.dataset_ref is not None
+        and join_plan.target_table.dataset_ref.data_source
     ):
-        sources.add(join_plan.target_table.model_ref.data_source)
+        sources.add(join_plan.target_table.dataset_ref.data_source)
     if len(sources) > 1:
         raise TranslationError(
             "cross-datasource queries are not supported (referenced "
@@ -845,7 +845,7 @@ class _ProjectionItem(BaseModel):
     # A date-part extraction of ``time_grain_underlying`` (``month``, …).
     extraction: str | None = None
     # CAST(<column> AS <type>) target: overrides projection_types[i], leaving
-    # the engine alias and SlayerQuery measure/dimension untouched.
+    # the engine alias and SlayerQuery metric/dimension untouched.
     cast_target: DataType | None = None
 
 
@@ -859,7 +859,7 @@ def _resolve_time_grain_projection(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> _ProjectionItem:
-    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
+    dotted = _field_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     dim = dims_by_name.get(dotted)
     if dim is None:
         raise TranslationError(
@@ -891,7 +891,7 @@ def _resolve_extraction_projection(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> _ProjectionItem:
-    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
+    dotted = _field_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     dim = dims_by_name.get(dotted)
     if dim is None or not dim.is_time:
         raise TranslationError(
@@ -910,12 +910,12 @@ def _resolve_aggregate_projection(
     call: _AggCall,
     alias_name: str | None,
     table: FacadeTable,
-    metrics_by_formula: dict[str, FacadeMetric],
+    metrics_by_expression: dict[str, FacadeMetric],
 ) -> _ProjectionItem:
     """Map a SQL aggregate call to the same projection item a bare metric
     name would produce."""
     metric = _metric_for_aggregate(
-        call=call, table=table, metrics_by_formula=metrics_by_formula,
+        call=call, table=table, metrics_by_expression=metrics_by_expression,
     )
     return _ProjectionItem(
         projected_name=alias_name or metric.name,
@@ -923,7 +923,7 @@ def _resolve_aggregate_projection(
     )
 
 
-def _resolve_column_projection(
+def _resolve_field_projection(
     *,
     body: exp.Column,
     alias_name: str | None,
@@ -933,7 +933,7 @@ def _resolve_column_projection(
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> _ProjectionItem:
-    dotted = _column_to_dotted(body, strip_prefix=strip_prefix, alias_map=alias_map)
+    dotted = _field_to_dotted(body, strip_prefix=strip_prefix, alias_map=alias_map)
     if dotted in metrics_by_name:
         metric = metrics_by_name[dotted]
         _assert_local_metric(metric)
@@ -951,7 +951,7 @@ def _resolve_column_projection(
     )
 
 
-def _detect_column_cast(
+def _detect_field_cast(
     body: Expression,
 ) -> tuple[exp.Column, DataType] | None:
     """If ``body`` is ``CAST(<Column> AS <supported_type>)``, return ``(inner_col,
@@ -968,7 +968,7 @@ def _detect_column_cast(
     return inner, target
 
 
-def _resolve_column_cast_projection(
+def _resolve_field_cast_projection(
     *,
     body: exp.Column,
     cast_target: DataType,
@@ -982,7 +982,7 @@ def _resolve_column_cast_projection(
     """Resolve ``CAST(<column> AS <type>)`` to a projection item that runs the bare
     column through the engine and overrides the wire OID via ``cast_target``,
     enforcing the strict per-pair coercion allowlist."""
-    inner = _resolve_column_projection(
+    inner = _resolve_field_projection(
         body=body, alias_name=alias_name, table=table,
         metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
         strip_prefix=strip_prefix, alias_map=alias_map,
@@ -1052,12 +1052,12 @@ def _is_fingerprint_shape_wrap(
     if qualifier_parts < 2:
         return False  # not a 3-part (or deeper) qualified ref
     # strip_prefix dropping something confirms the schema.table prefix matches.
-    raw = _raw_column_parts(inner_col)
+    raw = _raw_field_parts(inner_col)
     stripped = _apply_strip_prefix(list(raw), strip_prefix)
     return len(stripped) < len(raw)
 
 
-def _raw_column_parts(col: exp.Column) -> list[str]:
+def _raw_field_parts(col: exp.Column) -> list[str]:
     """The qualifier parts plus leaf identifier of ``col``, in order."""
     parts: list[str] = []
     for key in ("catalog", "db", "table"):
@@ -1075,19 +1075,19 @@ def _build_projection_lookups(
     *,
     extra_dims_by_name: dict[str, FacadeDimension] | None = None,
     extra_metrics_by_name: dict[str, FacadeMetric] | None = None,
-    extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
+    extra_metrics_by_expression: dict[str, FacadeMetric] | None = None,
 ) -> tuple[dict[str, FacadeMetric], dict[str, FacadeMetric], dict[str, FacadeDimension]]:
     """Assemble the (metrics_by_name, metrics_by_formula, dims_by_name) lookups
     from the table metadata, overlaid with dynamic-join extras when supplied."""
     metrics_by_name = {m.name: m for m in table.metrics}
-    metrics_by_formula = {m.measure_formula: m for m in table.metrics}
+    metrics_by_formula = {m.metric_expression: m for m in table.metrics}
     dims_by_name = {d.name: d for d in table.dimensions}
     if extra_dims_by_name:
         dims_by_name.update(extra_dims_by_name)
     if extra_metrics_by_name:
         metrics_by_name.update(extra_metrics_by_name)
-    if extra_metrics_by_formula:
-        metrics_by_formula.update(extra_metrics_by_formula)
+    if extra_metrics_by_expression:
+        metrics_by_formula.update(extra_metrics_by_expression)
     return metrics_by_name, metrics_by_formula, dims_by_name
 
 
@@ -1098,13 +1098,13 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
     alias_map: dict[str, str] | None = None,
     extra_dims_by_name: dict[str, FacadeDimension] | None = None,
     extra_metrics_by_name: dict[str, FacadeMetric] | None = None,
-    extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
-    allow_column_cast: bool = True,
+    extra_metrics_by_expression: dict[str, FacadeMetric] | None = None,
+    allow_field_cast: bool = True,
 ) -> list[_ProjectionItem]:
     """Walk the projection list, classifying each item against the table.
 
     ``extra_dims_by_name`` / ``extra_metrics_by_*`` carry a dynamic LEFT-JOIN
-    target's materialised ``<target>.<col>`` lookups. ``allow_column_cast`` gates
+    target's materialised ``<target>.<col>`` lookups. ``allow_field_cast`` gates
     the CAST branch: pg-facade passes ``True`` (its wire encoders coerce), Flight
     passes ``False`` (its Arrow schema-binding has no value-coercion pass).
     """
@@ -1112,7 +1112,7 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
         table,
         extra_dims_by_name=extra_dims_by_name,
         extra_metrics_by_name=extra_metrics_by_name,
-        extra_metrics_by_formula=extra_metrics_by_formula,
+        extra_metrics_by_expression=extra_metrics_by_expression,
     )
     # Schema-qualified FROM: let column refs with the same prefix strip to bare.
     strip_prefix: tuple[str, str] | None = (
@@ -1152,17 +1152,17 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
         if agg_call is not None:
             out.append(_resolve_aggregate_projection(
                 call=agg_call, alias_name=alias_name, table=table,
-                metrics_by_formula=metrics_by_formula,
+                metrics_by_expression=metrics_by_formula,
             ))
             continue
 
         # CAST(<column> AS <type>): runs after the time-grain unwrap and the
         # aggregate detector (both take precedence). Gated by allow_column_cast.
-        if allow_column_cast:
-            cast_match = _detect_column_cast(body)
+        if allow_field_cast:
+            cast_match = _detect_field_cast(body)
             if cast_match is not None:
                 inner_col, cast_target = cast_match
-                out.append(_resolve_column_cast_projection(
+                out.append(_resolve_field_cast_projection(
                     body=inner_col, cast_target=cast_target,
                     alias_name=alias_name, table=table,
                     metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
@@ -1171,7 +1171,7 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
                 continue
 
         if isinstance(body, exp.Column):
-            out.append(_resolve_column_projection(
+            out.append(_resolve_field_projection(
                 body=body, alias_name=alias_name, table=table,
                 metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
                 strip_prefix=strip_prefix, alias_map=alias_map,
@@ -1188,9 +1188,9 @@ def _resolve_projection(  # NOSONAR(S3776) — flat dispatch over projection-exp
             logger.debug(
                 "hygiene-scalar wrapper %r dropped for fingerprint projection "
                 "(column %r)",
-                func_name, _column_to_dotted(inner_col, strip_prefix=strip_prefix),
+                func_name, _field_to_dotted(inner_col, strip_prefix=strip_prefix),
             )
-            out.append(_resolve_column_projection(
+            out.append(_resolve_field_projection(
                 body=inner_col, alias_name=alias_name, table=table,
                 metrics_by_name=metrics_by_name, dims_by_name=dims_by_name,
                 strip_prefix=strip_prefix, alias_map=alias_map,
@@ -1229,7 +1229,7 @@ def _lift_time_between(
     col = conj.this
     if not isinstance(col, exp.Column):
         return None
-    dotted = _column_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
+    dotted = _field_to_dotted(col, strip_prefix=strip_prefix, alias_map=alias_map)
     if dotted not in time_dim_names:
         return None
     lo = _literal_str(conj.args.get("low"))
@@ -1239,7 +1239,7 @@ def _lift_time_between(
     return None
 
 
-def _aggregate_alias_for_column(
+def _aggregate_alias_for_field(
     side: Expression,
     items_by_projected_name: dict[str, "_ProjectionItem"],
     *, strip_prefix: tuple[str, str] | None = None,
@@ -1252,7 +1252,7 @@ def _aggregate_alias_for_column(
     """
     if not isinstance(side, exp.Column):
         return None
-    name = _column_to_dotted(side, strip_prefix=strip_prefix, alias_map=alias_map)
+    name = _field_to_dotted(side, strip_prefix=strip_prefix, alias_map=alias_map)
     item = items_by_projected_name.get(name)
     if item is not None:
         return item.metric
@@ -1282,31 +1282,31 @@ def _metric_filter(
     *, strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
     metrics_by_name: Mapping[str, FacadeMetric] | None = None,
-    temporal_columns: AbstractSet[str] = frozenset(),
+    temporal_fields: AbstractSet[str] = frozenset(),
 ) -> str | None:
     """``conj`` as an aggregate filter, each metric reference (projected aggregate alias or catalog metric) replaced
-    by its measure formula and each time bound's literals as instants; ``None`` when it names no metric.
+    by its metric expression and each time bound's literals as instants; ``None`` when it names no metric.
 
     Metabase compiles post-aggregation filters to alias-bearing SQL (``WHERE "count" > 1``).
     """
     found: list[FacadeMetric] = []
 
     def swap(node: Expression) -> Expression:
-        metric = _aggregate_alias_for_column(
+        metric = _aggregate_alias_for_field(
             node, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
             metrics_by_name=metrics_by_name,
         )
         if metric is None:
             return node
         found.append(metric)
-        return exp.var(metric.measure_formula)
+        return exp.var(metric.metric_expression)
 
-    temporal = _temporal_predicate(temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map)
+    temporal = _temporal_predicate(temporal_fields, strip_prefix=strip_prefix, alias_map=alias_map)
     instantized = conj.transform(lambda n: _instantized_time_bound(n, temporal) or n)
     rewritten = _literal_last(instantized).transform(swap)
     if not found:
         return None
-    normalised = _normalise_predicate_columns(
+    normalised = _normalise_predicate_fields(
         _expand_between(rewritten), strip_prefix=strip_prefix, alias_map=alias_map)
     return _rewrite_neq(normalised.sql())
 
@@ -1356,20 +1356,20 @@ def _expand_between(node: Expression) -> Expression:
 
 
 def _temporal_predicate(
-    temporal_columns: AbstractSet[str],
+    temporal_fields: AbstractSet[str],
     *, strip_prefix: tuple[str, str] | None, alias_map: dict[str, str] | None,
 ) -> Callable[[Expression], bool]:
     def temporal(node: Expression) -> bool:
-        return isinstance(node, exp.Column) and _column_to_dotted(
+        return isinstance(node, exp.Column) and _field_to_dotted(
             node, strip_prefix=strip_prefix, alias_map=alias_map,
-        ) in temporal_columns
+        ) in temporal_fields
     return temporal
 
 
 def _classify_where_conjunct(
     conj: Expression, time_dim_names: set[str],
     *,
-    temporal_columns: AbstractSet[str] = frozenset(),
+    temporal_fields: AbstractSet[str] = frozenset(),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
 ) -> tuple[tuple[str, str, str] | None, str | None]:
@@ -1381,15 +1381,15 @@ def _classify_where_conjunct(
     render as ``BETWEEN x AND NULL`` (never true, silent zero rows), so they fall
     through to the verbatim path. Returns ``(None, verbatim_sql)`` otherwise.
 
-    The engine's Mode-B DSL parses ``SlayerQuery.filters``
+    The engine's Mode-B DSL parses ``SlayerQuery.filter``
     and only accepts single-dot dotted paths. Before serialising the
     verbatim fallback, normalise any ``exp.Column`` nodes in the
     predicate via ``strip_prefix`` so a WHERE clause like
     ``"public"."orders"."total" > 0`` lands as ``"total" > 0`` in
-    SlayerQuery.filters, not as the original 3-part-qualified form that
+    SlayerQuery.filter, not as the original 3-part-qualified form that
     the DSL parser would reject.
     """
-    temporal = _temporal_predicate(temporal_columns, strip_prefix=strip_prefix, alias_map=alias_map)
+    temporal = _temporal_predicate(temporal_fields, strip_prefix=strip_prefix, alias_map=alias_map)
     instantized = conj.transform(lambda n: _instantized_time_bound(n, temporal) or n)
     if isinstance(instantized, exp.Between):
         lifted = _lift_time_between(
@@ -1397,7 +1397,7 @@ def _classify_where_conjunct(
         )
         if lifted is not None:
             return lifted, None
-    normalised = _normalise_predicate_columns(
+    normalised = _normalise_predicate_fields(
         _expand_between(instantized), strip_prefix=strip_prefix, alias_map=alias_map,
     )
     op = _TIME_BOUND_OPS.get(type(normalised))
@@ -1406,18 +1406,18 @@ def _classify_where_conjunct(
     return None, _rewrite_neq(normalised.sql())
 
 
-def _normalise_predicate_columns(
+def _normalise_predicate_fields(
     node: Expression,
     *,
     strip_prefix: tuple[str, str] | None,
     alias_map: dict[str, str] | None = None,
 ) -> Expression:
     """Walk ``node`` and rewrite every ``exp.Column``: apply ``alias_map``
-    first (so ``<JoinAlias>.<col>`` becomes ``<model>.<col>``), then
+    first (so ``<JoinAlias>.<col>`` becomes ``<dataset>.<col>``), then
     ``strip_prefix`` (so the parent table's ``schema.table.`` qualifier
     drops), then ALWAYS emit the identifiers UNQUOTED.
 
-    The un-quoting is load-bearing, not cosmetic. ``SlayerQuery.filters``
+    The un-quoting is load-bearing, not cosmetic. ``SlayerQuery.filter``
     is parsed by the Mode B (Python-AST) DSL, where a double-quoted
     ``"merchantId"`` is a STRING LITERAL identical to ``'merchantId'`` —
     NOT a column reference (Python doesn't distinguish quote styles).
@@ -1432,7 +1432,7 @@ def _normalise_predicate_columns(
     def rewrite(child: Expression) -> Expression:
         if not isinstance(child, exp.Column):
             return child
-        original = _raw_column_parts(child)
+        original = _raw_field_parts(child)
         parts = _apply_alias_remap(list(original), alias_map)
         parts = _apply_strip_prefix(parts, strip_prefix)
         # Rebuild the Column with UNQUOTED identifiers. Even when the parts
@@ -1506,7 +1506,7 @@ def _apply_where(
     items_by_projected_name: dict[str, "_ProjectionItem"],
     filters_out: list[str],
     *,
-    temporal_columns: AbstractSet[str] = frozenset(),
+    temporal_fields: AbstractSet[str] = frozenset(),
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
     metrics_by_name: Mapping[str, FacadeMetric] | None = None,
@@ -1520,14 +1520,14 @@ def _apply_where(
     for conj in _split_and_chain(where.this):
         metric_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
-            metrics_by_name=metrics_by_name, temporal_columns=temporal_columns | time_dim_names,
+            metrics_by_name=metrics_by_name, temporal_fields=temporal_fields | time_dim_names,
         )
         if metric_form is not None:
             filters_out.append(metric_form)
             reads_aggregate = True
             continue
         lifted, verbatim = _classify_where_conjunct(
-            conj, time_dim_names, temporal_columns=temporal_columns | time_dim_names,
+            conj, time_dim_names, temporal_fields=temporal_fields | time_dim_names,
             strip_prefix=strip_prefix, alias_map=alias_map,
         )
         if lifted is not None:
@@ -1546,26 +1546,26 @@ def _apply_having(
     *,
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
-    extra_metrics_by_formula: dict[str, FacadeMetric] | None = None,
+    extra_metrics_by_expression: dict[str, FacadeMetric] | None = None,
     metrics_by_name: Mapping[str, FacadeMetric] | None = None,
-    temporal_columns: AbstractSet[str] = frozenset(),
+    temporal_fields: AbstractSet[str] = frozenset(),
 ) -> None:
     """Map HAVING conjuncts naming a metric, and ``HAVING <agg(col)> <cmp> <literal>``,
     to aggregate filters, which the engine classifies as HAVING.
 
-    ``extra_metrics_by_formula`` overlay covers dynamic-join
+    ``extra_metrics_by_expression`` overlay covers dynamic-join
     targets whose metrics aren't yet in the catalog's projection.
     """
     if having is None:
         return
-    metrics_by_formula = {m.measure_formula: m for m in table.metrics}
-    if extra_metrics_by_formula:
-        metrics_by_formula.update(extra_metrics_by_formula)
+    metrics_by_formula = {m.metric_expression: m for m in table.metrics}
+    if extra_metrics_by_expression:
+        metrics_by_formula.update(extra_metrics_by_expression)
     for conj in _split_and_chain(having.this):
         # Metric-name form (``HAVING "rev" > 1000``) wins before the agg-call form.
         metric_form = _metric_filter(
             conj, items_by_projected_name, strip_prefix=strip_prefix, alias_map=alias_map,
-            metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
+            metrics_by_name=metrics_by_name, temporal_fields=temporal_fields,
         )
         if metric_form is not None:
             filters_out.append(metric_form)
@@ -1582,12 +1582,12 @@ def _apply_having(
         agg_lhs = _detect_aggregate(lhs, strip_prefix=strip_prefix, alias_map=alias_map)
         agg_rhs = _detect_aggregate(rhs, strip_prefix=strip_prefix, alias_map=alias_map)
         if agg_lhs is not None and agg_rhs is None and _is_literal_operand(rhs):
-            _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_formula=metrics_by_formula)
-            filters_out.append(f"{_agg_formula(agg_lhs)} {op_sql} {rhs.sql()}")
+            _metric_for_aggregate(call=agg_lhs, table=table, metrics_by_expression=metrics_by_formula)
+            filters_out.append(f"{_agg_expression(agg_lhs)} {op_sql} {rhs.sql()}")
         elif agg_rhs is not None and agg_lhs is None and _is_literal_operand(lhs):
-            _metric_for_aggregate(call=agg_rhs, table=table, metrics_by_formula=metrics_by_formula)
+            _metric_for_aggregate(call=agg_rhs, table=table, metrics_by_expression=metrics_by_formula)
             flipped = _flip_comparator(op_sql)
-            filters_out.append(f"{_agg_formula(agg_rhs)} {flipped} {lhs.sql()}")
+            filters_out.append(f"{_agg_expression(agg_rhs)} {flipped} {lhs.sql()}")
         else:
             raise TranslationError(
                 f"Unsupported HAVING expression: {conj.sql()!r}; expected "
@@ -1674,7 +1674,7 @@ def _reject_lossy_cast_or_pass(
 def _resolve_order_by_item(
     body: Expression,
     item_by_projected_name: dict[str, _ProjectionItem],
-    metric_item_by_formula: dict[str, _ProjectionItem],
+    metric_item_by_expression: dict[str, _ProjectionItem],
     *,
     strip_prefix: tuple[str, str] | None = None,
     alias_map: dict[str, str] | None = None,
@@ -1685,7 +1685,7 @@ def _resolve_order_by_item(
     ``_order_by_name``); on miss, fallback maps a literal aggregate
     call (``ORDER BY SUM(revenue)``) to the projection registered under a
     different alias (``SELECT SUM(revenue) AS "rev"``) by matching on the
-    aggregate's canonical ``measure_formula``. Returns ``(item, name)`` so
+    aggregate's canonical ``metric_expression``. Returns ``(item, name)`` so
     the lossy-CAST check downstream has both the resolved item and
     the user-visible name for error messaging. Raises ``TranslationError``
     if neither path resolves.
@@ -1695,7 +1695,7 @@ def _resolve_order_by_item(
     if item is None:
         agg = _detect_aggregate(body, strip_prefix=strip_prefix, alias_map=alias_map)
         if agg is not None:
-            item = metric_item_by_formula.get(_agg_formula(agg))
+            item = metric_item_by_expression.get(_agg_expression(agg))
     if item is None:
         raise TranslationError(
             f"ORDER BY column {name!r} is not in the projection list"
@@ -1719,8 +1719,8 @@ def _translate_order_by(
     # — but ``item_by_projected_name`` is keyed on the user alias (``"rev"``).
     # Build a fallback map keyed by ``metric.measure_formula`` so a repeated
     # aggregate call resolves to the same projection the alias does.
-    metric_item_by_formula: dict[str, _ProjectionItem] = {
-        item.metric.measure_formula: item
+    metric_item_by_expression: dict[str, _ProjectionItem] = {
+        item.metric.metric_expression: item
         for item in item_by_projected_name.values()
         if item.metric is not None
     }
@@ -1732,7 +1732,7 @@ def _translate_order_by(
         ordinal = _ordinal(ord_expr.this, count=len(items))
         item, name = (items[ordinal - 1], items[ordinal - 1].projected_name) if ordinal is not None else (
             _resolve_order_by_item(
-                ord_expr.this, item_by_projected_name, metric_item_by_formula,
+                ord_expr.this, item_by_projected_name, metric_item_by_expression,
                 strip_prefix=strip_prefix, alias_map=alias_map,
             )
         )
@@ -1741,20 +1741,20 @@ def _translate_order_by(
             lossy_pairs=_LOSSY_ORDER_BY_CAST_PAIRS,
         )
         if item.extraction is not None:
-            out.append(OrderItem.model_validate({"column": _extraction_expression(item), "direction": direction}))
+            out.append(OrderItem.model_validate({"field": _extraction_expression(item), "direction": direction}))
             continue
         if item.metric is not None:
             # use the projection's SELECT alias, not the catalog
             # ``FacadeMetric.name``. ``_record_metric`` registered the SLayer
-            # measure under ``projected_name``, so the OrderItem must point
-            # at the same name. Pre-fix the engine saw ``ColumnRef("row_count")``
-            # against a measure named ``"count"`` and DuckDB rejected with
+            # metric under ``projected_name``, so the OrderItem must point
+            # at the same name. Pre-fix the engine saw ``FieldRef("row_count")``
+            # against a metric named ``"count"`` and DuckDB rejected with
             # ``Referenced column "orders.row_count" not found``.
-            ref = ColumnRef(name=item.projected_name)
+            ref = FieldRef(name=item.projected_name)
         else:
             assert item.dimension is not None
-            ref = ColumnRef.from_string(item.dimension.dimension_ref)
-        out.append(OrderItem(column=ref, direction=direction))
+            ref = FieldRef.from_string(item.dimension.dimension_ref)
+        out.append(OrderItem(field=ref, direction=direction))
     return out
 
 
@@ -1781,9 +1781,9 @@ def _order_by_name(
     item registered for ``SUM(amount)``.
     """
     if isinstance(body, exp.Column):
-        return _column_to_dotted(body, strip_prefix=strip_prefix, alias_map=alias_map)
+        return _field_to_dotted(body, strip_prefix=strip_prefix, alias_map=alias_map)
     agg = _detect_aggregate(body, strip_prefix=strip_prefix, alias_map=alias_map)
-    if agg is not None and agg.inner_is_column:
+    if agg is not None and agg.inner_is_field:
         return f"{agg.inner_ref}_{agg.agg}"
     if agg is not None and agg.is_count_star:
         return "row_count"
@@ -1819,7 +1819,7 @@ def _validate_group_by(  # NOSONAR(S3776) — single GROUP BY validation pass; e
     user_items: list[str] = []
     for g in group.args.get("expressions") or []:
         if isinstance(g, exp.Column):
-            user_items.append(_column_to_dotted(g, strip_prefix=strip_prefix, alias_map=alias_map))
+            user_items.append(_field_to_dotted(g, strip_prefix=strip_prefix, alias_map=alias_map))
         else:
             grain_match = _detect_time_grain(g)
             if grain_match is not None:
@@ -1869,8 +1869,8 @@ def _reject_lossy_cast_in_implicit_grouping(
 ) -> None:
     """When the user omits an explicit GROUP BY
     but projects at least one dimension, SLayer auto-groups (dim-only-dedup
-    when there are no measures, mandatory dim-group when there are
-    measures). The auto-grouping is by the bare engine column, so a
+    when there are no metrics, mandatory dim-group when there are
+    metrics). The auto-grouping is by the bare engine column, so a
     CAST-projected dimension with a lossy (source, target) pair has the
     same correctness gap as an explicit ``GROUP BY <alias>`` would. Run
     the same lossy check the explicit-GROUP-BY path runs, on each
@@ -2175,7 +2175,7 @@ def translate(
     catalog_sql_executor: (
         "CatalogSqlExecutorProtocol | Callable[[], CatalogSqlExecutorProtocol] | None"
     ) = None,
-    allow_column_cast: bool = True,
+    allow_field_cast: bool = True,
     expand_star_in_browse_mode: bool = False,
 ) -> TranslatorResult:
     """Translate a SQL string into a TranslatorResult.
@@ -2240,7 +2240,7 @@ def translate(
 
     # Step 5 / 6 — SLayer-table translation.
     return _translate_slayer_select(
-        parsed, catalog, allow_column_cast=allow_column_cast,
+        parsed, catalog, allow_field_cast=allow_field_cast,
         expand_star_in_browse_mode=expand_star_in_browse_mode,
     )
 
@@ -2284,13 +2284,13 @@ class _ProjectionPlan(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    measures: list[dict]
-    dimension_refs: list[ColumnRef]
+    metrics: list[dict]
+    dimension_refs: list[FieldRef]
     expression_dims: list[str]
     time_dims: list[TimeDimension]
     time_dim_by_name: dict[str, TimeDimension]
     derived_dims: list[str]
-    column_name_mapping: list[tuple[str, str]]
+    field_name_mapping: list[tuple[str, str]]
     projection_types: list[DataType | None]
 
 
@@ -2298,12 +2298,12 @@ def _record_metric(
     *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
 ) -> None:
     assert item.metric is not None
-    plan.measures.append({
-        "formula": item.metric.measure_formula,
+    plan.metrics.append({
+        "expression": item.metric.metric_expression,
         "name": item.projected_name,
     })
     engine_alias = f"{table.name}.{item.projected_name}"
-    plan.column_name_mapping.append((engine_alias, item.projected_name))
+    plan.field_name_mapping.append((engine_alias, item.projected_name))
     # CAST(<metric_ref> AS T) overrides the declared metric type.
     plan.projection_types.append(item.cast_target or item.metric.data_type)
 
@@ -2313,7 +2313,7 @@ def _record_time_grain(
 ) -> None:
     assert item.time_grain is not None and item.time_grain_underlying is not None
     dotted = item.time_grain_underlying.dimension_ref
-    td = TimeDimension.model_validate({"dimension": dotted, "granularity": item.time_grain})
+    td = TimeDimension.model_validate({"field": dotted, "granularity": item.time_grain})
     plan.time_dims.append(td)
     plan.time_dim_by_name[dotted] = td
     plan.derived_dims.append(item.projected_name)
@@ -2327,7 +2327,7 @@ def _record_time_grain(
     if canonical != item.projected_name:
         plan.derived_dims.append(canonical)
     engine_alias = f"{table.name}.{dotted}"
-    plan.column_name_mapping.append((engine_alias, item.projected_name))
+    plan.field_name_mapping.append((engine_alias, item.projected_name))
     plan.projection_types.append(item.time_grain_underlying.data_type)
 
 
@@ -2340,7 +2340,7 @@ def _record_extraction(
     plan.derived_dims.append(item.projected_name)
     if expression != item.projected_name:
         plan.derived_dims.append(expression)
-    plan.column_name_mapping.append((f"{table.name}.{computed_dimension_name(expression)}", item.projected_name))
+    plan.field_name_mapping.append((f"{table.name}.{computed_dimension_name(expression)}", item.projected_name))
     plan.projection_types.append(DataType.INT)
 
 
@@ -2353,7 +2353,7 @@ def _record_dimension(
     *, plan: _ProjectionPlan, item: _ProjectionItem, table: FacadeTable,
 ) -> None:
     assert item.dimension is not None
-    plan.dimension_refs.append(ColumnRef.from_string(item.dimension.dimension_ref))
+    plan.dimension_refs.append(FieldRef.from_string(item.dimension.dimension_ref))
     plan.derived_dims.append(item.projected_name)
     # (mirrors the time-grain canonical-alias trick): when the
     # projection aliases a joined-col dim (e.g. ``"Stores"."name" AS
@@ -2363,7 +2363,7 @@ def _record_dimension(
     if item.dimension.dimension_ref != item.projected_name:
         plan.derived_dims.append(item.dimension.dimension_ref)
     engine_alias = f"{table.name}.{item.dimension.dimension_ref}"
-    plan.column_name_mapping.append((engine_alias, item.projected_name))
+    plan.field_name_mapping.append((engine_alias, item.projected_name))
     # CAST(<dim_ref> AS T) overrides the declared dim type.
     plan.projection_types.append(item.cast_target or item.dimension.data_type)
 
@@ -2372,8 +2372,8 @@ def _build_projection_plan(
     items: Sequence[_ProjectionItem], table: FacadeTable,
 ) -> _ProjectionPlan:
     plan = _ProjectionPlan(
-        measures=[], dimension_refs=[], expression_dims=[], time_dims=[], time_dim_by_name={},
-        derived_dims=[], column_name_mapping=[], projection_types=[],
+        metrics=[], dimension_refs=[], expression_dims=[], time_dims=[], time_dim_by_name={},
+        derived_dims=[], field_name_mapping=[], projection_types=[],
     )
     for item in items:
         if item.metric is not None:
@@ -2493,7 +2493,7 @@ def _parse_left_join(
     )
 
 
-def _join_subquery_columns(inner: exp.Select) -> frozenset[str] | None:
+def _join_subquery_fields(inner: exp.Select) -> frozenset[str] | None:
     """The columns a join subquery exposes, each a plain column under its own name; ``None`` with a ``*``."""
     names: set[str] = set()
     star = False
@@ -2512,13 +2512,13 @@ def _join_subquery_columns(inner: exp.Select) -> frozenset[str] | None:
     return None if star else frozenset(names)
 
 
-def _reject_unprojected_join_columns(parsed: exp.Select) -> None:
+def _reject_unprojected_join_fields(parsed: exp.Select) -> None:
     """Every ``<join alias>.<col>`` must name a column its subquery projects (case-insensitively, as ON resolves)."""
     joins = parsed.args.get("joins") or []
     if not joins:
         return
     subquery = joins[0].this
-    exposed = _join_subquery_columns(subquery.this)
+    exposed = _join_subquery_fields(subquery.this)
     if exposed is None:
         return
     exposed_folded = {name.casefold() for name in exposed}
@@ -2599,7 +2599,7 @@ def _resolve_join_subquery_target(
     if inner_from is None:
         raise TranslationError(
             "LEFT JOIN subquery body must have a FROM clause naming a "
-            "single SLayer model."
+            "single SLayer dataset."
         )
     # Reject inner comma-join shape (FROM a, b).
     inner_table = inner_from.this
@@ -2625,7 +2625,7 @@ def _parse_on_clause(
     qualified column and a join-alias-qualified column.
 
     Returns ``(source_col, target_col)`` in the canonical case used by
-    the underlying ``SlayerModel.columns[]`` (case-insensitive ON-column
+    the underlying ``SlayerDataset.fields[]`` (case-insensitive ON-column
     lookup catches hand-written UPPERCASE refs that Postgres folds to
     lowercase). Hidden columns counted.
     """
@@ -2658,8 +2658,8 @@ def _parse_on_clause(
             f"join alias ({alias!r}); got {on.sql()!r}."
         )
     return (
-        _canonical_column_or_raise(parent_table, source_raw, role="parent"),
-        _canonical_column_or_raise(target_table, target_raw, role="target"),
+        _canonical_field_or_raise(parent_table, source_raw, role="parent"),
+        _canonical_field_or_raise(target_table, target_raw, role="target"),
     )
 
 
@@ -2675,7 +2675,7 @@ def _matches_parent_qualifier(
     qual: str | None, parent_name: str,
 ) -> bool:
     """True if the qualifier names the parent table (case-insensitive).
-    Schema-prefix form is handled by ``_column_to_dotted``'s strip path,
+    Schema-prefix form is handled by ``_field_to_dotted``'s strip path,
     so this only matches the table-name segment."""
     return qual is not None and _ci_eq(qual, parent_name)
 
@@ -2689,35 +2689,35 @@ def _leaf(col: exp.Column) -> str:
     return str(leaf.this) if hasattr(leaf, "this") else str(leaf)
 
 
-def _canonical_column_or_raise(
+def _canonical_field_or_raise(
     table: FacadeTable, col_name: str, *, role: str,
 ) -> str:
-    """Lookup ``col_name`` against the underlying ``SlayerModel.columns[]``
+    """Lookup ``col_name`` against the underlying ``SlayerDataset.fields[]``
     (hidden cols counted). Returns the canonical column name; raises
     ``TranslationError`` on no match OR on case-insensitive ambiguity.
 
     Resolution order (Codex round 2):
       1. Exact (case-sensitive) match — preferred so user intent wins
-         when the model has two columns differing only by case
+         when the dataset has two fields differing only by case
          (``store_id`` and ``Store_ID``).
       2. Case-insensitive match — used when no exact match exists.
          Raises if multiple columns match case-insensitively (Postgres
          folds unquoted identifiers; sqlglot preserves what's written,
          so a hand-written ``ON ... = STORE_ID`` should pick the lower-
          case canonical column when that's the only match, but error
-         loudly if the model carries both cases).
+         loudly if the dataset carries both cases).
 
     Postgres folds unquoted identifiers to lowercase but
     sqlglot preserves what was written, so hand-written SQL like
     ``ON ORDERS.STORE_ID = STORES.ID`` would otherwise fail to match
-    against a model whose ``Column.name`` is ``store_id``. The canonical
-    return propagates the model-side casing to every downstream
+    against a dataset whose ``DatasetField.name`` is ``store_id``. The canonical
+    return propagates the dataset-side casing to every downstream
     comparison (the configured-join existence check, the dynamic-join
-    ``ModelExtension`` build).
+    ``DatasetExtension`` build).
     """
-    if table.model_ref is None:
+    if table.dataset_ref is None:
         return col_name
-    columns = table.model_ref.columns
+    columns = table.dataset_ref.fields
     for c in columns:
         if c.name == col_name:
             return c.name
@@ -2743,43 +2743,43 @@ def _match_parent_join(
     target_name: str,
     source_col: str,
     target_col: str,
-) -> FacadeJoin | None:
+) -> FacadeRelationship | None:
     """The parent's incident edge (either orientation) to ``target_name`` on exactly
     the emitted ON columns; ``None`` when no edge reaches the target (dynamic fallback).
 
     Raises when edges reach the target but none — or several — match the ON columns
-    (an additive ModelExtension would duplicate an existing join).
+    (an additive DatasetExtension would duplicate an existing relationship).
     """
-    same_target = [j for j in parent_table.joins if j.target_model == target_name]
+    same_target = [j for j in parent_table.relationships if j.to == target_name]
     if not same_target:
         return None
     matching = [j for j in same_target if list(j.join_pairs) == [[source_col, target_col]]]
     if len(matching) == 1:
         return matching[0]
     configured = [j.join_pairs for j in same_target]
-    problem = "match several configured joins" if matching else "do not match the configured join_pairs"
+    problem = "match several configured relationships" if matching else "do not match the configured join_pairs"
     raise TranslationError(
         f"LEFT JOIN to {target_name!r} uses ON columns "
         f"({source_col!r}, {target_col!r}) which {problem} ({configured}) on "
-        f"{parent_table.name!r}. ModelExtension cannot override an existing join — "
-        f"adjust the emitted SQL to match a configured join, or update the model joins."
+        f"{parent_table.name!r}. DatasetExtension cannot override an existing relationship — "
+        f"adjust the emitted SQL to match a configured relationship, or update the dataset relationships."
     )
 
 
 def _materialise_dynamic_join_lookups(
     *,
-    target_model: SlayerModel,
+    target_dataset: SlayerDataset,
     extra_dims_by_name: dict[str, FacadeDimension],
     extra_metrics_by_name: dict[str, FacadeMetric],
-    extra_metrics_by_formula: dict[str, FacadeMetric],
+    extra_metrics_by_expression: dict[str, FacadeMetric],
 ) -> None:
     """For a dynamic-join target (no configured BFS expansion in the
     catalog), build the bare-col dims and col×agg metrics keyed by
     ``<target>.<col>`` / ``<agg>(<target>.<col>)`` so the projection /
     aggregate / WHERE / HAVING resolution paths find the joined refs.
     """
-    local_dims, local_metrics = build_local_view(target_model)
-    prefix = target_model.name
+    local_dims, local_metrics = build_local_view(target_dataset)
+    prefix = target_dataset.name
     for dim in local_dims:
         ref = f"{prefix}.{dim.dimension_ref}"
         extra_dims_by_name[ref] = FacadeDimension(
@@ -2791,29 +2791,29 @@ def _materialise_dynamic_join_lookups(
             dimension_ref=ref,
         )
     for m in local_metrics:
-        formula = measure_text_at_path(m.measure_formula, path=[prefix])
+        formula = metric_text_at_path(m.metric_expression, path=[prefix])
         new_metric = FacadeMetric(
             name=f"{prefix}.{m.name}",
             description=m.description,
             label=m.label,
             data_type=m.data_type,
-            measure_formula=formula,
+            metric_expression=formula,
         )
         extra_metrics_by_name[f"{prefix}.{m.name}"] = new_metric
-        extra_metrics_by_formula[formula] = new_metric
+        extra_metrics_by_expression[formula] = new_metric
 
 
 def _extensions_from_join(
     *, parent_name: str, plan: _JoinPlan,
-) -> list[ModelExtension]:
-    """The query extensions the join plan needs: none when an existing configured join matched, else one
-    ``ModelExtension`` of the parent carrying the dynamically-built ``ModelJoin``."""
+) -> list[DatasetExtension]:
+    """The query extensions the join plan needs: none when an existing configured relationship matched, else one
+    ``DatasetExtension`` of the parent carrying the dynamically-built ``DatasetRelationship``."""
     if not plan.is_dynamic:
         return []
-    return [ModelExtension(
+    return [DatasetExtension(
         source_name=parent_name,
-        joins=[ModelJoin(
-            target_model=plan.target_table.name,
+        relationships=[DatasetRelationship(
+            to=plan.target_table.name,
             join_pairs=[[plan.source_col, plan.target_col]],
             join_type=JoinType.LEFT,
             cardinality=_dynamic_join_cardinality(plan),
@@ -2821,17 +2821,17 @@ def _extensions_from_join(
     )]
 
 
-def _dynamic_join_cardinality(plan: "_JoinPlan") -> JoinCardinality | None:
+def _dynamic_join_cardinality(plan: "_JoinPlan") -> RelationshipCardinality | None:
     """``many_to_one`` when the target column alone is unique, else undetermined."""
-    model_ref = plan.target_table.model_ref
+    model_ref = plan.target_table.dataset_ref
     if model_ref is None:
         return None
-    for col in model_ref.columns:
+    for col in model_ref.fields:
         if col.name.lower() == plan.target_col.lower():
             # The join constrains one column, so a composite-PK member does
             # not qualify — same subset rule as is_key_set_unique.
-            if declares_solo_unique(columns=model_ref.columns, column=col):
-                return JoinCardinality.MANY_TO_ONE
+            if declares_solo_unique(fields=model_ref.fields, field=col):
+                return RelationshipCardinality.MANY_TO_ONE
             return None
     return None
 
@@ -2840,14 +2840,14 @@ def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
     if plan.is_dynamic:
         logger.warning(
             "pg-facade: dynamic join from %r to %r on %r=%r — no configured "
-            "join matched in parent.joins[]; using a ModelExtension to honor "
+            "relationship matched in parent.relationships[]; using a DatasetExtension to honor "
             "the emitted ON clause.",
             parent_name, plan.target_table.name, plan.source_col, plan.target_col,
         )
     elif plan.warn_cardinality:
         logger.warning(
-            "pg-facade: LEFT JOIN to %r matched a configured non-LEFT join "
-            "(join_type=INNER on %r.joins) — using the configured join_type "
+            "pg-facade: LEFT JOIN to %r matched a configured non-LEFT relationship "
+            "(join_type=INNER on %r.relationships) — using the configured join_type "
             "but cardinality semantics differ from the emitted SQL.",
             plan.target_table.name, parent_name,
         )
@@ -2870,7 +2870,7 @@ class _JoinOverlays(BaseModel):
     alias_map: dict[str, str] | None = None
     extra_dims_by_name: dict[str, FacadeDimension] = {}
     extra_metrics_by_name: dict[str, FacadeMetric] = {}
-    extra_metrics_by_formula: dict[str, FacadeMetric] = {}
+    extra_metrics_by_expression: dict[str, FacadeMetric] = {}
 
 
 def _prepare_join_overlays(
@@ -2884,12 +2884,12 @@ def _prepare_join_overlays(
     overlays = _JoinOverlays(
         alias_map={join_plan.alias: join_plan.path},
     )
-    if join_plan.is_dynamic and join_plan.target_table.model_ref is not None:
+    if join_plan.is_dynamic and join_plan.target_table.dataset_ref is not None:
         _materialise_dynamic_join_lookups(
-            target_model=join_plan.target_table.model_ref,
+            target_dataset=join_plan.target_table.dataset_ref,
             extra_dims_by_name=overlays.extra_dims_by_name,
             extra_metrics_by_name=overlays.extra_metrics_by_name,
-            extra_metrics_by_formula=overlays.extra_metrics_by_formula,
+            extra_metrics_by_expression=overlays.extra_metrics_by_expression,
         )
     _emit_join_warnings(join_plan, parent_name)
     return overlays
@@ -2943,7 +2943,7 @@ def _projection_exprs(
     raise TranslationError(SELECT_STAR_MESSAGE)
 
 
-def _temporal_column_names(table: FacadeTable, overlays: _JoinOverlays) -> set[str]:
+def _temporal_field_names(table: FacadeTable, overlays: _JoinOverlays) -> set[str]:
     return {
         d.name for d in (*table.dimensions, *overlays.extra_dims_by_name.values())
         if d.data_type in (DataType.DATE, DataType.TIMESTAMP)
@@ -2952,7 +2952,7 @@ def _temporal_column_names(table: FacadeTable, overlays: _JoinOverlays) -> set[s
 
 def _translate_slayer_select(
     parsed: exp.Select, catalog: FacadeCatalog,
-    *, allow_column_cast: bool = True,
+    *, allow_field_cast: bool = True,
     expand_star_in_browse_mode: bool = False,
 ) -> QueryResult:
     from_clause = parsed.args.get("from_")
@@ -2977,7 +2977,7 @@ def _translate_slayer_select(
         parent_table=table,
         catalog=catalog,
     )
-    _reject_unprojected_join_columns(parsed)
+    _reject_unprojected_join_fields(parsed)
     data_source = _resolve_query_datasource(table=table, join_plan=join_plan)
     overlays = _prepare_join_overlays(join_plan, table.name)
 
@@ -2987,8 +2987,8 @@ def _translate_slayer_select(
         alias_map=overlays.alias_map,
         extra_dims_by_name=overlays.extra_dims_by_name or None,
         extra_metrics_by_name=overlays.extra_metrics_by_name or None,
-        extra_metrics_by_formula=overlays.extra_metrics_by_formula or None,
-        allow_column_cast=allow_column_cast,
+        extra_metrics_by_expression=overlays.extra_metrics_by_expression or None,
+        allow_field_cast=allow_field_cast,
     )
     plan = _build_projection_plan(items, table)
     item_by_projected_name = _index_items_by_canonical_form(items)
@@ -3002,11 +3002,11 @@ def _translate_slayer_select(
 
     filters: list[str] = []
     metrics_by_name = _metrics_by_name(table, overlays)
-    temporal_columns = _temporal_column_names(table, overlays)
+    temporal_columns = _temporal_field_names(table, overlays)
     where_reads_aggregate = _apply_where(
         parsed.args.get("where"), plan.time_dim_by_name,
         item_by_projected_name, filters,
-        temporal_columns=temporal_columns,
+        temporal_fields=temporal_columns,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
         metrics_by_name=metrics_by_name,
     )
@@ -3014,8 +3014,8 @@ def _translate_slayer_select(
         parsed.args.get("having"), table,
         item_by_projected_name, filters,
         strip_prefix=strip_prefix, alias_map=overlays.alias_map,
-        extra_metrics_by_formula=overlays.extra_metrics_by_formula or None,
-        metrics_by_name=metrics_by_name, temporal_columns=temporal_columns,
+        extra_metrics_by_expression=overlays.extra_metrics_by_expression or None,
+        metrics_by_name=metrics_by_name, temporal_fields=temporal_columns,
     )
 
     order_items = _translate_order_by(
@@ -3026,25 +3026,25 @@ def _translate_slayer_select(
     extensions = _extensions_from_join(parent_name=table.name, plan=join_plan) if join_plan is not None else []
 
     query = SlayerQuery.model_validate({
-        "source_model": table.name,
+        "population": table.name,
         "extensions": extensions or None,
-        "measures": plan.measures or None,
+        "metrics": plan.metrics or None,
         "dimensions": [*plan.dimension_refs, *plan.expression_dims] or None,
         "time_dimensions": plan.time_dims or None,
-        "filters": filters or None,
+        "filter": filters or None,
         "order": order_items or None,
         "limit": _parse_int_literal(parsed.args.get("limit")),
         "offset": _parse_int_literal(parsed.args.get("offset")),
         # SQL row semantics: only an aggregate, a metric, GROUP BY, HAVING or DISTINCT groups.
         "distinct_dimension_values": bool(
-            plan.measures or group or parsed.args.get("having") or parsed.args.get("distinct")
+            plan.metrics or group or parsed.args.get("having") or parsed.args.get("distinct")
             or where_reads_aggregate
         ),
     })
 
     return QueryResult(
         query=query,
-        column_name_mapping=plan.column_name_mapping,
+        field_name_mapping=plan.field_name_mapping,
         facade_table=table,
         schema_name=schema_name,
         projection_types=plan.projection_types,

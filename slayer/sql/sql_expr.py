@@ -20,7 +20,7 @@ Dialect-specific rewrites:
 * ``log10(x)`` and ``log2(x)`` are preserved as written rather than
   canonicalised to ``LOG(10, x)`` / ``LOG(2, x)``. sqlglot's default
   normalises both into a generic ``Log(base, expression)`` node, which
-  is correct numerically but breaks formula round-tripping for benchmark
+  is correct numerically but breaks expression round-tripping for benchmark
   agents reading ``last_sql`` and trips dialects without a 2-arg
   ``LOG``. The per-dialect policy is the shared ``rewrite_log_aliases``
   (driven by ``SqlDialect.should_use_native_log``), not a local allowlist.
@@ -124,7 +124,7 @@ def assert_no_window_in_filter(text: str, *, source: str) -> None:
     """Raise ``IllegalWindowInFilterError`` if ``text`` contains a
     window function.
 
-    ``source`` identifies the call site (e.g. ``"Column.filter on
+    ``source`` identifies the call site (e.g. ``"DatasetField.filter on
     orders.foo"``); it's surfaced in the exception message so the
     binder can produce actionable errors without re-formatting.
     """

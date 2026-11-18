@@ -32,11 +32,11 @@ class TestSavedMeasureAnchors:
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["tickets.reporter.handled > 0"],
+                filter=["tickets.reporter.handled > 0"],
             ),
             storage=storage,
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
         assert choice.data_source == DS_CHAIN
 
     async def test_saved_measure_colliding_with_sibling_stage_name(
@@ -47,12 +47,12 @@ class TestSavedMeasureAnchors:
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["orders.revenue > 100"],
+                filter=["orders.revenue > 100"],
             ),
             storage=storage,
             sibling_stage_names={"orders"},
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
 
 class TestFoldPins:
@@ -63,7 +63,7 @@ class TestFoldPins:
         same-named custom aggregation), so its anchor stays and cross-datasource
         scoping still fails closed."""
         query = SlayerQuery(
-            dimensions=["customers.region"], filters=["agents.score > 0"],
+            dimensions=["customers.region"], filter=["agents.score > 0"],
         )
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
@@ -74,7 +74,7 @@ class TestFoldPins:
     ) -> None:
         """Precedence order survives the fold: nothing to infer from beats any
         datasource verdict."""
-        query = SlayerQuery(filters=["orders.revenue > 100"])
+        query = SlayerQuery(filter=["orders.revenue > 100"])
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION

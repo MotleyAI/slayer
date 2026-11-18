@@ -15,7 +15,7 @@ The bijection's only domain constraint is that ``decode_alias`` inverts
 ``encode_alias`` ONLY on the latter's image. A key like ``my___metric`` (no dot
 in the original) is OUTSIDE the image — decoding it would corrupt the value to
 ``my.metric``. This never bites because SLayer projection aliases are always
-model-qualified (``<model>.<column>``), so they always contain a dot and always
+dataset-qualified (``<dataset>.<field>``), so they always contain a dot and always
 pass through ``encode_alias``.
 """
 

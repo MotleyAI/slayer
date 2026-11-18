@@ -69,7 +69,7 @@ MEMORIES = [
 
 
 def _over(model: str, *, dims: list, measures: list, **extra) -> dict:
-    return {"source_model": model, "dimensions": dims, "measures": measures, **extra}
+    return {"population": model, "dimensions": dims, "metrics": measures, **extra}
 
 
 QUERIES = {
@@ -79,12 +79,12 @@ QUERIES = {
     "collect_pk": _over("contractors", dims=["team"], measures=[{"formula": "collect(id)", "name": "c"}]),
     "score_elements": _over("contractors", dims=["team"], measures=[
         {"formula": "collect(scores.value)", "name": "c"}, {"formula": "sum(scores.value)", "name": "s"}]),
-    "element_filter": _over("contractors", dims=["name"], measures=[], filters=["skills.value = 'sql'"]),
+    "element_filter": _over("contractors", dims=["name"], measures=[], filter=["skills.value = 'sql'"]),
     "contains_filter": _over("contractors", dims=["name"], measures=[],
-                             filters=["contains_any(skills, ['go', 'sql']) and not contains(skills, 'go')"]),
+                             filter=["contains_any(skills, ['go', 'sql']) and not contains(skills, 'go')"]),
     "go_teams": _over("go_teams", dims=["team"], measures=[{"formula": "count(*)", "name": "n"}]),
     "dev_skills_count": _over("dev_skills", dims=[], measures=[{"formula": "count(skills)", "name": "n"}]),
-    "dev_skills_null": _over("dev_skills", dims=["name"], measures=[], filters=["skills IS NULL"]),
+    "dev_skills_null": _over("dev_skills", dims=["name"], measures=[], filter=["skills IS NULL"]),
 }
 
 

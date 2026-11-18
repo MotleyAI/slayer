@@ -1,0 +1,76 @@
+{
+ "source": "tests/test_dev2268_flat_stage_columns.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "m2",
+    "name": "a",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "m2",
+    "name": "a",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(s.customers.*)",
+    "name": "c"
+   },
+   "new": {
+    "expression": "count(s.customers.*)",
+    "name": "c"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 179,
+   "reason": "not fully literal"
+  }
+ ]
+}

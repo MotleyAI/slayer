@@ -1,0 +1,225 @@
+{
+ "source": "tests/test_dev1911_fanning_partition_key.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=status)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=status)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=bad_pop2)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=bad_pop2)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(pop), partition_by=bad_pop, direction='desc')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "rank(sum(pop), partition_by=bad_pop, direction='desc')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(pop, partition_by=bad_pop))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "avg(sum(pop, partition_by=bad_pop))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop)",
+    "name": "p"
+   },
+   "new": {
+    "expression": "sum(pop)",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop)",
+    "name": "p"
+   },
+   "new": {
+    "expression": "sum(pop)",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop)",
+    "name": "p"
+   },
+   "new": {
+    "expression": "sum(pop)",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(pop, partition_by=bad_pop)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(pop, partition_by=bad_pop)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d', partition_by=bad_amt)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d', partition_by=bad_amt)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(region_events.value, partition_by=bad_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(region_events.value, partition_by=bad_pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=unparseable)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=unparseable)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=derived_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=derived_pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=customers.regions.bad_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=customers.regions.bad_pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=island.value)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=island.value)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=region_events.value)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=region_events.value)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(pop, partition_by=bad_pop)",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  }
+ ]
+}

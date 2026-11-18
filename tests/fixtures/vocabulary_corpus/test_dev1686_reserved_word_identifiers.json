@@ -1,0 +1,610 @@
+{
+ "source": "tests/test_dev1686_reserved_word_identifiers.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "merchant",
+    "join_pairs": [
+     [
+      "merchantId",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "merchant",
+    "join_pairs": [
+     [
+      "merchantId",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Order",
+    "dimensions": [
+     "label"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "Order",
+    "dimensions": [
+     "label"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "revenue"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "revenue"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "events",
+    "dimensions": [
+     "order"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "events",
+    "dimensions": [
+     "order"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "merchant.name"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "merchant.name"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "amount > 0"
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "amount > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "amount > 0"
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "amount > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "measures": [
+     {
+      "formula": "sum(big)"
+     }
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(big)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "sum(amount) > 100"
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "sum(amount) > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "grant",
+    "join_pairs": [
+     [
+      "grant_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "grant",
+    "join_pairs": [
+     [
+      "grant_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "grant.status"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "grant.status"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "grant.status"
+    ],
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "grant.status == 'active'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "grant.status"
+    ],
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "grant.status == 'active'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "grant.status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "grant.status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "grant",
+    "join_pairs": [
+     [
+      "grant_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "grant",
+    "join_pairs": [
+     [
+      "grant_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "bumped"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "bumped"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "grant",
+    "dimensions": [
+     "namespace"
+    ],
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 108,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 239,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 240,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 243,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 251,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 255,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 270,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 282,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 347,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 358,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 426,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 429,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 432,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 436,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 439,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 440,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 441,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 442,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 560,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 563,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 564,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 567,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 570,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 571,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 572,
+   "reason": "not fully literal"
+  }
+ ]
+}

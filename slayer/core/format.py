@@ -24,7 +24,7 @@ class NumberFormatType(str, Enum):
 
 
 class NumberFormat(BaseModel):
-    """Number format specification for measures and dimensions."""
+    """Number format specification for metrics and dimensions."""
 
     type: NumberFormatType = Field(
         default=NumberFormatType.FLOAT,

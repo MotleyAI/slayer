@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 
 
 @pytest.mark.parametrize("sql", [
@@ -20,7 +20,7 @@ from slayer.core.models import Column
 ])
 def test_a_statement_is_rejected_naming_the_column(sql: str) -> None:
     with pytest.raises(ValidationError, match="leaky"):
-        Column(name="leaky", sql=sql, type=DataType.DOUBLE)
+        DatasetField(name="leaky", sql=sql, datatype=DataType.DOUBLE)
 
 
 @pytest.mark.parametrize("sql", [
@@ -30,4 +30,4 @@ def test_a_statement_is_rejected_naming_the_column(sql: str) -> None:
     "(SELECT max(x) FROM t)",
 ])
 def test_an_expression_is_accepted(sql: str) -> None:
-    assert Column(name="c", sql=sql, type=DataType.DOUBLE).sql == sql
+    assert DatasetField(name="c", sql=sql, datatype=DataType.DOUBLE).sql == sql

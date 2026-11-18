@@ -13,24 +13,24 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, month_td, q
+from tests._dev1865_fixtures import DatasetMetric, month_td, q
 
 
 def _rowkey(row, dim_cols):
     return tuple(row[c] for c in dim_cols)
 
 
-async def _twin_query_law(engine, *, dims, value_formula, threshold, td=None):
+async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None):
     """Assert Q (filter E>threshold) == Q' cells where E>threshold, values equal."""
     base = {"dimensions": dims}
     if td is not None:
         base["time_dimensions"] = td
-    display = [ModelMeasure(formula="sum(amount)", name="s")]
+    display = [DatasetMetric(expression="sum(amount)", name="s")]
     filtered = (await engine.execute(q(
-        **base, measures=display, filters=[f"{value_formula} > {threshold}"],
+        **base, metrics=display, filter=[f"{value_expression} > {threshold}"],
     ))).data
     twin = (await engine.execute(q(
-        **base, measures=display + [ModelMeasure(formula=value_formula, name="e")],
+        **base, metrics=display + [DatasetMetric(expression=value_expression, name="e")],
     ))).data
     assert filtered, "threshold kept no rows — the law would be vacuous"
     dim_cols = sorted(set(filtered[0]) - {"orders.s"})
@@ -67,7 +67,7 @@ class TestTwinQueryLaw:
         self, exec_engine, dims, value_formula, threshold, td,
     ) -> None:
         await _twin_query_law(
-            exec_engine, dims=dims, value_formula=value_formula,
+            exec_engine, dims=dims, value_expression=value_formula,
             threshold=threshold, td=td,
         )
 
@@ -78,17 +78,17 @@ class TestNullPredicateDropsRow:
         # NULL > 0 is NULL, so WHERE/HAVING drops the cell.
         twin = (await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="sum(nomatch)", name="e"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="s"),
+                DatasetMetric(expression="sum(nomatch)", name="e"),
             ],
         ))).data
         assert twin
         assert all(r["orders.e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
-            filters=["sum(nomatch) > 0"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(nomatch) > 0"],
         ))).data
         assert filtered == []
 
@@ -100,19 +100,19 @@ class TestPositionSupportCannotLag:
         expr = "sum(customers.spend, partition_by=customers.regions.name)"
         dims = ["customers.regions.name", "customers.tier"]
         as_measure = (await exec_engine.execute(q(
-            dimensions=dims, measures=[ModelMeasure(formula=expr, name="e")],
+            dimensions=dims, metrics=[DatasetMetric(expression=expr, name="e")],
         ))).data
         assert as_measure
         as_filter = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
-            filters=[f"{expr} > 100"],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            filter=[f"{expr} > 100"],
         ))).data
         assert 0 < len(as_filter) <= len(as_measure)
         ordered = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
-            order=[{"column": expr, "direction": "desc"}],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            order=[{"field": expr, "direction": "desc"}],
         ))).data
         assert len(ordered) == len(as_measure)
         # Sorted by the region partition total desc (RegN=300 before RegS=50);

@@ -15,7 +15,7 @@ from tests._dev2046_fixtures import (
     VIP_ASSOC_SUM_BY_REGION,
     by_dim,
     by_month,
-    dev2046_models,
+    dev2046_datasets,
     m,
     month_td,
     orders_q,
@@ -38,7 +38,7 @@ async def pg_engine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
         cur.execute(stmt)
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
-                               models=dev2046_models(data_source="pg")) as engine:
+                               datasets=dev2046_datasets(data_source="pg")) as engine:
         yield engine
 
 
@@ -48,7 +48,7 @@ def _num(value):
 
 @pytest.mark.integration
 async def test_column_aggregates(pg_engine: SlayerQueryEngine) -> None:
-    resp = await pg_engine.execute(orders_q(measures=[
+    resp = await pg_engine.execute(orders_q(metrics=[
         m("sum(flag)", "s"), m("avg(flag)", "a"), m("min(flag)", "mn"), m("max(flag)", "mx"),
         m("count(flag)", "c"), m("count_distinct(flag)", "cd"),
     ]))
@@ -65,7 +65,7 @@ async def test_column_aggregates(pg_engine: SlayerQueryEngine) -> None:
 @pytest.mark.integration
 async def test_by_region(pg_engine: SlayerQueryEngine) -> None:
     resp = await pg_engine.execute(orders_q(
-        dimensions=["region"], measures=[m(f"{agg}(flag)", agg) for agg in ("sum", "avg", "min", "max")],
+        dimensions=["region"], metrics=[m(f"{agg}(flag)", agg) for agg in ("sum", "avg", "min", "max")],
     ))
     assert by_dim(resp, "region", "sum") == FLAG_BY_REGION["sum"]
     assert {r: pytest.approx(_num(v)) for r, v in by_dim(resp, "region", "avg").items()} == FLAG_BY_REGION["avg"]
@@ -75,7 +75,7 @@ async def test_by_region(pg_engine: SlayerQueryEngine) -> None:
 
 @pytest.mark.integration
 async def test_comparison_source(pg_engine: SlayerQueryEngine) -> None:
-    resp = await pg_engine.execute(orders_q(measures=[
+    resp = await pg_engine.execute(orders_q(metrics=[
         m("sum(amount > 15)", "s"), m("avg(amount > 15)", "a"), m("count(amount > 15)", "c"),
         m("min(amount > 15)", "mn"), m("max(amount > 15)", "mx"), m("sum(big_order)", "sb"),
     ]))
@@ -91,7 +91,7 @@ async def test_comparison_source(pg_engine: SlayerQueryEngine) -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize("having", ["max(flag) = true", "sum(flag) > 1", "sum(amount > 15) > 1", "max(amount > 15) = true"])
 async def test_post_aggregation_filters(pg_engine: SlayerQueryEngine, having: str) -> None:
-    resp = await pg_engine.execute(orders_q(dimensions=["region"], measures=[m("sum(flag)")], filters=[having]))
+    resp = await pg_engine.execute(orders_q(dimensions=["region"], metrics=[m("sum(flag)")], filter=[having]))
     assert by_dim(resp, "region") == {"east": FLAG_BY_REGION["sum"]["east"]}
 
 
@@ -99,7 +99,7 @@ async def test_post_aggregation_filters(pg_engine: SlayerQueryEngine, having: st
 async def test_association_pick(pg_engine: SlayerQueryEngine) -> None:
     resp = await pg_engine.execute(orders_q(
         dimensions=["region"],
-        measures=[m("sum(customers.vip)", "s"), m("max(customers.vip)", "mx")],
+        metrics=[m("sum(customers.vip)", "s"), m("max(customers.vip)", "mx")],
         to_many_handling="associate",
     ))
     assert by_dim(resp, "region", "s") == VIP_ASSOC_SUM_BY_REGION
@@ -110,19 +110,19 @@ async def test_association_pick(pg_engine: SlayerQueryEngine) -> None:
 async def test_first_last_pick(pg_engine: SlayerQueryEngine) -> None:
     """The ranked pick over a boolean value (no ``max(boolean)`` on Postgres)."""
     resp = await pg_engine.execute(orders_q(
-        dimensions=["region"], measures=[m("first(flag)", "f"), m("last(flag)", "l")],
+        dimensions=["region"], metrics=[m("first(flag)", "f"), m("last(flag)", "l")],
     ))
     assert by_dim(resp, "region", "f") == {"east": True, "west": None}
     assert by_dim(resp, "region", "l") == {"east": True, "west": False}
     windowed = await pg_engine.execute(orders_q(
-        time_dimensions=month_td(), measures=[m("first(flag, window='90d')")],
+        time_dimensions=month_td(), metrics=[m("first(flag, window='90d')")],
     ))
     assert set(by_month(windowed).values()) == {True}
 
 
 @pytest.mark.integration
 async def test_statistical_aggregations(pg_engine: SlayerQueryEngine) -> None:
-    resp = await pg_engine.execute(orders_q(measures=[
+    resp = await pg_engine.execute(orders_q(metrics=[
         m("median(flag)", "md"), m("percentile(flag, p=0.5)", "p"),
         m("stddev_samp(amount > 15)", "sd"), m("weighted_avg(flag, weight=amount)", "w"),
     ]))
@@ -135,7 +135,7 @@ async def test_statistical_aggregations(pg_engine: SlayerQueryEngine) -> None:
 
 @pytest.mark.integration
 async def test_literal_sources(pg_engine: SlayerQueryEngine) -> None:
-    resp = await pg_engine.execute(orders_q(dimensions=["region"], measures=[
+    resp = await pg_engine.execute(orders_q(dimensions=["region"], metrics=[
         m("sum(True)", "s"), m("max(True)", "mx"), m("sum(1 > 2)", "f"),
     ]))
     assert by_dim(resp, "region", "s") == {"east": 3, "west": 2}
@@ -146,7 +146,7 @@ async def test_literal_sources(pg_engine: SlayerQueryEngine) -> None:
 @pytest.mark.integration
 async def test_numeric_positions(pg_engine: SlayerQueryEngine) -> None:
     """Postgres has no boolean arithmetic: each boolean below must read as its integer."""
-    resp = await pg_engine.execute(orders_q(measures=[
+    resp = await pg_engine.execute(orders_q(metrics=[
         m("sum(flag * amount)", "fa"), m("sum((amount > 15) + 1)", "p1"), m("max(round(flag))", "r"),
         m("sum(coalesce(flag, 0))", "c"), m("sum(iif(amount > 15, flag, 2))", "i"),
     ]))
@@ -156,10 +156,10 @@ async def test_numeric_positions(pg_engine: SlayerQueryEngine) -> None:
     assert _num(row["orders.r"]) == 1
     assert row["orders.c"] == 2
     assert row["orders.i"] == 7
-    filtered = await pg_engine.execute(orders_q(measures=[m("count(*)")], filters=["flag = 1"]))
+    filtered = await pg_engine.execute(orders_q(metrics=[m("count(*)")], filter=["flag = 1"]))
     assert filtered.data[0]["orders.v"] == 2
     measures = await pg_engine.execute(orders_q(
-        dimensions=["region"], measures=[m("(sum(amount) > 50) + (count(*) > 1)")],
+        dimensions=["region"], metrics=[m("(sum(amount) > 50) + (count(*) > 1)")],
     ))
     assert by_dim(measures, "region") == {"east": 2, "west": None}
 
@@ -167,10 +167,10 @@ async def test_numeric_positions(pg_engine: SlayerQueryEngine) -> None:
 @pytest.mark.integration
 async def test_compared_with_numeric_expressions(pg_engine: SlayerQueryEngine) -> None:
     """Postgres has no boolean = integer: a boolean beside a numeric scalar or aggregate reads as its integer."""
-    rows = await pg_engine.execute(orders_q(measures=[m("count(*)")], filters=["flag = sign(amount)"]))
+    rows = await pg_engine.execute(orders_q(metrics=[m("count(*)")], filter=["flag = sign(amount)"]))
     assert rows.data[0]["orders.v"] == 2
     groups = await pg_engine.execute(orders_q(
-        dimensions=["region"], measures=[m("count(*)")], filters=["max(flag) = count_distinct(region)"],
+        dimensions=["region"], metrics=[m("count(*)")], filter=["max(flag) = count_distinct(region)"],
     ))
     assert by_dim(groups, "region") == {"east": 3}
 
@@ -178,5 +178,5 @@ async def test_compared_with_numeric_expressions(pg_engine: SlayerQueryEngine) -
 @pytest.mark.integration
 async def test_weighted_avg_integer_inputs(pg_engine: SlayerQueryEngine) -> None:
     """Integer value and weight never divide as integers; a NULL value's weight is skipped."""
-    resp = await pg_engine.execute(orders_q(measures=[m("weighted_avg(amount, weight=customer_id)")]))
+    resp = await pg_engine.execute(orders_q(metrics=[m("weighted_avg(amount, weight=customer_id)")]))
     assert _num(resp.data[0]["orders.v"]) == pytest.approx(9000 / 400)

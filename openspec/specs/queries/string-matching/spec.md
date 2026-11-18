@@ -7,7 +7,7 @@ Defines how Mode-B compares and pattern-matches strings: which comparisons follo
 
 ### Requirement: Comparisons follow the column's collation
 
-`=`, `<>`, `<`, `<=`, `>`, `>=`, `IN` and `LIKE` over TEXT SHALL follow the database's collation for the operands, except on SQLite, where Mode-B `LIKE` SHALL be case-sensitive whatever the column's declared collation. `ILIKE` and the regex `'i'` flag SHALL be the case-insensitive forms on every dialect. Mode-A SQL (`Column.sql`, model `filters`) SHALL keep the database's own meaning.
+`=`, `<>`, `<`, `<=`, `>`, `>=`, `IN` and `LIKE` over TEXT SHALL follow the database's collation for the operands, except on SQLite, where Mode-B `LIKE` SHALL be case-sensitive whatever the column's declared collation. `ILIKE` and the regex `'i'` flag SHALL be the case-insensitive forms on every dialect. Mode-A SQL (`DatasetField.sql`, model `filters`) SHALL keep the database's own meaning.
 
 #### Scenario: SQLite LIKE is case-sensitive
 

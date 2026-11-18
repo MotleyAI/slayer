@@ -15,9 +15,10 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery, TimeDimension
 from tests._dev1879_helpers import dry_response
+from slayer.engine.query_engine import SlayerResponse
 
 
 _ALL_DIALECTS = [
@@ -63,11 +64,11 @@ _UNSUPPORTED_CELLS = {
 
 def _shape_query(shape: str) -> SlayerQuery:
     return SlayerQuery(
-        source_model="mart",
-        measures=[ModelMeasure(formula=_SHAPES[shape])],
+        population="mart",
+        metrics=[DatasetMetric(expression=_SHAPES[shape])],
         time_dimensions=[
             TimeDimension(
-                dimension="created_at",
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
@@ -81,7 +82,7 @@ def _projection_aliases(sql: str, dialect: str) -> list[str]:
     return [proj.alias_or_name for proj in select.expressions]
 
 
-def _measure_key(resp) -> str:
+def _metric_key(resp: SlayerResponse) -> str:
     keys = [c for c in resp.columns if c != "mart.created_at"]
     assert len(keys) == 1, resp.columns
     return keys[0]
@@ -99,7 +100,7 @@ async def test_aliases_valid_per_dialect(shape: str, dialect: str) -> None:
     resp = await dry_response(_shape_query(shape), dialect=dialect)
     sql = resp.sql
     assert sql is not None
-    alias = _emitted_alias(_measure_key(resp), dialect)
+    alias = _emitted_alias(_metric_key(resp), dialect)
     pattern = (
         _BARE_ALIAS_RE if dialect in _DOT_MANGLING else _DOTTED_ALIAS_RE
     )
@@ -127,14 +128,14 @@ async def test_result_keys_uniform_across_dialects(shape: str) -> None:
 
 async def test_bigquery_unnamed_formula_measures() -> None:
     query = SlayerQuery(
-        source_model="mart",
-        measures=[
-            ModelMeasure(formula="sum(logo_churn) / sum(logo_bop)"),
-            ModelMeasure(formula="time_shift(sum(cmrr_eop), -1, 'year')"),
+        population="mart",
+        metrics=[
+            DatasetMetric(expression="sum(logo_churn) / sum(logo_bop)"),
+            DatasetMetric(expression="time_shift(sum(cmrr_eop), -1, 'year')"),
         ],
         time_dimensions=[
             TimeDimension(
-                dimension="created_at",
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],

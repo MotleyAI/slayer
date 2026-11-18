@@ -48,13 +48,13 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
@@ -64,53 +64,53 @@ from tests._engine_helpers import _engine_generate
 # --------------------------------------------------------------------------- #
 # Model builders — orders → stores → regions (the QoQ demo chain).
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="population", sql="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _stores(*, extra=None) -> SlayerModel:
+def _stores(*, extra=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-        Column(name="name", sql="name", type=DataType.TEXT),
-        Column(name="opened_at", sql="opened_at", type=DataType.TIMESTAMP),
-        Column(name="region_id", sql="region_id", type=DataType.INT),
+        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="region_id", sql="region_id", datatype=DataType.INT),
     ]
     cols += extra or []
-    return SlayerModel(
-        name="stores", sql_table="stores", data_source="test", columns=cols,
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+    return SlayerDataset(
+        name="stores", sql_table="stores", data_source="test", fields=cols,
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def _orders(*, extra=None, filters=None) -> SlayerModel:
+def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
-        Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-        Column(name="status", sql="status", type=DataType.TEXT),
-        Column(name="status_up", sql="upper(status)", type=DataType.TEXT),
-        Column(name="ordered_at", sql="ordered_at", type=DataType.TIMESTAMP),
-        Column(name="delivery_at", sql="delivery_at", type=DataType.TIMESTAMP),
-        Column(name="store_id", sql="store_id", type=DataType.INT),
-        Column(name="order_total", sql="order_total", type=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+        DatasetField(name="status_up", sql="upper(status)", datatype=DataType.TEXT),
+        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="store_id", sql="store_id", datatype=DataType.INT),
+        DatasetField(name="order_total", sql="order_total", datatype=DataType.DOUBLE),
     ]
     cols += extra or []
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        default_time_dimension="ordered_at", columns=cols,
-        joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
+        default_time_dimension="ordered_at", fields=cols,
+        relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
         filters=filters or [],
     )
 
 
-async def _gen(query, model, *, extra_models=None, dialect="postgres") -> str:
+async def _gen(query, dataset, *, extra_datasets=None, dialect="postgres") -> str:
     return await _engine_generate(
-        query=query, model=model, extra_models=extra_models or [],
+        query=query, dataset=dataset, extra_datasets=extra_datasets or [],
         dialect=dialect, validate=False,
     )
 
@@ -201,19 +201,19 @@ def _grain_pair_count(on_pred: str, *, marker: str = "IS NOT DISTINCT FROM") -> 
 # --------------------------------------------------------------------------- #
 # The QoQ query shapes (reused by shape + execution tests).
 # --------------------------------------------------------------------------- #
-def _qoq_query(*, measure_formula: str, measure_name: str) -> SlayerQuery:
+def _qoq_query(*, metric_expression: str, metric_name: str) -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[TimeDimension(
-            dimension="ordered_at",
+            field="ordered_at",
             granularity=TimeGranularity.QUARTER,
         )],
-        dimensions=[ColumnRef(name="stores.name")],
-        measures=[
-            ModelMeasure(formula="sum(order_total)"),
-            ModelMeasure(formula=measure_formula, name=measure_name),
+        dimensions=[FieldRef(name="stores.name")],
+        metrics=[
+            DatasetMetric(expression="sum(order_total)"),
+            DatasetMetric(expression=metric_expression, name=metric_name),
         ],
-        order=[OrderItem(column=ColumnRef(name="ordered_at"), direction="asc")],
+        order=[OrderItem(field=FieldRef(name="ordered_at"), direction="asc")],
     )
 
 
@@ -226,8 +226,8 @@ class TestShiftedCtePartitionShape:
         shifted CTE pulls ``LEFT JOIN stores`` (Law 1), projects the joined dim,
         and the sjoin joins back on it. Today: ``NotImplementedError 7b.12``."""
         sql = await _gen(
-            _qoq_query(measure_formula="change(sum(order_total))", measure_name="qoq"),
-            _orders(), extra_models=[_stores(), _regions()],
+            _qoq_query(metric_expression="change(sum(order_total))", metric_name="qoq"),
+            _orders(), extra_datasets=[_stores(), _regions()],
         )
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores" in shifted, shifted
@@ -246,18 +246,18 @@ class TestShiftedCtePartitionShape:
         """A multi-hop partition (``stores.regions.name``) pulls BOTH hops into
         the shifted CTE (``stores`` and ``stores__regions`` aliases)."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.QUARTER,
             )],
-            dimensions=[ColumnRef(name="stores.regions.name")],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            dimensions=[FieldRef(name="stores.regions.name")],
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         # BOTH hops are introduced as real join clauses (not just the alias token
         # appearing somewhere): the direct ``stores`` hop and the second
@@ -275,15 +275,15 @@ class TestShiftedCtePartitionShape:
         shifted CTE. Today: silently skipped → the shifted value broadcasts
         across status groups (scope_closed does NOT catch it)."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[ColumnRef(name="status_up")],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            dimensions=[FieldRef(name="status_up")],
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -304,21 +304,21 @@ class TestShiftedCtePartitionShape:
         shifted CTE: the join is pulled AND the expanded expression is grouped.
         Today: silently skipped → broadcast across tiers (scope_closed passes)."""
         stores = _stores(extra=[
-            Column(name="tier", sql="upper(name)", type=DataType.TEXT),
+            DatasetField(name="tier", sql="upper(name)", datatype=DataType.TEXT),
         ])
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[ColumnRef(name="stores.tier")],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            dimensions=[FieldRef(name="stores.tier")],
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[stores, _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[stores, _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The derived JOINED expression is expanded (UPPER(stores.name), NOT the
@@ -336,17 +336,17 @@ class TestShiftedCtePartitionShape:
         ``ordered_at`` shift axis) must partition the shifted CTE. Today: silently
         skipped → the shifted value broadcasts across delivery quarters."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                TimeDimension(dimension="ordered_at",
+                TimeDimension(field="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension="delivery_at",
+                TimeDimension(field="delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -368,23 +368,23 @@ class TestShiftedCtePartitionShape:
         the explicit form was a no-op under the uniform rule, so it now raises
         rather than silently accepting an inert kwarg."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[ColumnRef(name="stores.name")],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(
-                    formula="time_shift(sum(order_total), -1, partition_by=stores.name)",
+            dimensions=[FieldRef(name="stores.name")],
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(
+                    expression="time_shift(sum(order_total), -1, partition_by=stores.name)",
                     name="prev",
                 ),
             ],
         )
         orders, stores, regions = _orders(), _stores(), _regions()
         with pytest.raises(ValueError, match=r"partition_by"):
-            await _gen(query, orders, extra_models=[stores, regions])
+            await _gen(query, orders, extra_datasets=[stores, regions])
 
     async def test_joined_time_axis_pulls_join_into_shifted_cte(self) -> None:
         """When the SHIFT-axis time dimension is itself a joined column
@@ -392,17 +392,17 @@ class TestShiftedCtePartitionShape:
         stores`` into the shifted CTE. Today: the shifted CTE references an
         unbound ``stores`` alias → scope leak."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="stores.opened_at",
+                field="stores.opened_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The shift-axis time expression IS the joined column — not some unrelated
@@ -425,18 +425,18 @@ class TestShiftedCteJoinedFilter:
         and applies the filter. Today: ``NotImplementedError`` from
         ``_guard_no_joined_refs``."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
-            filters=["stores.name = 'North'"],
+            filter=["stores.name = 'North'"],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The filter predicate is PRESERVED in the shifted CTE's WHERE (not merely
@@ -453,17 +453,17 @@ class TestShiftedCteJoinedFilter:
         population, joins pulled."""
         model = _orders(filters=["stores.name IS NOT NULL"])
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, model, extra_models=[_stores(), _regions()])
+        sql = await _gen(query, model, extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         where = _shifted_where(sql)
@@ -502,15 +502,15 @@ class TestShiftedCteNullSafeJoinBack:
         pipeline (a cross-model partition raises 7b.12 first) — this pins the
         null-safe EQUALITY spelling specifically, independent of the join-pull."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         sql = await _gen(query, _orders(), dialect=dialect)
@@ -537,18 +537,18 @@ class TestLocalOnlyTimeShiftUnchanged:
         must keep the shifted CTE's FROM bare — widening the FROM for the
         cross-model case must never leak a join into the local path."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[TimeDimension(
-                dimension="ordered_at",
+                field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[ColumnRef(name="status")],
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            dimensions=[FieldRef(name="status")],
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "JOIN" not in shifted.upper(), shifted
         # The local dim still partitions (no regression on the always-worked path)
@@ -572,20 +572,20 @@ class TestJoinedSecondaryTimeDimension:
         Exercises the plan's requirement that a secondary TimeTruncKey pulls joins
         while remaining a shifted-grain partition."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                TimeDimension(dimension="ordered_at",
+                TimeDimension(field="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension="stores.opened_at",
+                TimeDimension(field="stores.opened_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         assert re.search(r"GROUP BY[\s\S]*QUARTER['\"][\s\S]*stores\.opened_at", shifted), shifted
@@ -679,9 +679,9 @@ async def qoq_engine() -> AsyncIterator[SlayerQueryEngine]:
         await storage.save_datasource(
             DatasourceConfig(name="test", type="duckdb", database=db_path)
         )
-        await storage.save_model(_stores())
-        await storage.save_model(_regions())
-        await storage.save_model(_orders())
+        await storage.save_dataset(_stores())
+        await storage.save_dataset(_regions())
+        await storage.save_dataset(_orders())
         yield SlayerQueryEngine(storage=storage)
 
 
@@ -695,14 +695,14 @@ async def secondary_td_engine() -> AsyncIterator[SlayerQueryEngine]:
         await storage.save_datasource(
             DatasourceConfig(name="test", type="duckdb", database=db_path)
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             default_time_dimension="ordered_at",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="ordered_at", type=DataType.TIMESTAMP),
-                Column(name="delivery_at", type=DataType.TIMESTAMP),
-                Column(name="order_total", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="delivery_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="order_total", datatype=DataType.DOUBLE),
             ],
         ))
         yield SlayerQueryEngine(storage=storage)
@@ -720,7 +720,7 @@ class TestQoQExecutionGroundTruth:
         matches hand-computed per-store deltas, including the NULL-store group
         (whose non-null prev proves the null-safe join-back)."""
         resp = await qoq_engine.execute(_qoq_query(
-            measure_formula="change(sum(order_total))", measure_name="qoq",
+            metric_expression="change(sum(order_total))", metric_name="qoq",
         ))
         by = {
             (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
@@ -750,7 +750,7 @@ class TestQoQExecutionGroundTruth:
     async def test_change_pct_per_store_matches_hand_computed(self, qoq_engine) -> None:
         """``change_pct`` percentages per store (NULL prior → NULL)."""
         resp = await qoq_engine.execute(_qoq_query(
-            measure_formula="change_pct(sum(order_total))", measure_name="qoq_pct",
+            metric_expression="change_pct(sum(order_total))", metric_name="qoq_pct",
         ))
         by = {
             (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
@@ -775,17 +775,17 @@ class TestSecondaryTimeDimensionExecution:
         quarters — each (ordered-month, delivery-quarter) cell gets the prior
         MONTH's value within the SAME delivery quarter."""
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                TimeDimension(dimension="ordered_at",
+                TimeDimension(field="ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(dimension="delivery_at",
+                TimeDimension(field="delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
             main_time_dimension="ordered_at",
-            measures=[
-                ModelMeasure(formula="sum(order_total)"),
-                ModelMeasure(formula="time_shift(sum(order_total), -1)", name="prev"),
+            metrics=[
+                DatasetMetric(expression="sum(order_total)"),
+                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
         resp = await secondary_td_engine.execute(query)

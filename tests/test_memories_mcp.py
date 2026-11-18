@@ -26,13 +26,13 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -97,61 +97,61 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
     await storage.save_datasource(
         DatasourceConfig(name="other", type="postgres", host="x")
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             data_source="mydb",
             sql_table="orders",
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(
                     name="customer_id",
                     sql="customer_id",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
-            measures=[ModelMeasure(formula="sum(amount) / count(*)", name="aov")],
+            metrics=[DatasetMetric(expression="sum(amount) / count(*)", name="aov")],
             aggregations=[
                 Aggregation(
                     name="weighted_score",
-                    formula="SUM(amount * amount) / SUM(amount)",
+                    expression="SUM(amount * amount) / SUM(amount)",
                 ),
             ],
-            joins=[
-                ModelJoin(
-                    target_model="customers",
+            relationships=[
+                DatasetRelationship(
+                    to="customers",
                     join_pairs=[["customer_id", "id"]],
                 ),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             data_source="mydb",
             sql_table="customers",
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="name", sql="name", type=DataType.TEXT),
+                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="invoices",
             data_source="mydb",
             sql_table="invoices",
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
     )
@@ -277,10 +277,10 @@ class TestSaveMemoryQuery:
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=[ModelMeasure(formula="sum(amount)")],
-            filters=["status = 'paid'"],
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=[DatasetMetric(expression="sum(amount)")],
+            filter=["status = 'paid'"],
         )
         result = await _call(
             mcp_server,
@@ -298,15 +298,15 @@ class TestSaveMemoryQuery:
         assert "mydb.orders.amount" in payload["resolved_entities"]
         loaded = await seeded.get_memory("1")
         assert isinstance(loaded.query, SlayerQuery)
-        assert loaded.query.source_model == "orders"
+        assert loaded.query.population == "orders"
         assert loaded.learning == "Paid revenue by status"
 
     async def test_dict_input_coerces_to_query(
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
         query_dict = {
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
+            "population": "orders",
+            "metrics": [{"expression": "count(*)"}],
         }
         result = await _call(
             mcp_server,
@@ -326,8 +326,8 @@ class TestSaveMemoryQuery:
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
         query = SlayerQuery(
-            source_model="customers",
-            measures=[ModelMeasure(formula="count(*)")],
+            population="customers",
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await _call(
             mcp_server,

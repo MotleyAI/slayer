@@ -9,7 +9,7 @@ from slayer.core.enums import DataType
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.ingest_report import ConversionResult
 from tests._osi_helpers import (
-    by_name, convert, documents, ds, f, flat, hidden, m, measure_home, query, rel, seed_db, unconverted,
+    by_name, convert, documents, ds, f, flat, hidden, m, metric_home, query, rel, seed_db, unconverted,
 )
 
 
@@ -22,18 +22,18 @@ ORDER_FIELDS = [f("order_id", "o_orderkey"), f("customer_id", "o_custkey"), f("a
                 f("status"), f("region"), f("is_paid"), f("first_name"), f("last_name")]
 
 
-def _import(db: Path, *metrics: dict[str, Any], model_metrics: list[dict[str, Any]] | None = None
+def _import(db: Path, *metrics: dict[str, Any], dataset_metrics: list[dict[str, Any]] | None = None
             ) -> ConversionResult:
     orders = ds("orders", fields=ORDER_FIELDS, metrics=list(metrics))
     customers = ds("customers", fields=[f("id", "c_custkey"), f("segment"), f("discount")])
     o2c = rel("o2c", src="orders", to="customers", from_columns=["customer_id"], to_columns=["id"])
-    return convert(db=db, docs=documents(flat([orders, customers], relationships=[o2c], metrics=model_metrics)))
+    return convert(db=db, docs=documents(flat([orders, customers], relationships=[o2c], metrics=dataset_metrics)))
 
 
-async def _value(result: ConversionResult, db: Path, measure: str) -> Any:
-    home = measure_home(result, measure).name
-    rows = await query(result=result, db=db, payload={"source_model": home, "measures": [measure]})
-    return rows[0][f"{home}.{measure}"]
+async def _value(result: ConversionResult, db: Path, metric: str) -> Any:
+    home = metric_home(result, metric).name
+    rows = await query(result=result, db=db, payload={"population": home, "metrics": [metric]})
+    return rows[0][f"{home}.{metric}"]
 
 
 # ─────────────────────────── FILTER aggregates ─────────────────────────────
@@ -75,7 +75,7 @@ async def test_filtered_distinct_count(db: Path) -> None:
 async def test_filter_does_not_remove_groups(db: Path) -> None:
     result = _import(db, m("v", "SUM(amount) FILTER (WHERE status = 'completed')"))
     rows = await query(result=result, db=db, payload={
-        "source_model": "orders", "dimensions": ["status"], "measures": ["v"]})
+        "population": "orders", "dimensions": ["status"], "metrics": ["v"]})
     values = {r["orders.status"]: r["orders.v"] for r in rows}
     assert set(values) == {"completed", "open"}
     assert values["open"] is None
@@ -95,7 +95,7 @@ def test_unsupported_filter_metric_is_unconverted(db: Path, sql: str) -> None:
 
 
 def test_filter_predicate_on_another_dataset_is_unconverted(db: Path) -> None:
-    result = _import(db, model_metrics=[m("bad", "SUM(orders.amount) FILTER (WHERE customers.segment = 'b2b')")])
+    result = _import(db, dataset_metrics=[m("bad", "SUM(orders.amount) FILTER (WHERE customers.segment = 'b2b')")])
     assert unconverted(result, "bad")
 
 
@@ -128,7 +128,7 @@ async def test_inline_operand(db: Path, sql: str, expected: float) -> None:
 async def test_operand_outside_the_formula_grammar_uses_a_helper(db: Path, sql: str, expected: float) -> None:
     result = _import(db, m("v", sql))
     [helper] = hidden(by_name(result)["orders"])
-    formula = next(x.formula for x in by_name(result)["orders"].measures if x.name == "v")
+    formula = next(x.expression for x in by_name(result)["orders"].metrics if x.name == "v")
     parsed = parse_expr(formula)
     assert isinstance(parsed, AggCall)
     assert isinstance(parsed.source, Ref)
@@ -137,18 +137,18 @@ async def test_operand_outside_the_formula_grammar_uses_a_helper(db: Path, sql: 
 
 
 async def test_cross_dataset_operand(db: Path) -> None:
-    result = _import(db, model_metrics=[m("net", "SUM(orders.amount - customers.discount)")])
-    assert all(hidden(model) == [] for model in result.models)
+    result = _import(db, dataset_metrics=[m("net", "SUM(orders.amount - customers.discount)")])
+    assert all(hidden(model) == [] for model in result.datasets)
     assert float(await _value(result, db, "net")) == pytest.approx(19.5)
 
 
 async def test_operand_outside_the_formula_language_falls_back_to_a_hidden_column(db: Path) -> None:
     result = _import(db, m("v", "SUM(LENGTH(LPAD(status, 12, 'x')))"))
     [helper] = hidden(by_name(result)["orders"])
-    assert helper.type == DataType.INT
+    assert helper.datatype == DataType.INT
     assert await _value(result, db, "v") == 36
 
 
 def test_cross_dataset_operand_outside_the_formula_language_is_unconverted(db: Path) -> None:
-    result = _import(db, model_metrics=[m("bad", "SUM(LENGTH(LPAD(orders.status, 12, customers.segment)))")])
+    result = _import(db, dataset_metrics=[m("bad", "SUM(LENGTH(LPAD(orders.status, 12, customers.segment)))")])
     assert unconverted(result, "bad")

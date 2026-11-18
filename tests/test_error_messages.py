@@ -20,13 +20,13 @@ import pytest
 from slayer.core.errors import (
     AggregationNotAllowedError,
     AmbiguousReferenceError,
-    CanonicalAliasShadowsColumnError,
-    DuplicateMeasureNameError,
+    CanonicalAliasShadowsFieldError,
+    DuplicateMetricNameError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
-    MeasureCycleError,
-    MeasureNameCollidesWithColumnError,
-    MeasureRecursionLimitError,
+    MetricCycleError,
+    MetricNameCollidesWithFieldError,
+    MetricRecursionLimitError,
     SlayerError,
     UnknownFunctionError,
     UnknownReferenceError,
@@ -44,9 +44,9 @@ class TestInheritance:
         UnknownReferenceError, AmbiguousReferenceError,
         IllegalScopeReferenceError, IllegalWindowInFilterError,
         AggregationNotAllowedError, UnknownFunctionError,
-        MeasureRecursionLimitError, MeasureCycleError,
-        DuplicateMeasureNameError, MeasureNameCollidesWithColumnError,
-        CanonicalAliasShadowsColumnError,
+        MetricRecursionLimitError, MetricCycleError,
+        DuplicateMetricNameError, MetricNameCollidesWithFieldError,
+        CanonicalAliasShadowsFieldError,
     ])
     def test_subclasses_slayer_error(self, cls):
         assert issubclass(cls, SlayerError)
@@ -64,36 +64,36 @@ class TestUnknownReferenceError:
     def test_minimal(self):
         e = UnknownReferenceError(
             name="revenoo",
-            scope_kind="ModelScope",
+            scope_kind="DatasetScope",
             scope_summary="orders",
         )
         s = str(e)
         assert s == (
             "UnknownReferenceError: Cannot resolve reference 'revenoo'.\n"
-            "  scope: ModelScope: orders"
+            "  scope: DatasetScope: orders"
         )
 
     def test_with_suggestion(self):
         e = UnknownReferenceError(
             name="revenoo",
-            scope_kind="ModelScope",
+            scope_kind="DatasetScope",
             scope_summary="orders",
             suggestion="did you mean 'revenue'?",
         )
         s = str(e)
         assert s == (
             "UnknownReferenceError: Cannot resolve reference 'revenoo'.\n"
-            "  scope: ModelScope: orders\n"
+            "  scope: DatasetScope: orders\n"
             "  suggestion: did you mean 'revenue'?"
         )
 
     def test_carries_fields(self):
         e = UnknownReferenceError(
-            name="x", scope_kind="ModelScope", scope_summary="orders",
+            name="x", scope_kind="DatasetScope", scope_summary="orders",
             suggestion="hint",
         )
         assert e.name == "x"
-        assert e.scope_kind == "ModelScope"
+        assert e.scope_kind == "DatasetScope"
         assert e.scope_summary == "orders"
         assert e.suggestion == "hint"
 
@@ -131,13 +131,13 @@ class TestIllegalScopeReferenceError:
         # a legacy persisted column literal name).
         e = IllegalScopeReferenceError(
             name="customers__regions",
-            scope_kind="ModelScope",
+            scope_kind="DatasetScope",
             reason="`__` in Mode-B is reserved for SQL aliases; use dotted form (e.g. 'customers.regions').",
         )
         assert str(e) == (
             "IllegalScopeReferenceError: Reference 'customers__regions' is not legal "
             "in this scope.\n"
-            "  scope: ModelScope\n"
+            "  scope: DatasetScope\n"
             "  reason: `__` in Mode-B is reserved for SQL aliases; use dotted form "
             "(e.g. 'customers.regions')."
         )
@@ -171,7 +171,7 @@ class TestIllegalWindowInFilterError:
             "  expr: 'rank() OVER (ORDER BY x) <= 3'\n"
             "  source: raw OVER(...) in DSL filter\n"
             "  suggestion: use a rank-family transform "
-            "(e.g. `rank(<measure>, direction='desc') <= N`)."
+            "(e.g. `rank(<metric>, direction='desc') <= N`)."
         )
 
     def test_filter_naming_windowed_column(self):
@@ -193,19 +193,19 @@ class TestIllegalWindowInFilterError:
 class TestAggregationNotAllowedError:
     def test_type_bucket_violation(self):
         e = AggregationNotAllowedError(
-            column="status",
+            field="status",
             agg="sum",
             reason="aggregation 'sum' is numeric-only; column 'status' is TEXT.",
         )
         assert str(e) == (
-            "AggregationNotAllowedError: Aggregation 'sum' is not allowed on column "
+            "AggregationNotAllowedError: Aggregation 'sum' is not allowed on field "
             "'status'.\n"
             "  reason: aggregation 'sum' is numeric-only; column 'status' is TEXT."
         )
 
     def test_pk_restriction(self):
         e = AggregationNotAllowedError(
-            column="orders.id",
+            field="orders.id",
             agg="sum",
             reason="primary-key columns are restricted to count / count_distinct.",
         )
@@ -223,7 +223,7 @@ class TestUnknownFunctionError:
         assert str(e) == (
             "UnknownFunctionError: Function 'regexp_match' is not allowed in Mode B.\n"
             "  at measures[0].formula\n"
-            "  suggestion: move the call to a derived Column.sql (Mode A)."
+            "  suggestion: move the call to a derived DatasetField.sql (Mode A)."
         )
 
     def test_with_explicit_suggestion(self):
@@ -242,18 +242,18 @@ class TestUnknownFunctionError:
 
 class TestMeasureRecursionLimitError:
     def test_renders_chain(self):
-        e = MeasureRecursionLimitError(chain=["a", "b", "c", "d"], limit=32)
+        e = MetricRecursionLimitError(chain=["a", "b", "c", "d"], limit=32)
         s = str(e)
-        assert "MeasureRecursionLimitError" in s
+        assert "MetricRecursionLimitError" in s
         assert "limit=32" in s
         assert "a → b → c → d" in s
 
 
 class TestMeasureCycleError:
     def test_renders_cycle(self):
-        e = MeasureCycleError(chain=["a", "b", "a"])
+        e = MetricCycleError(chain=["a", "b", "a"])
         assert str(e) == (
-            "MeasureCycleError: Cyclic reference in named-measure expansion.\n"
+            "MetricCycleError: Cyclic reference in named-metric expansion.\n"
             "  chain: a → b → a"
         )
 
@@ -265,38 +265,38 @@ class TestMeasureCycleError:
 
 class TestDuplicateMeasureNameError:
     def test_renders_occurrences(self):
-        e = DuplicateMeasureNameError(
+        e = DuplicateMetricNameError(
             name="rev",
             occurrences=["measures[0]", "measures[3]"],
         )
         assert str(e) == (
-            "DuplicateMeasureNameError: The measure name is declared more than once.\n"
-            "  at measure 'rev'\n"
+            "DuplicateMetricNameError: The metric name is declared more than once.\n"
+            "  at metric 'rev'\n"
             "  occurrences: ['measures[0]', 'measures[3]']"
         )
 
 
 class TestMeasureNameCollidesWithColumnError:
     def test_basic(self):
-        e = MeasureNameCollidesWithColumnError(name="status", model="orders")
+        e = MetricNameCollidesWithFieldError(name="status", dataset="orders")
         assert str(e) == (
-            "MeasureNameCollidesWithColumnError: The declared measure name "
-            "matches a source column on model 'orders'.\n"
-            "  at measure 'status'"
+            "MetricNameCollidesWithFieldError: The declared metric name "
+            "matches a source field on dataset 'orders'.\n"
+            "  at metric 'status'"
         )
 
 
 class TestCanonicalAliasShadowsColumnError:
     def test_basic(self):
-        e = CanonicalAliasShadowsColumnError(
-            formula="count(status)",
+        e = CanonicalAliasShadowsFieldError(
+            expression="count(status)",
             canonical="status_count",
-            model="orders",
+            dataset="orders",
         )
         assert str(e) == (
-            "CanonicalAliasShadowsColumnError: The canonical alias 'status_count' "
-            "shadows a source column on model 'orders'.\n"
-            "  at measure 'count(status)'"
+            "CanonicalAliasShadowsFieldError: The canonical alias 'status_count' "
+            "shadows a source field on dataset 'orders'.\n"
+            "  at metric 'count(status)'"
         )
 
 

@@ -1,0 +1,40 @@
+{
+ "source": "tests/test_dev2120_string_matching.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "people",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "name LIKE 'ada%'"
+    ]
+   },
+   "new": {
+    "population": "people",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "name LIKE 'ada%'"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  }
+ ]
+}

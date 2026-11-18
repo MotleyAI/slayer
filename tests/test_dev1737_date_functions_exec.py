@@ -14,17 +14,18 @@ from tests._dev1737_fixtures import (
     as_temporal,
     assert_case,
     assert_value,
-    dt_model,
+    dt_dataset,
     exec_engine,
     matrix_cases,
     matrix_query,
-    orders_model,
-    customers_model,
-    scenario_models,
+    orders_dataset,
+    customers_dataset,
+    scenario_datasets,
     scenario_tables,
     sqlite_malformed_seed,
 )
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 
 CASES = matrix_cases()
 
@@ -32,7 +33,7 @@ CASES = matrix_cases()
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("case", CASES, ids=[c.case_id for c in CASES])
 async def test_matrix(backend: str, case: DateCase) -> None:
-    async with exec_engine(backend, tables=[DT], models=[dt_model()]) as engine:
+    async with exec_engine(backend, tables=[DT], datasets=[dt_dataset()]) as engine:
         resp = await engine.execute(matrix_query(case))
     assert_case(resp.data, case)
 
@@ -40,30 +41,30 @@ async def test_matrix(backend: str, case: DateCase) -> None:
 @pytest.fixture(params=BACKENDS)
 async def orders_engine(request):
     today = datetime.now(timezone.utc).date()
-    async with exec_engine(request.param, tables=scenario_tables(today=today), models=scenario_models()) as engine:
+    async with exec_engine(request.param, tables=scenario_tables(today=today), datasets=scenario_datasets()) as engine:
         yield engine
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery.model_validate(kw)
 
 
 async def _count(engine, *filters: str, **kw) -> int:
-    resp = await engine.execute(_q(measures=[{"formula": "count(*)", "name": "n"}], filters=list(filters), **kw))
+    resp = await engine.execute(_q(metrics=[{"expression": "count(*)", "name": "n"}], filter=list(filters), **kw))
     return int(resp.data[0]["orders.n"])
 
 
-async def _by_id(engine, expr: str, *, model: str = "orders") -> dict[int, object]:
-    resp = await engine.execute(_q(source_model=model, dimensions=["id", {"expression": expr, "name": "v"}]))
-    return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+async def _by_id(engine, expr: str, *, dataset: str = "orders") -> dict[int, object]:
+    resp = await engine.execute(_q(population=dataset, dimensions=["id", {"expression": expr, "name": "v"}]))
+    return {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in resp.data}
 
 
 class TestSpecScenarios:
     async def test_extraction_dimension(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(
             dimensions=[{"expression": "date_part('day_of_week', created_at)", "name": "dow"}],
-            measures=[{"formula": "count(*)", "name": "n"}],
+            metrics=[{"expression": "count(*)", "name": "n"}],
         ))
         got = {int(r["orders.dow"]): int(r["orders.n"]) for r in resp.data}
         assert got == {5: 1, 7: 1, 1: 2, 3: 1}
@@ -79,14 +80,14 @@ class TestSpecScenarios:
         assert await _count(orders_engine, "order_date <= current_date()") == 5
 
     async def test_bucket_form_unchanged(self, orders_engine) -> None:
-        resp = await orders_engine.execute(_q(dimensions=["date_trunc('month', created_at)"], measures=[{"formula": "count(*)", "name": "n"}]))
+        resp = await orders_engine.execute(_q(dimensions=["date_trunc('month', created_at)"], metrics=[{"expression": "count(*)", "name": "n"}]))
         key = next(k for k in resp.data[0] if k != "orders.n")
         assert {str(r[key])[:10] for r in resp.data} == {"2024-01-01", "2024-03-01", "2024-06-01", "2024-12-01"}
 
     async def test_unit_case_folds(self, orders_engine) -> None:
-        resp = await orders_engine.execute(_q(measures=[
-            {"formula": "max(date_part('MONTH', created_at))", "name": "a"},
-            {"formula": "max(date_part('month', created_at))", "name": "b"},
+        resp = await orders_engine.execute(_q(metrics=[
+            {"expression": "max(date_part('MONTH', created_at))", "name": "a"},
+            {"expression": "max(date_part('month', created_at))", "name": "b"},
         ]))
         assert resp.data[0]["orders.a"] == resp.data[0]["orders.b"] == 12
 
@@ -127,14 +128,14 @@ class TestSpecScenarios:
         assert_value((await _by_id(orders_engine, expr))[1], expected, where=expr)
 
     async def test_aggregate_span(self, orders_engine) -> None:
-        resp = await orders_engine.execute(_q(measures=[
-            {"formula": "date_diff('day', min(created_at), max(created_at))", "name": "span"},
+        resp = await orders_engine.execute(_q(metrics=[
+            {"expression": "date_diff('day', min(created_at), max(created_at))", "name": "span"},
         ]))
         assert resp.data[0]["orders.span"] == 334
 
     async def test_coalesce_with_the_clock(self, orders_engine) -> None:
-        resp = await orders_engine.execute(_q(measures=[
-            {"formula": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "name": "age"},
+        resp = await orders_engine.execute(_q(metrics=[
+            {"expression": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "name": "age"},
         ]))
         open_days = (datetime.now(timezone.utc).date() - date(2024, 6, 3)).days
         assert resp.data[0]["orders.age"] == pytest.approx((1 + 5 + 5 + 5 + open_days) / 5, abs=0.21)
@@ -144,8 +145,8 @@ class TestSpecScenarios:
         assert await _count(orders_engine, "date_diff('day', '2024-01-01', created_at) < 31") == 1
 
     async def test_literal_inside_coalesce(self, orders_engine) -> None:
-        resp = await orders_engine.execute(_q(measures=[
-            {"formula": "min(date_part('year', coalesce(shipped_at, '2024-01-01')))", "name": "y"},
+        resp = await orders_engine.execute(_q(metrics=[
+            {"expression": "min(date_part('year', coalesce(shipped_at, '2024-01-01')))", "name": "y"},
         ]))
         assert resp.data[0]["orders.y"] == 2024
         assert (await _by_id(orders_engine, "date_part('year', coalesce(shipped_at, '2023-06-01'))"))[3] == 2023
@@ -156,16 +157,16 @@ class TestSpecScenarios:
 
     async def test_recent_orders(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(
-            source_model="recent", measures=[{"formula": "count(*)", "name": "n"}],
-            filters=["created_at >= date_add(current_date(), -30, 'day')"],
+            population="recent", metrics=[{"expression": "count(*)", "name": "n"}],
+            filter=["created_at >= date_add(current_date(), -30, 'day')"],
         ))
         assert int(resp.data[0]["recent.n"]) == 1
 
     async def test_clock_relative_sanity(self, orders_engine) -> None:
-        got = await _by_id(orders_engine, "date_diff('day', created_at, now())", model="recent")
+        got = await _by_id(orders_engine, "date_diff('day', created_at, now())", dataset="recent")
         assert got[1] in (0, 1, 2)
         assert got[2] in (39, 40, 41)
-        today = await _by_id(orders_engine, "current_date()", model="recent")
+        today = await _by_id(orders_engine, "current_date()", dataset="recent")
         today_value = as_temporal(today[1])
         assert not isinstance(today_value, datetime)
         assert isinstance(today_value, date)
@@ -176,14 +177,14 @@ class TestSpecScenarios:
         assert got == {1: 61, 2: 61, 3: 95, 4: 305, 5: None}
 
     async def test_operator_equals_date_add(self, orders_engine) -> None:
-        ops = await orders_engine.execute(_q(measures=[{"formula": "max(shipped_at - interval(2, 'day'))", "name": "m"}]))
-        fn = await orders_engine.execute(_q(measures=[{"formula": "max(date_add(shipped_at, -2, 'day'))", "name": "m"}]))
+        ops = await orders_engine.execute(_q(metrics=[{"expression": "max(shipped_at - interval(2, 'day'))", "name": "m"}]))
+        fn = await orders_engine.execute(_q(metrics=[{"expression": "max(date_add(shipped_at, -2, 'day'))", "name": "m"}]))
         assert ops.sql == fn.sql
         assert_value(ops.data[0]["orders.m"], datetime(2025, 1, 2, 12, 0), where="interval")
 
-    async def test_operator_auto_name_matches(self, orders_engine) -> None:
-        ops = await orders_engine.execute(_q(measures=["max(shipped_at - interval(2, 'day'))"]))
-        fn = await orders_engine.execute(_q(measures=["max(date_add(shipped_at, -2, 'day'))"]))
+    async def test_operator_auto_name_matches(self, orders_engine: SlayerQueryEngine) -> None:
+        ops = await orders_engine.execute(_q(metrics=["max(shipped_at - interval(2, 'day'))"]))
+        fn = await orders_engine.execute(_q(metrics=["max(date_add(shipped_at, -2, 'day'))"]))
         assert ops.columns == fn.columns
 
     async def test_chained_and_commuted_intervals(self, orders_engine) -> None:
@@ -192,16 +193,16 @@ class TestSpecScenarios:
 
     async def test_date_functions_in_order_and_filters(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(
-            dimensions=["id"], measures=[{"formula": "count(*)", "name": "n"}],
-            filters=["date_part('year', created_at) = 2024"],
-            order=[{"column": "max(date_diff('day', created_at, shipped_at))", "direction": "desc"}],
+            dimensions=["id"], metrics=[{"expression": "count(*)", "name": "n"}],
+            filter=["date_part('year', created_at) = 2024"],
+            order=[{"field": "max(date_diff('day', created_at, shipped_at))", "direction": "desc"}],
         ))
         assert [int(r["orders.id"]) for r in resp.data][-2:] == [1, 3]
 
 
 async def test_sqlite_malformed_stored_date_is_null() -> None:
     async with seeded_exec_engine(
-        dialect="sqlite", seed=sqlite_malformed_seed, models=[orders_model(), customers_model()],
+        dialect="sqlite", seed=sqlite_malformed_seed, datasets=[orders_dataset(), customers_dataset()],
     ) as (engine, _db):
         for expr in (
             "date_add(order_date, 1, 'month')", "date_part('year', order_date)",

@@ -3552,26 +3552,24 @@ utils = ["numpydoc"]
 
 [[package]]
 name = "living-architecture"
-version = "0.6.0"
+version = "0.11.0"
 description = "A Claude Code plugin for Python and TypeScript code that agents write: normative principles attached to a LikeC4 architecture model, which also serves as an import whitelist. Enforced by a complete PR workflow that generates OpenSpec changes, whose archives double as ADRs."
 optional = false
 python-versions = ">=3.11"
 groups = ["dev"]
 files = [
-    {file = "living_architecture-0.6.0-py3-none-any.whl", hash = "sha256:a701c81344d694cefc297726bf5610ec8dd6c2a4eff53bd161270e583c01be36"},
-    {file = "living_architecture-0.6.0.tar.gz", hash = "sha256:ab8f68d83c0b29436a6eff2ab90c98331e321e6709334f62904d70a1fe92dc0e"},
+    {file = "living_architecture-0.11.0-py3-none-any.whl", hash = "sha256:10caca056bb1cb4485776c57fcc5e66ec4372126398dbb24b9d97c073b9dc9aa"},
+    {file = "living_architecture-0.11.0.tar.gz", hash = "sha256:d15c397e11b8276a2c3c6b1e6f8e1857364fc6a6b831198036107d12d3d6d5d6"},
 ]
 
 [package.dependencies]
+basedpyright = "1.40.2"
 jsonschema = ">=4.18"
 pydantic = ">=2.6"
 pyyaml = ">=6"
 referencing = ">=0.28.4"
 rope = ">=1.15"
 typing-extensions = ">=4.4"
-
-[package.extras]
-verify = ["basedpyright (>=1.20)"]
 
 [[package]]
 name = "lz4"
@@ -8412,4 +8410,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "60a4b2c0048e9364cdc314d8827e59bffa47c5ca7efa4e62afa28dadae71e75e"
+content-hash = "7ddd8d4b9d8c2843b2a061ddd1feedba47666b02c782d87b4af2ae7eab22c5df"

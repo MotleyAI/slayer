@@ -36,8 +36,9 @@ from slayer.live_schema.ingestion import (
 from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     IngestionError,
-    ModelAddition,
-    WholeModelDelete,
+    DatasetAddition,
+    ToDeleteEntry,
+    WholeDatasetDelete,
 )
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -101,15 +102,15 @@ def _ok_result() -> IdempotentIngestResult:
     return IdempotentIngestResult(additions=[], to_delete=[], errors=[])
 
 
-def _result_with_addition(model_name: str, data_source: str) -> IdempotentIngestResult:
+def _result_with_addition(dataset_name: str, data_source: str) -> IdempotentIngestResult:
     return IdempotentIngestResult(
         additions=[
-            ModelAddition(
-                model_name=model_name,
+            DatasetAddition(
+                dataset_name=dataset_name,
                 data_source=data_source,
                 created=True,
-                new_columns=["a", "b"],
-                new_joins=[],
+                new_fields=["a", "b"],
+                new_relationships=[],
             )
         ],
         to_delete=[],
@@ -121,8 +122,8 @@ def _result_with_drift(data_source: str) -> IdempotentIngestResult:
     return IdempotentIngestResult(
         additions=[],
         to_delete=[
-            WholeModelDelete(
-                model_name="dropped_table",
+            WholeDatasetDelete(
+                dataset_name="dropped_table",
                 data_source=data_source,
                 reasons=[],
             )
@@ -137,7 +138,7 @@ def _result_with_per_table_errors(data_source: str) -> IdempotentIngestResult:
         to_delete=[],
         errors=[
             IngestionError(
-                model_name="widgets",
+                dataset_name="widgets",
                 data_source=data_source,
                 error="Connection timed out",
             )
@@ -145,7 +146,7 @@ def _result_with_per_table_errors(data_source: str) -> IdempotentIngestResult:
     )
 
 
-def _patch_ingester(monkeypatch, behaviour):
+def _patch_ingester(monkeypatch: pytest.MonkeyPatch, behaviour):
     """Patch `ingest_datasource_idempotent` with a side-effect-driven stub.
 
     `behaviour` is a callable `(name, ds) -> IdempotentIngestResult` (or
@@ -190,7 +191,7 @@ def _mcp_args(**overrides) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def _patch_serve_dependencies(monkeypatch, *, capture: list, app_obj="APP"):
+def _patch_serve_dependencies(monkeypatch: pytest.MonkeyPatch, *, capture: list, app_obj="APP"):
     """Stub out _resolve_storage, _prepare_demo, create_app, and uvicorn's server
     so `_run_serve` can be called without touching real storage/network."""
     monkeypatch.setattr(cli, "_resolve_storage", lambda *a, **kw: "STORAGE")
@@ -211,7 +212,7 @@ def _patch_serve_dependencies(monkeypatch, *, capture: list, app_obj="APP"):
     ))
 
 
-def _patch_mcp_dependencies(monkeypatch, *, capture: list):
+def _patch_mcp_dependencies(monkeypatch: pytest.MonkeyPatch, *, capture: list):
     monkeypatch.setattr(cli, "_resolve_storage", lambda *a, **kw: "STORAGE")
     monkeypatch.setattr(
         cli, "_prepare_demo", lambda *a, **kw: capture.append(("prepare_demo",))
@@ -236,7 +237,7 @@ def _patch_mcp_dependencies(monkeypatch, *, capture: list):
 
 
 class TestOrchestrator:
-    async def test_zero_datasources(self, monkeypatch, capsys):
+    async def test_zero_datasources(self, monkeypatch: pytest.MonkeyPatch, capsys):
         storage = _stub_storage(names=[])
         called = _patch_ingester(monkeypatch, lambda n, ds: _ok_result())
         stream = io.StringIO()
@@ -257,7 +258,7 @@ class TestOrchestrator:
         assert captured.out == ""
         assert captured.err == ""
 
-    async def test_all_succeed(self, monkeypatch):
+    async def test_all_succeed(self, monkeypatch: pytest.MonkeyPatch):
         storage = _stub_storage(names=["a", "b", "c"])
         called = _patch_ingester(
             monkeypatch, lambda n, ds: _result_with_addition(f"{n}_model", n)
@@ -276,7 +277,7 @@ class TestOrchestrator:
         # No parenthetical when nothing failed.
         assert "failed" not in out
 
-    async def test_one_fails(self, monkeypatch):
+    async def test_one_fails(self, monkeypatch: pytest.MonkeyPatch):
         storage = _stub_storage(names=["a", "b", "c"])
 
         def behaviour(name, ds):
@@ -297,7 +298,7 @@ class TestOrchestrator:
         out = stream.getvalue()
         assert "Ingest-on-startup: 2/3 datasources ingested (1 failed: b)" in out
 
-    async def test_all_fail(self, monkeypatch):
+    async def test_all_fail(self, monkeypatch: pytest.MonkeyPatch):
         storage = _stub_storage(names=["a", "b", "c"])
         _patch_ingester(monkeypatch, lambda n, ds: RuntimeError(f"boom-{n}"))
         stream = io.StringIO()
@@ -312,7 +313,7 @@ class TestOrchestrator:
         assert "0/3 datasources ingested" in out
         assert "3 failed: a, b, c" in out
 
-    async def test_drift_accumulated_and_not_applied(self, monkeypatch):
+    async def test_drift_accumulated_and_not_applied(self, monkeypatch: pytest.MonkeyPatch):
         storage = _stub_storage(names=["a", "b"])
         _patch_ingester(monkeypatch, lambda n, ds: _result_with_drift(n))
         stream = io.StringIO()
@@ -341,7 +342,8 @@ class TestOrchestrator:
         )
 
         assert len(summary.drift_pending) == 2
-        names = {entry.model_name for entry in summary.drift_pending}
+        pending: list[ToDeleteEntry] = summary.drift_pending
+        names = {entry.dataset_name for entry in pending}
         assert names == {"dropped_table"}
         sources = {entry.data_source for entry in summary.drift_pending}
         assert sources == {"a", "b"}
@@ -349,7 +351,7 @@ class TestOrchestrator:
         # Drift line should be visible in stream.
         assert "drift" in stream.getvalue().lower() or "delete" in stream.getvalue().lower()
 
-    async def test_list_datasources_raises_propagates(self, monkeypatch):
+    async def test_list_datasources_raises_propagates(self, monkeypatch: pytest.MonkeyPatch):
         storage = _stub_storage(
             names=[], list_raises=RuntimeError("storage offline")
         )
@@ -361,7 +363,7 @@ class TestOrchestrator:
                 storage=storage, client_for=_stub_client_for, stream=stream
             )
 
-    async def test_get_datasource_returns_none_mid_iteration(self, monkeypatch):
+    async def test_get_datasource_returns_none_mid_iteration(self, monkeypatch: pytest.MonkeyPatch):
         storage = _stub_storage(names=["a", "b", "c"], missing=["b"])
         called = _patch_ingester(
             monkeypatch, lambda n, ds: _result_with_addition(f"{n}_model", n)
@@ -378,7 +380,7 @@ class TestOrchestrator:
         assert [f.name for f in summary.failures] == ["b"]
         assert "disappeared" in summary.failures[0].error
 
-    async def test_get_datasource_raises_does_not_abort_iteration(self, monkeypatch):
+    async def test_get_datasource_raises_does_not_abort_iteration(self, monkeypatch: pytest.MonkeyPatch):
         """A YAML parse error / invalid-config raise on a single datasource
         must not abort the whole startup pass — only `list_datasources()`
         raising is supposed to prevent boot."""
@@ -406,7 +408,7 @@ class TestOrchestrator:
         assert [f.name for f in summary.failures] == ["b"]
         assert "invalid YAML" in summary.failures[0].error
 
-    async def test_output_routed_to_stream_not_stdout(self, monkeypatch, capsys):
+    async def test_output_routed_to_stream_not_stdout(self, monkeypatch: pytest.MonkeyPatch, capsys):
         storage = _stub_storage(names=["a"])
         _patch_ingester(
             monkeypatch, lambda n, ds: _result_with_addition("a_model", "a")
@@ -423,7 +425,7 @@ class TestOrchestrator:
         assert captured.out == ""
         assert captured.err == ""
 
-    async def test_default_stream_is_stderr(self, monkeypatch, capsys):
+    async def test_default_stream_is_stderr(self, monkeypatch: pytest.MonkeyPatch, capsys):
         storage = _stub_storage(names=["only"])
         _patch_ingester(
             monkeypatch, lambda n, ds: _result_with_addition("only_model", "only")
@@ -436,7 +438,7 @@ class TestOrchestrator:
         assert captured.out == ""
         assert "Ingest-on-startup" in captured.err
 
-    async def test_per_table_errors_still_count_as_succeeded(self, monkeypatch):
+    async def test_per_table_errors_still_count_as_succeeded(self, monkeypatch: pytest.MonkeyPatch):
         """When `ingest_datasource_idempotent` returns normally but with
         `result.errors` non-empty, the datasource still counts as succeeded
         (the call itself didn't raise). Per the spec."""
@@ -460,7 +462,7 @@ class TestOrchestrator:
 
 
 class TestCliFlagPlumbing:
-    def test_argparse_accepts_serve_flag(self, monkeypatch):
+    def test_argparse_accepts_serve_flag(self, monkeypatch: pytest.MonkeyPatch):
         """`slayer serve --ingest-on-startup` parses without error and
         produces `args.ingest_on_startup == True`."""
         captured = []
@@ -476,7 +478,7 @@ class TestCliFlagPlumbing:
         assert len(captured) == 1
         assert captured[0].ingest_on_startup is True
 
-    def test_argparse_accepts_mcp_flag(self, monkeypatch):
+    def test_argparse_accepts_mcp_flag(self, monkeypatch: pytest.MonkeyPatch):
         captured = []
 
         def stub_run_mcp(args):
@@ -490,7 +492,7 @@ class TestCliFlagPlumbing:
         assert len(captured) == 1
         assert captured[0].ingest_on_startup is True
 
-    def test_argparse_default_is_false_serve(self, monkeypatch):
+    def test_argparse_default_is_false_serve(self, monkeypatch: pytest.MonkeyPatch):
         captured = []
         monkeypatch.setattr(cli, "_run_serve", lambda a: captured.append(a))
         monkeypatch.setattr(sys, "argv", ["slayer", "serve"])
@@ -498,7 +500,7 @@ class TestCliFlagPlumbing:
         assert len(captured) == 1
         assert captured[0].ingest_on_startup is False
 
-    def test_argparse_default_is_false_mcp(self, monkeypatch):
+    def test_argparse_default_is_false_mcp(self, monkeypatch: pytest.MonkeyPatch):
         captured = []
         monkeypatch.setattr(cli, "_run_mcp", lambda a: captured.append(a))
         monkeypatch.setattr(sys, "argv", ["slayer", "mcp"])
@@ -506,7 +508,7 @@ class TestCliFlagPlumbing:
         assert len(captured) == 1
         assert captured[0].ingest_on_startup is False
 
-    def test_serve_flag_threads_to_create_app(self, monkeypatch):
+    def test_serve_flag_threads_to_create_app(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
@@ -516,7 +518,7 @@ class TestCliFlagPlumbing:
         create_app_kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert create_app_kwargs.get("ingest_on_startup") is True
 
-    def test_mcp_flag_threads_to_create_mcp_server(self, monkeypatch):
+    def test_mcp_flag_threads_to_create_mcp_server(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_mcp_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
@@ -526,7 +528,7 @@ class TestCliFlagPlumbing:
         create_kwargs = next(c[1] for c in capture if c[0] == "create_mcp_server")
         assert create_kwargs.get("ingest_on_startup") is True
 
-    def test_serve_no_flag_passes_false(self, monkeypatch):
+    def test_serve_no_flag_passes_false(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
@@ -536,7 +538,7 @@ class TestCliFlagPlumbing:
         create_app_kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert create_app_kwargs.get("ingest_on_startup") is False
 
-    def test_mcp_no_flag_passes_false(self, monkeypatch):
+    def test_mcp_no_flag_passes_false(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_mcp_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
@@ -554,7 +556,7 @@ class TestCliFlagPlumbing:
 
 class TestEnvVar:
     @pytest.mark.parametrize("value", ["1", "true", "yes", "TRUE", "Yes", "YES"])
-    def test_truthy_enables(self, monkeypatch, value):
+    def test_truthy_enables(self, monkeypatch: pytest.MonkeyPatch, value):
         monkeypatch.setenv("SLAYER_INGEST_ON_STARTUP", value)
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
@@ -565,7 +567,7 @@ class TestEnvVar:
         assert kwargs.get("ingest_on_startup") is True
 
     @pytest.mark.parametrize("value", ["0", "false", "no", "FALSE", "", "garbage", "off"])
-    def test_falsy_disables(self, monkeypatch, value):
+    def test_falsy_disables(self, monkeypatch: pytest.MonkeyPatch, value):
         monkeypatch.setenv("SLAYER_INGEST_ON_STARTUP", value)
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
@@ -575,7 +577,7 @@ class TestEnvVar:
         kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert kwargs.get("ingest_on_startup") is False
 
-    def test_unset_disables(self, monkeypatch):
+    def test_unset_disables(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
@@ -585,7 +587,7 @@ class TestEnvVar:
         kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert kwargs.get("ingest_on_startup") is False
 
-    def test_flag_wins_when_env_false(self, monkeypatch):
+    def test_flag_wins_when_env_false(self, monkeypatch: pytest.MonkeyPatch):
         # Flag True, env "0" → effective True (flag set wins).
         monkeypatch.setenv("SLAYER_INGEST_ON_STARTUP", "0")
         capture: list = []
@@ -596,7 +598,7 @@ class TestEnvVar:
         kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert kwargs.get("ingest_on_startup") is True
 
-    def test_env_wins_when_flag_unset(self, monkeypatch):
+    def test_env_wins_when_flag_unset(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("SLAYER_INGEST_ON_STARTUP", "1")
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
@@ -606,7 +608,7 @@ class TestEnvVar:
         kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert kwargs.get("ingest_on_startup") is True
 
-    def test_env_also_threads_through_mcp(self, monkeypatch):
+    def test_env_also_threads_through_mcp(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("SLAYER_INGEST_ON_STARTUP", "yes")
         capture: list = []
         _patch_mcp_dependencies(monkeypatch, capture=capture)
@@ -623,7 +625,7 @@ class TestEnvVar:
 
 
 class TestDemoIngestOrdering:
-    def test_demo_then_ingest_serve(self, monkeypatch):
+    def test_demo_then_ingest_serve(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
@@ -638,7 +640,7 @@ class TestDemoIngestOrdering:
         kwargs = next(c[1] for c in capture if c[0] == "create_app")
         assert kwargs.get("ingest_on_startup") is True
 
-    def test_demo_then_ingest_mcp(self, monkeypatch):
+    def test_demo_then_ingest_mcp(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_mcp_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
@@ -659,7 +661,7 @@ class TestDemoIngestOrdering:
 
 class TestProgrammaticKwarg:
     @pytest.fixture(autouse=True)
-    def _no_seed_help(self, monkeypatch):
+    def _no_seed_help(self, monkeypatch: pytest.MonkeyPatch):
         # DEV-1658: create_app / create_mcp_server now seed help.* memories on
         # startup. These tests pass a MagicMock stub storage (no async memory
         # API), and are about ingest orchestration, not seeding — so no-op the
@@ -670,7 +672,7 @@ class TestProgrammaticKwarg:
         monkeypatch.setattr(api_server, "seed_help_memories", _noop)
         monkeypatch.setattr(mcp_server_mod, "seed_help_memories", _noop)
 
-    def test_create_app_with_kwarg_triggers_orchestrator(self, monkeypatch):
+    def test_create_app_with_kwarg_triggers_orchestrator(self, monkeypatch: pytest.MonkeyPatch):
         calls: list = []
 
         async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
@@ -693,7 +695,7 @@ class TestProgrammaticKwarg:
         # Default stream from create_app is sys.stderr.
         assert captured_stream is sys.stderr
 
-    def test_create_app_without_kwarg_does_not_trigger(self, monkeypatch):
+    def test_create_app_without_kwarg_does_not_trigger(self, monkeypatch: pytest.MonkeyPatch):
         calls: list = []
 
         async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
@@ -712,7 +714,7 @@ class TestProgrammaticKwarg:
 
         assert calls == []
 
-    def test_create_mcp_server_with_kwarg_triggers_orchestrator(self, monkeypatch):
+    def test_create_mcp_server_with_kwarg_triggers_orchestrator(self, monkeypatch: pytest.MonkeyPatch):
         calls: list = []
 
         async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
@@ -734,7 +736,7 @@ class TestProgrammaticKwarg:
         assert captured_storage.inner is storage
         assert captured_stream is sys.stderr
 
-    def test_create_mcp_server_without_kwarg_does_not_trigger(self, monkeypatch):
+    def test_create_mcp_server_without_kwarg_does_not_trigger(self, monkeypatch: pytest.MonkeyPatch):
         calls: list = []
 
         async def fake_orchestrator(*, storage, client_for, stream=None):  # NOSONAR(S7503) — must be `async def`; replaces the async ingest_all_datasources_idempotent which create_app/create_mcp_server awaits via run_sync
@@ -753,7 +755,7 @@ class TestProgrammaticKwarg:
 
         assert calls == []
 
-    def test_create_app_propagates_list_datasources_error(self, monkeypatch):
+    def test_create_app_propagates_list_datasources_error(self, monkeypatch: pytest.MonkeyPatch):
         """When `storage.list_datasources()` raises, the exception
         propagates through `create_app(ingest_on_startup=True)` and the app
         is never returned."""
@@ -764,7 +766,7 @@ class TestProgrammaticKwarg:
         with pytest.raises(RuntimeError, match="storage offline"):
             create_app(storage=storage, ingest_on_startup=True)
 
-    def test_create_mcp_server_propagates_list_datasources_error(self, monkeypatch):
+    def test_create_mcp_server_propagates_list_datasources_error(self, monkeypatch: pytest.MonkeyPatch):
         storage = _stub_storage(
             names=[], list_raises=RuntimeError("storage offline")
         )
@@ -779,7 +781,7 @@ class TestProgrammaticKwarg:
 
 
 class TestListDatasourcesRaiseAtBoot:
-    def test_serve_does_not_run_uvicorn_when_orchestrator_raises(self, monkeypatch):
+    def test_serve_does_not_run_uvicorn_when_orchestrator_raises(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_serve_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)
@@ -801,7 +803,7 @@ class TestListDatasourcesRaiseAtBoot:
         # uvicorn must NOT have been called.
         assert not any(c[0] == "uvicorn_run" for c in capture)
 
-    def test_mcp_does_not_run_when_orchestrator_raises(self, monkeypatch):
+    def test_mcp_does_not_run_when_orchestrator_raises(self, monkeypatch: pytest.MonkeyPatch):
         capture: list = []
         _patch_mcp_dependencies(monkeypatch, capture=capture)
         monkeypatch.delenv("SLAYER_INGEST_ON_STARTUP", raising=False)

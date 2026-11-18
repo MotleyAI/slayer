@@ -206,7 +206,7 @@ async def test_client_connects_with_psycopg_whatever_sqlalchemys_default() -> No
 
 
 @pytest.mark.usefixtures("sa20_postgres_default")
-async def test_missing_default_driver_names_extra(monkeypatch) -> None:
+async def test_missing_default_driver_names_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = DatasourceConfig(name="pg_ds", type="postgres", connection_string=f"postgresql://u@{_HOST}/d")
     monkeypatch.setitem(sys.modules, "psycopg", None)
     client = SlayerSQLClient(ds)

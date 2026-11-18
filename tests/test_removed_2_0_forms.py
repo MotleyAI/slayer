@@ -27,9 +27,9 @@ from slayer.storage.base import default_storage_path
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
 from tests._compat_helpers import future_warnings, recorded
-from tests._gateway_harness import backend_of, orders_model, seed_shop, shop_datasource, shop_storage
+from tests._gateway_harness import backend_of, orders_dataset, seed_shop, shop_datasource, shop_storage
 
-COUNT_ORDERS = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]}
 _MESSAGE = "old() is deprecated; use new(). It works until SLayer 3.0."
 
 
@@ -141,7 +141,7 @@ async def shop(tmp_path: Path) -> AsyncIterator[tuple[DatasourceConfig, YAMLStor
     db = str(tmp_path / "shop.db")
     seed_shop(db)
     ds = shop_datasource(db)
-    storage = await shop_storage(str(tmp_path / "store"), datasource=ds, models=[orders_model()])
+    storage = await shop_storage(str(tmp_path / "store"), datasource=ds, datasets=[orders_dataset()])
     try:
         yield ds, storage
     finally:

@@ -1,0 +1,112 @@
+{
+ "source": "tests/test_dev1746_empty_base_plan.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) * 2",
+    "name": "twice"
+   },
+   "new": {
+    "expression": "sum(customers.spend) * 2",
+    "name": "twice"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 101,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 271,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 302,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  }
+ ]
+}

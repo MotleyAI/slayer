@@ -1,0 +1,123 @@
+{
+ "source": "tests/test_inspect_saved_queries.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "measures": [
+       {
+        "formula": "sum(amount * 2)",
+        "name": "dbl"
+       }
+      ]
+     }
+    ],
+    "measures": [
+     {
+      "formula": "dbl",
+      "name": "d"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "metrics": [
+       {
+        "expression": "sum(amount * 2)",
+        "name": "dbl"
+       }
+      ]
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "dbl",
+      "name": "d"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rollup",
+    "measures": [
+     {
+      "formula": "sum(revenue)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "rollup",
+    "metrics": [
+     {
+      "expression": "sum(revenue)",
+      "name": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly_revenue",
+    "measures": [
+     {
+      "formula": "sum(revenue)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly_revenue",
+    "metrics": [
+     {
+      "expression": "sum(revenue)",
+      "name": "total"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -8,7 +8,7 @@ import pytest
 from slayer.osi.exporter import OsiExportError
 from slayer.osi.models import OSIAIContextObject, explicit_description, render_description
 from tests._osi_export_fixtures import BASIC_MEASURES, customers, orders
-from tests._osi_export_helpers import convert_document, dataset, export, export_models, make_env, mentions, slayer_entries
+from tests._osi_export_helpers import convert_document, dataset, export, export_datasets, make_env, mentions, slayer_entries
 from tests._osi_helpers import by_name, ds, f, flat
 
 
@@ -39,13 +39,13 @@ async def test_nothing_to_export_raises(env) -> None:
 
 
 async def test_unknown_model_raises(env) -> None:
-    await export_models(env, customers())
+    await export_datasets(env, customers())
     with pytest.raises(OsiExportError, match="nope"):
-        await export(env, models=["nope"])
+        await export(env, datasets=["nope"])
 
 
 async def test_duplicate_slayer_payloads_are_reported_and_ignored(env) -> None:
-    result = await export_models(env, customers(), orders(measures=BASIC_MEASURES, hidden=True))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, hidden=True))
     edited = copy.deepcopy(result.document)
     orders_ds = dataset(edited, "orders")
     orders_ds["nonportable_extensions"] = slayer_entries(orders_ds) * 2
@@ -58,4 +58,4 @@ async def test_single_field_unique_key_marks_the_column_unique(env) -> None:
     doc = flat([ds("customers", fields=[f("id", "c_custkey"), f("email"), f("segment")], primary_key=["id"],
                    unique_keys=[["email"], ["segment", "email"]])])
     imported = by_name(convert_document(env, doc))["customers"]
-    assert {c.name: c.unique for c in imported.columns} == {"id": False, "email": True, "segment": False}
+    assert {c.name: c.unique for c in imported.fields} == {"id": False, "email": True, "segment": False}

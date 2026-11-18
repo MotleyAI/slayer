@@ -1,0 +1,214 @@
+{
+ "source": "tests/test_usage_reporting_features.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "measures": [
+       {
+        "name": "double_total",
+        "formula": "sum(amount * 2)"
+       }
+      ]
+     }
+    ],
+    "measures": [
+     "double_total"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "metrics": [
+       {
+        "name": "double_total",
+        "expression": "sum(amount * 2)"
+       }
+      ]
+     }
+    ],
+    "metrics": [
+     "double_total"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "joins": [
+       {
+        "target_model": "revenue_by_status",
+        "join_pairs": [
+         [
+          "region",
+          "region"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "revenue_by_status.revenue"
+    ],
+    "measures": [
+     "sum(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "relationships": [
+       {
+        "to": "revenue_by_status",
+        "join_pairs": [
+         [
+          "region",
+          "region"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "revenue_by_status.revenue"
+    ],
+    "metrics": [
+     "sum(amount)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s2",
+    "source_model": "s1",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "max(rev)",
+      "name": "top"
+     }
+    ]
+   },
+   "new": {
+    "name": "s2",
+    "population": "s1",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "expression": "max(rev)",
+      "name": "top"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s2",
+    "measures": [
+     "avg(top)"
+    ]
+   },
+   "new": {
+    "population": "s2",
+    "metrics": [
+     "avg(top)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(no_such_column)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(no_such_column)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

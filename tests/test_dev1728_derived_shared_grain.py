@@ -49,11 +49,11 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -81,9 +81,9 @@ class TestForwardDerivedGrainShape:
         expands it rooted at the target, projects it under the dotted host alias,
         groups by it, and joins back null-safe — no CROSS-JOIN broadcast."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -104,9 +104,9 @@ class TestForwardDerivedGrainShape:
         the CTE pulls ``LEFT JOIN regions`` and groups by ``regions.population``;
         the host base pulls the join under its ``__`` path alias."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -122,9 +122,9 @@ class TestForwardDerivedGrainShape:
         """A two-hop crossing derived grain (``deep_gdp = regions__countries.gdp``)
         pulls BOTH joins into the CTE FROM, rooted at the target."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_gdp"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -139,9 +139,9 @@ class TestForwardDerivedGrainShape:
         wrapped in the SAME ``CAST(... AS BIGINT)`` in both ``_base`` and ``_cm_*``
         so the join-back compares identically-typed values."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_third"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -157,9 +157,9 @@ class TestForwardDerivedGrainShape:
         column (``deep_pop`` dim + ``sum(deep_pop)``) — grouped and aggregated on
         the same expanded expression, one pulled join."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="sum(customers_v2.deep_pop)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.deep_pop)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -172,9 +172,9 @@ class TestForwardDerivedGrainShape:
         """A non-sum plain aggregate (``count_distinct``) over a derived grain
         renders through the same path (Codex F3 reduced)."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="count_distinct(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="count_distinct(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -186,11 +186,11 @@ class TestForwardDerivedGrainShape:
         """Two cross-model aggregates grouped by the same derived grain produce
         two CTEs, each grouped on the grain and joined back on it."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[
-                ModelMeasure(formula="sum(customers_v2.lifetime_value)"),
-                ModelMeasure(formula="max(customers_v2.region_id)"),
+            metrics=[
+                DatasetMetric(expression="sum(customers_v2.lifetime_value)"),
+                DatasetMetric(expression="max(customers_v2.region_id)"),
             ],
         )
         sql = await _gen(query)
@@ -208,10 +208,10 @@ class TestForwardDerivedGrainShape:
         """A WHERE filter on the projected derived grain dim renders alongside
         the grain (the grain still projects + groups; the query is scope-closed)."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
-            filters=["customers_v2.deep_pop > 50"],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            filter=["customers_v2.deep_pop > 50"],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -232,9 +232,9 @@ class TestForwardDerivedGrainShape:
         # Aggregate targets the TWO-hop path customers_v2 → regions; the grain is
         # a derived dim on the intermediate customers_v2 hop.
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="sum(customers_v2.regions.population)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.regions.population)")],
             to_many_handling="broadcast",
         )
         sql = await _gen(query)
@@ -258,9 +258,9 @@ class TestFirstLastDerivedGrain:
         grain crosses the boundary exactly like a crossing one — and the raw
         expression still drives ``PARTITION BY``, where the join is bound."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -284,9 +284,9 @@ class TestFirstLastDerivedGrain:
         INSIDE the ranked subquery; the outer SELECT / GROUP BY reference the
         alias, and PARTITION BY uses the raw crossing expression."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -311,11 +311,11 @@ class TestFirstLastDerivedGrain:
         outer DATE_TRUNC referenced an unbound ``regions.opened_at``). The grain
         must now be materialised / scope-closed."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="customers_v2.region_opened_eff",
+                field="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -339,9 +339,9 @@ class TestFirstLastDerivedGrain:
         SAME ``CAST(... AS DOUBLE PRECISION)`` wrapper the host base applies
         (Codex F5 typed variant) — not a bare, un-cast expression."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop_x2"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -363,9 +363,9 @@ class TestFirstLastDerivedGrain:
     async def test_repeated_render_byte_identical(self) -> None:
         """The first/last crossing-grain materialisation is deterministic."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
         )
         sql1 = await _gen(query)
         sql2 = await _gen(query)
@@ -377,11 +377,11 @@ class TestFirstLastDerivedGrain:
         materialisation must NOT mint that same name (it would make the outer
         ``_val_0`` reference ambiguous). The allocator reserves the target's
         physical column names, so the minted alias walks past ``_val_0``."""
-        customers_extra = [Column(name="_val_0", sql="1", type=DataType.INT)]
+        customers_extra = [DatasetField(name="_val_0", sql="1", datatype=DataType.INT)]
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
@@ -397,11 +397,11 @@ class TestFirstLastDerivedGrain:
         ``Column(name="renamed", sql="_val_0")`` exports ``_val_0`` through
         ``target.*``, so the allocator must reserve the physical name too — not
         just ``c.name`` (Codex)."""
-        customers_extra = [Column(name="renamed", sql="_val_0", type=DataType.INT)]
+        customers_extra = [DatasetField(name="renamed", sql="_val_0", datatype=DataType.INT)]
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
@@ -420,9 +420,9 @@ class TestSiblingPathsDerivedGrain:
         OFF-PATH dim re-roots the CTE at the target; both grains join back on
         their dotted aliases (dotted naming on both sides)."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop", "customers_v2.regions.name"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -441,13 +441,13 @@ class TestSiblingPathsDerivedGrain:
         base joins back on its dotted alias. This path never hit the derived-grain
         gate, so it is a regression guard — must pass before AND after the fix."""
         # amt_hi's filter references a joined table → filtered-local isolation.
-        orders_extra = [Column(
-            name="amt_hi", sql="amount", type=DataType.DOUBLE,
+        orders_extra = [DatasetField(
+            name="amt_hi", sql="amount", datatype=DataType.DOUBLE,
             filter="customers_v2.lifetime_value > 15")]
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="sum(amt_hi)")],
+            metrics=[DatasetMetric(expression="sum(amt_hi)")],
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
@@ -472,12 +472,12 @@ class TestUnchangedBehaviourGuards:
     async def test_host_local_derived_dim_still_broadcasts(self) -> None:
         """A HOST-LOCAL derived dim (``path == ()``) still broadcasts via CROSS
         JOIN — the shared-grain rendering is scoped to path-bearing dims."""
-        orders_extra = [Column(
-            name="amt_bucket", sql="amount * 2", type=DataType.DOUBLE)]
+        orders_extra = [DatasetField(
+            name="amt_bucket", sql="amount * 2", datatype=DataType.DOUBLE)]
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["amt_bucket"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
             to_many_handling="broadcast",
         )
         sql = await _gen(query, orders_extra=orders_extra)
@@ -488,8 +488,8 @@ class TestUnchangedBehaviourGuards:
         """A derived aggregate SOURCE crossing a join (no derived grain) still
         renders, unchanged by the gate removal."""
         query = SlayerQuery(
-            source_model="orders_x",
-            measures=[ModelMeasure(formula="sum(customers_v2.deep_pop)")],
+            population="orders_x",
+            metrics=[DatasetMetric(expression="sum(customers_v2.deep_pop)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -499,9 +499,9 @@ class TestUnchangedBehaviourGuards:
     async def test_derived_filter_unaffected(self) -> None:
         """A derived crossing FILTER (no derived grain) still renders."""
         query = SlayerQuery(
-            source_model="orders_x",
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
-            filters=["customers_v2.deep_pop > 1"],
+            population="orders_x",
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            filter=["customers_v2.deep_pop > 1"],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -512,11 +512,11 @@ class TestUnchangedBehaviourGuards:
     async def test_time_trunc_derived_grain_still_supported(self) -> None:
         """A TimeTrunc-wrapped derived grain keeps full support (unchanged)."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="customers_v2.region_opened_eff",
+                field="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -567,44 +567,44 @@ def _seed_sqlite(db_path: str) -> None:
         )
 
 
-def _sqlite_models() -> "list[SlayerModel]":
+def _sqlite_datasets() -> "list[SlayerDataset]":
     """SQLite-shaped models (no schema qualifier, no sql= on base columns)."""
     return [
-        SlayerModel(
+        SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="population", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="population", datatype=DataType.DOUBLE),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers_v2", sql_table="customers", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="lifetime_value", type=DataType.DOUBLE),
-                Column(name="signup_at", type=DataType.TIMESTAMP),
-                Column(name="ltv_x2", sql="lifetime_value * 2", type=DataType.DOUBLE),
-                Column(name="ltv_third", sql="lifetime_value / 3.0", type=DataType.INT),
-                Column(name="deep_pop", sql="regions.population", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INT),
+                DatasetField(name="lifetime_value", datatype=DataType.DOUBLE),
+                DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.DOUBLE),
+                DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INT),
+                DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.DOUBLE),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
             default_time_dimension="signup_at",
         ),
-        SlayerModel(
+        SlayerDataset(
             name="orders_x", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
                 # Filter references a JOINED table → filtered-local
                 # isolation (used by the filtered-local + derived-grain test).
-                Column(name="amt_hi", sql="amount", type=DataType.DOUBLE,
+                DatasetField(name="amt_hi", sql="amount", datatype=DataType.DOUBLE,
                        filter="customers_v2.lifetime_value > 15"),
             ],
-            joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers_v2", join_pairs=[["customer_id", "id"]])],
             default_time_dimension="created_at",
         ),
     ]
@@ -619,8 +619,8 @@ async def sqlite_engine() -> AsyncIterator[SlayerQueryEngine]:
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=db_path)
         )
-        for m in _sqlite_models():
-            await storage.save_model(m)
+        for m in _sqlite_datasets():
+            await storage.save_dataset(m)
         yield SlayerQueryEngine(storage=storage)
 
 
@@ -629,9 +629,9 @@ class TestDerivedGrainExecution:
         """Group a cross-model sum by a target-local derived grain
         (``ltv_x2``): each distinct ltv*2 is its own group with the right sum."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         ))
         by_grain = {r["orders_x.customers_v2.ltv_x2"]: r for r in resp.data}
         # Four distinct grains, one per customer — no group swallowed.
@@ -646,9 +646,9 @@ class TestDerivedGrainExecution:
         """Group a cross-model sum by a crossing derived grain (``deep_pop`` =
         regions.population): region 1 (pop 100) has ltv 10+30 = 40."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         assert by_pop[100.0]["orders_x.customers_v2.lifetime_value_sum"] == 40.0, resp.data
@@ -658,9 +658,9 @@ class TestDerivedGrainExecution:
         """A NULL derived-grain group (region 3, population NULL) retains its
         joined-back aggregate via the null-safe join-back, not dropping to NULL."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         assert None in by_pop, resp.data
@@ -672,9 +672,9 @@ class TestDerivedGrainExecution:
         CAST must be identical on both join-back sides, else the INT-vs-float
         mismatch silently drops every group. ltv 10/3 → INT 3."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.ltv_third"],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         ))
         by_grain = {r["orders_x.customers_v2.ltv_third"]: r for r in resp.data}
         # ltv 10 → 10/3.0 = 3.33 → INT 3; the group must survive the join-back.
@@ -689,9 +689,9 @@ class TestDerivedGrainExecution:
         values. Group by deep_pop; last(lifetime_value ORDER BY signup_at) picks
         the latest customer in each region-population group."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.customers_v2.lifetime_value_last_customers_v2_signup_at"
@@ -706,9 +706,9 @@ class TestDerivedGrainExecution:
         customer is customer 1 (Jan, ltv 10), vs last = 30 — proving the ASC/DESC
         ranking path is exercised for a derived grain too (Codex F3)."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="first(customers_v2.lifetime_value, customers_v2.signup_at)")],
+            metrics=[DatasetMetric(expression="first(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.customers_v2.lifetime_value_first_customers_v2_signup_at"
@@ -724,9 +724,9 @@ class TestDerivedGrainExecution:
         low-ltv customer 1 (ltv 10, order amt 5) is EXCLUDED — region 1's
         amt_hi sum is customer 2's order amount 7 alone, not 5 + 7."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="sum(amt_hi)")],
+            metrics=[DatasetMetric(expression="sum(amt_hi)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.amt_hi_sum"
@@ -746,10 +746,10 @@ class TestDerivedGrainExecution:
         correct pre-ranking filter yields 10; a broken post-ranking filter would
         rank customer 2 first and yield 30 (or drop the group)."""
         resp = await sqlite_engine.execute(SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            measures=[ModelMeasure(formula="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
-            filters=["customers_v2.lifetime_value < 25"],
+            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
+            filter=["customers_v2.lifetime_value < 25"],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.customers_v2.lifetime_value_last_customers_v2_signup_at"
