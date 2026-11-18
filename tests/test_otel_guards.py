@@ -145,9 +145,9 @@ def test_a_late_setup_failure_closes_the_providers_created_so_far(monkeypatch: p
     def broken_log_exporter() -> None:
         raise RuntimeError("log exporter bug")
 
-    def observed(providers: list[object]) -> None:
+    def observed(providers: list[object]) -> bool:
         closed.extend(providers)
-        original(providers)
+        return original(providers)
 
     monkeypatch.setattr(exporters, "OTLPLogExporter", broken_log_exporter)
     monkeypatch.setattr(exporters, "shutdown_all", observed)
@@ -180,6 +180,18 @@ def test_exporter_log_text_is_hidden_while_slayer_owns_the_providers(monkeypatch
         otel.reset()
     shown = not any(isinstance(f, logs._ExportTextFilter) for f in exporter_logger.filters)
     assert (hidden, shown) == (True, True)
+
+
+def test_exporter_log_text_stays_hidden_while_a_shutdown_is_still_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(recorder, "_owned", [_SlowProvider()])
+    exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
+    logs.hide_export_text()
+    try:
+        otel.reset()
+        hidden = any(isinstance(f, logs._ExportTextFilter) for f in exporter_logger.filters)
+    finally:
+        logs.show_export_text()
+    assert hidden
 
 
 def test_providers_stay_private_and_a_second_start_gets_new_ones() -> None:

@@ -72,8 +72,8 @@ def start() -> None:
         )
     except Exception:
         _detach_logs()
-        exporters.shutdown_all(configured.owned)
-        logs.show_export_text()
+        if exporters.shutdown_all(configured.owned):
+            logs.show_export_text()
         raise
     _owned = configured.owned
 
@@ -110,15 +110,17 @@ def reset() -> None:
     uninstrument()
     _detach_logs()
     providers, _owned = _owned, []
-    close_providers(providers)
-    if providers:
+    if close_providers(providers) and providers:  # a shutdown still running may still log the URL
         from slayer.otel import logs  # ALLOW(import-not-top): optional extra
 
         logs.show_export_text()
 
 
-def close_providers(providers: list[Any]) -> None:
-    """Shut each provider down in its own thread, so a slow backend delays no other signal's final batch."""
+def close_providers(providers: list[Any]) -> bool:
+    """Shut each provider down in its own thread, so a slow backend delays no other signal's final batch.
+
+    Returns whether every shutdown finished within the bound.
+    """
     workers = [
         threading.Thread(target=_shutdown_one, kwargs={"provider": provider}, name="slayer-otel-shutdown", daemon=True)
         for provider in providers
@@ -128,6 +130,7 @@ def close_providers(providers: list[Any]) -> None:
     deadline = time.monotonic() + SHUTDOWN_WAIT_SECONDS
     for worker in workers:
         worker.join(timeout=max(0.0, deadline - time.monotonic()))
+    return not any(worker.is_alive() for worker in workers)
 
 
 def _shutdown_one(*, provider: Any) -> None:

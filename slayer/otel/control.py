@@ -94,8 +94,8 @@ def _probe(*, url: str, headers: dict[str, str], tls: settings.TlsFiles) -> tupl
     """POST an empty OTLP request: valid protobuf, so it checks reachability, credentials and path only."""
     if _scheme(url) not in ("http", "https"):
         return False, "not a valid URL: the endpoint needs http:// or https://"
-    url, headers = _with_url_credentials(url=url, headers=headers)
     try:
+        url, headers = _with_url_credentials(url=url, headers=headers)
         request = urllib.request.Request(
             url, data=b"", method="POST", headers={**headers, "Content-Type": "application/x-protobuf"},
         )

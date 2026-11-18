@@ -76,9 +76,9 @@ def _create_providers(configured: Configured) -> None:
         logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
 
 
-def shutdown_all(providers: list[Any]) -> None:
-    """Close ``providers`` within the same 1 s bound as the exit flush."""
-    recorder.close_providers(providers)
+def shutdown_all(providers: list[Any]) -> bool:
+    """Close ``providers`` within the same 1 s bound as the exit flush; ``True`` if all finished."""
+    return recorder.close_providers(providers)
 
 
 def _note_unsupported_values() -> None:

@@ -457,6 +457,12 @@ def test_status_shows_a_malformed_endpoint(clean_env: pytest.MonkeyPatch) -> Non
     assert control.status().count("<malformed URL>") == 3
 
 
+def test_test_reports_unencodable_endpoint_credentials(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://ops:p\u20acss@127.0.0.1:9")
+    report, code = control.test()
+    assert (code, report.count("not sendable")) == (1, 3), report
+
+
 def test_test_command_exits_with_one_on_failure(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", RefusedEndpoint().url.removesuffix("/i/v0/e/"))
     result = cli(["otel", "test"])
