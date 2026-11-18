@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev1903_opacity.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  }
+ ]
+}

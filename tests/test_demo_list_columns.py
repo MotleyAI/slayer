@@ -80,23 +80,23 @@ class TestDemoModels:
         storage = YAMLStorage(base_dir=store_dir)
         jaffle_shop.ensure_demo_datasource(storage, storage_path=store_dir, years=1)
         for model_name, column_name in (("products", "ingredients"), ("orders", "item_skus")):
-            model = run_sync(storage.get_model(name=model_name, data_source=jaffle_shop.DEMO_NAME))
+            model = run_sync(storage.get_dataset(name=model_name, data_source=jaffle_shop.DEMO_NAME))
             assert model is not None
-            column = model.get_column(column_name)
+            column = model.get_field(column_name)
             assert column is not None
-            assert (column.type, column.element_type) == (DataType.ARRAY, DataType.TEXT)
+            assert (column.datatype, column.element_type) == (DataType.ARRAY, DataType.TEXT)
             assert column.description
 
     def test_element_counts_match_the_items(self, doc_demo_storage: YAMLStorage) -> None:
         engine = SlayerQueryEngine(storage=doc_demo_storage)
         try:
             per_element = engine.execute_sync({
-                "source_model": "orders", "dimensions": ["item_skus.value"],
-                "measures": [{"formula": "count(item_skus.*)", "name": "units"}],
+                "population": "orders", "dimensions": ["item_skus.value"],
+                "metrics": [{"expression": "count(item_skus.*)", "name": "units"}],
             }).data
             per_item = engine.execute_sync({
-                "source_model": "items", "dimensions": ["sku"],
-                "measures": [{"formula": "count(*)", "name": "units"}],
+                "population": "items", "dimensions": ["sku"],
+                "metrics": [{"expression": "count(*)", "name": "units"}],
             }).data
         finally:
             engine.close()

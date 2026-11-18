@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchService
@@ -58,8 +58,8 @@ class TestStringIds:
         self, storage: StorageBackend,
     ) -> None:
         attached = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
         )
         await storage.save_memory(
             learning="example revenue query",

@@ -1,0 +1,48 @@
+{
+ "source": "tests/test_cube_smoke.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "total_revenue"
+     },
+     {
+      "formula": "completed_revenue"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "total_revenue"
+     },
+     {
+      "expression": "completed_revenue"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 102,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 105,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 114,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 117,
+   "reason": "no positional counterpart"
+  }
+ ]
+}

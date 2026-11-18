@@ -14,20 +14,20 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER
 from slayer.core.errors import (
     AggregationArgumentError,
-    CircularJoinPathError,
+    CircularRelationshipPathError,
     UnanalyzableAggregationParameterError,
     UnknownReferenceError,
-    UnresolvableDimensionJoinError,
+    UnresolvableDimensionRelationshipError,
 )
-from slayer.core.join_walker import (
+from slayer.core.relationship_walker import (
     aggregation_owner,
     cancelling_revisit,
     resolved_terminal,
     walk_cancelling,
 )
 from slayer.core.keys import (
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     SqlFragmentKey,
     ValueKey,
     normalize_scalar,
@@ -37,25 +37,25 @@ from slayer.core.models import (
     VALUE_PLACEHOLDER,
     WINDOW_PARAM,
     Aggregation,
-    SlayerModel,
+    SlayerDataset,
     aggregation_definition,
-    rendered_formula,
+    rendered_expression,
     reserved_window_param_message,
 )
-from slayer.core.scope import resolve_generated_column
+from slayer.core.scope import resolve_generated_field
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql.column_expansion import (
+from slayer.sql.field_expansion import (
     raise_if_legacy_split_alias,
     reference_sites,
-    root_scope_column_ids,
+    root_scope_field_ids,
 )
 from slayer.sql.dialects import get_dialect
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.sql_template import SqlTemplateError, sql_template
 
 Path = Tuple[str, ...]
-ColumnRef = Union[ColumnKey, ColumnSqlKey]
+FieldRef = Union[FieldKey, FieldSqlKey]
 #: Binds a query-side string argument as its unquoted spelling; raises ``QuotedArgumentRefused``.
 QuotedArgumentBinder = Callable[[str], Any]
 
@@ -109,7 +109,7 @@ def bind_aggregation_params(
     read parameter is Mode B, bound by ``bind_quoted``; a missing one binds its definition
     default (Mode A) in the owner's frame; any other string (``window='90d'``) stays a marker."""
     owner = aggregation_owner(
-        root=bundle.source_model, source=source, models_by_name=bundle.models_by_name,
+        root=bundle.population, source=source, datasets_by_name=bundle.datasets_by_name,
     )
     definition = aggregation_definition(owner=owner, agg=agg)
     if definition is not None and (
@@ -130,8 +130,8 @@ def bind_aggregation_params(
         if name not in defaults:
             raise SqlTemplateError(
                 f"Aggregation '{agg}' requires parameter '{name}'. "
-                f"Set it in the model's aggregation definition or at query time "
-                f"(e.g., '{agg}(measure, {name}=column)')."
+                f"Set it in the dataset's aggregation definition or at query time "
+                f"(e.g., '{agg}(metric, {name}=field)')."
             )
         out.append((name, _bind_text(
             text=defaults[name], name=name, ctx=ctx, resolve=ctx.resolve_default)))
@@ -141,12 +141,12 @@ def bind_aggregation_params(
 def _reads(
     *, agg: str, definition: Optional[Aggregation], bundle: ResolvedSourceBundle,
 ) -> frozenset[str]:
-    """The parameters ``agg`` reads, its formula parsed (an invalid one fails here)."""
-    formula = rendered_formula(agg=agg, definition=definition)
-    if formula is None:
+    """The parameters ``agg`` reads, its expression parsed (an invalid one fails here)."""
+    expression = rendered_expression(agg=agg, definition=definition)
+    if expression is None:
         return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
     try:
-        return sql_template(text=formula, dialect=bundle.dialect).placeholder_names
+        return sql_template(text=expression, dialect=bundle.dialect).placeholder_names
     except SqlTemplateError as e:
         raise SqlTemplateError(f"Aggregation '{agg}': {e}") from e
 
@@ -155,16 +155,16 @@ class _Ctx:
     """The fixed inputs of one aggregate's parameter binding."""
 
     def __init__(
-        self, *, agg: str, owner: Optional[SlayerModel], source: ValueKey,
+        self, *, agg: str, owner: Optional[SlayerDataset], source: ValueKey,
         bundle: ResolvedSourceBundle,
     ) -> None:
         self.agg = agg
         self.owner = owner
         self.owner_path: Path = source_anchor_path(source)
         self.bundle = bundle
-        self.root = bundle.source_model
+        self.root = bundle.population
 
-    def model_name(self) -> Optional[str]:
+    def dataset_name(self) -> Optional[str]:
         return self.owner.name if self.owner is not None else None
 
     def resolve_default(self, parts: Tuple[str, ...]) -> ValueKey:
@@ -172,10 +172,10 @@ class _Ctx:
         assert self.root is not None  # a default exists only with an owner
         quals, leaf = parts[:-1], parts[-1]
         abs_path = resolve_default_path(
-            qualifiers=quals, leaf=leaf, root_model=self.root,
+            qualifiers=quals, leaf=leaf, root_dataset=self.root,
             owner_path=self.owner_path, root_path=(), bundle=self.bundle,
         )
-        return _column_key(
+        return _field_key(
             root=self.root, path=abs_path, leaf=leaf, spelled=".".join(parts),
             bundle=self.bundle,
         )
@@ -195,16 +195,16 @@ def _bind_quoted(*, text: str, name: str, ctx: _Ctx, bind: QuotedArgumentBinder)
 def _bind_text(
     *, text: str, name: str, ctx: _Ctx, resolve: Callable[[Tuple[str, ...]], ValueKey],
 ) -> object:
-    """A definition default's Mode-A text → a column key, a scalar, or a ``SqlFragmentKey``."""
+    """A definition default's Mode-A text → a field key, a scalar, or a ``SqlFragmentKey``."""
     tree = _parse(text=text, name=name, ctx=ctx)
     scalar = _scalar(tree)
     if scalar is not _NOT_SCALAR:
         return scalar
-    sites = reference_sites(tree, root_scope_column_ids(parsed=tree))
+    sites = reference_sites(tree, root_scope_field_ids(parsed=tree))
     keys = [resolve((*quals, leaf)) for _node, quals, leaf in sites]
     for key in keys:
-        if not isinstance(key, (ColumnKey, ColumnSqlKey)):
-            raise _unanalysable(text=text, name=name, ctx=ctx, reason="it names a measure, not a column")
+        if not isinstance(key, (FieldKey, FieldSqlKey)):
+            raise _unanalysable(text=text, name=name, ctx=ctx, reason="it names a metric, not a field")
     if len(sites) == 1 and sites[0][0] is tree:
         return keys[0]
     sentinel = _fresh_sentinel(text)
@@ -236,7 +236,7 @@ def _parse(*, text: str, name: str, ctx: _Ctx) -> Expression:
 
 def _unanalysable(*, text: str, name: str, ctx: _Ctx, reason: str) -> UnanalyzableAggregationParameterError:
     return UnanalyzableAggregationParameterError(
-        model=ctx.model_name(), aggregation=ctx.agg, parameter=name, text=text, reason=reason,
+        dataset=ctx.dataset_name(), aggregation=ctx.agg, parameter=name, text=text, reason=reason,
     )
 
 
@@ -270,51 +270,51 @@ def _sqlglot_name(bundle: ResolvedSourceBundle) -> str:
         return bundle.dialect
 
 
-def _column_key(
-    *, root: SlayerModel, path: Path, leaf: str, spelled: str, bundle: ResolvedSourceBundle,
-) -> ColumnRef:
-    terminal = walk_key_path(model=root, path=path, bundle=bundle)
+def _field_key(
+    *, root: SlayerDataset, path: Path, leaf: str, spelled: str, bundle: ResolvedSourceBundle,
+) -> FieldRef:
+    terminal = walk_key_path(dataset=root, path=path, bundle=bundle)
     if terminal is None:
-        raise UnresolvableDimensionJoinError(
-            reference=spelled, root_model=root.name,
-            reason="its join path does not resolve from the query root.",
+        raise UnresolvableDimensionRelationshipError(
+            reference=spelled, root_dataset=root.name,
+            reason="its relationship path does not resolve from the query root.",
         )
-    col = resolve_generated_column(model=terminal, name=leaf)
+    col = resolve_generated_field(dataset=terminal, name=leaf)
     if col is None:
         raise UnknownReferenceError(
-            name=spelled, scope_kind="ModelScope",
-            scope_summary=f"model {terminal.name!r} columns: {[c.name for c in terminal.columns]}",
+            name=spelled, scope_kind="DatasetScope",
+            scope_summary=f"dataset {terminal.name!r} fields: {[c.name for c in terminal.fields]}",
             suggestion=None,
         )
     if col.needs_expansion:
-        return ColumnSqlKey(path=path, model=terminal.name, column_name=col.name)
-    return ColumnKey(path=path, leaf=col.name)
+        return FieldSqlKey(path=path, dataset=terminal.name, field_name=col.name)
+    return FieldKey(path=path, leaf=col.name)
 
 
 def resolve_default_path(
-    *, qualifiers: Path, leaf: str, root_model: SlayerModel, owner_path: Path,
+    *, qualifiers: Path, leaf: str, root_dataset: SlayerDataset, owner_path: Path,
     root_path: Path, bundle: ResolvedSourceBundle,
 ) -> Path:
     """The absolute path of a default reference: owner-first with cancellation, else
     the query root; unreachable from both, or circular from the root, fails closed."""
-    mbn = bundle.models_by_name
+    mbn = bundle.datasets_by_name
     abs_path = resolve_default_qualifier_path(
-        qualifiers=qualifiers, leaf=leaf, root_model=root_model,
-        owner_path=owner_path, models_by_name=mbn,
+        qualifiers=qualifiers, leaf=leaf, root_dataset=root_dataset,
+        owner_path=owner_path, datasets_by_name=mbn,
     )
     if abs_path is None:
         abs_path = resolve_default_qualifier_path(
-            qualifiers=qualifiers, leaf=leaf, root_model=root_model,
-            owner_path=root_path, models_by_name=mbn,
+            qualifiers=qualifiers, leaf=leaf, root_dataset=root_dataset,
+            owner_path=root_path, datasets_by_name=mbn,
         )
     if abs_path is None:
         _raise_if_circular(
-            qualifiers=qualifiers, leaf=leaf, root_model=root_model,
-            owner_path=root_path, models_by_name=mbn,
+            qualifiers=qualifiers, leaf=leaf, root_dataset=root_dataset,
+            owner_path=root_path, datasets_by_name=mbn,
         )
-        raise UnresolvableDimensionJoinError(
-            reference=".".join((*qualifiers, leaf)), root_model=root_model.name,
-            reason="not reachable forward from the owning model or the query root.",
+        raise UnresolvableDimensionRelationshipError(
+            reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.name,
+            reason="not reachable forward from the owning dataset or the query root.",
         )
     return abs_path
 
@@ -323,62 +323,62 @@ def resolve_default_qualifier_path(
     *,
     qualifiers: Path,
     leaf: str,
-    root_model: SlayerModel,
+    root_dataset: SlayerDataset,
     owner_path: Path,
-    models_by_name: Dict[str, SlayerModel],
+    datasets_by_name: Dict[str, SlayerDataset],
 ) -> Optional[Path]:
     """Owner-first resolution of a default's qualifier chain with reverse-hop
-    cancellation, from ``root_model`` walked along ``owner_path``: the absolute path, or
+    cancellation, from ``root_dataset`` walked along ``owner_path``: the absolute path, or
     ``None`` on a clean first-token miss (the caller retries at the root). A revisit
-    through an edge name fails closed with the circular-join error, and a chain whose
+    through an edge name fails closed with the circular-relationship-path error, and a chain whose
     first token resolves but a later one misses as unresolvable."""
     quals = tuple(qualifiers)
     if not quals:
         return tuple(owner_path)
     resolved = walk_cancelling(
-        root=root_model, owner_path=owner_path, tokens=quals, models_by_name=models_by_name,
+        root=root_dataset, owner_path=owner_path, tokens=quals, datasets_by_name=datasets_by_name,
     )
     if resolved is not None:
         return resolved
     _raise_if_circular(
-        qualifiers=quals, leaf=leaf, root_model=root_model,
-        owner_path=owner_path, models_by_name=models_by_name,
+        qualifiers=quals, leaf=leaf, root_dataset=root_dataset,
+        owner_path=owner_path, datasets_by_name=datasets_by_name,
     )
     if walk_cancelling(
-        root=root_model, owner_path=owner_path, tokens=quals[:1], models_by_name=models_by_name,
+        root=root_dataset, owner_path=owner_path, tokens=quals[:1], datasets_by_name=datasets_by_name,
     ) is None:
         if len(quals) == 1:
             raise_if_legacy_split_alias(
-                qualifier=quals[0], leaf=leaf, models_by_name=models_by_name,
-                source_model=resolved_terminal(
-                    root=root_model, path=owner_path, models_by_name=models_by_name,
-                ) or root_model,
+                qualifier=quals[0], leaf=leaf, datasets_by_name=datasets_by_name,
+                source_dataset=resolved_terminal(
+                    root=root_dataset, path=owner_path, datasets_by_name=datasets_by_name,
+                ) or root_dataset,
             )
         return None
     failing = next(
         (quals[i - 1] for i in range(2, len(quals) + 1)
-         if walk_cancelling(root=root_model, owner_path=owner_path,
-                            tokens=quals[:i], models_by_name=models_by_name) is None),
+         if walk_cancelling(root=root_dataset, owner_path=owner_path,
+                            tokens=quals[:i], datasets_by_name=datasets_by_name) is None),
         quals[-1],
     )
-    raise UnresolvableDimensionJoinError(
-        reference=".".join((*quals, leaf)), root_model=root_model.name,
-        reason=f"'{failing}' is not a joined model on the preceding hop.",
+    raise UnresolvableDimensionRelationshipError(
+        reference=".".join((*quals, leaf)), root_dataset=root_dataset.name,
+        reason=f"'{failing}' is not a joined dataset on the preceding hop.",
     )
 
 
 def _raise_if_circular(
-    *, qualifiers: Path, leaf: str, root_model: SlayerModel, owner_path: Path,
-    models_by_name: Dict[str, SlayerModel],
+    *, qualifiers: Path, leaf: str, root_dataset: SlayerDataset, owner_path: Path,
+    datasets_by_name: Dict[str, SlayerDataset],
 ) -> None:
     revisit = cancelling_revisit(
-        root=root_model, owner_path=owner_path, tokens=qualifiers,
-        models_by_name=models_by_name,
+        root=root_dataset, owner_path=owner_path, tokens=qualifiers,
+        datasets_by_name=datasets_by_name,
     )
     if revisit is not None:
         hop, revisited, via = revisit
-        raise CircularJoinPathError(
-            reference=".".join((*qualifiers, leaf)), root_model=root_model.name,
+        raise CircularRelationshipPathError(
+            reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.name,
             revisited=revisited, hop=hop, via=via,
         )
 
@@ -394,20 +394,20 @@ def default_reference_sites(definition: Aggregation) -> List[Tuple[Path, str]]:
                 prequote_reserved_identifiers(param.sql, dialect="postgres"), dialect="postgres"))
         except (SqlglotError, ValueError):
             continue
-        out.extend((tuple(quals), leaf) for _node, quals, leaf in reference_sites(parsed, root_scope_column_ids(parsed=parsed)))
+        out.extend((tuple(quals), leaf) for _node, quals, leaf in reference_sites(parsed, root_scope_field_ids(parsed=parsed)))
     return out
 
 
 def resolve_default_reference_paths(
     *, parsed: Expression, owner_path: Path,
-    root_model: SlayerModel, root_path: Path, bundle: ResolvedSourceBundle,
+    root_dataset: SlayerDataset, root_path: Path, bundle: ResolvedSourceBundle,
 ) -> List[Tuple[Path, str]]:
     """``(absolute path, leaf)`` per root-scope reference of a parsed default, each
     resolved in its own frame (reference-site order)."""
     return [
         (resolve_default_path(
-            qualifiers=quals, leaf=leaf, root_model=root_model,
+            qualifiers=quals, leaf=leaf, root_dataset=root_dataset,
             owner_path=owner_path, root_path=root_path, bundle=bundle,
         ), leaf)
-        for _node, quals, leaf in reference_sites(parsed, root_scope_column_ids(parsed=parsed))
+        for _node, quals, leaf in reference_sites(parsed, root_scope_field_ids(parsed=parsed))
     ]

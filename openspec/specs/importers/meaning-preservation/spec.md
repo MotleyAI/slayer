@@ -73,7 +73,7 @@ When the import's datasource is configured and reachable, each imported column's
 
 #### Scenario: List measure source typed from the database
 - **WHEN** a Cube measure `tag_cnt` is `count` over `{CUBE}.tags` and the datasource is reachable
-- **THEN** the column `tag_cnt` reads is a list of text, and `validate_models` proposes no deletion for the model
+- **THEN** the column `tag_cnt` reads is a list of text, and `validate_datasets` proposes no deletion for the model
 
 #### Scenario: Offline count source
 - **WHEN** the same cube is imported with the datasource not configured

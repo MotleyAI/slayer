@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.resolver import extract_entities_from_query
 from slayer.storage.yaml_storage import YAMLStorage
@@ -49,7 +49,7 @@ def test_the_allowlist_names_real_tokenize_readers() -> None:
 # Usage reporting reads the parse tree
 # --------------------------------------------------------------------------- #
 def _features(*measures: str) -> tuple[Counter[str], Counter[str]]:
-    found = query_features({"source_model": "m", "measures": list(measures)})
+    found = query_features({"population": "m", "metrics": list(measures)})
     return Counter(found.aggregations), Counter(found.flags)
 
 
@@ -70,7 +70,7 @@ def test_count_distinct_counts_as_count_distinct() -> None:
 
 
 def test_array_length_stays_custom() -> None:
-    found = query_features({"source_model": "m", "measures": ["array_length(tags)"]})
+    found = query_features({"population": "m", "metrics": ["array_length(tags)"]})
     assert Counter(found.aggregations) == Counter({"custom": 1})
     assert found.functions == []
 
@@ -82,15 +82,15 @@ def test_array_length_stays_custom() -> None:
 async def storage(tmp_path: Path) -> YAMLStorage:
     store = YAMLStorage(base_dir=str(tmp_path))
     await store.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
-    await store.save_model(SlayerModel(
+    await store.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="region", type=DataType.TEXT), Column(name="amount", type=DataType.DOUBLE)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="region", datatype=DataType.TEXT), DatasetField(name="amount", datatype=DataType.DOUBLE)],
     ))
     return store
 
 
 async def test_quoted_identifier_in_a_filter_is_tagged(storage: YAMLStorage) -> None:
-    query = SlayerQuery(source_model="orders", filters=['"region" = \'x\''], measures=[ModelMeasure(formula="count(*)")])
+    query = SlayerQuery(population="orders", filter=['"region" = \'x\''], metrics=[DatasetMetric(expression="count(*)")])
     result = await extract_entities_from_query(query, storage=storage)
     assert "mydb.orders.region" in result.canonical_forms

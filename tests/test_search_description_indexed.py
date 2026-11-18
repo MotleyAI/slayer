@@ -12,10 +12,10 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from tests.search_helpers import seed_warehouse_models
+from tests.search_helpers import seed_warehouse_datasets
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.render import render_datasource_text, render_memory_text
 from slayer.search.service import SearchService
@@ -43,7 +43,7 @@ def test_render_memory_text_omits_none_description() -> None:
 async def storage() -> AsyncIterator[StorageBackend]:
     with tempfile.TemporaryDirectory() as tmpdir:
         s = resolve_storage(tmpdir)
-        await seed_warehouse_models(s)
+        await seed_warehouse_datasets(s)
         yield s
 
 
@@ -77,7 +77,7 @@ async def test_tantivy_matches_description_only_term(
 def test_render_datasource_text_includes_description() -> None:
     rendered = render_datasource_text(
         name="warehouse",
-        models=[],
+        datasets=[],
         description="prod warehouse with billing facts",
     )
     assert "warehouse" in rendered
@@ -85,7 +85,7 @@ def test_render_datasource_text_includes_description() -> None:
 
 
 def test_render_datasource_text_omits_none_description() -> None:
-    rendered = render_datasource_text(name="warehouse", models=[])
+    rendered = render_datasource_text(name="warehouse", datasets=[])
     assert "warehouse" in rendered
     assert "Description:" not in rendered
 
@@ -103,12 +103,12 @@ async def test_tantivy_matches_datasource_description_only_term() -> None:
             database=":memory:",
             description="amalgamated_reconciliation_zeta is a unique term",
         ))
-        await s.save_model(SlayerModel(
+        await s.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
             ],
         ))
         response = await SearchService(storage=s).search(

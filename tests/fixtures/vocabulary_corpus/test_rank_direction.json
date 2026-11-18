@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_rank_direction.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='asc')",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='asc')",
+    "direction": "asc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  }
+ ]
+}

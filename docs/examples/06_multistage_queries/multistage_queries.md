@@ -7,85 +7,85 @@ Most semantic layers and BI tools basically parameterize a GROUP BY, maybe with 
 
 In many architectures, this is treated as a bolt-on. For example, Cube.js supports a specific, named list of multistage measures that you have to specify with a special syntax inside the measure definition. This is also how we initially did it in Motley.
 
-But one day, I had an insight: SLayer can automatically generate a model definition by introspecting an SQL query (string columns become dimensions, numeric columns become measures — one measure per column — and so on). But each SLayer query resolves to an SQL query!
+But one day, I had an insight: SLayer can automatically generate a dataset definition by introspecting an SQL query (string columns become dimensions, numeric columns become metrics — one metric per column — and so on). But each SLayer query resolves to an SQL query!
 
-## Queries as models
+## Queries as datasets
 
-In most semantic layers and BI tools, queries and models are completely different beasties. Models define the available dimensions and measures, and queries request them and get data back.
+In most semantic layers and BI tools, queries and datasets are completely different beasties. Datasets define the available dimensions and metrics, and queries request them and get data back.
 
-In SLayer, things are more dynamic. The reasoning is simple: a SLayer query resolves to a SQL query to the datasource (the one that we use to fetch the query's result). At the same time, SLayer's [introspection](../../concepts/ingestion.md) allows us to take any SQL SELECT query and define a model from it, generating measures and dimensions from the columns that that SQL query returns, according to the type of these columns.
+In SLayer, things are more dynamic. The reasoning is simple: a SLayer query resolves to a SQL query to the datasource (the one that we use to fetch the query's result). At the same time, SLayer's [introspection](../../concepts/ingestion.md) allows us to take any SQL SELECT query and define a dataset from it, generating metrics and dimensions from the columns that that SQL query returns, according to the type of these columns.
 
-Put these two together, and hey presto: any query automatically implies a model!
+Put these two together, and hey presto: any query automatically implies a dataset!
 
-Actually there's a bit more to it — for example, automatic propagation of metadata such as labels or descriptions from both the source model and any labels defined in the query itself — but that is the basic idea.
+Actually there's a bit more to it — for example, automatic propagation of metadata such as labels or descriptions from both the population and any labels defined in the query itself — but that is the basic idea.
 
-## How queries as models enable multi-stage queries
+## How queries as datasets enable multi-stage queries
 
-Combined with another powerful SLayer feature — [inline joins and dimensions](../../concepts/queries.md#query-extensions) — this makes multi-stage queries a natural, effortless thing.
+Combined with another powerful SLayer feature — [inline relationships and dimensions](../../concepts/queries.md#query-extensions) — this makes multi-stage queries a natural, effortless thing.
 
-For the first example above, all you need to do is use the (revenue by store and month) query as the root model of a second query. Pass both as a [query list](../../concepts/queries.md#query-lists):
-
-```json
-[
-  {
-    "name": "monthly_store_revenue",
-    "source_model": "orders",
-    "measures": ["sum(order_total)"],
-    "dimensions": ["stores.name"],
-    "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
-  },
-  {
-    "source_model": "monthly_store_revenue",
-    "measures": ["avg(order_total_sum)"],
-    "dimensions": ["stores__name"]
-  }
-]
-```
-
-The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `source_model`, groups by `stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` measure with `avg` at query time.
-
-If you'd rather not type `order_total_sum` everywhere, give the inner measure an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform formulas, and downstream stages reference it directly:
+For the first example above, all you need to do is use the (revenue by store and month) query as the root dataset of a second query. Pass both as a [query list](../../concepts/queries.md#query-lists):
 
 ```json
 [
   {
     "name": "monthly_store_revenue",
-    "source_model": "orders",
-    "measures": [{"formula": "sum(order_total)", "name": "rev"}],
+    "population": "orders",
+    "metrics": ["sum(order_total)"],
     "dimensions": ["stores.name"],
-    "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]
+    "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
   },
   {
-    "source_model": "monthly_store_revenue",
-    "measures": [{"formula": "avg(rev)"}],
+    "population": "monthly_store_revenue",
+    "metrics": ["avg(order_total_sum)"],
     "dimensions": ["stores__name"]
   }
 ]
 ```
 
-The outer stage can also re-bucket the inner stage's `ordered_at` column to a coarser granularity — add `"time_dimensions": [{"dimension": "ordered_at", "granularity": "year"}]` there to roll the monthly rows up to a yearly axis.
+The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `population`, groups by `stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` metric with `avg` at query time.
 
-The inner stage emits a column called `rev`; the outer stage averages `avg(rev)`. Renaming an inner-stage measure (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
+If you'd rather not type `order_total_sum` everywhere, give the inner metric an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform expressions, and downstream stages reference it directly:
+
+```json
+[
+  {
+    "name": "monthly_store_revenue",
+    "population": "orders",
+    "metrics": [{"expression": "sum(order_total)", "name": "rev"}],
+    "dimensions": ["stores.name"],
+    "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
+  },
+  {
+    "population": "monthly_store_revenue",
+    "metrics": [{"expression": "avg(rev)"}],
+    "dimensions": ["stores__name"]
+  }
+]
+```
+
+The outer stage can also re-bucket the inner stage's `ordered_at` column to a coarser granularity — add `"time_dimensions": [{"field": "ordered_at", "granularity": "year"}]` there to roll the monthly rows up to a yearly axis.
+
+The inner stage emits a column called `rev`; the outer stage averages `avg(rev)`. Renaming an inner-stage metric (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
-As we want to use a result of a child query as a dimension, we use a [dynamic join](../../concepts/queries.md#query-extensions) inside the parent query to make it available. For the bucketing, we use a computed dimension with a CASE expression; since the child query is a joined model like any other, we reference its columns using the standard `table.column` syntax in the expression:
+As we want to use a result of a child query as a dimension, we use a [dynamic relationship](../../concepts/queries.md#query-extensions) inside the parent query to make it available. For the bucketing, we use a computed dimension with a CASE expression; since the child query is a joined dataset like any other, we reference its columns using the standard `table.column` syntax in the expression:
 
 ```json
 [
   {
     "name": "customer_activity",
-    "source_model": "orders",
-    "measures": ["count(*)"],
+    "population": "orders",
+    "metrics": ["count(*)"],
     "dimensions": ["customer_id"]
   },
   {
-    "source_model": "orders",
+    "population": "orders",
     "extensions": [{
       "source_name": "orders",
-      "joins": [{"target_model": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}]
+      "relationships": [{"to": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}]
     }],
-    "measures": ["count(*)", "sum(order_total)"],
+    "metrics": ["count(*)", "sum(order_total)"],
     "dimensions": [{"expression": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "name": "activity_bucket"}]
   }
 ]
@@ -95,28 +95,28 @@ The inner query computes total orders per customer. The outer query joins this r
 
 ## Stages can reference each other — DAGs, not just chains
 
-Stages in a query list are not restricted to a linear pipeline. Any stage may use any *prior* named sibling stage as its `source_model` or as a `joins.target_model`, so several rollups can run in parallel and feed a single final stage. For example, "max per-customer order total" computed by joining a per-customer rollup back to `customers`:
+Stages in a query list are not restricted to a linear pipeline. Any stage may use any *prior* named sibling stage as its `population` or as a `relationships.to`, so several rollups can run in parallel and feed a single final stage. For example, "max per-customer order total" computed by joining a per-customer rollup back to `customers`:
 
 ```json
 [
   {
     "name": "kpis",
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": ["customer_id"],
-    "measures": ["sum(order_total)"]
+    "metrics": ["sum(order_total)"]
   },
   {
     "name": "tagged",
-    "source_model": "customers",
+    "population": "customers",
     "extensions": [{
       "source_name": "customers",
-      "joins": [{"target_model": "kpis", "join_pairs": [["id", "customer_id"]]}]
+      "relationships": [{"to": "kpis", "join_pairs": [["id", "customer_id"]]}]
     }],
     "dimensions": ["name", "kpis.order_total_sum"]
   },
   {
-    "source_model": "tagged",
-    "measures": ["max(kpis__order_total_sum)"]
+    "population": "tagged",
+    "metrics": ["max(kpis__order_total_sum)"]
   }
 ]
 ```

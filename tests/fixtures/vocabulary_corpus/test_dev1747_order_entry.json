@@ -1,0 +1,238 @@
+{
+ "source": "tests/test_dev1747_order_entry.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.spend) + sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.spend) + sum(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "customers.regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "customers.regions"
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "customers.regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "customers.regions"
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "customers.regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "customers.regions"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cs"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 179,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 218,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 222,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 227,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 233,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 234,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 272,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 295,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 299,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 318,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 353,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 371,
+   "reason": "not fully literal"
+  }
+ ]
+}

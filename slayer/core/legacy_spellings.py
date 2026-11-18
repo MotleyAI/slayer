@@ -9,8 +9,8 @@ from typing import Dict, List, Literal, Optional, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.deprecation import warn_deprecated
-from slayer.core.warnings import DeprecatedSpellingWarning, outside_stacklevel
+from slayer.core.deprecation import outside_stacklevel, warn_deprecated
+from slayer.core.warnings import DeprecatedSpellingWarning
 
 LegacyKind = Literal["==", "is None", "is not None", "bare None", "list after IN", "method-call"]
 

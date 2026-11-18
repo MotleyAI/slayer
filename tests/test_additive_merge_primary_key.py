@@ -3,27 +3,27 @@
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.live_schema.ingestion import _additive_merge_existing
 
 
-def _model(*, keys: set[str], columns: tuple[tuple[str, str | None], ...]) -> SlayerModel:
-    return SlayerModel(
+def _dataset(*, keys: set[str], columns: tuple[tuple[str, str | None], ...]) -> SlayerDataset:
+    return SlayerDataset(
         name="supplies", sql_table="supplies", data_source="ds",
-        columns=[Column(name=name, sql=sql, type=DataType.TEXT, primary_key=name in keys) for name, sql in columns],
+        fields=[DatasetField(name=name, sql=sql, datatype=DataType.TEXT, primary_key=name in keys) for name, sql in columns],
     )
 
 
 _LIVE = (("id", None), ("sku", None), ("cost", None))
 
 
-def _keys(model: SlayerModel) -> set[str]:
-    return {c.name for c in model.columns if c.primary_key}
+def _keys(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if c.primary_key}
 
 
 def test_keyless_model_gains_the_live_composite_key():
     result = _additive_merge_existing(
-        persisted=_model(keys=set(), columns=_LIVE), fresh=_model(keys={"id", "sku"}, columns=_LIVE),
+        persisted=_dataset(keys=set(), columns=_LIVE), fresh=_dataset(keys={"id", "sku"}, columns=_LIVE),
     )
     assert _keys(result.merged) == {"id", "sku"}
     assert result.has_changes
@@ -31,50 +31,50 @@ def test_keyless_model_gains_the_live_composite_key():
 
 def test_stored_key_is_never_changed():
     result = _additive_merge_existing(
-        persisted=_model(keys={"cost"}, columns=_LIVE), fresh=_model(keys={"id", "sku"}, columns=_LIVE),
+        persisted=_dataset(keys={"cost"}, columns=_LIVE), fresh=_dataset(keys={"id", "sku"}, columns=_LIVE),
     )
     assert _keys(result.merged) == {"cost"}
     assert not result.has_changes
 
 
 def test_key_fills_onto_the_column_spelling_it():
-    stored = _model(keys=set(), columns=(("supply_id", "id"), ("sku", None), ("cost", None)))
-    result = _additive_merge_existing(persisted=stored, fresh=_model(keys={"id", "sku"}, columns=_LIVE))
+    stored = _dataset(keys=set(), columns=(("supply_id", "id"), ("sku", None), ("cost", None)))
+    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, columns=_LIVE))
     assert _keys(result.merged) == {"supply_id", "sku"}
 
 
 def test_new_live_key_column_does_not_widen_a_stored_key():
-    stored = _model(keys={"id"}, columns=(("id", None), ("cost", None)))
-    result = _additive_merge_existing(persisted=stored, fresh=_model(keys={"id", "sku"}, columns=_LIVE))
-    assert result.new_columns == ["sku"]
+    stored = _dataset(keys={"id"}, columns=(("id", None), ("cost", None)))
+    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, columns=_LIVE))
+    assert result.new_fields == ["sku"]
     assert _keys(result.merged) == {"id"}
 
 
 def test_renamed_live_column_takes_its_key_and_comment():
     """A live ``_count`` is the model column ``count_col``."""
-    def counts(*, key: bool, description: str | None) -> SlayerModel:
-        return SlayerModel(name="t", sql_table="t", data_source="ds", columns=[
-            Column(name="count_col", sql="_count", type=DataType.INT, primary_key=key, description=description),
+    def counts(*, key: bool, description: str | None) -> SlayerDataset:
+        return SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
+            DatasetField(name="count_col", sql="_count", datatype=DataType.INT, primary_key=key, description=description),
         ])
 
     result = _additive_merge_existing(
         persisted=counts(key=False, description=None), fresh=counts(key=True, description="Live comment"),
     )
-    column = result.merged.get_column("count_col")
+    column = result.merged.get_field("count_col")
     assert column is not None
     assert column.primary_key
     assert column.description == "Live comment"
-    assert result.new_columns == []
+    assert result.new_fields == []
 
 
 def test_computed_column_named_like_the_key_takes_no_key_metadata():
-    stored = SlayerModel(name="t", sql_table="t", data_source="ds", columns=[
-        Column(name="id", sql="id + 1", type=DataType.INT),
+    stored = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
+        DatasetField(name="id", sql="id + 1", datatype=DataType.INT),
     ])
-    fresh = SlayerModel(name="t", sql_table="t", data_source="ds", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True, unique=True),
+    fresh = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True, unique=True),
     ])
-    column = _additive_merge_existing(persisted=stored, fresh=fresh).merged.get_column("id")
+    column = _additive_merge_existing(persisted=stored, fresh=fresh).merged.get_field("id")
     assert column is not None
     assert not column.primary_key
     assert not column.unique
@@ -82,20 +82,20 @@ def test_computed_column_named_like_the_key_takes_no_key_metadata():
 
 
 def test_composite_key_lands_whole_or_not_at_all():
-    stored = _model(keys=set(), columns=(("id", "id || ''"), ("sku", None)))
-    result = _additive_merge_existing(persisted=stored, fresh=_model(keys={"id", "sku"}, columns=_LIVE))
+    stored = _dataset(keys=set(), columns=(("id", "id || ''"), ("sku", None)))
+    result = _additive_merge_existing(persisted=stored, fresh=_dataset(keys={"id", "sku"}, columns=_LIVE))
     assert _keys(result.merged) == set()
 
 
 def test_key_metadata_follows_the_physical_column():
     """A stored ``id`` reading physical ``sku`` describes ``sku``, not the live ``id``."""
-    stored = _model(keys=set(), columns=(("id", "sku"), ("sku", None)))
-    fresh = SlayerModel(name="supplies", sql_table="supplies", data_source="ds", columns=[
-        Column(name="id", type=DataType.TEXT, primary_key=True, unique=True),
-        Column(name="sku", type=DataType.TEXT, primary_key=True),
+    stored = _dataset(keys=set(), columns=(("id", "sku"), ("sku", None)))
+    fresh = SlayerDataset(name="supplies", sql_table="supplies", data_source="ds", fields=[
+        DatasetField(name="id", datatype=DataType.TEXT, primary_key=True, unique=True),
+        DatasetField(name="sku", datatype=DataType.TEXT, primary_key=True),
     ])
     merged = _additive_merge_existing(persisted=stored, fresh=fresh).merged
     assert _keys(merged) == set()
-    column = merged.get_column("id")
+    column = merged.get_field("id")
     assert column is not None
     assert not column.unique

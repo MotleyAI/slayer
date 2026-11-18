@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_usage_reporting_payload.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 240,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 241,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -65,7 +65,7 @@ def _spool_one(token: str = "query") -> None:
 
 
 def test_normal_exit_spools_without_a_request(store: str, usage_reporting_env) -> None:
-    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    result = run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     assert len(spool_files()) == 1
     assert usage_reporting_env.capture.arrivals == 0
@@ -74,14 +74,14 @@ def test_normal_exit_spools_without_a_request(store: str, usage_reporting_env) -
 def test_concurrent_processes_each_write_their_own_spool_file(store: str, usage_reporting_env) -> None:
     procs = [
         subprocess.Popen(
-            [sys.executable, "-m", "slayer", "models", "--storage", store, "list"],
+            [sys.executable, "-m", "slayer", "datasets", "--storage", store, "list"],
             env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(5)
     ]
     assert [p.wait(timeout=120) for p in procs] == [0] * 5
     assert len(spool_files()) == 5
-    assert usage(show(), "cli:models.list")["ok"] == 5
+    assert usage(show(), "cli:datasets.list")["ok"] == 5
 
 
 def _mcp_with_one_call(store: str, env: dict[str, str], *, argv: list[str] | None = None) -> McpStdio:
@@ -455,7 +455,7 @@ def test_no_wait_at_exit_without_send_in_flight(usage_reporting_env) -> None:
 
 def test_two_simultaneous_senders_send_one_report(store: str, usage_reporting_env) -> None:
     usage_reporting_env.capture.behaviour.delay = 0.5
-    run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     make_due()
     procs = [
         subprocess.Popen(
@@ -470,7 +470,7 @@ def test_two_simultaneous_senders_send_one_report(store: str, usage_reporting_en
     assert len(usage_reporting_env.capture.requests) == 1
 
 
-def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch) -> None:
+def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     lease = tmp_path / "send.lease"
     now = now_utc()
     assert spool.acquire_lease(lease, now=now - datetime.timedelta(hours=1)) is not None
@@ -491,7 +491,7 @@ def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch) 
 
 def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env) -> None:
     usage_reporting_env.capture.behaviour.stall_first = 60
-    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    result = run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     make_due()
     session = McpStdio(args=["--storage", store], env=usage_reporting_env.subprocess_env())
@@ -504,7 +504,7 @@ def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env)
     requests = usage_reporting_env.capture.wait_for(count=1, timeout=20)
     end_process()
     assert len(requests) == 1
-    assert requests[0].json()["properties"]["usage"]["cli:models.list"]["ok"] == 1
+    assert requests[0].json()["properties"]["usage"]["cli:datasets.list"]["ok"] == 1
 
 
 def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting_env) -> None:
@@ -616,7 +616,7 @@ def _assert_stays_disabled(racer: threading.Thread) -> None:
     assert final.install_id is None
 
 
-def test_disable_during_send_rotation_is_never_undone(usage_reporting_env, monkeypatch) -> None:
+def test_disable_during_send_rotation_is_never_undone(usage_reporting_env, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config(install_id=uuid.uuid4(), install_id_created=(_T0 - datetime.timedelta(days=400)).date(),
                  last_sent=_T0 - datetime.timedelta(days=2))
     racer = _disable_during_rotation(monkeypatch)
@@ -625,7 +625,7 @@ def test_disable_during_send_rotation_is_never_undone(usage_reporting_env, monke
     _assert_stays_disabled(racer)
 
 
-def test_disable_during_start_is_never_undone(usage_reporting_env, monkeypatch) -> None:
+def test_disable_during_start_is_never_undone(usage_reporting_env, monkeypatch: pytest.MonkeyPatch) -> None:
     quiet_config()
     racer = _disable_during_rotation(monkeypatch)
     usage_reporting.start()
@@ -635,7 +635,7 @@ def test_disable_during_start_is_never_undone(usage_reporting_env, monkeypatch) 
 
 
 def test_install_id_stored_in_config_dir_not_model_storage(store: str, usage_reporting_env) -> None:
-    cli(["models", "--storage", store, "list"])
+    cli(["datasets", "--storage", store, "list"])
     install_id = str(config().install_id)
     for path in Path(store).rglob("*"):
         if path.is_file():
@@ -675,7 +675,7 @@ def test_spool_file_names_carry_the_schema_version(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
     (path,) = spool_files()
-    assert path.name.startswith("v2-spool-")
+    assert path.name.startswith("v3-spool-")
 
 
 def test_legacy_spool_file_sent_and_deleted(usage_reporting_env) -> None:
@@ -699,7 +699,7 @@ def test_schema_1_sender_leaves_newer_spool_files(usage_reporting_env) -> None:
     _legacy_spool_file()
     _schema_1_send(settings.spool_dir())
     (survivor,) = spool_files()
-    assert survivor.name.startswith("v2-")
+    assert survivor.name.startswith("v3-")
     make_due()
     usage_reporting.start()
     (request,) = usage_reporting_env.capture.wait_for(count=1)
@@ -711,7 +711,7 @@ def test_schema_1_sender_leaves_newer_spool_files(usage_reporting_env) -> None:
 
 def test_sender_leaves_newer_schema_files_untouched(usage_reporting_env) -> None:
     quiet_config()
-    newer = [_legacy_spool_file(prefix="v3-spool-", body="{}"), _legacy_spool_file(prefix="v3-claim-", body="{}")]
+    newer = [_legacy_spool_file(prefix="v4-spool-", body="{}"), _legacy_spool_file(prefix="v4-claim-", body="{}")]
     _spool_one()
     make_due()
     usage_reporting.start()
@@ -741,7 +741,7 @@ def test_cap_covers_every_schema_version(usage_reporting_env) -> None:
         spool.write(settings.spool_dir(), batch)
     files = spool_files()
     assert len(files) <= 100
-    assert sum(name.startswith("v2-spool-") for name in (p.name for p in files)) == 60
+    assert sum(name.startswith("v3-spool-") for name in (p.name for p in files)) == 60
     report = show()
     assert usage(report, "mcp:query")["ok"] == 60
     assert usage(report, "mcp:search")["ok"] == len(files) - 60
@@ -750,7 +750,7 @@ def test_cap_covers_every_schema_version(usage_reporting_env) -> None:
 def test_disable_purges_every_schema_version(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
-    for prefix in ("spool-", "claim-", "v2-claim-", "v3-spool-", "v3-claim-"):
+    for prefix in ("spool-", "claim-", "v3-claim-", "v4-spool-", "v4-claim-"):
         _legacy_spool_file(prefix=prefix)
     assert cli(["usage-reporting", "disable"]).returncode == 0
     assert spool_files() == []

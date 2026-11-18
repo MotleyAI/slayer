@@ -1,0 +1,53 @@
+{
+ "source": "tests/test_measure_name_collision_suggestion.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(credit)",
+    "name": "credit"
+   },
+   "new": {
+    "expression": "sum(credit)",
+    "name": "credit"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "credit_sum"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "credit_sum"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  }
+ ]
+}

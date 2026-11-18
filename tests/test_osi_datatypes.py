@@ -38,39 +38,39 @@ def _orders(*fields: dict[str, Any], **extra: Any) -> dict[str, Any]:
 def test_declared_type_used_when_the_database_cannot_report_one(db: Path, datatype: str, expected: DataType) -> None:
     result = convert(db=db, docs=documents(_orders(f("x", "UPPER(status)", datatype=datatype))))
     x = cols(by_name(result)["orders"])["x"]
-    assert x.type == expected
+    assert x.datatype == expected
     assert (x.meta or {})["osi_datatype"] == datatype
 
 
 @pytest.mark.usefixtures("failing_probe")
 def test_double_when_neither_database_nor_declared_type(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("x", "UPPER(status)"))))
-    assert cols(by_name(result)["orders"])["x"].type == DataType.DOUBLE
+    assert cols(by_name(result)["orders"])["x"].datatype == DataType.DOUBLE
 
 
 def test_database_type_wins_and_disagreement_is_reported(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("qty", "quantity", datatype="String"))))
     qty = cols(by_name(result)["orders"])["qty"]
-    assert qty.type == DataType.INT
+    assert qty.datatype == DataType.INT
     assert (qty.meta or {})["osi_datatype"] == "String"
     assert mentions(result, "qty", severity="info")
 
 
 def test_probed_type_wins_over_declared_type(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("up", "UPPER(status)", datatype="Integer"))))
-    assert cols(by_name(result)["orders"])["up"].type == DataType.TEXT
+    assert cols(by_name(result)["orders"])["up"].datatype == DataType.TEXT
     assert mentions(result, "up", severity="info")
 
 
 def test_agreeing_types_are_not_reported(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("qty", "quantity", datatype="Integer"))))
-    assert cols(by_name(result)["orders"])["qty"].type == DataType.INT
+    assert cols(by_name(result)["orders"])["qty"].datatype == DataType.INT
     assert not mentions(result, "qty")
 
 
 def test_integer_expression_is_int(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("status_len", "LENGTH(status)", datatype="Integer"))))
-    assert cols(by_name(result)["orders"])["status_len"].type == DataType.INT
+    assert cols(by_name(result)["orders"])["status_len"].datatype == DataType.INT
     assert not mentions(result, "status_len")
 
 
@@ -82,7 +82,7 @@ def test_query_column_keeps_its_database_type(db: Path, select: str, expected: D
     source = f"SELECT o_orderkey, {select} AS x FROM orders"
     doc = flat([ds("priced", source=source, fields=[f("order_id", "o_orderkey"), f("x")])])
     x = cols(by_name(convert(db=db, docs=documents(doc)))["priced"])["x"]
-    assert x.type == expected
+    assert x.datatype == expected
     assert x.db_type == db_type
 
 
@@ -97,7 +97,7 @@ def test_explicit_opt_out(db: Path) -> None:
     field = f("ordered_at", datatype="DateTime", dimension={"is_time": False})
     result = convert(db=db, docs=documents(_orders(field)))
     orders = by_name(result)["orders"]
-    assert cols(orders)["ordered_at"].type == DataType.TIMESTAMP
+    assert cols(orders)["ordered_at"].datatype == DataType.TIMESTAMP
     assert orders.default_time_dimension is None
 
 
@@ -114,7 +114,7 @@ def test_role_on_a_non_temporal_column_keeps_its_type(db: Path, field: dict[str,
     result = convert(db=db, docs=documents(_orders(field)))
     orders = by_name(result)["orders"]
     column = cols(orders)[field["name"]]
-    assert column.type == (DataType.INT if field["name"] == "order_year" else DataType.TEXT)
+    assert column.datatype == (DataType.INT if field["name"] == "order_year" else DataType.TEXT)
     assert (column.meta or {})["osi_is_time"] is True
     assert orders.default_time_dimension is None
 
@@ -124,7 +124,7 @@ def test_time_of_day_is_not_the_default_time_dimension(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("at_time", "UPPER(status)", datatype="Time"))))
     orders = by_name(result)["orders"]
     at_time = cols(orders)["at_time"]
-    assert at_time.type == DataType.UNKNOWN
+    assert at_time.datatype == DataType.UNKNOWN
     assert (at_time.meta or {})["osi_is_time"] is True
     assert orders.default_time_dimension is None
 
@@ -134,10 +134,10 @@ def test_time_of_day_is_not_the_default_time_dimension(db: Path) -> None:
 async def test_metric_datatype_is_metadata_only(db: Path) -> None:
     metrics = [m("typed", "SUM(amount)", datatype="Decimal"), m("untyped", "SUM(amount)")]
     result = convert(db=db, docs=documents(_orders(f("amount", "o_totalprice"), metrics=metrics)))
-    measures = {x.name: x for x in by_name(result)["orders"].measures}
+    measures = {x.name: x for x in by_name(result)["orders"].metrics}
     assert (measures["typed"].meta or {})["osi_datatype"] == "Decimal"
-    assert measures["typed"].type is None
-    rows = await query(result=result, db=db, payload={"source_model": "orders", "measures": ["typed", "untyped"]})
+    assert measures["typed"].datatype is None
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["typed", "untyped"]})
     # Exact only if the renamed field keeps the source column's db_type.
     assert rows[0]["orders.typed"] == Decimal("22.00")
     assert isinstance(rows[0]["orders.typed"], Decimal)

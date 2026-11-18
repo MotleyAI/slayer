@@ -1,0 +1,46 @@
+{
+ "source": "tests/test_cli_import_osi.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "total_amount",
+     "completed_amount",
+     "order_count"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "total_amount",
+     "completed_amount",
+     "order_count"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.segment"
+    ],
+    "measures": [
+     "total_amount"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.segment"
+    ],
+    "metrics": [
+     "total_amount"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

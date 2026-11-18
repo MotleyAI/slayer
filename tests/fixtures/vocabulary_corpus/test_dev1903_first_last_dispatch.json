@@ -1,0 +1,78 @@
+{
+ "source": "tests/test_dev1903_first_last_dispatch.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(revenue)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rev * 2",
+    "name": "rev_twice"
+   },
+   "new": {
+    "expression": "rev * 2",
+    "name": "rev_twice"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(revenue))",
+    "name": "cum_rev"
+   },
+   "new": {
+    "expression": "cumsum(sum(revenue))",
+    "name": "cum_rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) * 2",
+    "name": "rev2"
+   },
+   "new": {
+    "expression": "sum(revenue) * 2",
+    "name": "rev2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(factor)",
+    "name": "tf"
+   },
+   "new": {
+    "expression": "sum(factor)",
+    "name": "tf"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 222,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 224,
+   "reason": "not fully literal"
+  }
+ ]
+}

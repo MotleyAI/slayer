@@ -1,0 +1,64 @@
+{
+ "source": "tests/facade/test_info_schema.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  }
+ ]
+}

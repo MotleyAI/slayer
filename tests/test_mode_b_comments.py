@@ -5,14 +5,14 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery, extract_placeholder_names
 from slayer.core.syntax import (
     AggCall, BoundVariable, Cmp, Literal, Ref, bind_variables, parse_bound_expr, parse_expr, variable_names,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2101_fixtures import (
-    EXEC_BACKENDS, customers_model, emit, ids, m, make_exec_engine, num, orders_model, q, single,
+    EXEC_BACKENDS, customers_dataset, emit, ids, m, make_exec_engine, num, orders_dataset, q, single,
 )
 
 
@@ -97,7 +97,7 @@ class TestPlaceholders:
         assert variable_names(text) == names
 
     def test_query_does_not_require_a_commented_placeholder(self) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "filters": ["status = 'paid' -- r = {region}"]})
+        query = SlayerQuery.model_validate({"population": "orders", "filter": ["status = 'paid' -- r = {region}"]})
         assert extract_placeholder_names(query) == set()
 
     def test_placeholder_outside_the_comment_still_binds(self) -> None:
@@ -122,34 +122,34 @@ async def engine(request):
 
 class TestExecution:
     async def test_double_dash_renders_like_no_comment(self) -> None:
-        with_comment = await emit(q(measures=[m("sum(amount) --discount")]), dialect="postgres")
-        plain = await emit(q(measures=[m("sum(amount)")]), dialect="postgres")
+        with_comment = await emit(q(metrics=[m("sum(amount) --discount")]), dialect="postgres")
+        plain = await emit(q(metrics=[m("sum(amount)")]), dialect="postgres")
         assert with_comment == plain
 
     async def test_multi_line_formula(self, engine: SlayerQueryEngine) -> None:
         formula = "sum(amount) /* gross */ - sum(discount) -- net of discounts\n+ 0"
-        assert num(single(await engine.execute(q(measures=[m(formula)])))) == 92
+        assert num(single(await engine.execute(q(metrics=[m(formula)])))) == 92
 
     async def test_nested_block_in_a_filter(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=[
+        resp = await engine.execute(q(dimensions=["id"], filter=[
             "status = 'paid' /* old: /* status = 'open' */ */ AND amount > 15",
         ]))
         assert ids(resp) == {2, 4}, resp.sql
 
     async def test_markers_in_a_quoted_identifier_name_the_column(self) -> None:
-        orders = orders_model()
-        orders.columns.append(Column(name="x--y", sql="amount", type=DataType.DOUBLE))
-        models = [orders, customers_model()]
-        quoted = await emit(q(measures=[m('sum("x--y")')]), dialect="postgres", models=models)
-        plain = await emit(q(measures=[m("sum(amount)")]), dialect="postgres", models=models)
+        orders = orders_dataset()
+        orders.fields.append(DatasetField(name="x--y", sql="amount", datatype=DataType.DOUBLE))
+        models = [orders, customers_dataset()]
+        quoted = await emit(q(metrics=[m('sum("x--y")')]), dialect="postgres", datasets=models)
+        plain = await emit(q(metrics=[m("sum(amount)")]), dialect="postgres", datasets=models)
         assert quoted.replace("x--y", "amount") == plain, quoted
 
     async def test_markers_in_a_literal_are_text(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=[
+        resp = await engine.execute(q(dimensions=["id"], filter=[
             "status || ' -- /* x */' = 'paid -- /* x */'",
         ]))
         assert ids(resp) == {1, 2, 4}, resp.sql
 
     async def test_placeholder_in_a_comment_runs_without_the_variable(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=["status = 'paid' -- region = {region}"]))
+        resp = await engine.execute(q(dimensions=["id"], filter=["status = 'paid' -- region = {region}"]))
         assert ids(resp) == {1, 2, 4}, resp.sql

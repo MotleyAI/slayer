@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -35,28 +35,28 @@ JOIN_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
 ))
 
 
-def _id() -> Column:
-    return Column(name="id", type=DataType.INT, primary_key=True)
+def _id() -> DatasetField:
+    return DatasetField(name="id", datatype=DataType.INT, primary_key=True)
 
 
-def _models() -> list[SlayerModel]:
+def _datasets() -> list[SlayerDataset]:
     return [
-        SlayerModel(name="shipments", data_source="test", sql_table="shipments", columns=[
-            _id(), Column(name="order_ref", type=DataType.INT), Column(name="carrier", type=DataType.TEXT),
+        SlayerDataset(name="shipments", data_source="test", sql_table="shipments", fields=[
+            _id(), DatasetField(name="order_ref", datatype=DataType.INT), DatasetField(name="carrier", datatype=DataType.TEXT),
         ]),
-        SlayerModel(name="ups_orders", data_source="test", sql_table="orders", columns=[_id()],
-                    joins=[ModelJoin(target_model="shipments", join_pairs=[["id", "order_ref"]])],
+        SlayerDataset(name="ups_orders", data_source="test", sql_table="orders", fields=[_id()],
+                    relationships=[DatasetRelationship(to="shipments", join_pairs=[["id", "order_ref"]])],
                     filters=["shipments.carrier = 'ups'"]),
-        SlayerModel(name="returns", data_source="test", sql_table="returns",
-                    columns=[_id(), Column(name="order_id", type=DataType.INT)],
-                    joins=[ModelJoin(target_model="ups_orders", join_pairs=[["order_id", "id"]])]),
+        SlayerDataset(name="returns", data_source="test", sql_table="returns",
+                    fields=[_id(), DatasetField(name="order_id", datatype=DataType.INT)],
+                    relationships=[DatasetRelationship(to="ups_orders", join_pairs=[["order_id", "id"]])]),
     ]
 
 
 @pytest.fixture
 async def base() -> AsyncIterator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect="sqlite", seed=lambda p: seed("sqlite", p, DDL), models=_models(),
+        dialect="sqlite", seed=lambda p: seed("sqlite", p, DDL), datasets=_datasets(),
     ) as (eng, _db):
         yield eng
 
@@ -74,27 +74,27 @@ async def _execute(engine: SlayerQueryEngine, body: dict[str, Any]):
 
 class TestColumnRuleset:
     async def test_scopes_the_table_only_a_filter_reads(self, base):
-        resp = await _execute(_scoped(base, COLUMN_POLICY), {"source_model": "ups_orders", "dimensions": ["id"]})
+        resp = await _execute(_scoped(base, COLUMN_POLICY), {"population": "ups_orders", "dimensions": ["id"]})
         assert ids(resp, "ups_orders") == {1}
 
     async def test_scopes_a_filtered_join_target(self, base):
-        resp = await _execute(_scoped(base, COLUMN_POLICY), {"source_model": "returns", "dimensions": ["id", "ups_orders.id"]})
+        resp = await _execute(_scoped(base, COLUMN_POLICY), {"population": "returns", "dimensions": ["id", "ups_orders.id"]})
         assert by_id(resp, "returns", "ups_orders.id") == {10: 1, 11: None, 14: None}
 
 
 class TestJoinRuleset:
     async def test_scopes_the_filtered_root(self, base):
-        resp = await _execute(_scoped(base, JOIN_POLICY), {"source_model": "ups_orders", "dimensions": ["id"]})
+        resp = await _execute(_scoped(base, JOIN_POLICY), {"population": "ups_orders", "dimensions": ["id"]})
         assert ids(resp, "ups_orders") == {1, 2}
 
     async def test_scopes_a_filtered_join_target(self, base):
-        resp = await _execute(_scoped(base, JOIN_POLICY), {"source_model": "returns", "dimensions": ["id", "ups_orders.id"]})
+        resp = await _execute(_scoped(base, JOIN_POLICY), {"population": "returns", "dimensions": ["id", "ups_orders.id"]})
         assert by_id(resp, "returns", "ups_orders.id") == {10: 1, 11: 2, 14: None}
 
 
 @pytest.mark.parametrize(("body", "expected"), [
-    ({"source_model": "ups_orders", "dimensions": ["id"]}, {"ups_orders", "shipments"}),
-    ({"source_model": "returns", "dimensions": ["id", "ups_orders.id"]}, {"returns", "ups_orders", "shipments"}),
+    ({"population": "ups_orders", "dimensions": ["id"]}, {"ups_orders", "shipments"}),
+    ({"population": "returns", "dimensions": ["id", "ups_orders.id"]}, {"returns", "ups_orders", "shipments"}),
 ], ids=["filtered-root", "filtered-join-target"])
 async def test_query_reports_every_model_read(base, body, expected):
     main, named, ds, chain = await base._normalize_input(body, runtime_kwarg={}, prefer_data_source=None)

@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_dev1841_error_mode.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(agents.score)",
+    "name": "sm"
+   },
+   "new": {
+    "expression": "sum(agents.score)",
+    "name": "sm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=[])",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": []
+}

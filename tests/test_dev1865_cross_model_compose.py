@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, q
+from tests._dev1865_fixtures import DatasetMetric, q
+from slayer.engine.query_engine import SlayerQueryEngine
 
 CM_BAND = (
     "CASE WHEN sum(customers.spend, partition_by=customers.tier) > 175 "
@@ -21,10 +22,10 @@ CM_BAND = (
 async def test_local_and_cross_model_aggregates_in_one_expression(exec_engine) -> None:
     resp = await exec_engine.execute(q(
         dimensions=["customers.tier"],
-        measures=[
-            ModelMeasure(formula="sum(amount)", name="a"),
-            ModelMeasure(formula="sum(customers.spend)", name="sp"),
-            ModelMeasure(formula="sum(amount) / sum(customers.spend)", name="r"),
+        metrics=[
+            DatasetMetric(expression="sum(amount)", name="a"),
+            DatasetMetric(expression="sum(customers.spend)", name="sp"),
+            DatasetMetric(expression="sum(amount) / sum(customers.spend)", name="r"),
         ],
     ))
     assert resp.data
@@ -37,16 +38,16 @@ async def test_local_and_cross_model_aggregates_in_one_expression(exec_engine) -
 async def test_cross_model_source_inside_a_computed_dimension(exec_engine) -> None:
     resp = await exec_engine.execute(q(
         dimensions=[{"expression": CM_BAND, "name": "band"}, "customers.tier"],
-        measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+        metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
     ))
     assert resp.data
     assert all(r["orders.band"] in {"hi", "lo"} for r in resp.data)
 
 
-async def test_computed_dimension_coexists_with_cross_model_measure(exec_engine) -> None:
+async def test_computed_dimension_coexists_with_cross_model_measure(exec_engine: SlayerQueryEngine) -> None:
     resp = await exec_engine.execute(q(
         dimensions=[{"expression": CM_BAND, "name": "band"}, "customers.regions.name"],
-        measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+        metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
     ))
     assert resp.data
     assert "orders.band" in resp.columns

@@ -31,14 +31,14 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from tests.search_helpers import seed_warehouse_models
+from tests.search_helpers import seed_warehouse_datasets
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ProfileOutcome
@@ -58,7 +58,7 @@ from slayer.storage.base import StorageBackend, resolve_storage
 async def storage() -> AsyncIterator[StorageBackend]:
     with tempfile.TemporaryDirectory() as tmpdir:
         s = resolve_storage(tmpdir)
-        await seed_warehouse_models(s)
+        await seed_warehouse_datasets(s)
         yield s
 
 
@@ -269,8 +269,8 @@ async def test_example_query_hit_compact_preserves_query(
     storage: StorageBackend, service: SearchService,
 ) -> None:
     sample = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(amount_paid)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -293,8 +293,8 @@ async def test_example_query_hit_verbose_preserves_query(
     storage: StorageBackend, service: SearchService,
 ) -> None:
     sample = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(amount_paid)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -323,7 +323,7 @@ async def test_entity_hit_compact_surfaces_entity_description(
     resp = await service.search(question="amount paid net usd", compact=True)
     column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "warehouse.orders.amount_paid"
+        if h.kind == "field" and h.id == "warehouse.orders.amount_paid"
     ]
     assert column_hits, "expected the amount_paid column to surface"
     hit = column_hits[0]
@@ -336,17 +336,17 @@ async def test_entity_hit_compact_description_none_when_entity_has_none(
     storage: StorageBackend, service: SearchService,
 ) -> None:
     """A column without a description gets SearchHit.description = None."""
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="bare", sql_table="bare", data_source="warehouse",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="raw_amount", type=DataType.DOUBLE),  # no description
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="raw_amount", datatype=DataType.DOUBLE),  # no description
         ],
     ))
     resp = await service.search(question="raw_amount", compact=True)
     column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "warehouse.bare.raw_amount"
+        if h.kind == "field" and h.id == "warehouse.bare.raw_amount"
     ]
     assert column_hits
     hit = column_hits[0]
@@ -361,7 +361,7 @@ async def test_entity_hit_verbose_uses_full_render_text(
     resp = await service.search(question="amount paid net usd", compact=False)
     column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "warehouse.orders.amount_paid"
+        if h.kind == "field" and h.id == "warehouse.orders.amount_paid"
     ]
     assert column_hits
     hit = column_hits[0]
@@ -452,7 +452,7 @@ async def test_matched_entities_unchanged_by_compact(
 
 @pytest.mark.asyncio
 async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
-    storage: StorageBackend, monkeypatch,
+    storage: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex#3 (strengthened): force the lazy column-refresh path to
     actually run (monkeypatch ensure_samples_fresh to return a
@@ -464,17 +464,17 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
 
     refreshed_calls = []
 
-    async def fake_refresh(*, model, columns, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
+    async def fake_refresh(*, dataset, fields, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
         # Materially-different columns, so the production path treats them as refreshed.
-        refreshed_calls.extend((model.name, c.name) for c in columns)
+        refreshed_calls.extend((dataset.name, c.name) for c in fields)
         return ProfileOutcome(
-            columns=[c.model_copy(update={"description": "FRESH"}) for c in columns], errors=[],
+            fields=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
         )
 
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
 
     resp = await service.search(question="amount paid net", compact=True)
-    column_hits = [h for h in resp.results if h.kind == "column"]
+    column_hits = [h for h in resp.results if h.kind == "field"]
     assert column_hits, "expected at least one column hit to trigger refresh"
     assert refreshed_calls, "expected the refresh hook to fire"
     for h in column_hits:
@@ -485,21 +485,21 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
 
 @pytest.mark.asyncio
 async def test_verbose_plus_lazy_column_refresh_regenerates_text(
-    storage: StorageBackend, monkeypatch,
+    storage: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verbose-mode regression pin: refresh DOES regenerate hit.text."""
     engine = SlayerQueryEngine(storage=storage)
     service = SearchService(storage=storage, engine=engine)
 
-    async def fake_refresh(*, model, columns, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
+    async def fake_refresh(*, dataset, fields, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
         return ProfileOutcome(
-            columns=[c.model_copy(update={"description": "FRESH"}) for c in columns], errors=[],
+            fields=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
         )
 
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
 
     resp = await service.search(question="amount paid", compact=False)
-    column_hits = [h for h in resp.results if h.kind == "column"]
+    column_hits = [h for h in resp.results if h.kind == "field"]
     assert column_hits
     # Verbose text is the full render — first line names the column.
     assert any(
@@ -572,16 +572,16 @@ async def test_compact_with_cypher_filter_excludes_non_matching(
     baseline = await service.search(question="amount paid", compact=True)
     assert any(h.id == mem_id for h in baseline.results)
 
-    # The full-graph engine uses label "ModelColumn"; the naive-fallback
-    # parser uses "Column". Both should narrow to column-only hits.
-    column_label = "ModelColumn" if _graph_mod.is_available() else "Column"
+    # The full-graph engine uses label "DatasetField"; the naive-fallback
+    # parser uses "Field". Both should narrow to column-only hits.
+    column_label = "DatasetField" if _graph_mod.is_available() else "Field"
     filtered = await service.search(
         question="amount paid",
         cypher_filter=f"MATCH (n:{column_label}) RETURN n.id AS id",
         compact=True,
     )
     assert all(h.id != mem_id for h in filtered.results)
-    column_hits = [h for h in filtered.results if h.kind == "column"]
+    column_hits = [h for h in filtered.results if h.kind == "field"]
     assert column_hits, "expected column hits to survive the cypher filter"
     for h in column_hits:
         assert h.text == ""
@@ -600,11 +600,11 @@ async def test_compact_with_datasource_pre_filter(
     await storage.save_datasource(
         DatasourceConfig(name="other_ds", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="other_table", sql_table="t", data_source="other_ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount_paid", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
                    description="other ds amount_paid"),
         ],
     ))
@@ -618,7 +618,7 @@ async def test_compact_with_datasource_pre_filter(
     assert all(not h.id.startswith("other_ds") for h in resp.results)
     warehouse_column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id.startswith("warehouse.")
+        if h.kind == "field" and h.id.startswith("warehouse.")
     ]
     assert warehouse_column_hits, "warehouse hits must survive the filter"
     for h in warehouse_column_hits:

@@ -23,10 +23,10 @@ A `data_type` declared for a column of the dbt model a semantic model reads (in 
 
 ### Requirement: The datasource is used whenever it resolves
 
-`slayer import-dbt` SHALL resolve its `--datasource` and use it for column typing whenever it is configured and reachable, independent of `--include-hidden-models`.
+`slayer import-dbt` SHALL resolve its `--datasource` and use it for column typing whenever it is configured and reachable, independent of `--include-hidden-datasets`.
 
 #### Scenario: Typing without hidden models
-- **WHEN** `import-dbt` runs without `--include-hidden-models` against a reachable DuckDB datasource whose `orders.tags` is a text list, and a measure counts `tags`
+- **WHEN** `import-dbt` runs without `--include-hidden-datasets` against a reachable DuckDB datasource whose `orders.tags` is a text list, and a measure counts `tags`
 - **THEN** the measure's source column is a list of text
 
 ### Requirement: Relations follow dbt's quoting policy

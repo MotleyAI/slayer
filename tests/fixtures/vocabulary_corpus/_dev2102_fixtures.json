@@ -1,0 +1,126 @@
+{
+ "source": "tests/_dev2102_fixtures.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "parts",
+    "join_pairs": [
+     [
+      "ka",
+      "pa"
+     ],
+     [
+      "kb",
+      "pb"
+     ]
+    ]
+   },
+   "new": {
+    "to": "parts",
+    "join_pairs": [
+     [
+      "ka",
+      "pa"
+     ],
+     [
+      "kb",
+      "pb"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "addresses",
+    "name": "origin",
+    "join_pairs": [
+     [
+      "address_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "addresses",
+    "name": "origin",
+    "join_pairs": [
+     [
+      "address_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "addresses",
+    "name": "dest",
+    "join_pairs": [
+     [
+      "address_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "addresses",
+    "name": "dest",
+    "join_pairs": [
+     [
+      "address_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 175,
+   "reason": "not fully literal"
+  }
+ ]
+}

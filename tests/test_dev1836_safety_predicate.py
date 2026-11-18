@@ -8,88 +8,89 @@ file fails on import (the right reason).
 
 from __future__ import annotations
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.join_walker import provably_to_one
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.cardinality.join_safety import may_inline_crossing_inputs, safe_reachable
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.relationship_walker import provably_to_one
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.engine.cardinality.relationship_safety import may_inline_crossing_inputs, safe_reachable
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
 from tests._dev1836_fixtures import (
-    customers_model,
-    dev1836_models,
-    inventory_model,
-    orders_model,
+    customers_dataset,
+    dev1836_datasets,
+    inventory_dataset,
+    orders_dataset,
     q,
-    regions_model,
-    segments_model,
+    regions_dataset,
+    segments_dataset,
 )
-from slayer.engine.cardinality import join_safety
+from slayer.engine.cardinality import relationship_safety
+import pytest
 
 
-def _models_by_name() -> dict[str, SlayerModel]:
-    return {m.name: m for m in dev1836_models()}
+def _datasets_by_name() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in dev1836_datasets()}
 
 
-def _join(target: str, pairs: list[list[str]], **kw) -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=pairs, **kw)
+def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
+    return DatasetRelationship(to=target, join_pairs=pairs, **kw)
 
 
 class TestStructuralProof:
     def test_covered_solo_primary_key_proves(self) -> None:
         # orders → customers on customers.id (PK): no declaration needed.
-        join = orders_model().joins[0]
-        assert provably_to_one(edge=join, target_model=customers_model())
+        join = orders_dataset().relationships[0]
+        assert provably_to_one(edge=join, target_dataset=customers_dataset())
 
     def test_covered_solo_unique_column_proves(self) -> None:
-        target = SlayerModel(
+        target = SlayerDataset(
             name="codes", data_source="test", sql_table="codes",
-            columns=[
-                Column(name="code", type=DataType.TEXT, unique=True),
-                Column(name="label", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="code", datatype=DataType.TEXT, unique=True),
+                DatasetField(name="label", datatype=DataType.TEXT),
             ],
         )
         join = _join("codes", [["c", "code"]])
-        assert provably_to_one(edge=join, target_model=target)
+        assert provably_to_one(edge=join, target_dataset=target)
 
     def test_logical_spelling_of_a_renamed_pk_proves(self) -> None:
         # A renamed PK proves the hop when the join names it by column name.
-        target = SlayerModel(
+        target = SlayerDataset(
             name="loss_payment", data_source="test", sql_table="Loss_Payment",
-            columns=[
-                Column(name="id", sql="Claim_Amount_Identifier",
-                       type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="Claim_Amount_Identifier",
+                       datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
         )
         join = _join("loss_payment", [["id", "id"]])
-        assert provably_to_one(edge=join, target_model=target)
+        assert provably_to_one(edge=join, target_dataset=target)
 
     def test_a_derived_pk_sql_does_not_prove_the_raw_spelling(self) -> None:
         # A NON-bare ``sql`` is an expression, not a rename — no uniqueness
         # transfer to any raw column it mentions.
-        target = SlayerModel(
+        target = SlayerDataset(
             name="derived", data_source="test", sql_table="derived",
-            columns=[
-                Column(name="id", sql="UPPER(code)", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", sql="UPPER(code)", datatype=DataType.TEXT,
                        primary_key=True),
-                Column(name="code", type=DataType.TEXT),
+                DatasetField(name="code", datatype=DataType.TEXT),
             ],
         )
         join = _join("derived", [["c", "code"]])
-        assert not provably_to_one(edge=join, target_model=target)
+        assert not provably_to_one(edge=join, target_dataset=target)
 
     def test_uncovered_target_is_unproven(self) -> None:
         # customers → segments: segments.code carries no PK/unique claim.
         join = next(
-            j for j in customers_model().joins if j.target_model == "segments"
+            j for j in customers_dataset().relationships if j.to == "segments"
         )
-        assert not provably_to_one(edge=join, target_model=segments_model())
+        assert not provably_to_one(edge=join, target_dataset=segments_dataset())
 
     def test_non_key_target_column_is_unproven(self) -> None:
         # Joining on a non-key column of a model that HAS a PK elsewhere.
         join = _join("regions", [["r", "name"]])
-        assert not provably_to_one(edge=join, target_model=regions_model())
+        assert not provably_to_one(edge=join, target_dataset=regions_dataset())
 
 
 class TestCompositeKeys:
@@ -97,17 +98,17 @@ class TestCompositeKeys:
 
     def test_full_composite_coverage_proves(self) -> None:
         join = _join("inventory", [["wh", "wh"], ["sku", "sku"]])
-        assert provably_to_one(edge=join, target_model=inventory_model())
+        assert provably_to_one(edge=join, target_dataset=inventory_dataset())
 
     def test_partial_composite_coverage_proves_nothing(self) -> None:
         join = _join("inventory", [["wh", "wh"]])
-        assert not provably_to_one(edge=join, target_model=inventory_model())
+        assert not provably_to_one(edge=join, target_dataset=inventory_dataset())
 
     def test_superset_of_composite_key_proves(self) -> None:
         join = _join(
             "inventory", [["wh", "wh"], ["sku", "sku"], ["q", "qty"]],
         )
-        assert provably_to_one(edge=join, target_model=inventory_model())
+        assert provably_to_one(edge=join, target_dataset=inventory_dataset())
 
 
 class TestDeclaredCardinality:
@@ -115,31 +116,31 @@ class TestDeclaredCardinality:
         # No structural proof on segments.code — the declaration alone proves.
         join = _join(
             "segments", [["segment_code", "code"]],
-            cardinality=JoinCardinality.MANY_TO_ONE,
+            cardinality=RelationshipCardinality.MANY_TO_ONE,
         )
-        assert provably_to_one(edge=join, target_model=segments_model())
+        assert provably_to_one(edge=join, target_dataset=segments_dataset())
 
     def test_declared_one_to_one_is_trusted(self) -> None:
         join = _join(
             "segments", [["segment_code", "code"]],
-            cardinality=JoinCardinality.ONE_TO_ONE,
+            cardinality=RelationshipCardinality.ONE_TO_ONE,
         )
-        assert provably_to_one(edge=join, target_model=segments_model())
+        assert provably_to_one(edge=join, target_dataset=segments_dataset())
 
     def test_declared_one_to_many_is_unsafe(self) -> None:
         # The fixture declares no reverse edge — same shape inline.
         join = _join(
             "orders", [["id", "customer_id"]],
-            cardinality=JoinCardinality.ONE_TO_MANY,
+            cardinality=RelationshipCardinality.ONE_TO_MANY,
         )
-        assert not provably_to_one(edge=join, target_model=orders_model())
+        assert not provably_to_one(edge=join, target_dataset=orders_dataset())
 
     def test_declared_many_to_many_is_unsafe(self) -> None:
         join = _join(
             "segments", [["segment_code", "code"]],
-            cardinality=JoinCardinality.MANY_TO_MANY,
+            cardinality=RelationshipCardinality.MANY_TO_MANY,
         )
-        assert not provably_to_one(edge=join, target_model=segments_model())
+        assert not provably_to_one(edge=join, target_dataset=segments_dataset())
 
 
 class TestInvertedCardinalityEdges:
@@ -149,52 +150,52 @@ class TestInvertedCardinalityEdges:
         # Forward m:1 inverts to 1:N — the reverse-orientation shape.
         reverse = _join(
             "orders", [["id", "customer_id"]],
-            cardinality=JoinCardinality.ONE_TO_MANY,
+            cardinality=RelationshipCardinality.ONE_TO_MANY,
         )
-        assert not provably_to_one(edge=reverse, target_model=orders_model())
+        assert not provably_to_one(edge=reverse, target_dataset=orders_dataset())
 
     def test_inverted_one_to_one_reverse_edge_is_safe(self) -> None:
         reverse = _join(
             "segments", [["segment_code", "code"]],
-            cardinality=JoinCardinality.ONE_TO_ONE,
+            cardinality=RelationshipCardinality.ONE_TO_ONE,
         )
-        assert provably_to_one(edge=reverse, target_model=segments_model())
+        assert provably_to_one(edge=reverse, target_dataset=segments_dataset())
 
 
 class TestSafeReachable:
     def test_empty_path_is_safe(self) -> None:
         assert safe_reachable(
-            root=orders_model(), path=(), models_by_name=_models_by_name(),
+            root=orders_dataset(), path=(), datasets_by_name=_datasets_by_name(),
         )
 
     def test_all_proven_hops_are_safe(self) -> None:
-        models = _models_by_name()
+        models = _datasets_by_name()
         assert safe_reachable(
-            root=orders_model(), path=("customers",), models_by_name=models,
+            root=orders_dataset(), path=("customers",), datasets_by_name=models,
         )
         assert safe_reachable(
-            root=orders_model(), path=("customers", "regions"),
-            models_by_name=models,
+            root=orders_dataset(), path=("customers", "regions"),
+            datasets_by_name=models,
         )
 
     def test_unproven_terminal_hop_is_unsafe(self) -> None:
         assert not safe_reachable(
-            root=orders_model(), path=("customers", "segments"),
-            models_by_name=_models_by_name(),
+            root=orders_dataset(), path=("customers", "segments"),
+            datasets_by_name=_datasets_by_name(),
         )
 
     def test_declared_one_to_many_hop_is_unsafe(self) -> None:
         assert not safe_reachable(
-            root=customers_model(), path=("orders",),
-            models_by_name=_models_by_name(),
+            root=customers_dataset(), path=("orders",),
+            datasets_by_name=_datasets_by_name(),
         )
 
     def test_unsafe_first_hop_poisons_the_whole_path(self) -> None:
         # customers → orders (1:N) → customers: a proven later hop cannot
         # recover an unsafe prefix.
         assert not safe_reachable(
-            root=customers_model(), path=("orders", "customers"),
-            models_by_name=_models_by_name(),
+            root=customers_dataset(), path=("orders", "customers"),
+            datasets_by_name=_datasets_by_name(),
         )
 
 
@@ -207,15 +208,15 @@ class TestInvertedOrientationsStayProven:
         # customers → regions is stored and proven; the inverted hop
         # regions → customers now WALKS but its 1:N orientation is unproven.
         assert not safe_reachable(
-            root=regions_model(), path=("customers",),
-            models_by_name=_models_by_name(),
+            root=regions_dataset(), path=("customers",),
+            datasets_by_name=_datasets_by_name(),
         )
 
     def test_unconnected_hop_is_not_reachable(self) -> None:
         # orders and regions share no edge in either direction (2 hops apart).
         assert not safe_reachable(
-            root=orders_model(), path=("regions",),
-            models_by_name=_models_by_name(),
+            root=orders_dataset(), path=("regions",),
+            datasets_by_name=_datasets_by_name(),
         )
 
 
@@ -231,32 +232,32 @@ class TestMayInlineSeam:
         assert may_inline_crossing_inputs([("customers",)]) is False
         assert may_inline_crossing_inputs([]) is False
 
-    def test_the_seam_is_load_bearing(self, monkeypatch) -> None:
+    def test_the_seam_is_load_bearing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Flipping the seam must change the verdict — otherwise it is
         decorative. With it
         returning ``True`` a crossing-input local aggregate stays inline
         instead of desugaring onto a host-rooted producer."""
-        host = orders_model()
-        host.columns.append(Column(
-            name="gold_amount", type=DataType.DOUBLE, sql="amount",
+        host = orders_dataset()
+        host.fields.append(DatasetField(
+            name="gold_amount", datatype=DataType.DOUBLE, sql="amount",
             filter="customers.tier = 'gold'",
         ))
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host,
-            referenced_models=[host, customers_model(), regions_model(),
-                               segments_model()],
+            population=host,
+            referenced_datasets=[host, customers_dataset(), regions_dataset(),
+                               segments_dataset()],
         )
         query = q(
             dimensions=[{"name": "status"}],
-            measures=[{"formula": "sum(gold_amount)", "name": "g"}],
+            metrics=[{"expression": "sum(gold_amount)", "name": "g"}],
         )
         planned = plan_query(query=query, bundle=bundle)
         assert planned.regroup_attach_plans, (
             "fixture rot: the crossing-input aggregate no longer desugars"
         )
         monkeypatch.setattr(
-            join_safety, "may_inline_crossing_inputs", lambda paths: True,
+            relationship_safety, "may_inline_crossing_inputs", lambda paths: True,
         )
         planned = plan_query(query=query, bundle=bundle)
         assert not planned.regroup_attach_plans, (

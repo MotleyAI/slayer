@@ -11,7 +11,7 @@ from slayer.api.server import QueryRequest, create_app
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.database.client import SlayerSQLClient
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -76,7 +76,7 @@ class TestHealth:
 
 class TestModels:
     def test_list_empty(self, client: TestClient) -> None:
-        resp = client.get("/models")
+        resp = client.get("/datasets")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -85,60 +85,60 @@ class TestModels:
             "name": "orders",
             "sql_table": "public.orders",
             "data_source": "test",
-            "columns": [
-                {"name": "id", "sql": "id", "type": "number"},
-                {"name": "revenue", "sql": "amount", "type": "number"},
+            "fields": [
+                {"name": "id", "sql": "id", "datatype": "number"},
+                {"name": "revenue", "sql": "amount", "datatype": "number"},
             ],
         }
-        resp = client.post("/models", json=model)
+        resp = client.post("/datasets", json=model)
         assert resp.status_code == 200
         assert resp.json()["name"] == "orders"
 
-        resp = client.get("/models/orders")
+        resp = client.get("/datasets/orders")
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "orders"
-        assert len(body["columns"]) == 2
+        assert len(body["fields"]) == 2
 
     def test_list_after_create(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "a", "sql_table": "t", "data_source": "test"})
-        client.post("/models", json={"name": "b", "sql_table": "t", "data_source": "test"})
-        resp = client.get("/models")
+        client.post("/datasets", json={"name": "a", "sql_table": "t", "data_source": "test"})
+        client.post("/datasets", json={"name": "b", "sql_table": "t", "data_source": "test"})
+        resp = client.get("/datasets")
         names = sorted(m["name"] for m in resp.json())
         assert names == ["a", "b"]
 
     def test_list_includes_description(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Order data"})
-        resp = client.get("/models")
+        client.post("/datasets", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Order data"})
+        resp = client.get("/datasets")
         entry = resp.json()[0]
         assert entry["name"] == "orders"
         assert entry["description"] == "Order data"
 
     def test_update(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "orders", "sql_table": "t", "data_source": "test"})
-        client.put("/models/orders", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Updated"})
-        resp = client.get("/models/orders")
+        client.post("/datasets", json={"name": "orders", "sql_table": "t", "data_source": "test"})
+        client.put("/datasets/orders", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Updated"})
+        resp = client.get("/datasets/orders")
         assert resp.json()["description"] == "Updated"
 
     def test_delete(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "orders", "sql_table": "t", "data_source": "test"})
-        resp = client.delete("/models/orders")
+        client.post("/datasets", json={"name": "orders", "sql_table": "t", "data_source": "test"})
+        resp = client.delete("/datasets/orders")
         assert resp.status_code == 200
-        resp = client.get("/models/orders")
+        resp = client.get("/datasets/orders")
         assert resp.status_code == 404
 
     def test_delete_nonexistent(self, client: TestClient) -> None:
-        resp = client.delete("/models/nonexistent")
+        resp = client.delete("/datasets/nonexistent")
         assert resp.status_code == 404
 
     def test_get_nonexistent(self, client: TestClient) -> None:
-        resp = client.get("/models/nonexistent")
+        resp = client.get("/datasets/nonexistent")
         assert resp.status_code == 404
 
     def test_hidden_model_excluded_from_list(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "visible", "sql_table": "t", "data_source": "test"})
-        client.post("/models", json={"name": "secret", "sql_table": "t", "data_source": "test", "hidden": True})
-        resp = client.get("/models")
+        client.post("/datasets", json={"name": "visible", "sql_table": "t", "data_source": "test"})
+        client.post("/datasets", json={"name": "secret", "sql_table": "t", "data_source": "test", "hidden": True})
+        resp = client.get("/datasets")
         names = [m["name"] for m in resp.json()]
         assert "visible" in names
         assert "secret" not in names
@@ -148,17 +148,17 @@ class TestModels:
             "name": "orders",
             "sql_table": "t",
             "data_source": "test",
-            "columns": [
-                {"name": "id", "sql": "id", "type": "number"},
-                {"name": "internal_flag", "sql": "flag", "type": "string", "hidden": True},
-                {"name": "revenue", "sql": "amount", "type": "number"},
-                {"name": "secret_sum", "sql": "x", "type": "number", "hidden": True},
+            "fields": [
+                {"name": "id", "sql": "id", "datatype": "number"},
+                {"name": "internal_flag", "sql": "flag", "datatype": "string", "hidden": True},
+                {"name": "revenue", "sql": "amount", "datatype": "number"},
+                {"name": "secret_sum", "sql": "x", "datatype": "number", "hidden": True},
             ],
         }
-        client.post("/models", json=model)
-        resp = client.get("/models/orders")
+        client.post("/datasets", json=model)
+        resp = client.get("/datasets/orders")
         data = resp.json()
-        col_names = [c["name"] for c in data["columns"]]
+        col_names = [c["name"] for c in data["fields"]]
         assert col_names == ["id", "revenue"]
 
     def test_all_named_measures_returned_from_get(self, client: TestClient) -> None:
@@ -169,16 +169,16 @@ class TestModels:
             "name": "orders",
             "sql_table": "t",
             "data_source": "test",
-            "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
-            "measures": [
-                {"name": "aov", "formula": "sum(amount) / count(*)"},
-                {"name": "revenue", "formula": "sum(amount)"},
+            "fields": [{"name": "amount", "sql": "amount", "datatype": "number"}],
+            "metrics": [
+                {"name": "aov", "expression": "sum(amount) / count(*)"},
+                {"name": "revenue", "expression": "sum(amount)"},
             ],
         }
-        client.post("/models", json=model)
-        resp = client.get("/models/orders")
+        client.post("/datasets", json=model)
+        resp = client.get("/datasets/orders")
         data = resp.json()
-        names = [m["name"] for m in data["measures"]]
+        names = [m["name"] for m in data["metrics"]]
         assert names == ["aov", "revenue"]
 
 
@@ -281,17 +281,17 @@ class TestIngestEndpoint:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "count(*)"}]})
+        resp = client.post("/query", json={"population": "nonexistent", "metrics": [{"expression": "count(*)"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        run_sync(storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         )))
-        resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "sum(revenue)"}]})
+        resp = client.post("/query", json={"population": "orders", "metrics": [{"expression": "sum(revenue)"}]})
         assert resp.status_code == 400
 
     def test_query_schema_drift_returns_422(
@@ -301,12 +301,12 @@ class TestQuery:
         drift contract must not be swallowed by the generic 400 handler."""
         async def _raise_drift(self, *args, **kwargs):
             raise SchemaDriftError(
-                models=["orders"], to_delete=[], original=RuntimeError("boom"),
+                datasets=["orders"], to_delete=[], original=RuntimeError("boom"),
             )
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
         resp = client.post("/query", json={
-            "source_model": "orders", "measures": [{"formula": "count(*)"}],
+            "population": "orders", "metrics": [{"expression": "count(*)"}],
         })
         assert resp.status_code == 422
         assert resp.json()["detail"]["error"] == "schema_drift"
@@ -314,35 +314,35 @@ class TestQuery:
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "measures": [{"formula": "count(*)"}]}
+            {"population": "orders", "metrics": [{"expression": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert slayer_query.measures is not None
-        assert len(slayer_query.measures) == 1
-        assert slayer_query.measures[0].formula == "count(*)"
+        assert slayer_query.metrics is not None
+        assert len(slayer_query.metrics) == 1
+        assert slayer_query.metrics[0].expression == "count(*)"
 
     def test_request_accepts_bare_string_measures_and_dimensions(self) -> None:
         """Bare strings in ``measures`` / ``dimensions`` (matching ``SlayerQuery``'s
         coercion and the docs / example READMEs) must pass FastAPI validation
         and lift to ``{"formula": ...}`` / ``{"name": ...}`` downstream."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}
+            {"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert slayer_query.measures is not None
-        assert slayer_query.measures[0].formula == "count(*)"
+        assert slayer_query.metrics is not None
+        assert slayer_query.metrics[0].expression == "count(*)"
         assert slayer_query.dimensions is not None
         assert slayer_query.dimensions[0].name == "status"
 
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "fields": [{"formula": "count(*)"}]}
+            {"population": "orders", "fields": [{"expression": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert slayer_query.measures is not None
-        assert len(slayer_query.measures) == 1
-        assert slayer_query.measures[0].formula == "count(*)"
+        assert slayer_query.metrics is not None
+        assert len(slayer_query.metrics) == 1
+        assert slayer_query.metrics[0].expression == "count(*)"
 
 
 class TestQueryBackedModelsAPI:
@@ -360,28 +360,28 @@ class TestQueryBackedModelsAPI:
             ))
         )
         run_sync(
-            storage.save_model(SlayerModel(
+            storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
         )
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "qb_via_api",
             "data_source": "ds",
             "source_queries": [{
-                "source_model": "upstream",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "upstream",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dry_run": True,
             }],
             "query_variables": {},
         })
         assert resp.status_code == 200, resp.text
         # GET returns the model with source_queries + query_variables
-        get_resp = client.get("/models/qb_via_api")
+        get_resp = client.get("/datasets/qb_via_api")
         assert get_resp.status_code == 200
         body = get_resp.json()
         assert "source_queries" in body
-        assert body["source_queries"][0]["source_model"] == "upstream"
+        assert body["source_queries"][0]["population"] == "upstream"
 
     def test_post_models_rejects_user_columns_on_query_backed(
         self, client: TestClient, storage: YAMLStorage
@@ -392,19 +392,19 @@ class TestQueryBackedModelsAPI:
             ))
         )
         run_sync(
-            storage.save_model(SlayerModel(
+            storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
         )
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "qb_bad",
             "data_source": "ds",
             "source_queries": [{
-                "source_model": "upstream",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "upstream",
+                "metrics": [{"expression": "sum(amount)"}],
             }],
-            "columns": [{"name": "x", "type": "string"}],
+            "fields": [{"name": "x", "datatype": "string"}],
         })
         # 400 with "auto-generated" in detail
         assert resp.status_code == 400
@@ -415,7 +415,7 @@ class TestQueryBackedModelsAPI:
     ) -> None:
         resp = client.post("/query", json={
             "name": "some_model",
-            "source_model": "other",
+            "population": "other",
         })
         assert resp.status_code == 400
         assert "put query clauses in 'refine'" in resp.text
@@ -476,7 +476,7 @@ class TestRunByNameRefine:
 
     def test_refine_with_variables(self, client: TestClient, seeded: YAMLStorage) -> None:
         resp = client.post("/query", json={
-            "name": "revenue_by_status", "refine": {"measures": ["count(*)"]}, "variables": {"status": "refunded"},
+            "name": "revenue_by_status", "refine": {"metrics": ["count(*)"]}, "variables": {"status": "refunded"},
         })
         assert resp.status_code == 200, resp.text
         assert resp.json()["data"] == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
@@ -488,16 +488,16 @@ class TestRunByNameRefine:
         assert refined.json()["sql"] == plain.json()["sql"]
 
     def test_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
-        resp = client.post("/query", json={"source_model": "orders", "refine": {"dimensions": ["region"]}})
+        resp = client.post("/query", json={"population": "orders", "refine": {"dimensions": ["region"]}})
         assert resp.status_code == 400
         assert "'refine' requires 'name'" in resp.text
 
     def test_null_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
-        resp = client.post("/query", json={"source_model": "orders", "measures": ["count(*)"], "refine": None})
+        resp = client.post("/query", json={"population": "orders", "metrics": ["count(*)"], "refine": None})
         assert resp.status_code == 400
         assert "'refine' requires 'name'" in resp.text
 
-    @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"source_model": None}])
+    @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"population": None}])
     def test_flat_fields_next_to_name(self, client: TestClient, seeded: YAMLStorage, flat: dict) -> None:
         resp = client.post("/query", json={"name": "monthly_revenue", **flat})
         assert resp.status_code == 400
@@ -505,12 +505,12 @@ class TestRunByNameRefine:
 
     def test_conflict_is_400(self, client: TestClient, seeded: YAMLStorage) -> None:
         resp = client.post("/query", json={
-            "name": "monthly_revenue", "refine": {"measures": [{"formula": "count(*)", "name": "revenue"}]},
+            "name": "monthly_revenue", "refine": {"metrics": [{"expression": "count(*)", "name": "revenue"}]},
         })
         assert resp.status_code == 400
         assert "revenue" in resp.text
 
-    @pytest.mark.parametrize("refine", [{"bogus": 1}, {"source_model": "orders"}, {"limit": "many"}])
+    @pytest.mark.parametrize("refine", [{"bogus": 1}, {"population": "orders"}, {"limit": "many"}])
     def test_malformed_refine_is_422(self, client: TestClient, seeded: YAMLStorage, refine: dict) -> None:
         resp = client.post("/query", json={"name": "monthly_revenue", "refine": refine})
         assert resp.status_code == 422
@@ -518,8 +518,8 @@ class TestRunByNameRefine:
     def test_openapi_shows_query_refinement(self, client: TestClient) -> None:
         schemas = client.get("/openapi.json").json()["components"]["schemas"]
         assert "QueryRefinement" in schemas
-        assert {"dimensions", "measures", "filters", "limit"} <= set(schemas["QueryRefinement"]["properties"])
-        assert "source_model" not in schemas["QueryRefinement"]["properties"]
+        assert {"dimensions", "metrics", "filter", "limit"} <= set(schemas["QueryRefinement"]["properties"])
+        assert "population" not in schemas["QueryRefinement"]["properties"]
 
 
 class TestQueryListBody:
@@ -538,14 +538,14 @@ class TestQueryListBody:
             "name": "ds_list", "type": "sqlite", "database": ":memory:",
         })
         assert resp.status_code in (200, 201), resp.text
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "orders",
             "data_source": "ds_list",
             "sql_table": "orders",
-            "columns": [
-                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
-                {"name": "status", "sql": "status", "type": "TEXT"},
-                {"name": "customer_id", "sql": "customer_id", "type": "DOUBLE"},
+            "fields": [
+                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
+                {"name": "status", "sql": "status", "datatype": "TEXT"},
+                {"name": "customer_id", "sql": "customer_id", "datatype": "DOUBLE"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -559,13 +559,13 @@ class TestQueryListBody:
             "queries": [
                 {
                     "name": "by_customer",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": [{"name": "customer_id"}],
                 },
                 {
-                    "source_model": "by_customer",
-                    "measures": [{"formula": "avg(amount_sum)"}],
+                    "population": "by_customer",
+                    "metrics": [{"expression": "avg(amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -584,18 +584,18 @@ class TestQueryListBody:
                 # ``b`` ahead so the SQL emits cleanly.
                 {
                     "name": "a",
-                    "source_model": "b",
-                    "measures": [{"formula": "avg(amount_sum)"}],
+                    "population": "b",
+                    "metrics": [{"expression": "avg(amount_sum)"}],
                 },
                 {
                     "name": "b",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": [{"name": "customer_id"}],
                 },
                 {
-                    "source_model": "a",
-                    "measures": [{"formula": "max(amount_sum_avg)"}],
+                    "population": "a",
+                    "metrics": [{"expression": "max(amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -613,9 +613,9 @@ class TestQueryListBody:
         self._setup_orders(client)
         resp = client.post("/query", json={
             "queries": [
-                {"name": "a", "source_model": "b", "measures": [{"formula": "sum(amount)"}]},
-                {"name": "b", "source_model": "a", "measures": [{"formula": "sum(amount)"}]},
-                {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+                {"name": "a", "population": "b", "metrics": [{"expression": "sum(amount)"}]},
+                {"name": "b", "population": "a", "metrics": [{"expression": "sum(amount)"}]},
+                {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
             ],
             "dry_run": True,
         })
@@ -632,12 +632,12 @@ class TestQueryInlineSourceModel:
             "name": "ds_inline", "type": "sqlite", "database": ":memory:",
         })
         assert resp.status_code in (200, 201), resp.text
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "orders",
             "data_source": "ds_inline",
             "sql_table": "orders",
-            "columns": [
-                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+            "fields": [
+                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -645,14 +645,14 @@ class TestQueryInlineSourceModel:
     def test_inline_model_extension_dict(self, client: TestClient) -> None:
         self._setup_orders(client)
         resp = client.post("/query", json={
-            "source_model": "orders",
+            "population": "orders",
             "extensions": [{
                 "source_name": "orders",
                 "columns": [
                     {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                 ],
             }],
-            "measures": [{"formula": "sum(double_amount)"}],
+            "metrics": [{"expression": "sum(double_amount)"}],
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -665,13 +665,13 @@ class TestQueryInlineSourceModel:
         })
         assert resp.status_code in (200, 201), resp.text
         resp = client.post("/query", json={
-            "source_model": {
+            "population": {
                 "name": "ad_hoc",
                 "sql_table": "things",
                 "data_source": "ds_adhoc",
                 "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
             },
-            "measures": [{"formula": "sum(x)"}],
+            "metrics": [{"expression": "sum(x)"}],
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -690,23 +690,23 @@ class TestOpenAPI400Documentation:
 
     def test_post_models_documents_400(self, client: TestClient) -> None:
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models"]["post"]["responses"]
+        responses = spec["paths"]["/datasets"]["post"]["responses"]
         assert "400" in responses
 
     def test_put_model_documents_400(self, client: TestClient) -> None:
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models/{name}"]["put"]["responses"]
+        responses = spec["paths"]["/datasets/{name}"]["put"]["responses"]
         assert "400" in responses
 
     def test_get_model_documents_409(self, client: TestClient) -> None:
         """``GET /models/{name}`` raises 409 on AmbiguousModelError; declare it."""
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models/{name}"]["get"]["responses"]
+        responses = spec["paths"]["/datasets/{name}"]["get"]["responses"]
         assert "409" in responses
 
     def test_delete_model_documents_409(self, client: TestClient) -> None:
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models/{name}"]["delete"]["responses"]
+        responses = spec["paths"]["/datasets/{name}"]["delete"]["responses"]
         assert "409" in responses
 
     def test_put_datasource_priority_documents_400(self, client: TestClient) -> None:
@@ -717,8 +717,8 @@ class TestOpenAPI400Documentation:
     @pytest.mark.parametrize(
         ("path", "method"),
         [
-            ("/models/{name}", "get"),
-            ("/models/{name}", "delete"),
+            ("/datasets/{name}", "get"),
+            ("/datasets/{name}", "delete"),
             ("/datasources/{name}", "get"),
             ("/datasources/{name}", "delete"),
         ],
@@ -728,7 +728,7 @@ class TestOpenAPI400Documentation:
         assert "404" in spec["paths"][path][method]["responses"]
 
     def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
-        self, client: TestClient, storage: YAMLStorage, monkeypatch
+        self, client: TestClient, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``{"name": "m", "dry_run": true}`` must populate ``sql`` in the response
         without ever calling the SQL client.
@@ -736,17 +736,17 @@ class TestOpenAPI400Documentation:
         run_sync(storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         ))
-        run_sync(storage.save_model(SlayerModel(
+        run_sync(storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         )))
         # Save a query-backed model whose stage does NOT have dry_run set.
-        setup_resp = client.post("/models", json={
+        setup_resp = client.post("/datasets", json={
             "name": "qb_dryrun",
             "data_source": "ds",
             "source_queries": [{
-                "source_model": "upstream",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "upstream",
+                "metrics": [{"expression": "sum(amount)"}],
             }],
         })
         assert setup_resp.status_code == 200, setup_resp.text
@@ -789,38 +789,38 @@ class TestSaveTimeSqlValidation:
         self, client: TestClient, tmp_path
     ) -> None:
         self._register_live_ds(client, tmp_path)
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "good_model", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 200
         # Acknowledged AND retrievable — not a no-op 200.
-        assert client.get("/models/good_model").status_code == 200
+        assert client.get("/datasets/good_model").status_code == 200
 
     def test_invalid_sql_model_returns_400(self, client: TestClient, tmp_path) -> None:
         self._register_live_ds(client, tmp_path)
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "bad_model", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
-        assert client.get("/models/bad_model").status_code == 404
+        assert client.get("/datasets/bad_model").status_code == 404
 
     def test_invalid_sql_update_returns_400_and_original_intact(
         self, client: TestClient, tmp_path
     ) -> None:
         self._register_live_ds(client, tmp_path)
-        assert client.post("/models", json={
+        assert client.post("/datasets", json={
             "name": "upd", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         }).status_code == 200
-        resp = client.put("/models/upd", json={
+        resp = client.put("/datasets/upd", json={
             "name": "upd", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
-        assert client.get("/models/upd").json()["sql"] == "SELECT id FROM orders"
+        assert client.get("/datasets/upd").json()["sql"] == "SELECT id FROM orders"

@@ -1,0 +1,161 @@
+{
+ "source": "tests/test_dev1836_query_model_stamping.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_kpis",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ],
+     [
+      "channel",
+      "channel"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_kpis",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ],
+     [
+      "channel",
+      "channel"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_kpis2",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_kpis2",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_grain",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ],
+     [
+      "channel",
+      "channel"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_grain",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ],
+     [
+      "channel",
+      "channel"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(vm_grain.total)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(vm_grain.total)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "vm_dup2",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   },
+   "new": {
+    "to": "vm_dup2",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

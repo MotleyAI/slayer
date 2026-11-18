@@ -1,0 +1,54 @@
+{
+ "source": "tests/test_recommend_root_model_surfaces.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 33,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 35,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 39,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 40,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 43,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 44,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 47,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 51,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 56,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 117,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 120,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 121,
+   "reason": "no positional counterpart"
+  }
+ ]
+}

@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_heal_partition_time_bucket.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 14,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 15,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 76,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 83,
+   "reason": "unclassifiable"
+  }
+ ]
+}

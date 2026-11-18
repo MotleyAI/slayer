@@ -1,0 +1,170 @@
+{
+ "source": "tests/test_dev2137_list_children.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "contractors.skills.value = 'sql'"
+    ]
+   },
+   "new": {
+    "population": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "contractors.skills.value = 'sql'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "dimensions": [
+     "team"
+    ],
+    "filters": [
+     "contains(team_skills, 'go')"
+    ]
+   },
+   "new": {
+    "population": "s",
+    "dimensions": [
+     "team"
+    ],
+    "filter": [
+     "contains(team_skills, 'go')"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "contractors",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "contractors",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "contractors",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ],
+    "name": "skills"
+   },
+   "new": {
+    "to": "contractors",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ],
+    "name": "skills"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "contractors.skills.value = 'sql'"
+    ]
+   },
+   "new": {
+    "population": "assignments",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "contractors.skills.value = 'sql'"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 191,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 233,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 234,
+   "reason": "not fully literal"
+  }
+ ]
+}

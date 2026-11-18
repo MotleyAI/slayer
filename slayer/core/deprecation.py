@@ -5,13 +5,25 @@ or ``scheduled_notice`` is the tag.
 major version reaches a call's ``removal``.
 """
 
+from __future__ import annotations
+
 import contextlib
+import os
 import sys
 import warnings
 from collections.abc import Generator
 from typing import NoReturn
 
-from slayer.core.warnings import DeprecatedInputWarning, outside_stacklevel
+import pydantic
+
+from slayer.core import warnings as payloads  # a module reference: warnings reaches this module through vocabulary
+
+# Frames under these directories are never the caller a warning names.
+_INTERNAL_DIRS = (
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep,
+    os.path.abspath(pydantic.__path__[0]) + os.sep,
+)
+
 
 def warn_deprecated(message: str, *, removal: str, stacklevel: int = 2) -> None:
     """Emit ``message`` as a ``FutureWarning`` (shown outside ``__main__``, unlike ``DeprecationWarning``).
@@ -26,7 +38,7 @@ def warn_deprecated(message: str, *, removal: str, stacklevel: int = 2) -> None:
 class DeprecatedInputFutureWarning(FutureWarning):
     """Carrier ``FutureWarning`` for a ``DeprecatedInputWarning`` payload — one wording on both channels."""
 
-    def __init__(self, payload: DeprecatedInputWarning) -> None:
+    def __init__(self, payload: payloads.DeprecatedInputWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
@@ -34,10 +46,20 @@ class DeprecatedInputFutureWarning(FutureWarning):
         return self.payload.human_message()
 
 
-def deprecated_input(old: str, new: str, *, removal: str) -> DeprecatedInputWarning:
+def outside_stacklevel() -> int:
+    """``stacklevel``, counted from this function's caller, of the first frame outside SLayer and pydantic."""
+    frame = sys._getframe(1)
+    level = 1
+    while frame.f_back is not None and os.path.abspath(frame.f_code.co_filename).startswith(_INTERNAL_DIRS):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
+def deprecated_input(old: str, new: str, *, removal: str) -> payloads.DeprecatedInputWarning:
     """Report converting the input form ``old`` to ``new``: one ``FutureWarning`` at the first line outside SLayer
     that supplied it, and the payload the caller keeps with the converted input. ``removal`` as in ``warn_deprecated``."""
-    payload = DeprecatedInputWarning(old=old, new=new, removal=removal)
+    payload = payloads.DeprecatedInputWarning(old=old, new=new, removal=removal)
     warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=outside_stacklevel())
     return payload
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1739_fixtures import dev1739_models, month_td
+from tests._dev1739_fixtures import dev1739_datasets, month_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -20,7 +20,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -31,67 +31,67 @@ def _cases() -> dict:
     return {
         "local/single_key": _q(
             dimensions=["region", "city"],
-            measures=[
-                {"formula": "sum(amount)", "name": "city_rev"},
-                {"formula": "sum(amount, partition_by=region)", "name": "region_rev"},
+            metrics=[
+                {"expression": "sum(amount)", "name": "city_rev"},
+                {"expression": "sum(amount, partition_by=region)", "name": "region_rev"},
             ],
         ),
         "local/grand_total": _q(
             dimensions=["region", "city"],
-            measures=[{"formula": "sum(amount, partition_by=[])", "name": "g"}],
+            metrics=[{"expression": "sum(amount, partition_by=[])", "name": "g"}],
         ),
         "local/multi_key": _q(
             dimensions=["region", "channel", "city"],
-            measures=[
-                {"formula": "sum(amount, partition_by=[region, channel])", "name": "rc"},
+            metrics=[
+                {"expression": "sum(amount, partition_by=[region, channel])", "name": "rc"},
             ],
         ),
         "local/share_composite": _q(
             dimensions=["region", "city"],
-            measures=[
-                {"formula": "sum(amount) / sum(amount, partition_by=region)", "name": "sh"},
+            metrics=[
+                {"expression": "sum(amount) / sum(amount, partition_by=region)", "name": "sh"},
             ],
         ),
         "local/filtered": _q(
             dimensions=["region", "city"],
-            measures=[{"formula": "sum(ok_amount, partition_by=region)", "name": "o"}],
+            metrics=[{"expression": "sum(ok_amount, partition_by=region)", "name": "o"}],
         ),
         "local/star_count": _q(
             dimensions=["region", "city"],
-            measures=[{"formula": "count(*, partition_by=region)", "name": "n"}],
+            metrics=[{"expression": "count(*, partition_by=region)", "name": "n"}],
         ),
         "local/time_dim": _q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[{"formula": "sum(amount, partition_by=ordered_at)", "name": "m"}],
+            metrics=[{"expression": "sum(amount, partition_by=ordered_at)", "name": "m"}],
         ),
         "local/full_grain_degenerate": _q(
             dimensions=["region", "city"],
-            measures=[
-                {"formula": "sum(amount, partition_by=[region, city])", "name": "d"},
+            metrics=[
+                {"expression": "sum(amount, partition_by=[region, city])", "name": "d"},
             ],
         ),
         "cross_model/grand_total": _q(
             dimensions=["customers.tier"],
-            measures=[
-                {"formula": "sum(customers.spend, partition_by=[])", "name": "t"},
+            metrics=[
+                {"expression": "sum(customers.spend, partition_by=[])", "name": "t"},
             ],
         ),
         "cross_model/rerooted": _q(
             dimensions=["customers.regions.name"],
-            measures=[
-                {"formula": "sum(customers.spend, partition_by=[])", "name": "t"},
+            metrics=[
+                {"expression": "sum(customers.spend, partition_by=[])", "name": "t"},
             ],
         ),
         "cross_model/rerooted_partition_key": _q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[
-                {"formula": "sum(customers.spend, partition_by=customers.regions.name)",
+            metrics=[
+                {"expression": "sum(customers.spend, partition_by=customers.regions.name)",
                  "name": "rt"},
             ],
         ),
         "guard/non_dimension": _q(
             dimensions=["region"],
-            measures=[{"formula": "sum(amount, partition_by=city)", "name": "x"}],
+            metrics=[{"expression": "sum(amount, partition_by=city)", "name": "x"}],
         ),
         # guard/first, guard/last, guard/nested_transform, guard/in_filter,
         # guard/window_plus_partition removed — these LOCAL shapes are lifted;
@@ -101,18 +101,18 @@ def _cases() -> dict:
         "guard/cross_model_outside_grain": _q(
             to_many_handling="broadcast",
             dimensions=["region", "customers.tier"],
-            measures=[
-                {"formula": "sum(customers.spend, partition_by=region)", "name": "x"},
+            metrics=[
+                {"expression": "sum(customers.spend, partition_by=region)", "name": "x"},
             ],
         ),
     }
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
-    models = dev1739_models()
+    models = dev1739_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

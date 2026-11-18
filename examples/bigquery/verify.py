@@ -7,7 +7,7 @@ Run after starting the SLayer API server (see README.md):
 Targets the read-only public dataset ``bigquery-public-data.thelook_ecommerce``.
 Assertions avoid hardcoded row counts (the public dataset isn't strictly
 frozen) — instead they prove semantic correctness:
-  - models load, queries succeed, joins work end-to-end
+  - datasets load, queries succeed, relationships work end-to-end
   - sum of grouped counts equals the ungrouped total (cardinality invariant)
   - aggregates return numbers in plausible ranges
   - time dimension truncation works against TIMESTAMP columns
@@ -25,7 +25,7 @@ BASE_URL = os.environ.get("SLAYER_URL", "http://localhost:5143")
 # Repeated literals (hoisted per SonarCloud python:S1192) — these strings
 # would otherwise show up nine and eight times respectively.
 QUERY_PATH = "/query"
-COUNT_MEASURE = "count(*)"
+COUNT_METRIC = "count(*)"
 
 _passed = 0
 _failed = 0
@@ -79,11 +79,11 @@ def main():
         print("\nStart the server first: ./start.sh", file=sys.stderr)
         sys.exit(1)
 
-    print("\nModels:")
-    models = api(method="GET", path="/models")
-    names = {m["name"] for m in models}
+    print("\nDatasets:")
+    datasets = api(method="GET", path="/datasets")
+    names = {d["name"] for d in datasets}
     for expected in ("orders", "order_items", "products", "users"):
-        check(name=f"{expected} model present", condition=expected in names)
+        check(name=f"{expected} dataset present", condition=expected in names)
 
     print("\nDatasource:")
     datasources = api(method="GET", path="/datasources")
@@ -96,20 +96,20 @@ def main():
     print("\nBaseline counts:")
     total_orders = api(
         method="POST", path=QUERY_PATH,
-        body={"source_model": "orders", "measures": [COUNT_MEASURE]},
+        body={"population": "orders", "metrics": [COUNT_METRIC]},
     )["data"][0]["orders._count"]
     check(name="orders count > 0", condition=total_orders > 0)
     print(f"    (orders._count = {total_orders})")
 
     total_users = api(
         method="POST", path=QUERY_PATH,
-        body={"source_model": "users", "measures": [COUNT_MEASURE]},
+        body={"population": "users", "metrics": [COUNT_METRIC]},
     )["data"][0]["users._count"]
     check(name="users count > 0", condition=total_users > 0)
 
     total_products = api(
         method="POST", path=QUERY_PATH,
-        body={"source_model": "products", "measures": [COUNT_MEASURE]},
+        body={"population": "products", "metrics": [COUNT_METRIC]},
     )["data"][0]["products._count"]
     # thelook_ecommerce.products has roughly 29k rows; allow a wide band.
     check(
@@ -123,8 +123,8 @@ def main():
     by_status = api(
         method="POST", path=QUERY_PATH,
         body={
-            "source_model": "orders",
-            "measures": [COUNT_MEASURE],
+            "population": "orders",
+            "metrics": [COUNT_METRIC],
             "dimensions": ["status"],
         },
     )["data"]
@@ -144,19 +144,19 @@ def main():
     )
 
     # --- Joined query: order_items → products (category rollup) ----------
-    print("\nJoin: order_items by product category:")
+    print("\nRelationship: order_items by product category:")
     by_category = api(
         method="POST", path=QUERY_PATH,
         body={
-            "source_model": "order_items",
-            "measures": [COUNT_MEASURE],
+            "population": "order_items",
+            "metrics": [COUNT_METRIC],
             "dimensions": ["products.category"],
         },
     )["data"]
     check(name="by-category rows present", condition=len(by_category) > 0)
     total_items = api(
         method="POST", path=QUERY_PATH,
-        body={"source_model": "order_items", "measures": [COUNT_MEASURE]},
+        body={"population": "order_items", "metrics": [COUNT_METRIC]},
     )["data"][0]["order_items._count"]
     summed_cat = sum(row["order_items._count"] for row in by_category)
     check(
@@ -164,15 +164,15 @@ def main():
         condition=summed_cat == total_items,
     )
 
-    # --- Transitive join: order_items → users → country -------------------
-    print("\nTransitive join: order_items by user country:")
+    # --- Transitive relationship: order_items → users → country -----------
+    print("\nTransitive relationship: order_items by user country:")
     by_country = api(
         method="POST", path=QUERY_PATH,
         body={
-            "source_model": "order_items",
-            "measures": [COUNT_MEASURE],
+            "population": "order_items",
+            "metrics": [COUNT_METRIC],
             "dimensions": ["users.country"],
-            "order": [{"column": "count", "direction": "desc"}],
+            "order": [{"field": "count", "direction": "desc"}],
             "limit": 5,
         },
     )["data"]
@@ -182,13 +182,13 @@ def main():
         condition=all(row.get("order_items.users.country") for row in by_country),
     )
 
-    # --- Aggregates on a numeric column ----------------------------------
+    # --- Aggregates on a numeric field -----------------------------------
     print("\nAggregates on order_items.sale_price:")
     aggs = api(
         method="POST", path=QUERY_PATH,
         body={
-            "source_model": "order_items",
-            "measures": [
+            "population": "order_items",
+            "metrics": [
                 "sum(sale_price)",
                 "avg(sale_price)",
                 "min(sale_price)",
@@ -210,12 +210,12 @@ def main():
     by_month = api(
         method="POST", path=QUERY_PATH,
         body={
-            "source_model": "orders",
-            "measures": [COUNT_MEASURE],
+            "population": "orders",
+            "metrics": [COUNT_METRIC],
             "time_dimensions": [
-                {"dimension": "created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "month"},
             ],
-            "order": [{"column": "created_at", "direction": "asc"}],
+            "order": [{"field": "created_at", "direction": "asc"}],
             "limit": 6,
         },
     )["data"]

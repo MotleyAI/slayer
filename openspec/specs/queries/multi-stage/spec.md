@@ -8,15 +8,15 @@ is ordered and validated so every stage can read the siblings it references.
 
 ### Requirement: Stages are ordered by every sibling reference
 A multi-stage query list SHALL be ordered so each stage follows every sibling it
-references — as its `source_model`, as an extension's `source_name`, or as a
-`joins[].target_model` of one of its extensions —
+references — as its `population`, as an extension's `source_name`, or as a
+`relationships[].to` of one of its extensions —
 regardless of the order the non-root stages were supplied in. The last entry SHALL stay
 the root. Duplicate stage names, an unnamed non-root stage, a self-reference, a non-root
 stage referencing the root, and a cycle SHALL each be rejected with an error
 naming the offending stages.
 
 #### Scenario: A stage joining a sibling that reads another sibling
-- **WHEN** the list `[x (source customers), c (source x), b (source orders, extended with a join to c), root (source b)]` is executed
+- **WHEN** the list `[x (source customers), c (source x), b (source orders, extended with a relationship to c), root (source b)]` is executed
 - **THEN** it returns the hand-computed result instead of failing to resolve `c`
 
 #### Scenario: Supply order of non-root stages does not matter
@@ -41,7 +41,7 @@ naming the offending stages.
 
 ### Requirement: Stage names are query-local
 A stage name SHALL be visible only within its own query list, where a name the
-query writes (`source_model`, an extension's `source_name`, the `joins[].target_model`
+query writes (`population`, an extension's `source_name`, the `relationships[].to`
 of an extension) SHALL resolve to the stage in preference to a
 same-named model. A stored definition — a stored model's joins, a stored
 query-backed model's `source_queries` — SHALL never see a stage name: its
@@ -55,7 +55,7 @@ name only.
 - **THEN** `customers.tier` reads the model and the result equals the hand-computed amount by tier
 
 #### Scenario: A query-written join to a stage wins over a same-named stored edge
-- **WHEN** a stage extends `orders` with a join to the stage `customers` while `orders` also stores an edge to the model `customers`, and asks for `customers.<column>`
+- **WHEN** a stage extends `orders` with a join to the stage `customers` while `orders` also stores an edge to the model `customers`, and asks for `customers.<field>`
 - **THEN** the hop reaches the stage
 
 #### Scenario: A stage named like a physical table does not hide it

@@ -1,0 +1,209 @@
+{
+ "source": "tests/test_list_set_equality.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "contractors",
+    "join_pairs": [
+     [
+      "contractor_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "contractors",
+    "join_pairs": [
+     [
+      "contractor_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "skills",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "skills",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "skills",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "skills",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "dimensions": [
+     "skills",
+     "n"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "population": "s",
+    "dimensions": [
+     "skills",
+     "n"
+    ],
+    "distinct_dimension_values": false
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "dimensions": [
+     "skills",
+     {
+      "expression": "length(skills)",
+      "name": "len"
+     }
+    ]
+   },
+   "new": {
+    "population": "s",
+    "dimensions": [
+     "skills",
+     {
+      "expression": "length(skills)",
+      "name": "len"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s",
+    "source_model": "contractors",
+    "dimensions": [
+     "id",
+     "skills"
+    ],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "name": "s",
+    "population": "contractors",
+    "dimensions": [
+     "id",
+     "skills"
+    ],
+    "distinct_dimension_values": false
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 128,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 129,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 369,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 759,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 766,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 781,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 782,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 783,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 829,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 842,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1060,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1061,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1062,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1072,
+   "reason": "not fully literal"
+  }
+ ]
+}

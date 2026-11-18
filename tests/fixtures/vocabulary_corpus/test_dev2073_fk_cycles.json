@@ -1,0 +1,37 @@
+{
+ "source": "tests/test_dev2073_fk_cycles.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(sales.total)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(sales.total)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(depts.employees.salary)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(depts.employees.salary)",
+    "name": "s"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 132,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  }
+ ]
+}

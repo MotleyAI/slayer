@@ -1,0 +1,143 @@
+{
+ "source": "tests/test_integer_aggregate_range.py",
+ "pairs": [
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "orders",
+    "data_source": "test",
+    "sql_table": "orders",
+    "default_time_dimension": "created_at",
+    "columns": [
+     {
+      "name": "id",
+      "type": "INT",
+      "primary_key": true
+     },
+     {
+      "name": "amount",
+      "type": "INT"
+     },
+     {
+      "name": "created_at",
+      "type": "TIMESTAMP"
+     }
+    ],
+    "measures": [
+     {
+      "name": "as_int",
+      "formula": "sum(amount)",
+      "type": "INT"
+     }
+    ]
+   },
+   "new": {
+    "name": "orders",
+    "data_source": "test",
+    "sql_table": "orders",
+    "default_time_dimension": "created_at",
+    "fields": [
+     {
+      "name": "id",
+      "datatype": "INT",
+      "primary_key": true
+     },
+     {
+      "name": "amount",
+      "datatype": "INT"
+     },
+     {
+      "name": "created_at",
+      "datatype": "TIMESTAMP"
+     }
+    ],
+    "metrics": [
+     {
+      "name": "as_int",
+      "expression": "sum(amount)",
+      "datatype": "INT"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "type": "INT"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "datatype": "INT"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(customers.amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=created_at)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=created_at)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "as_int",
+    "type": "DOUBLE"
+   },
+   "new": {
+    "expression": "as_int",
+    "datatype": "DOUBLE"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 116,
+   "reason": "not a standalone dataset: ValidationError"
+  }
+ ]
+}

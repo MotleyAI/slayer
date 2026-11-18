@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_connection_default_schema.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  }
+ ]
+}

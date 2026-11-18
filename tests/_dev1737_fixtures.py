@@ -13,7 +13,7 @@ import pytest
 from pydantic import BaseModel
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -84,52 +84,52 @@ def recent_table(*, today: date) -> TableSpec:
     )
 
 
-def orders_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="sla_days", type=DataType.DOUBLE),
-            Column(name="is_paid", type=DataType.BOOLEAN),
-            Column(name="raw_dt"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="sla_days", datatype=DataType.DOUBLE),
+            DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
+            DatasetField(name="raw_dt"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="signup_date", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="signup_date", datatype=DataType.DATE),
         ],
     )
 
 
-def recent_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def recent_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="recent", sql_table="recent", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
 
-def scenario_models(*, data_source: str = "test") -> list[SlayerModel]:
+def scenario_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     return [
-        orders_model(data_source=data_source),
-        customers_model(data_source=data_source),
-        recent_model(data_source=data_source),
+        orders_dataset(data_source=data_source),
+        customers_dataset(data_source=data_source),
+        recent_dataset(data_source=data_source),
     ]
 
 
@@ -162,16 +162,16 @@ DT = TableSpec(
 )
 
 
-def dt_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def dt_dataset(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="dt", sql_table="dt", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="d1", type=DataType.DATE),
-            Column(name="d2", type=DataType.DATE),
-            Column(name="t1", type=DataType.TIMESTAMP),
-            Column(name="t2", type=DataType.TIMESTAMP),
-            Column(name="n", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="d1", datatype=DataType.DATE),
+            DatasetField(name="d2", datatype=DataType.DATE),
+            DatasetField(name="t1", datatype=DataType.TIMESTAMP),
+            DatasetField(name="t2", datatype=DataType.TIMESTAMP),
+            DatasetField(name="n", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -317,7 +317,7 @@ def matrix_cases() -> list[DateCase]:
 
 def matrix_query(case: DateCase) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "dt",
+        "population": "dt",
         "dimensions": ["id", {"expression": case.expr, "name": "v"}],
     })
 
@@ -344,8 +344,8 @@ def assert_value(actual: Any, expected: Any, *, where: str) -> None:
         assert Decimal(str(actual)) == Decimal(expected), f"{where}: expected {expected}, got {actual!r}"
 
 
-def assert_case(data: list[dict[str, Any]], case: DateCase, *, model: str = "dt") -> None:
-    got = {int(r[f"{model}.id"]): r[f"{model}.v"] for r in data}
+def assert_case(data: list[dict[str, Any]], case: DateCase, *, dataset: str = "dt") -> None:
+    got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in data}
     assert set(got) == set(case.expected), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.expected.items():
         assert_value(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -374,10 +374,10 @@ def seed_backend(backend: str, db_path: str, tables: Iterable[TableSpec]) -> Non
 
 @contextlib.asynccontextmanager
 async def exec_engine(
-    backend: str, *, tables: list[TableSpec], models: list[SlayerModel],
+    backend: str, *, tables: list[TableSpec], datasets: list[SlayerDataset],
 ) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), models=models,
+        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), datasets=datasets,
     ) as (engine, _db):
         yield engine
 
@@ -459,20 +459,20 @@ def server_seed_statements(backend: str, *, today: date) -> list[str]:
     return out
 
 
-def all_models(*, data_source: str) -> list[SlayerModel]:
-    return [dt_model(data_source=data_source), *scenario_models(data_source=data_source)]
+def all_datasets(*, data_source: str) -> list[SlayerDataset]:
+    return [dt_dataset(data_source=data_source), *scenario_datasets(data_source=data_source)]
 
 
 async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
     """Spec scenarios whose values need a real backend (clock, joins, literals)."""
     async def by_id(expr: str, model: str = "orders") -> dict[int, Any]:
         resp = await engine.execute(SlayerQuery.model_validate(
-            {"source_model": model, "dimensions": ["id", {"expression": expr, "name": "v"}]}))
+            {"population": model, "dimensions": ["id", {"expression": expr, "name": "v"}]}))
         return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
 
     async def count(filt: str, model: str = "orders") -> int:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": model, "measures": [{"formula": "count(*)", "name": "n"}], "filters": [filt]}))
+            "population": model, "metrics": [{"expression": "count(*)", "name": "n"}], "filter": [filt]}))
         return int(resp.data[0][f"{model}.n"])
 
     assert await count("created_at >= date_add(current_date(), -30, 'day')", model="recent") == 1

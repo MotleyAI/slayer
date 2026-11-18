@@ -15,7 +15,7 @@ from pathlib import Path
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery, TimeDimension
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -23,7 +23,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1942_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(dimension="ordered_at",
+_MONTH_TD = [TimeDimension(field="ordered_at",
                            granularity=TimeGranularity.MONTH)]
 _X = "sum(amount, partition_by=[region, ordered_at])"
 _STANDALONE = f"min({_X}, partition_by=region)"
@@ -39,37 +39,37 @@ def _cases() -> dict:
         "dual_phase/measure": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"}]}},
+                   "metrics": [{"expression": _STANDALONE, "name": "a"},
+                                {"expression": _MIXED, "name": "b"}]}},
         "dual_phase/filter_position": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _MIXED, "name": "b"}],
-                   "filters": [f"{_STANDALONE} > 5"]}},
+                   "metrics": [{"expression": _MIXED, "name": "b"}],
+                   "filter": [f"{_STANDALONE} > 5"]}},
         "dual_phase/order_position": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"}],
-                   "order": [{"column": _STANDALONE, "direction": "desc"}]}},
+                   "metrics": [{"expression": _STANDALONE, "name": "a"},
+                                {"expression": _MIXED, "name": "b"}],
+                   "order": [{"field": _STANDALONE, "direction": "desc"}]}},
         "dual_phase/with_transform": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"},
-                                {"formula": "cumsum(sum(amount))", "name": "c"}]}},
+                   "metrics": [{"expression": _STANDALONE, "name": "a"},
+                                {"expression": _MIXED, "name": "b"},
+                                {"expression": "cumsum(sum(amount))", "name": "c"}]}},
         # population/* — the fanning-hop population filter over a mixed constituent.
         "population/mixed_reagg_constituent": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": _POP_MIXED, "name": "m"}],
-                   "filters": [_OK]}},
+                   "metrics": [{"expression": _POP_MIXED, "name": "m"}],
+                   "filter": [_OK]}},
         "population/dual_phase_with_filter": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": _POP_AVG, "name": "a"},
-                                {"formula": _POP_MIXED, "name": "m"}],
-                   "filters": [_OK]}},
+                   "metrics": [{"expression": _POP_AVG, "name": "a"},
+                                {"expression": _POP_MIXED, "name": "m"}],
+                   "filter": [_OK]}},
     }
 
 
@@ -82,16 +82,16 @@ FAIL_CLOSED = {
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_models()
+    models = dev1832_datasets()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model=case["source"], **kw)
+        query = SlayerQuery(population=case["source"], **kw)
         root = next(m for m in models if m.name == case["source"])
         return await _engine_generate(
-            query=query, model=root,
-            extra_models=[m for m in models if m.name != case["source"]],
+            query=query, dataset=root,
+            extra_datasets=[m for m in models if m.name != case["source"]],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

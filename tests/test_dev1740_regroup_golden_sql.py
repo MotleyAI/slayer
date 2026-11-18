@@ -11,7 +11,7 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1740_fixtures import dev1740_models, month_td
+from tests._dev1740_fixtures import dev1740_datasets, month_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -24,7 +24,7 @@ BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -32,7 +32,7 @@ def _cases() -> dict:
     return {
         "regroup/flagship": _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[{"formula": "sum(amount)", "name": "band_total"}],
+            metrics=[{"expression": "sum(amount)", "name": "band_total"}],
         ),
         "regroup/cross_model_partition": _q(
             dimensions=[
@@ -40,12 +40,12 @@ def _cases() -> dict:
                 {"expression": "CASE WHEN sum(amount, partition_by=customers.region_id) "
                                "> 10000 THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[{"formula": "sum(amount)", "name": "s"}],
+            metrics=[{"expression": "sum(amount)", "name": "s"}],
         ),
         "regroup/filter_on_band": _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["band == 1"],
-            measures=[{"formula": "sum(amount)", "name": "band_total"}],
+            filter=["band == 1"],
+            metrics=[{"expression": "sum(amount)", "name": "band_total"}],
         ),
         "guard/missing_partition_by": _q(
             dimensions=[
@@ -53,7 +53,7 @@ def _cases() -> dict:
                 {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
                  "name": "band"},
             ],
-            measures=[{"formula": "sum(amount)", "name": "t"}],
+            metrics=[{"expression": "sum(amount)", "name": "t"}],
         ),
         "guard/transform_in_dim": _q(
             dimensions=[
@@ -62,7 +62,7 @@ def _cases() -> dict:
                  "name": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[{"formula": "sum(amount)", "name": "t"}],
+            metrics=[{"expression": "sum(amount)", "name": "t"}],
         ),
         "guard/ddv_false": _q(
             dimensions=[{"expression": BAND, "name": "band"}],
@@ -72,10 +72,10 @@ def _cases() -> dict:
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
-    models = dev1740_models()
+    models = dev1740_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

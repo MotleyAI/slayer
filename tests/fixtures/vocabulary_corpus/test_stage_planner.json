@@ -1,0 +1,525 @@
+{
+ "source": "tests/test_stage_planner.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "status == 'paid'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "status == 'paid'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)",
+      "name": "rev_sum"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(customers.revenue)",
+      "name": "rev_sum"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "metrics": [
+     {
+      "expression": "max(amount_sum)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage1",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)",
+      "name": "robot_details__modelseriesval"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "stage1",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(customers.revenue)",
+      "name": "robot_details__modelseriesval"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage1",
+    "measures": [
+     {
+      "formula": "robot_details.modelseriesval"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "stage1",
+    "metrics": [
+     {
+      "expression": "robot_details.modelseriesval"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage_a",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "stage_a",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage_b",
+    "source_model": "stage_a",
+    "measures": [
+     {
+      "formula": "max(amount_sum)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "stage_b",
+    "population": "stage_a",
+    "metrics": [
+     {
+      "expression": "max(amount_sum)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage_b",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "stage_b",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "dup",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "dup",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "dup",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "max(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "dup",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "max(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "dup",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "dup",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage_a",
+    "source_model": "stage_b",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "stage_a",
+    "population": "stage_b",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "stage_b",
+    "source_model": "stage_a",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "name": "stage_b",
+    "population": "stage_a",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "stage_a",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "stage_a",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev1"
+     },
+     {
+      "formula": "sum(amount)",
+      "name": "rev2"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev1"
+     },
+     {
+      "expression": "sum(amount)",
+      "name": "rev2"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  }
+ ]
+}

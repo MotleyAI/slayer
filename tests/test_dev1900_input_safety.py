@@ -21,35 +21,35 @@ from slayer.engine.elaborate_env import check_input_dependencies_analyzable
 
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     REAGG_BAD,
     REAGG_DERIVED_POP_WAVG,
     REAGG_GOOD,
     make_exec_engine,
     orders_q,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
 
-UNPROVEN = "unproven join hop"
+UNPROVEN = "unproven relationship hop"
 HOP = "region_events"
 MODES = ["broadcast", "associate", "error"]
 
-CM_KWARG = ModelMeasure(
-    formula="weighted_avg(customers.spend, weight=customers.regions.bad_pop)", name="w")
-CM_POSITIONAL = ModelMeasure(
-    formula="weighted_avg(customers.spend, customers.regions.bad_pop)", name="w")
-CM_KWARG_CHAIN = ModelMeasure(
-    formula="weighted_avg(customers.spend, weight=customers.regions.bad_pop2)", name="w")
-LOCAL_KWARG = ModelMeasure(
-    formula="weighted_avg(amount, weight=customers.regions.bad_pop)", name="w")
-SOURCE_FANNING = ModelMeasure(formula="sum(customers.regions.bad_pop)", name="w")  # source crosses the hop
-CM_DEFAULT = ModelMeasure(formula="wsumx(customers.spend)", name="w")       # dotted default regions.bad_pop
-CM_DEFAULT_BARE = ModelMeasure(formula="wbadbare(customers.regions.pop)", name="w")  # bare owner-local default bad_pop
-CM_DEFAULT_EXPR = ModelMeasure(formula="wsumy(customers.spend)", name="w")  # expr default regions.bad_pop * 1
-CM_FILTER = ModelMeasure(formula="sum(customers.bad_pop_spend)", name="w")  # measure-local regions.bad_pop > 0
-CM_GOOD = ModelMeasure(formula="wgood(customers.spend)", name="w")          # default regions.derived_pop (to-one)
-CM_UNPARSE = ModelMeasure(formula="wunparse(customers.spend)", name="w")
-CM_EXPR_UNPARSE = ModelMeasure(formula="wexpr_unparse(customers.spend)", name="w")  # unparseable expr default → unnameable
+CM_KWARG = DatasetMetric(
+    expression="weighted_avg(customers.spend, weight=customers.regions.bad_pop)", name="w")
+CM_POSITIONAL = DatasetMetric(
+    expression="weighted_avg(customers.spend, customers.regions.bad_pop)", name="w")
+CM_KWARG_CHAIN = DatasetMetric(
+    expression="weighted_avg(customers.spend, weight=customers.regions.bad_pop2)", name="w")
+LOCAL_KWARG = DatasetMetric(
+    expression="weighted_avg(amount, weight=customers.regions.bad_pop)", name="w")
+SOURCE_FANNING = DatasetMetric(expression="sum(customers.regions.bad_pop)", name="w")  # source crosses the hop
+CM_DEFAULT = DatasetMetric(expression="wsumx(customers.spend)", name="w")       # dotted default regions.bad_pop
+CM_DEFAULT_BARE = DatasetMetric(expression="wbadbare(customers.regions.pop)", name="w")  # bare owner-local default bad_pop
+CM_DEFAULT_EXPR = DatasetMetric(expression="wsumy(customers.spend)", name="w")  # expr default regions.bad_pop * 1
+CM_FILTER = DatasetMetric(expression="sum(customers.bad_pop_spend)", name="w")  # measure-local regions.bad_pop > 0
+CM_GOOD = DatasetMetric(expression="wgood(customers.spend)", name="w")          # default regions.derived_pop (to-one)
+CM_UNPARSE = DatasetMetric(expression="wunparse(customers.spend)", name="w")
+CM_EXPR_UNPARSE = DatasetMetric(expression="wexpr_unparse(customers.spend)", name="w")  # unparseable expr default → unnameable
 
 #: wgood (to-one derived default) executes today; behaviour-preserving pin.
 WGOOD_TOONE_DEFAULT = 134000.0
@@ -63,7 +63,7 @@ async def engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_engine(request):
-    async for e in make_exec_engine(request, models=unparseable_derived_models()):
+    async for e in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield e
 
 
@@ -74,9 +74,9 @@ def _assert_unproven(exc: ValueError) -> None:
     assert_ref_free(msg)
 
 
-async def _assert_fails_closed(engine, measure, *, mode=None):
+async def _assert_fails_closed(engine, metric, *, mode=None):
     kw = {} if mode is None else {"to_many_handling": mode}
-    q = orders_q(measures=[measure], **kw)
+    q = orders_q(metrics=[metric], **kw)
     with pytest.raises(ValueError) as ei:
         await engine.execute(q)
     _assert_unproven(ei.value)
@@ -130,7 +130,7 @@ class TestUnanalyzableDefinition:
         """No dialect parses regions.unparseable; the dependency is unsafe, not
         empty — the typed analyzability error names the column and the dialect
         failure, never the raw parser error."""
-        q = orders_q(measures=[CM_UNPARSE])
+        q = orders_q(metrics=[CM_UNPARSE])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)
@@ -141,8 +141,8 @@ class TestUnanalyzableDefinition:
     async def test_unparseable_column_filter_typed_error(self, unparse_engine):
         """A source column's ``filter=`` referencing an unanalyzable derived
         column is an input dependency too — fail closed, never stamped ``()``."""
-        q = orders_q(measures=[ModelMeasure(
-            formula="sum(customers.flagged_spend)", name="fs")])
+        q = orders_q(metrics=[DatasetMetric(
+            expression="sum(customers.flagged_spend)", name="fs")])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)
@@ -155,7 +155,7 @@ class TestUnanalyzableDefinition:
         (expr_refs is (None,)): the closure is None while the diagnostic returns
         None, so the guard must still fail closed rather than leak the failure to
         the renderer (CodeRabbit; without the fix the guard is a no-op)."""
-        q = orders_q(measures=[CM_EXPR_UNPARSE])
+        q = orders_q(metrics=[CM_EXPR_UNPARSE])
         with pytest.raises(UnanalyzableAggregationParameterError, match="weight"):
             await unparse_engine.execute(q)
 
@@ -167,17 +167,17 @@ class TestInputDependencyCheckerAlwaysRaises:
     return silently passed an unanalysable dependency)."""
 
     def test_named_column_raises_naming_it(self):
-        with pytest.raises(ValueError, match="derived column 'bad_pop'"):
-            check_input_dependencies_analyzable(alias="w", column="bad_pop")
+        with pytest.raises(ValueError, match="derived field 'bad_pop'"):
+            check_input_dependencies_analyzable(alias="w", field="bad_pop")
 
     def test_unnameable_dependency_still_raises(self):
         with pytest.raises(ValueError, match="has an input dependency"):
-            check_input_dependencies_analyzable(alias="w", column=None)
+            check_input_dependencies_analyzable(alias="w", field=None)
 
 
 class TestReaggregationParameter:
     async def test_fanning_derived_parameter_fails_closed(self, engine):
-        q = orders_q(measures=[REAGG_BAD])
+        q = orders_q(metrics=[REAGG_BAD])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -185,11 +185,11 @@ class TestReaggregationParameter:
 
 class TestLegalDerivedDependencies:
     async def test_to_one_derived_default_executes(self, engine):
-        resp = await engine.execute(orders_q(measures=[CM_GOOD]))
+        resp = await engine.execute(orders_q(metrics=[CM_GOOD]))
         assert float(resp.data[0]["orders.w"]) == pytest.approx(WGOOD_TOONE_DEFAULT)
 
     async def test_local_only_derived_reagg_parameter_executes(self, engine):
         """weight = regions.derived_pop (= pop * 2, local) over a grain pinning
         regions by its key: each region cell weighted by twice its population."""
-        resp = await engine.execute(orders_q(measures=[REAGG_GOOD]))
+        resp = await engine.execute(orders_q(metrics=[REAGG_GOOD]))
         assert float(resp.data[0]["orders.ra"]) == pytest.approx(REAGG_DERIVED_POP_WAVG)

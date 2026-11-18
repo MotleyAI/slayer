@@ -1,0 +1,27 @@
+{
+ "source": "tests/flight/test_flight_client_factory.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

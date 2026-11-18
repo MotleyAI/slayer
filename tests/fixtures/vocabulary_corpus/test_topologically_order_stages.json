@@ -1,0 +1,436 @@
+{
+ "source": "tests/test_topologically_order_stages.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b"
+   },
+   "new": {
+    "population": "b"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b"
+   },
+   "new": {
+    "population": "b"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b"
+   },
+   "new": {
+    "population": "b"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "b",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "b",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a"
+   },
+   "new": {
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "root_stage"
+   },
+   "new": {
+    "name": "a",
+    "population": "root_stage"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "root_stage",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "root_stage",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "a"
+   },
+   "new": {
+    "name": "a",
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a"
+   },
+   "new": {
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a"
+   },
+   "new": {
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "a",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "a",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b"
+   },
+   "new": {
+    "population": "b"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "b",
+    "source_model": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "joins": [
+       {
+        "target_model": "a",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "new": {
+    "name": "b",
+    "population": "orders",
+    "extensions": [
+     {
+      "source_name": "orders",
+      "relationships": [
+       {
+        "to": "a",
+        "join_pairs": [
+         [
+          "id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b"
+   },
+   "new": {
+    "population": "b"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 138,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  }
+ ]
+}

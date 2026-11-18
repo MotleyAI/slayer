@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import DatasetExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -58,155 +58,155 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def m(formula: str, name: str) -> Dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str) -> Dict[str, str]:
+    return {"expression": expression, "name": name}
 
 
 # --------------------------------------------------------------------------- #
 # Storage models.
 # --------------------------------------------------------------------------- #
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def clients_model() -> SlayerModel:
+def clients_dataset() -> SlayerDataset:
     """Named unlike its physical table ``acct``; joins the query-backed ``cust_rev``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="clients", data_source="test", sql_table="acct",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="cust_rev", join_pairs=[["id", "customer_id"]])],
+        relationships=[DatasetRelationship(to="cust_rev", join_pairs=[["id", "customer_id"]])],
     )
 
 
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT, label=STATUS_LABEL),
-            Column(name="amount", type=DataType.DOUBLE, description=AMOUNT_DESCRIPTION,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT, label=STATUS_LABEL),
+            DatasetField(name="amount", datatype=DataType.DOUBLE, description=AMOUNT_DESCRIPTION,
                    format=NumberFormat(type=NumberFormatType.CURRENCY)),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="clients", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="clients", join_pairs=[["customer_id", "id"]]),
         ],
     )
 
 
-def orders_v_model(*, default: Optional[str]) -> SlayerModel:
+def orders_v_dataset(*, default: Optional[str]) -> SlayerDataset:
     """``orders`` carrying a ``th`` default (the source-model variable layer)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders_v", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
         query_variables={"th": default} if default is not None else {},
     )
 
 
-def _qb(name: str, *stages: SlayerQuery, **kw: Any) -> SlayerModel:
-    return SlayerModel(name=name, data_source="test", source_queries=list(stages), **kw)
+def _qb(name: str, *stages: SlayerQuery, **kw: Any) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", source_queries=list(stages), **kw)
 
 
-def rev_by_status_model() -> SlayerModel:
+def rev_by_status_dataset() -> SlayerDataset:
     return _qb("rev_by_status", query(
-        source_model="orders", dimensions=["status"], measures=[m("sum(amount)", "rev")]))
+        population="orders", dimensions=["status"], metrics=[m("sum(amount)", "rev")]))
 
 
-def status_share_model() -> SlayerModel:
+def status_share_dataset() -> SlayerDataset:
     """Query-backed over the query-backed ``rev_by_status``."""
     return _qb("status_share", query(
-        source_model="rev_by_status", dimensions=["status"], measures=[m("sum(rev)", "rr")]))
+        population="rev_by_status", dimensions=["status"], metrics=[m("sum(rev)", "rr")]))
 
 
-def cust_rev_model() -> SlayerModel:
+def cust_rev_dataset() -> SlayerDataset:
     """Multi-stage with a private stage ``x``; grain ``{customer_id}``."""
     return _qb(
         "cust_rev",
-        query(name="x", source_model="orders", dimensions=["customer_id", "status"],
-              measures=[m("sum(amount)", "amt")]),
-        query(source_model="x", dimensions=["customer_id"],
-              measures=[m("sum(amt)", "rev"), m("max(amt)", "top")]),
+        query(name="x", population="orders", dimensions=["customer_id", "status"],
+              metrics=[m("sum(amount)", "amt")]),
+        query(population="x", dimensions=["customer_id"],
+              metrics=[m("sum(amt)", "rev"), m("max(amt)", "top")]),
     )
 
 
-def ok_rev_model() -> SlayerModel:
+def ok_rev_dataset() -> SlayerDataset:
     """Multi-stage, also with a private stage ``x``."""
     return _qb(
         "ok_rev",
-        query(name="x", source_model="orders", dimensions=["customer_id", "status"],
-              measures=[m("sum(amount)", "amt")], filters=["status = 'ok'"]),
-        query(source_model="x", dimensions=["customer_id"], measures=[m("sum(amt)", "ok_rev")]),
+        query(name="x", population="orders", dimensions=["customer_id", "status"],
+              metrics=[m("sum(amount)", "amt")], filter=["status = 'ok'"]),
+        query(population="x", dimensions=["customer_id"], metrics=[m("sum(amt)", "ok_rev")]),
     )
 
 
-def qb_shadow_model() -> SlayerModel:
+def qb_shadow_dataset() -> SlayerDataset:
     """Private stage named ``customers``; the final stage reaches model ``customers`` via a stored join."""
     return _qb(
         "qb_shadow",
-        query(name="customers", source_model="orders", dimensions=["status"],
-              measures=[m("sum(amount)", "a")]),
-        query(source_model="orders", dimensions=["customers.tier"],
-              measures=[m("sum(amount)", "amt")]),
+        query(name="customers", population="orders", dimensions=["status"],
+              metrics=[m("sum(amount)", "a")]),
+        query(population="orders", dimensions=["customers.tier"],
+              metrics=[m("sum(amount)", "amt")]),
     )
 
 
-def monthly_model() -> SlayerModel:
+def monthly_dataset() -> SlayerDataset:
     return _qb("monthly", query(
-        source_model="orders", dimensions=["status"],
-        time_dimensions=[{"dimension": "ordered_at", "granularity": "month"}],
-        measures=[m("sum(amount)", "rev")]))
+        population="orders", dimensions=["status"],
+        time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
+        metrics=[m("sum(amount)", "rev")]))
 
 
-def bcast_qb_model() -> SlayerModel:
+def bcast_qb_dataset() -> SlayerDataset:
     """Private stage ``bstage`` broadcasts ``sum(customers.spend)`` across ``status``."""
     return _qb(
         "bcast_qb",
-        query(name="bstage", source_model="orders", dimensions=["status"], to_many_handling="broadcast",
-              measures=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")]),
-        query(source_model="bstage", dimensions=["status"], measures=[m("sum(amt)", "amt2")]),
+        query(name="bstage", population="orders", dimensions=["status"], to_many_handling="broadcast",
+              metrics=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")]),
+        query(population="bstage", dimensions=["status"], metrics=[m("sum(amt)", "amt2")]),
     )
 
 
-def jt_qb_model() -> SlayerModel:
+def jt_qb_dataset() -> SlayerDataset:
     """``a`` depends on ``b`` only through a join target and is supplied first."""
     return _qb(
         "jt_qb",
         query(name="a",
-              source_model="customers",
+              population="customers",
               extensions=[{"source_name": "customers",
-                           "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}]}],
-              dimensions=["tier"], measures=[m("sum(b.rev)", "ab")]),
-        query(name="b", source_model="orders", dimensions=["customer_id"],
-              measures=[m("sum(amount)", "rev")]),
-        query(source_model="a", dimensions=["tier"], measures=[m("max(ab)", "v")]),
+                           "relationships": [{"to": "b", "join_pairs": [["id", "customer_id"]]}]}],
+              dimensions=["tier"], metrics=[m("sum(b.rev)", "ab")]),
+        query(name="b", population="orders", dimensions=["customer_id"],
+              metrics=[m("sum(amount)", "rev")]),
+        query(population="a", dimensions=["tier"], metrics=[m("max(ab)", "v")]),
     )
 
 
-def _sql_model(name: str, sql: str) -> SlayerModel:
-    return SlayerModel(
+def _sql_dataset(name: str, sql: str) -> SlayerDataset:
+    return SlayerDataset(
         name=name, data_source="test", sql=sql,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -245,21 +245,21 @@ EMBEDDED_WITH: Dict[str, "tuple[str, Dict[int, float]]"] = {
 }
 
 
-def embedded_with_models() -> List[SlayerModel]:
-    return [_sql_model(name, sql) for name, (sql, _) in EMBEDDED_WITH.items()]
+def embedded_with_datasets() -> List[SlayerDataset]:
+    return [_sql_dataset(name, sql) for name, (sql, _) in EMBEDDED_WITH.items()]
 
 
-def query_backed_models() -> List[SlayerModel]:
+def query_backed_datasets() -> List[SlayerDataset]:
     return [
-        rev_by_status_model(), status_share_model(), cust_rev_model(), ok_rev_model(),
-        qb_shadow_model(), monthly_model(), bcast_qb_model(), jt_qb_model(),
+        rev_by_status_dataset(), status_share_dataset(), cust_rev_dataset(), ok_rev_dataset(),
+        qb_shadow_dataset(), monthly_dataset(), bcast_qb_dataset(), jt_qb_dataset(),
     ]
 
 
-def dev1966_models() -> List[SlayerModel]:
+def dev1966_datasets() -> List[SlayerDataset]:
     return [
-        orders_model(), customers_model(), clients_model(),
-        *query_backed_models(), *embedded_with_models(),
+        orders_dataset(), customers_dataset(), clients_dataset(),
+        *query_backed_datasets(), *embedded_with_datasets(),
     ]
 
 
@@ -295,13 +295,13 @@ def seed_duckdb(db_path: str) -> None:
 
 @asynccontextmanager
 async def dev1966_engine(
-    dialect: str, *, models: Optional[List[SlayerModel]] = None,
+    dialect: str, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1966_models() if models is None else models,
+        dialect=dialect, seed=seed, datasets=dev1966_datasets() if datasets is None else datasets,
     ) as (engine, _):
         yield engine
 
@@ -310,28 +310,28 @@ async def dev1966_engine(
 # Helpers.
 # --------------------------------------------------------------------------- #
 def explicit_splice(
-    model: SlayerModel, *, rename: Optional[Dict[str, str]] = None,
+    dataset: SlayerDataset, *, rename: Optional[Dict[str, str]] = None,
 ) -> List[SlayerQuery]:
     """``model``'s stages as named user stages: private stages renamed per ``rename``, the final one
     named after the model."""
     rename = rename or {}
-    stages = list(model.source_queries or [])
+    stages: List[SlayerQuery] = list(dataset.source_queries or [])
 
-    def respell(spec: Any) -> Any:
+    def respell(spec: Union[str, DatasetExtension, SlayerDataset, None]) -> Union[str, DatasetExtension, SlayerDataset, None]:
         if isinstance(spec, str):
             return rename.get(spec, spec)
-        if spec is None or isinstance(spec, SlayerModel):
+        if spec is None or isinstance(spec, SlayerDataset):
             return spec
-        joins = [j.model_copy(update={"target_model": rename.get(j.target_model, j.target_model)})
-                 for j in spec.joins or []]
+        joins = [j.model_copy(update={"to": rename.get(j.to, j.to)})
+                 for j in spec.relationships or []]
         return spec.model_copy(update={"source_name": rename.get(spec.source_name, spec.source_name),
-                                       "joins": joins})
+                                       "relationships": joins})
 
     out = []
     for i, stage in enumerate(stages):
-        name = model.name if i == len(stages) - 1 else rename.get(stage.name, stage.name)
+        name = dataset.name if i == len(stages) - 1 else respell(stage.name)
         extensions = [respell(e) for e in stage.extensions] if stage.extensions else stage.extensions
-        out.append(stage.model_copy(update={"name": name, "source_model": respell(stage.source_model),
+        out.append(stage.model_copy(update={"name": name, "population": respell(stage.population),
                                             "extensions": extensions}))
     return out
 

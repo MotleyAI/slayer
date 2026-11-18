@@ -1,0 +1,248 @@
+{
+ "source": "tests/test_inspect_collection.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "revenue",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "revenue",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "orders_count",
+    "formula": "count(*)"
+   },
+   "new": {
+    "name": "orders_count",
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "revenue",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "revenue",
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "zebra",
+    "join_pairs": [
+     [
+      "z_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "zebra",
+    "join_pairs": [
+     [
+      "z_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "alpha",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "alpha",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 860,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 863,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 864,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 865,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 886,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 889,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 890,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 891,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 898,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 900,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 902,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 904,
+   "reason": "not fully literal"
+  }
+ ]
+}

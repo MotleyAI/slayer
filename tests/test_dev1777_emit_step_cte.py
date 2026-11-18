@@ -13,7 +13,6 @@ cross-model chains). These pin the shell directly and deterministically:
 from __future__ import annotations
 
 from decimal import Decimal
-from types import SimpleNamespace
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
@@ -21,12 +20,14 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType
 from slayer.core.keys import (
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
+    Phase,
     LiteralKey,
     ScalarCallKey,
     TransformKey,
+    ValueKey,
 )
-from slayer.ir.planned import Stage, StageKind
+from slayer.ir.planned import PlannedQuery, Stage, StageKind, ValueSlot
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.cte_assembly import CteEntry
 
@@ -39,13 +40,11 @@ def _base_ctes() -> list[CteEntry]:
     return [CteEntry(name="base", query=exp.Select().select(exp.column("x")).from_("t"))]
 
 
-def _slot(name: str, *, type_=None) -> SimpleNamespace:
-    return SimpleNamespace(
-        public_aliases=[name],
-        declared_name=name,
-        type=type_,
-        cast_type=type_,
-        preserve_native_type=False,
+def _slot(name: str, *, type_: DataType | None = None, public_aliases: list[str] | None = None) -> ValueSlot:
+    return ValueSlot(
+        id=name, key=FieldKey(path=(), leaf=name), declared_name=name,
+        public_aliases=[name] if public_aliases is None else public_aliases, phase=Phase.ROW,
+        type=type_, type_is_explicit=type_ is not None,
     )
 
 
@@ -148,9 +147,7 @@ def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
         source_relation="orders",
         slot_entries=[(
             "sid",
-            SimpleNamespace(
-                public_aliases=["a", "b"], declared_name="a", type=None,
-            ),
+            _slot("a", public_aliases=["a", "b"]),
         )],
         render=render,
     )
@@ -175,7 +172,7 @@ def test_no_public_aliases_falls_back_to_declared_name() -> None:
         source_relation="orders",
         slot_entries=[(
             "sid",
-            SimpleNamespace(public_aliases=[], declared_name="d", type=None),
+            _slot("d", public_aliases=[]),
         )],
         render=lambda s: exp.column("v", quoted=True),
     )
@@ -202,32 +199,24 @@ def test_typed_slot_is_cast_wrapped() -> None:
     assert "CAST" in ctes[-1].query.sql(dialect="postgres").upper()
 
 
+def _post_slot(slot_id: str, key: ValueKey, *, needs_field: bool = False) -> ValueSlot:
+    stage = Stage(kind=StageKind.DERIVED, level=1)
+    return ValueSlot(id=slot_id, key=key, declared_name=slot_id, phase=Phase.ROW, stage=stage, needs_field=needs_field)
+
+
 def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
     # The detection loop feeding block C (F1) and block D (F2): DERIVED
     # Arithmetic and ScalarCall slots needing a column are detected; TransformKey
     # (materialised by a layer), an already-materialised slot, a mask-only slot
-    # (needs_column=False), and a plain ColumnKey are skipped.
-    derived = Stage(kind=StageKind.DERIVED, level=1)
-    arith = SimpleNamespace(
-        id="arith", key=ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)),
-        stage=derived, needs_column=True,
-    )
-    scalar = SimpleNamespace(
-        id="scalar", key=ScalarCallKey(name="abs", args=(ColumnKey(leaf="x"),)),
-        stage=derived, needs_column=True,
-    )
-    transform = SimpleNamespace(
-        id="xf", key=TransformKey(op="cumsum", input=ColumnKey(leaf="x")),
-    )
-    materialised = SimpleNamespace(
-        id="done", key=ArithmeticKey(op="+", operands=(LiteralKey(value=Decimal(2)),)),
-    )
-    mask_only = SimpleNamespace(
-        id="mask", key=ArithmeticKey(op=">", operands=(LiteralKey(value=Decimal(3)),)),
-        stage=derived, needs_column=False,
-    )
-    column = SimpleNamespace(id="col", key=ColumnKey(leaf="y"))
-    pq = SimpleNamespace(
+    # (needs_field=False), and a plain ColumnKey are skipped.
+    arith = _post_slot("arith", ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)), needs_field=True)
+    scalar = _post_slot("scalar", ScalarCallKey(name="abs", args=(FieldKey(leaf="x"),)), needs_field=True)
+    transform = _post_slot("xf", TransformKey(op="cumsum", input=FieldKey(leaf="x")))
+    materialised = _post_slot("done", ArithmeticKey(op="+", operands=(LiteralKey(value=Decimal(2)),)))
+    mask_only = _post_slot("mask", ArithmeticKey(op=">", operands=(LiteralKey(value=Decimal(3)),)))
+    column = _post_slot("col", FieldKey(leaf="y"))
+    pq = PlannedQuery(
+        source_relation="orders",
         combined_expression_slots=[arith, scalar, transform, materialised, mask_only, column],
     )
     out = SQLGenerator._unmaterialised_post_slots(pq, {"done": ["orders.done"]})

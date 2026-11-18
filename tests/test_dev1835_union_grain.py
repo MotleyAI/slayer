@@ -21,7 +21,7 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1835_fixtures import (
     CITY_TOTAL,
-    ModelMeasure,
+    DatasetMetric,
     REGION_MONTH_TOTAL,
     UNION_RK_DIM,
     UNION_RK_RANK,
@@ -56,7 +56,7 @@ class TestUnionGrainBroadcast:
         query = q(
             dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         resp = await engine.execute(query)
         got = {
@@ -81,7 +81,7 @@ class TestUnionGrainBroadcast:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city", {"expression": UNION_RK_DIM, "name": "ur"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         resp = await engine.execute(query)
         got = {
@@ -106,7 +106,7 @@ class TestUnionGrainBroadcast:
         _, engine = exec_backend
         query = q(
             dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await engine.execute(query)

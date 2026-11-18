@@ -1,0 +1,40 @@
+{
+ "source": "tests/test_osi_export_relationships.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "orders",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   },
+   "new": {
+    "to": "orders",
+    "join_pairs": [
+     [
+      "status",
+      "status"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_dev2215_first_last_null_keys.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, updated_at, window='90d')",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, updated_at, window='90d')",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount, updated_at, window='90d')",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount, updated_at, window='90d')",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, updated_at, window='90d')",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, updated_at, window='90d')",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, updated_at, window='90d')",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, updated_at, window='90d')",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount, window='90d')",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(amount, window='90d')",
+    "name": "f"
+   }
+  }
+ ],
+ "skipped": []
+}

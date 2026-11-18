@@ -1,0 +1,66 @@
+{
+ "source": "tests/test_query_backed_declared_joins.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.credit)",
+    "name": "credit"
+   },
+   "new": {
+    "expression": "sum(customers.credit)",
+    "name": "credit"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 79,
+   "reason": "unclassifiable"
+  }
+ ]
+}

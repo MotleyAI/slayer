@@ -1,0 +1,184 @@
+{
+ "source": "tests/_dev1842_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(spend) / count(*)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(spend) / count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov_big",
+    "formula": "aov * 2"
+   },
+   "new": {
+    "name": "aov_big",
+    "expression": "aov * 2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "self_aov",
+    "formula": "sum(customers.spend) / count(customers.*)"
+   },
+   "new": {
+    "name": "self_aov",
+    "expression": "sum(customers.spend) / count(customers.*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "pop_total",
+    "formula": "sum(regions.pop)"
+   },
+   "new": {
+    "name": "pop_total",
+    "expression": "sum(regions.pop)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "gold_spend_total",
+    "formula": "sum(gold_spend)"
+   },
+   "new": {
+    "name": "gold_spend_total",
+    "expression": "sum(gold_spend)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "north_spend_total",
+    "formula": "sum(north_spend)"
+   },
+   "new": {
+    "name": "north_spend_total",
+    "expression": "sum(north_spend)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "vip_spend_total",
+    "formula": "sum(vip_spend)"
+   },
+   "new": {
+    "name": "vip_spend_total",
+    "expression": "sum(vip_spend)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "spend_by_tier",
+    "formula": "sum(spend, partition_by=tier)"
+   },
+   "new": {
+    "name": "spend_by_tier",
+    "expression": "sum(spend, partition_by=tier)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "spend_grand",
+    "formula": "sum(spend, partition_by=[])"
+   },
+   "new": {
+    "name": "spend_grand",
+    "expression": "sum(spend, partition_by=[])"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "spend_run",
+    "formula": "cumsum(sum(spend))"
+   },
+   "new": {
+    "name": "spend_run",
+    "expression": "cumsum(sum(spend))"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "order_total",
+    "formula": "sum(orders.amount)"
+   },
+   "new": {
+    "name": "order_total",
+    "expression": "sum(orders.amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "cyc_c",
+    "formula": "orders.cyc_o"
+   },
+   "new": {
+    "name": "cyc_c",
+    "expression": "orders.cyc_o"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "host_runs_dotted",
+    "formula": "cumsum(customers.aov)"
+   },
+   "new": {
+    "name": "host_runs_dotted",
+    "expression": "cumsum(customers.aov)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "host_mix",
+    "formula": "sum(amount) / customers.aov"
+   },
+   "new": {
+    "name": "host_mix",
+    "expression": "sum(amount) / customers.aov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "cyc_o",
+    "formula": "customers.cyc_c"
+   },
+   "new": {
+    "name": "cyc_o",
+    "expression": "customers.cyc_c"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  }
+ ]
+}

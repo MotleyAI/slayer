@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import JoinCardinality
-from slayer.core.errors import AmbiguousJoinPathError
-from slayer.core.keys import ColumnKey
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.cardinality.join_safety import (
+from slayer.core.enums import RelationshipCardinality
+from slayer.core.errors import AmbiguousRelationshipPathError
+from slayer.core.keys import FieldKey
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.engine.cardinality.relationship_safety import (
     _route_via_common_prefix,
     attributable_from_root,
     broadcast_reason,
@@ -21,18 +21,18 @@ from slayer.engine.cardinality.join_safety import (
 
 
 def _m(name, cols, joins=None):
-    return SlayerModel(name=name, data_source="ds", sql_table=name,
-                       columns=[Column(name=c) for c in cols], joins=joins or [])
+    return SlayerDataset(name=name, data_source="ds", sql_table=name,
+                       fields=[DatasetField(name=c) for c in cols], relationships=joins or [])
 
 
 def _unnamed_two_hop():
     """orders → customers → regions, both hops unnamed (many-to-one)."""
     orders = _m("orders", ["id", "customer_id", "status"], [
-        ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     regions = _m("regions", ["id", "pop"])
     return {m.name: m for m in (orders, customers, regions)}
 
@@ -40,11 +40,11 @@ def _unnamed_two_hop():
 def _named_two_hop():
     """orders → customers (unnamed) → regions (named ``home_region``)."""
     orders = _m("orders", ["id", "customer_id"], [
-        ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE, name="home_region")])
+        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE, name="home_region")])
     regions = _m("regions", ["id", "pop"])
     return {m.name: m for m in (orders, customers, regions)}
 
@@ -52,11 +52,11 @@ def _named_two_hop():
 def _one_to_one_chain():
     """orders → carts → sessions, both hops one-to-one (attributable reverse)."""
     orders = _m("orders", ["id", "cart_id"], [
-        ModelJoin(target_model="carts", join_pairs=[["cart_id", "id"]],
-                  cardinality=JoinCardinality.ONE_TO_ONE)])
+        DatasetRelationship(to="carts", join_pairs=[["cart_id", "id"]],
+                  cardinality=RelationshipCardinality.ONE_TO_ONE)])
     carts = _m("carts", ["id", "session_id"], [
-        ModelJoin(target_model="sessions", join_pairs=[["session_id", "id"]],
-                  cardinality=JoinCardinality.ONE_TO_ONE)])
+        DatasetRelationship(to="sessions", join_pairs=[["session_id", "id"]],
+                  cardinality=RelationshipCardinality.ONE_TO_ONE)])
     sessions = _m("sessions", ["id", "channel"])
     return {m.name: m for m in (orders, carts, sessions)}
 
@@ -65,13 +65,13 @@ def _ambiguous_reverse():
     """events → customers on TWO parallel unnamed edges (the reverse hop from a
     customers-side home is ambiguous), customers → regions single."""
     events = _m("events", ["id", "bill_cid", "ship_cid", "kind"], [
-        ModelJoin(target_model="customers", join_pairs=[["bill_cid", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE),
-        ModelJoin(target_model="customers", join_pairs=[["ship_cid", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="customers", join_pairs=[["bill_cid", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE),
+        DatasetRelationship(to="customers", join_pairs=[["ship_cid", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE)])
+        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE)])
     regions = _m("regions", ["id", "pop"])
     return {m.name: m for m in (events, customers, regions)}
 
@@ -80,26 +80,26 @@ class TestBackPath:
     def test_single_hop_is_byte_identical(self):
         M = _unnamed_two_hop()
         assert _route_via_common_prefix(host_name="orders", host_path=(),
-                          target_path=("customers",), models_by_name=M) == ("orders",)
+                          target_path=("customers",), datasets_by_name=M) == ("orders",)
 
     def test_unnamed_two_hop_reverses_both_source_models(self):
         M = _unnamed_two_hop()
         assert _route_via_common_prefix(host_name="orders", host_path=(),
                           target_path=("customers", "regions"),
-                          models_by_name=M) == ("customers", "orders")
+                          datasets_by_name=M) == ("customers", "orders")
 
     def test_named_hop_uses_the_edge_name_reversed(self):
         M = _named_two_hop()
         assert _route_via_common_prefix(host_name="orders", host_path=(),
                           target_path=("customers", "regions"),
-                          models_by_name=M) == ("home_region", "orders")
+                          datasets_by_name=M) == ("home_region", "orders")
 
     def test_ambiguous_forward_walk_falls_back_to_the_host(self):
         """When the forward walk finds no path (not ambiguity), fall back to the
         host name — today's single-token behaviour."""
         M = _unnamed_two_hop()
         assert _route_via_common_prefix(host_name="orders", host_path=(),
-                          target_path=("nonexistent",), models_by_name=M) == ("orders",)
+                          target_path=("nonexistent",), datasets_by_name=M) == ("orders",)
 
 
 class TestAttributabilityAcrossReversePath:
@@ -110,13 +110,13 @@ class TestAttributabilityAcrossReversePath:
         M = _one_to_one_chain()
         assert attributable_from_root(
             host_path=(), target_path=("carts", "sessions"),
-            root_model=M["sessions"], models_by_name=M, host_name="orders") is True
+            root_dataset=M["sessions"], datasets_by_name=M, host_name="orders") is True
 
     def test_fanning_reverse_chain_stays_unattributable(self):
         M = _unnamed_two_hop()
         assert attributable_from_root(
             host_path=(), target_path=("customers", "regions"),
-            root_model=M["regions"], models_by_name=M, host_name="orders") is False
+            root_dataset=M["regions"], datasets_by_name=M, host_name="orders") is False
 
 
 class TestRerootAcrossReversePath:
@@ -126,16 +126,16 @@ class TestRerootAcrossReversePath:
         hop)."""
         M = _unnamed_two_hop()
         rerooted = reroot_from_root(
-            ColumnKey(path=(), leaf="status"), target_path=("customers", "regions"),
-            root_model=M["regions"], models_by_name=M, host_name="orders")
-        assert rerooted == ColumnKey(path=("customers", "orders"), leaf="status")
+            FieldKey(path=(), leaf="status"), target_path=("customers", "regions"),
+            root_dataset=M["regions"], datasets_by_name=M, host_name="orders")
+        assert rerooted == FieldKey(path=("customers", "orders"), leaf="status")
 
     def test_single_hop_reroot_is_unchanged(self):
         M = _unnamed_two_hop()
         rerooted = reroot_from_root(
-            ColumnKey(path=(), leaf="status"), target_path=("customers",),
-            root_model=M["customers"], models_by_name=M, host_name="orders")
-        assert rerooted == ColumnKey(path=("orders",), leaf="status")
+            FieldKey(path=(), leaf="status"), target_path=("customers",),
+            root_dataset=M["customers"], datasets_by_name=M, host_name="orders")
+        assert rerooted == FieldKey(path=("orders",), leaf="status")
 
 
 class TestBroadcastReasonAcrossReversePath:
@@ -145,7 +145,7 @@ class TestBroadcastReasonAcrossReversePath:
         M = _unnamed_two_hop()
         reason = broadcast_reason(
             host_path=(), target_path=("customers", "regions"),
-            root_model=M["regions"], models_by_name=M, host_name="orders")
+            root_dataset=M["regions"], datasets_by_name=M, host_name="orders")
         assert "fanning" in reason or "unproven" in reason
         assert "unreachable" not in reason
 
@@ -156,8 +156,8 @@ class TestAmbiguousReverseHopFailsClosed:
         raises the ambiguous-hop error rather than silently guessing (today it is
         swallowed and a wrong single-token reroot is returned)."""
         M = _ambiguous_reverse()
-        key = ColumnKey(path=(), leaf="kind")
-        with pytest.raises(AmbiguousJoinPathError):
+        key = FieldKey(path=(), leaf="kind")
+        with pytest.raises(AmbiguousRelationshipPathError):
             reroot_from_root(
                 key, target_path=("customers", "regions"),
-                root_model=M["regions"], models_by_name=M, host_name="events")
+                root_dataset=M["regions"], datasets_by_name=M, host_name="events")

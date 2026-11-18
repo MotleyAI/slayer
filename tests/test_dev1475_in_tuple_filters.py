@@ -37,7 +37,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import DateOperandTypeError
 from slayer.core.keys import InKey, LiteralKey
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import (
     Cmp,
@@ -52,8 +52,8 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 import tempfile
-from slayer.core.keys import ColumnKey
-from slayer.core.scope import ModelScope
+from slayer.core.keys import FieldKey
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_filter
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
@@ -157,7 +157,7 @@ class TestParserGuards:
         )
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": "count(*)"}], "filters": ["status in 'a'"],
+            "population": "orders", "metrics": [{"expression": "count(*)"}], "filter": ["status in 'a'"],
         })
         with pytest.raises(DateOperandTypeError, match="status"):
             engine.execute_sync(query=query, dry_run=True)
@@ -173,9 +173,9 @@ class TestParserGuards:
         # the parser and constructs ``InKey(values=())`` directly, the
         # SQL generator must not emit invalid ``col IN ()``. The
         # field_validator on InKey raises at construction time.
-        column = ColumnKey(leaf="status")
+        column = FieldKey(leaf="status")
         with pytest.raises(ValueError, match="non-empty"):
-            InKey(column=column, values=())
+            InKey(field=column, values=())
 
 
 # ---------------------------------------------------------------------------
@@ -183,41 +183,41 @@ class TestParserGuards:
 # ---------------------------------------------------------------------------
 
 
-def _make_orders_with_status() -> SlayerModel:
-    return SlayerModel(
+def _make_orders_with_status() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _make_orders_joined_to_stores() -> tuple[SlayerModel, SlayerModel]:
-    stores = SlayerModel(
+def _make_orders_joined_to_stores() -> tuple[SlayerDataset, SlayerDataset]:
+    stores = SlayerDataset(
         name="stores",
         sql_table="stores",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
         ],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="store_id", sql="store_id", type=DataType.INT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="store_id", sql="store_id", datatype=DataType.INT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[
-            ModelJoin(
-                target_model="stores",
+        relationships=[
+            DatasetRelationship(
+                to="stores",
                 join_pairs=[["store_id", "id"]],
             ),
         ],
@@ -230,8 +230,8 @@ class TestBinder:
 
         model = _make_orders_with_status()
         parsed = parse_expr("status in ('completed', 'pending')")
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
-        scope = ModelScope(source_model=model)
+        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
+        scope = DatasetScope(population=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)
 
         assert isinstance(bound.value_key, InKey)
@@ -247,8 +247,8 @@ class TestBinder:
 
         model = _make_orders_with_status()
         parsed = parse_expr("status not in ('cancelled',)")
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
-        scope = ModelScope(source_model=model)
+        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
+        scope = DatasetScope(population=model)
         bound = bind_filter(parsed, scope=scope, bundle=bundle)
 
         assert isinstance(bound.value_key, InKey)
@@ -274,7 +274,7 @@ def _make_engine_with_orders() -> tuple:
     ds = DatasourceConfig(name="test", type="sqlite", database=":memory:")
     asyncio.run(storage.save_datasource(ds))
     model = _make_orders_with_status()
-    asyncio.run(storage.save_model(model))
+    asyncio.run(storage.save_dataset(model))
     return SlayerQueryEngine(storage=storage), model
 
 
@@ -286,8 +286,8 @@ def _make_engine_with_orders_and_stores() -> tuple:
     ds = DatasourceConfig(name="test", type="sqlite", database=":memory:")
     asyncio.run(storage.save_datasource(ds))
     orders, stores = _make_orders_joined_to_stores()
-    asyncio.run(storage.save_model(stores))
-    asyncio.run(storage.save_model(orders))
+    asyncio.run(storage.save_dataset(stores))
+    asyncio.run(storage.save_dataset(orders))
     return SlayerQueryEngine(storage=storage), orders, stores
 
 
@@ -295,9 +295,9 @@ class TestSQLEmission:
     def test_in_filter_emits_sql_in_clause(self):
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
-            "filters": ["status in ('completed', 'pending')"],
+            "population": "orders",
+            "metrics": [{"expression": "count(*)"}],
+            "filter": ["status in ('completed', 'pending')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
@@ -310,9 +310,9 @@ class TestSQLEmission:
     def test_not_in_emits_sql_not_in(self):
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
-            "filters": ["status not in ('cancelled', 'expired')"],
+            "population": "orders",
+            "metrics": [{"expression": "count(*)"}],
+            "filter": ["status not in ('cancelled', 'expired')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 
@@ -332,9 +332,9 @@ class TestSQLEmission:
         # predicate plus a numeric comparison must keep both predicates.
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
-            "filters": [
+            "population": "orders",
+            "metrics": [{"expression": "count(*)"}],
+            "filter": [
                 "status in ('completed', 'pending') and amount > 100",
             ],
         })
@@ -351,10 +351,10 @@ class TestSQLEmission:
     def test_in_filter_on_joined_column_emits_qualified(self):
         engine, orders, stores = _make_engine_with_orders_and_stores()
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
+            "population": "orders",
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": ["stores.name"],
-            "filters": ["stores.name in ('Brooklyn', 'Philadelphia')"],
+            "filter": ["stores.name in ('Brooklyn', 'Philadelphia')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
 

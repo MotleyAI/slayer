@@ -6,7 +6,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import (
     AnySlayerWarning,
@@ -70,18 +70,18 @@ class TestCarrier:
 
 
 @pytest.fixture
-async def engine(tmp_path, monkeypatch) -> SlayerQueryEngine:
+async def engine(tmp_path, monkeypatch: pytest.MonkeyPatch) -> SlayerQueryEngine:
     db_path = tmp_path / "orders.sqlite"
     with transaction(db_path) as conn:
         conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)")
         conn.executemany("INSERT INTO orders VALUES (?, ?)", [(1, "a"), (2, "b")])
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=str(db_path)))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ],
     ))
 
@@ -104,7 +104,7 @@ async def engine(tmp_path, monkeypatch) -> SlayerQueryEngine:
     return SlayerQueryEngine(storage=storage)
 
 
-_QUERY = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula="count(*)")])  # pyright: ignore[reportArgumentType]
+_QUERY = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])  # pyright: ignore[reportArgumentType]
 
 
 async def test_data_query_response_carries_skip(engine: SlayerQueryEngine) -> None:

@@ -8,7 +8,7 @@ from decimal import Decimal
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     Phase,
     TransformKey,
@@ -28,9 +28,9 @@ from slayer.sql.generator import _lower_positions
 
 _PRODUCER = Stage(kind=StageKind.PRODUCER)
 
-_SPEND = AggregateKey(source=ColumnKey(path=("customers",), leaf="spend"), agg="sum")
+_SPEND = AggregateKey(source=FieldKey(path=("customers",), leaf="spend"), agg="sum")
 _GT0 = LiteralKey(value=Decimal(0))
-_PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__spend_sum")
+_PLACEHOLDER = FieldKey(path=(), leaf="__regroup__0__spend_sum")
 
 
 def _plan_with_mask(
@@ -54,7 +54,7 @@ def _plan_with_mask(
         row_slots=list(extra_row_slots),
         combined_expression_slots=[*extra_combined_slots, slot],
         regroup_attach_plans=[attach],
-        masks=[MaskEntry(slot_id="s1", typing=MaskTyping.MEASURE, stratum=1)],
+        masks=[MaskEntry(slot_id="s1", typing=MaskTyping.METRIC, stratum=1)],
     )
 
 
@@ -64,7 +64,7 @@ def test_transform_wrapped_cross_model_predicate_is_not_combined() -> None:
     cumsum_slot = ValueSlot(
         id="t1", key=cumsum, declared_name="_cumsum_inner", hidden=True,
         phase=Phase.POST, stage=Stage(kind=StageKind.DERIVED, level=1),
-        needs_column=True,
+        needs_field=True,
     )
     # DERIVED-staged: the transform owns the predicate, so it lowers to the post
     # wrapper instead of the combined outer WHERE (regressed before the fix).

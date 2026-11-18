@@ -1,0 +1,38 @@
+{
+ "source": "tests/test_dev2137_list_functions.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 172,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 191,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  }
+ ]
+}

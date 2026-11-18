@@ -4,11 +4,11 @@ A key property of a **well-designed semantic layer DSL** is being **expressive e
 
 In this post I’ll discuss what I consider to be natural query operations specifically relating to time, and how they’re implemented in SLayer.
 
-First of all, consider **time dimensions**. They are different from most other dimensions in two important respects: firstly, a time column is **naturally ordered**; secondly, to usefully aggregate by it, you need to supply an additional parameter, the **aggregation granularity:** do you want **daily, weekly, monthly etc buckets**? 
+First of all, consider **time dimensions**. They are different from most other dimensions in two important respects: firstly, a time field is **naturally ordered**; secondly, to usefully aggregate by it, you need to supply an additional parameter, the **aggregation granularity:** do you want **daily, weekly, monthly etc buckets**? 
 
 From this we can already see some natural semantics that are special to queries with a time dimension. 
 
-The first one is a **time-specific aggregation, “last”**. This works much like max or min, but orders by a time column instead of by the value itself. 
+The first one is a **time-specific aggregation, “last”**. This works much like max or min, but orders by a time field instead of by the value itself. 
 
 The next one is the **time shift: “same values, but for last year”**. This must be implemented as a sub-query that shifts the values of the time dimension by the desired amount before applying the granularity (after all, the shift value must not be an integer multiple of the granularity used, for example it’s perfectly valid to have a 3-day time shift while querying with weekly granularity). So we’re talking about a mildly intricate subquery to implement a semantically simple concept - clear usecase for a semantic layer, **implemented in SLayer as a time_shift transform**. 
 
@@ -16,7 +16,7 @@ You may think that at least in the case where the shift is an integer multiple o
 
 So now in the context of a query with a known time dimension and known granularity we have **a natural “previous” concept**. This means we also have a natural **“change”** concept, which in SLayer we can express as a **simple query-time change(x) transform** that needs no additional arguments, and just returns the change of its argument from one period (defined by the time dimension and granularity of the query) to the next one. 
 
-Here we see the power of dynamic formulas - compare that e.g. to the Cube.js syntax that would require us to define the time-shifted version as a separate pre-defined measure in a cube, that hard-wires the time dimension and shift amount, and then yet another pre-defined measure that uses that to calculate the “change” quantity we want (now have fun pre-defining these measures for all needed time dimension/granularity combinations, and once you’ve done so have even more fun squishing the resulting cube model into agent context). 
+Here we see the power of dynamic expressions - compare that e.g. to the Cube.js syntax that would require us to define the time-shifted version as a separate pre-defined measure in a cube, that hard-wires the time dimension and shift amount, and then yet another pre-defined measure that uses that to calculate the “change” quantity we want (now have fun pre-defining these measures for all needed time dimension/granularity combinations, and once you’ve done so have even more fun squishing the resulting cube model into agent context). 
 
 The final time-related transform currently available in SLayer is **last()**. This is different from the previous transforms because taking the last value (for every combination of other dimensions in the query) is guaranteed to change the cardinality by **collapsing the time dimension**, so again needs a subquery that can be joined to the rest of the query by the values of the remaining dimensions. 
 
@@ -28,24 +28,24 @@ Here is a complete example query on the demo for “monthly revenue for the last
 
 ```json
 {
-  "source_model": "orders",
-  "measures": [
+  "population": "orders",
+  "metrics": [
     "sum(order_total)",
     "time_shift(sum(order_total), -1, 'year')"
   ],
   "dimensions": ["stores.regions.name"],
   "time_dimensions": [{
-    "dimension": "ordered_at",
+    "field": "ordered_at",
     "granularity": "month",
     "date_range": "last 12 months"
   }],
-  "filters": ["last(cumsum(sum(order_total))) > 10000"]
+  "filter": ["last(cumsum(sum(order_total))) > 10000"]
 }
 ```
 
 What would it take to define this in the semantic layer you’re currently using?
 
-Time *bounds* are natural too: nobody should compute dates by hand to ask for "last quarter". A `date_range` or filter takes periods and relative tokens directly — `"date_range": "last 3 months"`, `"date_range": ["2025-Q1", null]`, `"filters": ["created_at in 'this year'", "date_trunc('month', shipped_at) = date_trunc('month', created_at)"]` — each a half-open range resolved once per query, so trailing windows and `time_shift` still reach back past it; see [Time](../../concepts/time.md) for the full grammar.
+Time *bounds* are natural too: nobody should compute dates by hand to ask for "last quarter". A `date_range` or filter takes periods and relative tokens directly — `"date_range": "last 3 months"`, `"date_range": ["2025-Q1", null]`, `"filter": ["created_at in 'this year'", "date_trunc('month', shipped_at) = date_trunc('month', created_at)"]` — each a half-open range resolved once per query, so trailing windows and `time_shift` still reach back past it; see [Time](../../concepts/time.md) for the full grammar.
 
 ---
 

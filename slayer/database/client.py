@@ -13,7 +13,7 @@ import weakref
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 
 import sqlalchemy as sa
 import sqlalchemy.exc
@@ -299,14 +299,14 @@ def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in result.fetchall()]
 
 
-def sql_model_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
+def sql_dataset_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
     """The zero-row trial of read-only model ``sql``; anything else raises."""
     inner = parse_query(sql=sql, target_dialect=dialect)
     return exp.select("*").from_(inner.subquery("_sd_validate")).where(
         exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
 
 
-def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
+def classify_dataset_sql(sql: str, *, dialect: str | None = None) -> str:
     """'unparseable', 'modifying' (anything not a proven read-only query), or
     'read_only'. Parses like the generator (prequote + parse_one), so SQL it
     rejects is non-functional there too — rejected with no DB round-trip."""
@@ -451,7 +451,7 @@ async def _set_timeout_async(
 def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
     transaction_local: bool = False,
-) -> Iterator[list[StatementTimeoutSkippedWarning]]:
+) -> Generator[list[StatementTimeoutSkippedWarning], None, None]:
     """Put the dialect's timeout on ``conn`` for the block (a session statement once per value); yields the skips."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
@@ -471,7 +471,7 @@ def _statement_timeout(
 async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
     transaction_local: bool = False,
-) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
+) -> AsyncGenerator[list[StatementTimeoutSkippedWarning], None]:
     """Async sibling of ``_statement_timeout``."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(
         await _server_profile_async(conn, engine=engine, dialect=dialect),

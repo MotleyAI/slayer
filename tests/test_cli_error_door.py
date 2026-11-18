@@ -41,7 +41,7 @@ def _raise(exc: BaseException):
 class TestOneLineErrors:
     def test_failing_query_prints_one_line(self, shop: str) -> None:
         line = _assert_one_error_line(run_cli_in_process(["query", README_QUERY, "--storage", shop]))
-        assert "stores.name reads stores, which no join path reaches" in line
+        assert "stores.name reads stores, which no relationship path reaches" in line
 
     def test_driver_error_names_class_message_and_debug(self, shop: str, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(SlayerQueryEngine, "execute_sync", _raise(sqlite3.OperationalError("database is locked")))

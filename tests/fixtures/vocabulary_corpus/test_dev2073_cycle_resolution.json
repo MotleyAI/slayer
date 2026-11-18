@@ -1,0 +1,17 @@
+{
+ "source": "tests/test_dev2073_cycle_resolution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(z.amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(z.amount)",
+    "name": "s"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,82 @@
+{
+ "source": "tests/test_dev2102_edge_merge.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(orders.id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(orders.id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "name": "home",
+    "join_pairs": [
+     [
+      "id",
+      "region_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "name": "home",
+    "join_pairs": [
+     [
+      "id",
+      "region_id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "spent"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "spent"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  }
+ ]
+}

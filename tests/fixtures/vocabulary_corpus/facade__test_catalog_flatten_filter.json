@@ -1,0 +1,219 @@
+{
+ "source": "tests/facade/test_catalog_flatten_filter.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_count",
+    "formula": "COUNT(DISTINCT {value})"
+   },
+   "new": {
+    "name": "my_count",
+    "expression": "COUNT(DISTINCT {value})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 149,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 215,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 216,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 328,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 329,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 336,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 340,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 403,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 412,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 413,
+   "reason": "not fully literal"
+  }
+ ]
+}

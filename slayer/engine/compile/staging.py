@@ -1,8 +1,8 @@
 """The one materialisation-staging pass (DEV-1800 D3).
 
 Assigns every ``ValueSlot`` in a plan exactly one ``Stage`` (which relation in
-the emitted pipeline it materialises in), a ``needs_column`` flag (must it be
-projected as a column for a later stage / consumer), and — for a transform —
+the emitted pipeline it materialises in), a ``needs_field`` flag (must it be
+projected as a field for a later stage / consumer), and — for a transform —
 its ``series`` regime. Producer bodies are staged by their own compilation,
 so this pass never recurses into them; it reads the
 attach plans only to classify placeholders and join-back keys.
@@ -18,8 +18,8 @@ from typing import Dict, List, Optional, Set, Tuple
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.keys import (
     SLOT_COMPOSITE_KINDS,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     AggregateKey,
     LiteralKey,
     TimeTruncKey,
@@ -134,7 +134,7 @@ class _SlotStager:
             return self._aggregate_stage(key)
         if is_placeholder(key):
             return self._placeholder_stage(key)
-        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey, LiteralKey)):
+        if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey, LiteralKey)):
             return Stage(kind=StageKind.BASE)
         if isinstance(key, TransformKey):
             return Stage(kind=StageKind.DERIVED, level=1 + self._max_transform_level(key))
@@ -159,8 +159,8 @@ class _SlotStager:
         # the same value is also combined-attached (dual role): _base is the
         # earliest relation it materialises in. A combined-only placeholder is
         # joined at the combined SELECT (PRODUCER). An externally-provided
-        # carrier column (answered by the enclosing producer, absent from
-        # this plan's own attaches) is likewise a base column (BASE).
+        # carrier field (answered by the enclosing producer, absent from
+        # this plan's own attaches) is likewise a base field (BASE).
         if key in self._row_ph:
             return Stage(kind=StageKind.BASE)
         if key in self._combined_ph:
@@ -190,7 +190,7 @@ def stage_slots(
     projection: List[SlotId],
     grain: Optional[List[SlotId]],
 ) -> Tuple[List[ValueSlot], List[ValueSlot], List[ValueSlot]]:
-    """Return the three slot lists with ``stage`` / ``needs_column`` / ``series``
+    """Return the three slot lists with ``stage`` / ``needs_field`` / ``series``
     assigned. Producer bodies are staged separately; this pass classifies only
     this plan's own slots."""
     all_slots = [*row_slots, *aggregate_slots, *combined_expression_slots]
@@ -204,7 +204,7 @@ def stage_slots(
     )
     stages = {s.id: stager.stage_of(s) for s in all_slots}
 
-    needs_column = _compute_needs_column(
+    needs_field = _compute_needs_field(
         all_slots=all_slots, by_key=by_key, by_id=by_id, stages=stages,
         masks=masks, order=order, projection=projection,
         attach_plans=regroup_attach_plans,
@@ -212,9 +212,9 @@ def stage_slots(
     )
 
     return (
-        _assign(row_slots, stages=stages, needs_column=needs_column, to_original=to_original),
-        _assign(aggregate_slots, stages=stages, needs_column=needs_column, to_original=to_original),
-        _assign(combined_expression_slots, stages=stages, needs_column=needs_column,
+        _assign(row_slots, stages=stages, needs_field=needs_field, to_original=to_original),
+        _assign(aggregate_slots, stages=stages, needs_field=needs_field, to_original=to_original),
+        _assign(combined_expression_slots, stages=stages, needs_field=needs_field,
                 to_original=to_original),
     )
 
@@ -223,7 +223,7 @@ def _assign(
     slots: List[ValueSlot],
     *,
     stages: Dict[SlotId, Stage],
-    needs_column: Set[SlotId],
+    needs_field: Set[SlotId],
     to_original: Dict[ValueKey, ValueKey],
 ) -> List[ValueSlot]:
     out: List[ValueSlot] = []
@@ -234,7 +234,7 @@ def _assign(
         )
         out.append(s.model_copy(update={
             "stage": stages[s.id],
-            "needs_column": s.id in needs_column,
+            "needs_field": s.id in needs_field,
             "series": series,
         }))
     return out
@@ -246,7 +246,7 @@ def _direct_deps(slot: ValueSlot, *, by_key: Dict[ValueKey, ValueSlot]) -> List[
     materialised value is referenced as a whole, not through its internals
     (F7: a computed dimension resolves by its grouped alias). An aggregate's
     internals are its own business (like ``_iter_slot_deps``), so its source
-    columns are never consumer deps."""
+    fields are never consumer deps."""
     if isinstance(slot.key, AggregateKey):
         return []
     out: List[ValueSlot] = []
@@ -271,7 +271,7 @@ def _later_stage_reads(
     by_key: Dict[ValueKey, ValueSlot],
     stages: Dict[SlotId, Stage],
 ) -> Set[SlotId]:
-    """A value read by a strictly-later stage must be a column of its own relation."""
+    """A value read by a strictly-later stage must be a field of its own relation."""
     needs: Set[SlotId] = set()
     for slot in all_slots:
         for dep in _direct_deps(slot, by_key=by_key):
@@ -280,18 +280,18 @@ def _later_stage_reads(
     return needs
 
 
-def _measure_mask_deps(
+def _metric_mask_deps(
     masks: List[MaskEntry],
     *,
     by_id: Dict[SlotId, ValueSlot],
     by_key: Dict[ValueKey, ValueSlot],
 ) -> Set[SlotId]:
-    """A measure-typed mask renders in HAVING, which reads its aggregates by base
+    """A metric-typed mask renders in HAVING, which reads its aggregates by base
     alias, so those deps need columns. A field-typed mask renders inline in
-    WHERE — its column deps are referenced directly, never projected."""
+    WHERE — its field deps are referenced directly, never projected."""
     needs: Set[SlotId] = set()
     for mask in masks:
-        if mask.typing is not MaskTyping.MEASURE:
+        if mask.typing is not MaskTyping.METRIC:
             continue
         slot = by_id.get(mask.slot_id)
         if slot is None:
@@ -323,7 +323,7 @@ def _grouped_order_targets(
     *,
     stages: Dict[SlotId, Stage],
 ) -> Set[SlotId]:
-    """Order targets in a grouped query resolve to a hidden column of the relation
+    """Order targets in a grouped query resolve to a hidden field of the relation
     their stage names (BASE / DERIVED); a PRODUCER / COMBINED value renders
     inline in the ORDER BY."""
     needs: Set[SlotId] = set()
@@ -334,7 +334,7 @@ def _grouped_order_targets(
     return needs
 
 
-def _compute_needs_column(
+def _compute_needs_field(
     *,
     all_slots: List[ValueSlot],
     by_key: Dict[ValueKey, ValueSlot],
@@ -346,12 +346,12 @@ def _compute_needs_column(
     attach_plans: List[RegroupAttachPlan],
     grain: Optional[List[SlotId]],
 ) -> Set[SlotId]:
-    """Slot ids that must be projected as a column of their own relation (D4)."""
+    """Slot ids that must be projected as a field of their own relation (D4)."""
     needs: Set[SlotId] = set(projection)
     needs |= _later_stage_reads(all_slots, by_key=by_key, stages=stages)
-    needs |= _measure_mask_deps(masks, by_id=by_id, by_key=by_key)
+    needs |= _metric_mask_deps(masks, by_id=by_id, by_key=by_key)
     needs |= _attach_join_keys(attach_plans, by_key=by_key)
-    # Raw rows: row-column order targets resolve inline via split emission.
+    # Raw rows: row-field order targets resolve inline via split emission.
     if grain is not None:
         needs |= _grouped_order_targets(order, stages=stages)
     return needs

@@ -22,7 +22,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._dev1840_fixtures import (
     _seed_duckdb,
     _seed_sqlite,
-    dev1840_models,
+    dev1840_datasets,
     rows_by,
 )
 from tests._dev1910_fixtures import _append_order, make_null_status_engine
@@ -71,7 +71,7 @@ async def make_vm_engine(request) -> AsyncIterator[SlayerQueryEngine]:
         pytest.importorskip("duckdb")
     seed = _seed_vm_duckdb if dialect == "duckdb" else _seed_vm_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1840_models(),
+        dialect=dialect, seed=seed, datasets=dev1840_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -91,19 +91,19 @@ def q(payload: Dict[str, Any]) -> SlayerQuery:
     return SlayerQuery.model_validate(payload)
 
 
-def cells(resp, dim: str, measure: str) -> Dict[Any, Any]:
+def cells(resp, dim: str, metric: str) -> Dict[Any, Any]:
     """``{dimension value: measure value}``; ``None`` keys the NULL cell."""
-    return {k[0]: v[measure] for k, v in rows_by(resp, dim).items()}
+    return {k[0]: v[metric] for k, v in rows_by(resp, dim).items()}
 
 
 async def materialise(engine: SlayerQueryEngine, *, name: str,
                       payload: Dict[str, Any]) -> Dict[str, Dict[Any, Any]]:
     """Save ``payload`` as a query-backed model; return ``{measure: {grain value: value}}``."""
-    model = await engine.create_model_from_query(q(payload), name)
-    grain = model.columns[0].name
-    measures = [m["name"] for m in payload["measures"]]
+    model = await engine.create_dataset_from_query(q(payload), name)
+    grain = model.fields[0].name
+    measures = [m["name"] for m in payload["metrics"]]
     resp = await engine.execute(q({
-        "source_model": name, "dimensions": [grain, *measures]}))
+        "population": name, "dimensions": [grain, *measures]}))
     return {m: cells(resp, f"{name}.{grain}", f"{name}.{m}") for m in measures}
 
 

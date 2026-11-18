@@ -21,15 +21,15 @@ import pytest
 import yaml
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
@@ -118,90 +118,90 @@ def _seed(db_path: str, *, dialect: str) -> None:
             cur.executemany(stmt, data)
 
 
-def _staff_join() -> ModelJoin:
-    return ModelJoin(target_model="hr", join_pairs=[["staff_id", "id"]], cardinality=JoinCardinality.MANY_TO_ONE)
+def _staff_join() -> DatasetRelationship:
+    return DatasetRelationship(to="hr", join_pairs=[["staff_id", "id"]], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
-def _pay(name: str, **extra) -> SlayerModel:
+def _pay(name: str, **extra) -> SlayerDataset:
     columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="staff_id", type=DataType.INT),
-        Column(name="gross", type=DataType.DOUBLE),
-        *extra.pop("columns", []),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="staff_id", datatype=DataType.INT),
+        DatasetField(name="gross", datatype=DataType.DOUBLE),
+        *extra.pop("fields", []),
     ]
-    return SlayerModel(name=name, sql_table="pay_runs", data_source=DS, columns=columns, joins=[_staff_join()], **extra)
+    return SlayerDataset(name=name, sql_table="pay_runs", data_source=DS, fields=columns, relationships=[_staff_join()], **extra)
 
 
-def table_models() -> list[SlayerModel]:
+def table_datasets() -> list[SlayerDataset]:
     """The table-backed models (saved unvalidated, in this order)."""
-    hr_dept = Column(name="dept_label", type=DataType.TEXT, sql="hr.dept")
-    masked = Column(name="gross_eng", type=DataType.DOUBLE, sql="gross", filter="hr.dept = 'eng'")
-    hr_total = ModelMeasure(name="hr_salary_total", formula="sum(hr.salary)")
+    hr_dept = DatasetField(name="dept_label", datatype=DataType.TEXT, sql="hr.dept")
+    masked = DatasetField(name="gross_eng", datatype=DataType.DOUBLE, sql="gross", filter="hr.dept = 'eng'")
+    hr_total = DatasetMetric(name="hr_salary_total", expression="sum(hr.salary)")
     return [
-        SlayerModel(
+        SlayerDataset(
             name="pub", sql_table="pub_items", data_source=DS, description="public catalogue items",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="label", type=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="label", datatype=DataType.TEXT)],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="hr", sql_table="hr_staff", data_source=DS, access_tags=["hr"], description="payroll staff roster",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="dept", type=DataType.TEXT),
-                Column(name="salary", type=DataType.DOUBLE),
-                Column(name="hired_at", type=DataType.DATE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="dept", datatype=DataType.TEXT),
+                DatasetField(name="salary", datatype=DataType.DOUBLE),
+                DatasetField(name="hired_at", datatype=DataType.DATE),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="fin", sql_table="fin_ledger", data_source=DS, access_tags=["fin"], description="finance ledger entries",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="staff_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="staff_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[_staff_join()],
+            relationships=[_staff_join()],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="pub_link", sql_table="pub_items", data_source=DS,
-            columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="label", type=DataType.TEXT)],
-            joins=[ModelJoin(
-                target_model="hr", name=PRUNED_EDGE, join_pairs=[["id", "id"]], cardinality=JoinCardinality.ONE_TO_ONE,
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="label", datatype=DataType.TEXT)],
+            relationships=[DatasetRelationship(
+                to="hr", name=PRUNED_EDGE, join_pairs=[["id", "id"]], cardinality=RelationshipCardinality.ONE_TO_ONE,
             )],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="dangling", sql_table="pub_items", data_source=DS,
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-            joins=[ModelJoin(target_model="ghost", join_pairs=[["id", "id"]])],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            relationships=[DatasetRelationship(to="ghost", join_pairs=[["id", "id"]])],
         ),
-        _pay("pay", columns=[hr_dept], measures=[hr_total], filters=["hr.dept IS NOT NULL"]),
-        _pay("pay_col", columns=[hr_dept]),
-        _pay("pay_colfilter", columns=[masked]),
+        _pay("pay", fields=[hr_dept], metrics=[hr_total], filters=["hr.dept IS NOT NULL"]),
+        _pay("pay_col", fields=[hr_dept]),
+        _pay("pay_colfilter", fields=[masked]),
         _pay("pay_filter", filters=["hr.dept = 'eng'"]),
-        _pay("pay_measure", measures=[hr_total]),
+        _pay("pay_measure", metrics=[hr_total]),
         _pay("pay_agg", aggregations=[Aggregation(
-            name="weighted", formula="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="hr.salary")],
+            name="weighted", expression="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="hr.salary")],
         )]),
     ]
 
 
-def query_backed_models() -> list[SlayerModel]:
+def query_backed_datasets() -> list[SlayerDataset]:
     """The query-backed models (saved through the engine, in dependency order)."""
-    def qb(name: str, *stages: dict) -> SlayerModel:
-        return SlayerModel(name=name, source_queries=[SlayerQuery.model_validate(s) for s in stages])
+    def qb(name: str, *stages: dict) -> SlayerDataset:
+        return SlayerDataset(name=name, source_queries=[SlayerQuery.model_validate(s) for s in stages])
 
     return [
-        qb("hr_summary", {"source_model": "hr", "dimensions": ["dept"], "measures": [{"formula": "sum(salary)", "name": "total"}]}),
-        qb("hr_rollup", {"source_model": "hr_summary", "measures": [{"formula": "sum(total)", "name": "grand"}]}),
-        qb("fin_hop", {"source_model": "fin", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(amount)", "name": "amt"}]}),
+        qb("hr_summary", {"population": "hr", "dimensions": ["dept"], "metrics": [{"expression": "sum(salary)", "name": "total"}]}),
+        qb("hr_rollup", {"population": "hr_summary", "metrics": [{"expression": "sum(total)", "name": "grand"}]}),
+        qb("fin_hop", {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(amount)", "name": "amt"}]}),
         qb("fin_ordered", {
-            "source_model": "fin", "dimensions": ["id"], "measures": [{"formula": "sum(amount)", "name": "amt"}],
-            "order": [{"column": "hr.salary", "direction": "desc"}],
+            "population": "fin", "dimensions": ["id"], "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "order": [{"field": "hr.salary", "direction": "desc"}],
         }),
-        qb("fin_report", {"source_model": "fin", "measures": [{"formula": "sum(amount)", "name": "amt"}]}),
+        qb("fin_report", {"population": "fin", "metrics": [{"expression": "sum(amount)", "name": "amt"}]}),
     ]
 
 
-MIXED_QUERY = {"source_model": "fin", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(amount)"}]}
-QHOP_QUERY = {"source_model": "pay", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(gross)"}]}
+MIXED_QUERY = {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(amount)"}]}
+QHOP_QUERY = {"population": "pay", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(gross)"}]}
 
 
 async def _save_memories(storage: StorageBackend) -> None:
@@ -223,10 +223,10 @@ async def _save_memories(storage: StorageBackend) -> None:
 #: canonical id -> entity kind, one embedding row each.
 EMBEDDED: dict[str, EntityKind] = {
     DS: "datasource",
-    f"{DS}.pub": "model", f"{DS}.pub.label": "column",
-    f"{DS}.hr": "model", f"{DS}.hr.dept": "column", f"{DS}.hr.salary": "column",
-    f"{DS}.hr_summary": "model", f"{DS}.pay": "model", f"{DS}.pay.hr_salary_total": "measure",
-    f"{DS}.fin": "model", f"{DS}.fin.amount": "column",
+    f"{DS}.pub": "dataset", f"{DS}.pub.label": "field",
+    f"{DS}.hr": "dataset", f"{DS}.hr.dept": "field", f"{DS}.hr.salary": "field",
+    f"{DS}.hr_summary": "dataset", f"{DS}.pay": "dataset", f"{DS}.pay.hr_salary_total": "metric",
+    f"{DS}.fin": "dataset", f"{DS}.fin.amount": "field",
     f"memory:{HR_ONLY_MEMORY}": "memory", f"memory:{MIXED_MEMORY}": "memory",
     f"memory:{QUERY_HOP_MEMORY}": "memory", f"memory:{FIN_MEMORY}": "memory",
 }
@@ -285,12 +285,12 @@ async def access_store(*, backend: str, dialect: str, unloadable: bool = True) -
         storage = make_storage(backend=backend, base=tmp)
         ds = DatasourceConfig(name=DS, type=dialect, database=db_path)
         await storage.save_datasource(ds)
-        for model in table_models():
-            await storage.save_model(model, _validate=False)
+        for model in table_datasets():
+            await storage.save_dataset(model, _validate=False)
         engine = SlayerQueryEngine(storage=storage)
         try:
-            for model in query_backed_models():
-                await engine.save_model(model)
+            for model in query_backed_datasets():
+                await engine.save_dataset(model)
             await _save_memories(storage)
             await _save_embeddings(storage)
             if unloadable:
@@ -306,15 +306,15 @@ async def reference_store(*, backend: str, dialect: str) -> AsyncGenerator[Acces
     """What a ``{fin}`` caller sees, built for real: hidden models deleted and the joins into them dropped."""
     async with access_store(backend=backend, dialect=dialect, unloadable=False) as s:
         for name in sorted(HIDDEN_FROM_FIN):
-            await s.storage.delete_model(name, data_source=DS)
+            await s.storage.delete_dataset(name, data_source=DS)
         for name in ("fin", "pub_link"):
             model = await must_get(s.storage, name)
-            await s.storage.save_model(model.model_copy(update={"joins": []}), _validate=False)
+            await s.storage.save_dataset(model.model_copy(update={"relationships": []}), _validate=False)
         yield s
 
 
-async def must_get(storage: StorageBackend, name: str, data_source: str = DS) -> SlayerModel:
-    model = await storage.get_model(name, data_source=data_source)
+async def must_get(storage: StorageBackend, name: str, data_source: str = DS) -> SlayerDataset:
+    model = await storage.get_dataset(name, data_source=data_source)
     assert model is not None, f"{data_source}.{name} is absent"
     return model
 
@@ -337,6 +337,6 @@ async def outcome(awaitable) -> tuple[str, str]:
         return type(exc).__name__, str(exc)
 
 
-def model_ids(identities) -> set[str]:
+def dataset_ids(identities) -> set[str]:
     """``{name}`` of the ``DS`` identities in ``identities``."""
     return {name for ds, name in identities if ds == DS}

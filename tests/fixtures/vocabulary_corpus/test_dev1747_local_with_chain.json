@@ -1,0 +1,90 @@
+{
+ "source": "tests/test_dev1747_local_with_chain.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "ch"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "ch"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 229,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  }
+ ]
+}

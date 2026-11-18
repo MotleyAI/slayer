@@ -1,4 +1,4 @@
-"""Imported column types: the database's first, then the source's declared type, then the aggregation's."""
+"""Imported field types: the database's first, then the source's declared type, then the aggregation's."""
 
 from __future__ import annotations
 
@@ -61,21 +61,21 @@ def contradicts(declared: Typed, live: Typed) -> bool:
 
 
 def offline_note(reason: str) -> str:
-    return f"Column types were not checked against the database ({reason}); re-import against a reachable " \
+    return f"Field types were not checked against the database ({reason}); re-import against a reachable " \
            f"datasource to type them from the live schema."
 
 
-def untyped_message(measure: str, *, agg: str, column: str) -> str:
-    return (f"Measure {measure!r} was dropped: {agg} needs the type of {column!r}, which no datasource or "
+def untyped_message(metric: str, *, agg: str, field: str) -> str:
+    return (f"Metric {metric!r} was dropped: {agg} needs the type of {field!r}, which no datasource or "
             f"declaration gives; re-import against a reachable datasource or declare the type.")
 
 
-def list_refusal(measure: str, *, agg: str, column: str) -> str:
-    return f"Measure {measure!r} was dropped: {agg} over the list (ARRAY) column {column!r} is not supported."
+def list_refusal(metric: str, *, agg: str, field: str) -> str:
+    return f"Metric {metric!r} was dropped: {agg} over the list (ARRAY) field {field!r} is not supported."
 
 
-def contradiction_note(column: str, *, declared: Typed, live: Typed) -> str:
-    return (f"Column {column!r} declares {_shown(declared)} but the live column is {_shown(live)}; using "
+def contradiction_note(field: str, *, declared: Typed, live: Typed) -> str:
+    return (f"Field {field!r} declares {_shown(declared)} but the live column is {_shown(live)}; using "
             f"{_shown(live)}.")
 
 
@@ -180,7 +180,7 @@ class LiveSource:
         """Whether ``ident`` names an output label a query source holds more than once."""
         return self._label_key(ident) in self._duplicated
 
-    def column(self, physical: exp.Identifier | str) -> Typed | None:
+    def field(self, physical: exp.Identifier | str) -> Typed | None:
         """The live type of the one physical column ``physical`` names; ``None`` for none or several."""
         found = self._index.live_names(exp.to_identifier(physical) if isinstance(physical, str) else physical)
         return self._by_exact[found[0]] if len(found) == 1 else None

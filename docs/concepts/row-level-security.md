@@ -4,7 +4,7 @@ SLayer can scope every query a session runs to a single tenant, so an agent
 only ever sees that tenant's rows — across joins, CTEs, sql-mode sub-queries,
 query-backed stages, and profiling/sample data. The scoping is **immutable
 engine state**: the agent cannot read it, override it, or disable it through
-any query field. Under a policy, column samples are profiled and cached per engine, never read from or written to shared model storage.
+any query field. Under a policy, field samples are profiled and cached per engine, never read from or written to shared dataset storage.
 
 A policy carries exactly one **ruleset**, one of two kinds:
 
@@ -37,13 +37,13 @@ policy = SessionPolicy(
 engine = SlayerQueryEngine(storage=storage, policy=policy)
 ```
 
-Every query the engine runs is now tenant-scoped, with no model or query
+Every query the engine runs is now tenant-scoped, with no dataset or query
 changes:
 
 ```python
 resp = await engine.execute({
-    "source_model": "orders",
-    "measures": [{"formula": "count(*)"}],
+    "population": "orders",
+    "metrics": [{"expression": "count(*)"}],
 })
 # -> count of THIS org's orders only; a join to customers/regions is
 #    org-scoped on every side too.
@@ -55,7 +55,7 @@ The same `policy=` argument works on the local-engine client:
 from slayer.client import SlayerClient
 
 client = SlayerClient(storage=storage, policy=policy)
-df = client.query_df({"source_model": "orders", "measures": [{"formula": "count(*)"}]})
+df = client.query_df({"population": "orders", "metrics": [{"expression": "count(*)"}]})
 ```
 
 `ruleset` is **required** — the "no filtering" case is simply `policy=None`
@@ -137,9 +137,9 @@ policy = SessionPolicy(ruleset=JoinFilterRuleset(
 
 Each table is scoped as follows:
 
-- **The anchor** (`customers`) is filtered directly, exactly like a column
+- **The anchor** (`customers`) is filtered directly, exactly like a field
   ruleset: `WHERE organization_uuid = '7ef3...'`.
-- **A join target** (`orders`, `line_items`) is scoped by a correlated
+- **A relationship target** (`orders`, `line_items`) is scoped by a correlated
   `EXISTS` semi-join along its `join_path` — cardinality-safe (it never
   multiplies rows) and `LEFT JOIN`-preserving. `orders` becomes:
 
@@ -153,14 +153,14 @@ Each table is scoped as follows:
   ```
 
 - **A whitelisted table** (`exchange_rates`) is emitted untouched.
-- **Anything else** — a table that is not the anchor, not a join target, and
+- **Anything else** — a table that is not the anchor, not a relationship target, and
   not whitelisted — **fails closed** (raises), so a table the operator forgot
   can never leak.
 
 ### The join path
 
 Each hop is a string `"from_table.from_column = to_table.to_column"` in
-**physical DB table/column names** (not model names; tables optionally
+**physical DB table/column names** (not dataset names; tables optionally
 schema/catalog-qualified). A path connects the target table to the anchor at
 its two endpoints, and may be written in **either** direction — target-first or
 anchor-first:
@@ -193,7 +193,7 @@ against the database. So:
   (`public.orders`, `public.customers`, …). A mismatched path can only
   over-filter / mis-scope (the terminal tenant predicate is always emitted) —
   it cannot mass-leak — but it can silently return the wrong rows.
-- The anchor's `column` is trusted to exist; a typo surfaces as a database
+- The anchor's `field` is trusted to exist; a typo surfaces as a database
   error at execution, not a silent pass.
 - Intermediate hop tables are part of the enforcement path, not agent input,
   so they are not classified against the whitelist. The `whitelist` governs
@@ -234,17 +234,17 @@ returns exactly the SQL that would execute, including the wraps.
 ## Scope and limits
 
 - The policy is **engine-global** — it applies to whatever datasource a query
-  targets. Per-model / per-datasource scoping is a future addition.
+  targets. Per-dataset / per-datasource scoping is a future addition.
 - It is enforced in the **local engine** only. Passing `policy=` to a
   `SlayerClient` in HTTP mode raises — server-side policy is not yet available.
-- Join paths are **explicit** (authored in the policy), never auto-discovered
-  from model joins or BFS-resolved. Alternate-column-per-table overrides,
+- Relationship paths are **explicit** (authored in the policy), never auto-discovered
+  from dataset relationships or BFS-resolved. Alternate-column-per-table overrides,
   composite-key hops (one column pair per hop), auto/BFS join resolution,
   multiple join paths to one target (diamond), and a multi-column
   `ColumnFilterRuleset` are out of scope.
 - The wrapper preserves each table's original alias (or the bare table name if
   no alias was written). SLayer-generated SQL references columns by table
-  alias, so this is transparent. A hand-written `sql`-mode model that
+  alias, so this is transparent. A hand-written `sql`-mode dataset that
   *schema-qualifies its own column references* (`SELECT public.orders.id ...`)
   is the one shape that won't resolve against the wrapped alias — such a query
   errors rather than executing. It fails safe (it cannot leak another tenant's

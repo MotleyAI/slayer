@@ -16,7 +16,7 @@ import traceback
 from pathlib import Path
 
 import slayer
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerModel  # pyright: ignore[reportDeprecated]
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -150,7 +150,7 @@ async def _main_async(args, version: str) -> dict:
         name=corpus.DS, type=args.db_type, **ds_kwargs,
     ))
     for model_dict in corpus.MODELS:
-        await storage.save_model(SlayerModel(**model_dict))
+        await storage.save_model(SlayerModel(**model_dict))  # pyright: ignore[reportDeprecated]
 
     engine = SlayerQueryEngine(storage=storage)
     await engine.execute(query={"source_model": "orders", "measures": ["count(*)"]})

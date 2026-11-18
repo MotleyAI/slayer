@@ -5,6 +5,7 @@ a strict subset of the producer grain (design D3, D6)."""
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 
 import pytest
 
@@ -22,14 +23,14 @@ from slayer.ir.planned import PlannedQuery
 from slayer.ir.prebound import StrictQueryCarrier
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 
-from tests._dev1836_fixtures import dev1836_models
-from tests._dev1900_fixtures import cust_q, dev1900_models
+from tests._dev1836_fixtures import dev1836_datasets
+from tests._dev1900_fixtures import cust_q, dev1900_datasets
 from tests._dev1836_fixtures import q as dev1836_q
-from tests._dev1832_fixtures import ModelMeasure, dev1832_models, month_td, monthly_q
+from tests._dev1832_fixtures import DatasetMetric, dev1832_datasets, month_td, monthly_q
 from tests._dev1847_fixtures import (
     INNER_CR,
     SPEND_BAND_EXPR,
-    dev1847_models,
+    dev1847_datasets,
     make_exec_engine,
     reagg,
     sales_q,
@@ -48,23 +49,23 @@ PROBE_A_CELLS = {("East", "P"), ("Gap", "P"), ("North", "P"), ("South", "P"),
 def _probe_a_query() -> SlayerQuery:
     return sales_q(
         dimensions=["region", "product"], to_many_handling="broadcast",
-        measures=[reagg("avg", INNER_CR, name="acc", partition_by="[]")])
+        metrics=[reagg("avg", INNER_CR, name="acc", partition_by="[]")])
 
 
 def _sales_bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    models = dev1847_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
-def _monthly_plan(formula: str) -> PlannedQuery:
-    models = dev1832_models()
+def _monthly_plan(expression: str) -> PlannedQuery:
+    models = dev1832_datasets()
     root = next(m for m in models if m.name == "monthly")
     return plan_query(
         query=monthly_q(dimensions=["region"], time_dimensions=month_td(),
-                        measures=[ModelMeasure(formula=formula, name="t")]),
+                        metrics=[DatasetMetric(expression=expression, name="t")]),
         bundle=ResolvedSourceBundle(
             dialect="postgres",
-            source_model=root, referenced_models=[m for m in models if m is not root]))
+            population=root, referenced_datasets=[m for m in models if m is not root]))
 
 
 def _shifted(pq: PlannedQuery):
@@ -80,7 +81,7 @@ def _shifted(pq: PlannedQuery):
 
 def _host_plain_combined(pq: PlannedQuery) -> list:
     return [a for a in pq.regroup_attach_plans
-            if a.attach_phase == "combined" and a.producer_root_model is None
+            if a.attach_phase == "combined" and a.producer_root_dataset is None
             and a.kernel.kind == "plain"]
 
 
@@ -91,15 +92,15 @@ async def exec_engine(request):
 
 
 def _dev1836_bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=list(models[1:]))
+    models = dev1836_datasets()
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=list(models[1:]))
 
 
 def _customers_bundle() -> ResolvedSourceBundle:
-    models = dev1900_models()
+    models = dev1900_datasets()
     src = next(m for m in models if m.name == "customers")
-    return ResolvedSourceBundle(dialect="postgres", source_model=src,
-                                referenced_models=[m for m in models if m is not src])
+    return ResolvedSourceBundle(dialect="postgres", population=src,
+                                referenced_datasets=[m for m in models if m is not src])
 
 
 def _semi_join_and_mask_counts(pq: PlannedQuery) -> list:
@@ -149,7 +150,7 @@ class TestTwoEntryPoints:
 def _producer_env():
     bundle = _dev1836_bundle()
     query = dev1836_q(dimensions=["status"],
-                      measures=[ModelMeasure(formula="sum(amount)", name="s")])
+                      metrics=[DatasetMetric(expression="sum(amount)", name="s")])
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
     return query, prebound, elaborate_mod.elaborate_synthesized(
@@ -171,7 +172,7 @@ class TestTwoEnvironmentTypes:
 
     def test_each_environment_rejects_the_other_carrier(self):
         query, prebound, producer = _producer_env()
-        carrier = StrictQueryCarrier(source_model="orders", prebound=prebound)
+        carrier = StrictQueryCarrier(population="orders", prebound=prebound)
         inputs = dict(scope=producer.scope, bundle=producer.bundle, prebound=producer.prebound)
         with pytest.raises(ValueError):
             elaborated_mod.ElaboratedStage(query=carrier, **inputs)  # pyright: ignore[reportArgumentType]
@@ -179,7 +180,7 @@ class TestTwoEnvironmentTypes:
             elaborated_mod.ElaboratedProducer(query=query, **inputs)  # pyright: ignore[reportArgumentType]
 
 
-def _count_top_only(monkeypatch) -> dict:
+def _count_top_only(monkeypatch: pytest.MonkeyPatch) -> dict:
     calls = {"dispose": 0, "total_routing": 0}
     dispose, total = stages.dispose_population_filters, stages._assert_total_routing
 
@@ -200,7 +201,7 @@ class TestEverySiteStatesItsPopulation:
     """The cross-model producer re-roots its own filters; every other site inherits."""
 
     @pytest.fixture
-    def populations(self, monkeypatch) -> list:
+    def populations(self, monkeypatch: pytest.MonkeyPatch) -> list:
         seen: list = []
         real = stages.compile_synthesized
 
@@ -214,20 +215,20 @@ class TestEverySiteStatesItsPopulation:
     @pytest.mark.parametrize(("plan", "expected"), [
         pytest.param(lambda: plan_query(query=dev1836_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")]),
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="cm")]),
             bundle=_dev1836_bundle()), {"NoInheritedPopulation"}, id="cross-model"),
         pytest.param(lambda: plan_query(query=dev1836_q(
             dimensions=["status", "channel"],
-            measures=[ModelMeasure(formula="sum(amount, partition_by=channel)", name="pt")]),
+            metrics=[DatasetMetric(expression="sum(amount, partition_by=channel)", name="pt")]),
             bundle=_dev1836_bundle()), {"InheritedPopulation"}, id="local-regroup"),
         pytest.param(lambda: plan_query(query=cust_q(
-            dimensions=["tier"], measures=[ModelMeasure(formula="sum(spend)", name="sp")],
-            order=[{"column": "orders.amount", "direction": "asc"}]),
+            dimensions=["tier"], metrics=[DatasetMetric(expression="sum(spend)", name="sp")],
+            order=[{"field": "orders.amount", "direction": "asc"}]),
             bundle=_customers_bundle()), {"InheritedPopulation"}, id="wrap"),
         pytest.param(lambda: _monthly_plan("time_shift(sum(amount), -1)"),
                      {"InheritedPopulation"}, id="shifted"),
         pytest.param(lambda: plan_query(query=sales_q(
-            dimensions=["region"], measures=[reagg("avg", INNER_CR, name="a")]),
+            dimensions=["region"], metrics=[reagg("avg", INNER_CR, name="a")]),
             bundle=_sales_bundle()), {"InheritedPopulation"},
             id="reaggregation-outer-and-carrier"),
     ])
@@ -244,8 +245,8 @@ class TestTopOnlySteps:
         bundle = _dev1836_bundle()
         query = dev1836_q(
             dimensions=["status", "channel"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
-            filters=["status = 'ok' and sum(amount, partition_by=channel) > 0"])
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["status = 'ok' and sum(amount, partition_by=channel) > 0"])
         top = elaborate_query(query=query, bundle=bundle)
         assert top.prebound is not None
         assert len(top.prebound.bound_filters) == 2
@@ -261,8 +262,8 @@ class TestTopOnlySteps:
         """A fanning row filter rides the host EXISTS at the top; a producer with no
         inherited population keeps it as its own mask."""
         query = cust_q(dimensions=["tier"],
-                       measures=[ModelMeasure(formula="sum(spend)", name="sp")],
-                       filters=["orders.status = 'ok'"])
+                       metrics=[DatasetMetric(expression="sum(spend)", name="sp")],
+                       filter=["orders.status = 'ok'"])
         assert _semi_join_and_mask_counts(
             plan_query(query=query, bundle=_customers_bundle())) == [(1, 0)]
         assert _semi_join_and_mask_counts(
@@ -271,8 +272,8 @@ class TestTopOnlySteps:
     def test_redundant_partition_strip(self):
         """A row-attach root partitioned by exactly the query grain is stripped at the
         top; the producer entry leaves the key as written."""
-        query = sales_q(dimensions=["region"], measures=[ModelMeasure(
-            formula="sum(quantity * sum(amount, partition_by=product), partition_by=region)",
+        query = sales_q(dimensions=["region"], metrics=[DatasetMetric(
+            expression="sum(quantity * sum(amount, partition_by=product), partition_by=region)",
             name="x")])
 
         def outer_partition(pq: PlannedQuery):
@@ -285,17 +286,17 @@ class TestTopOnlySteps:
         assert outer_partition(plan_as_producer(query=query, bundle=_sales_bundle())) \
             is not None
 
-    def test_non_root_authored_stage_is_top_level(self, monkeypatch):
+    def test_non_root_authored_stage_is_top_level(self, monkeypatch: pytest.MonkeyPatch):
         """Every authored DAG stage disposes and checks routing exactly once; its own
         producer does neither."""
         calls = _count_top_only(monkeypatch)
-        s1 = cust_q(name="s1", dimensions=["tier"], measures=[
-            ModelMeasure(formula="sum(spend)", name="sp"),
-            ModelMeasure(formula="sum(spend, partition_by=tier)", name="pt")],
-            filters=["orders.status = 'ok'"])
+        s1 = cust_q(name="s1", dimensions=["tier"], metrics=[
+            DatasetMetric(expression="sum(spend)", name="sp"),
+            DatasetMetric(expression="sum(spend, partition_by=tier)", name="pt")],
+            filter=["orders.status = 'ok'"])
         root = SlayerQuery.model_validate({
-            "source_model": "s1", "dimensions": ["tier"],
-            "measures": [{"formula": "sum(sp)", "name": "t"}]})
+            "population": "s1", "dimensions": ["tier"],
+            "metrics": [{"expression": "sum(sp)", "name": "t"}]})
         stage_plans = plan_stages(queries=[s1, root], bundle=_customers_bundle())
         assert calls == {"dispose": 2, "total_routing": 2}
         assert [len(p.semi_join_filters) for p in stage_plans] == [1, 0]
@@ -303,23 +304,23 @@ class TestTopOnlySteps:
 
     @pytest.mark.parametrize("plan", [
         pytest.param(lambda: plan_query(query=cust_q(
-            dimensions=["tier"], measures=[ModelMeasure(formula="sum(spend)", name="sp")],
-            filters=["orders.status = 'ok'"],
-            order=[{"column": "orders.amount", "direction": "asc"}]),
+            dimensions=["tier"], metrics=[DatasetMetric(expression="sum(spend)", name="sp")],
+            filter=["orders.status = 'ok'"],
+            order=[{"field": "orders.amount", "direction": "asc"}]),
             bundle=_customers_bundle()), id="late-wrap"),
         pytest.param(lambda: _monthly_plan("time_shift(sum(amount), -1)"), id="shifted"),
     ])
-    def test_late_producers_never_run_top_only_steps(self, monkeypatch, plan):
+    def test_late_producers_never_run_top_only_steps(self, monkeypatch: pytest.MonkeyPatch, plan):
         calls = _count_top_only(monkeypatch)
         pq = plan()
         assert pq.regroup_attach_plans
         assert calls == {"dispose": 1, "total_routing": 1}
 
-    def test_total_routing(self, monkeypatch):
+    def test_total_routing(self, monkeypatch: pytest.MonkeyPatch):
         """Blinded discovery raises at the top; a producer holds the root inline."""
         monkeypatch.setattr(stages, "discover_roots", lambda *_a, **_k: [])
-        query = dev1836_q(dimensions=["status", "channel"], measures=[
-            ModelMeasure(formula="sum(amount, partition_by=channel)", name="pt")])
+        query = dev1836_q(dimensions=["status", "channel"], metrics=[
+            DatasetMetric(expression="sum(amount, partition_by=channel)", name="pt")])
         bundle = _dev1836_bundle()
         with pytest.raises(ValueError, match="no routing disposition"):
             plan_query(query=query, bundle=bundle)
@@ -348,8 +349,8 @@ class TestStrictSubsetNesting:
 
     def test_carrier_nests_every_strict_constituent(self):
         """``[city]`` and ``[region]`` are strict subsets of the ``[city, region]`` carrier grain."""
-        pq = plan_query(query=sales_q(dimensions=["region"], measures=[ModelMeasure(
-            formula="avg(sum(amount, partition_by=city) + sum(amount, partition_by=region))",
+        pq = plan_query(query=sales_q(dimensions=["region"], metrics=[DatasetMetric(
+            expression="avg(sum(amount, partition_by=city) + sum(amount, partition_by=region))",
             name="x")]), bundle=_sales_bundle())
         [outer] = pq.regroup_attach_plans
         [carrier] = outer.producer_plan.regroup_attach_plans
@@ -362,10 +363,13 @@ class TestStrictSubsetNesting:
                      lambda: _bundle(_claim_amount()), id="filter-crossing"),
         pytest.param("sum(region_pay)", None, _s5_bundle, id="input-crossing"),
     ])
-    def test_own_answer_at_producer_grain_never_nests(self, formula, dimensions, bundle):
-        host = bundle().source_model
-        q = SlayerQuery(source_model=host.name, dimensions=dimensions,
-                        measures=[ModelMeasure(formula=formula, name="m0")])
+    def test_own_answer_at_producer_grain_never_nests(
+        self, formula: str, dimensions, bundle: Callable[[], ResolvedSourceBundle],
+    ) -> None:
+        host = bundle().population
+        assert host is not None
+        q = SlayerQuery(population=host.name, dimensions=dimensions,
+                        metrics=[DatasetMetric(expression=formula, name="m0")])
         pq = plan_as_producer(query=q, bundle=bundle())
         assert _host_plain_combined(pq) == []
         assert any(isinstance(s.key, AggregateKey) and s.key.agg == "sum"
@@ -390,8 +394,8 @@ class TestOffGrainConstituentNests:
     async def test_executes_at_the_band_grain(self, exec_engine, dimensions, expected):
         """Grained at ``spend_band`` alone (the nested aggregate is opaque): a constant
         weight per band."""
-        query = sales_q(dimensions=dimensions, measures=[ModelMeasure(
-            formula="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))",
+        query = sales_q(dimensions=dimensions, metrics=[DatasetMetric(
+            expression="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))",
             name="w")])
         resp = await exec_engine.execute(query)
         names = [d if isinstance(d, str) else d["name"] for d in dimensions]

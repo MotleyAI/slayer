@@ -1,0 +1,179 @@
+{
+ "source": "tests/test_dev1747_reroot_filter_routing.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "customers.regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "customers.regions"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.population)",
+    "name": "pop"
+   },
+   "new": {
+    "expression": "sum(customers.regions.population)",
+    "name": "pop"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "customers.regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "customers.regions"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.regions.population)",
+    "name": "pop"
+   },
+   "new": {
+    "expression": "sum(customers.regions.population)",
+    "name": "pop"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(order_tags.id)",
+    "name": "tags"
+   },
+   "new": {
+    "expression": "count(order_tags.id)",
+    "name": "tags"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 200,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 239,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 340,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 369,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 566,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 599,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 618,
+   "reason": "not fully literal"
+  }
+ ]
+}

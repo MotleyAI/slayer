@@ -1,0 +1,73 @@
+{
+ "source": "tests/test_osi_expression.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "customer_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "customer_id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "region_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "region_id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 258,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 261,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 262,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 266,
+   "reason": "not fully literal"
+  }
+ ]
+}

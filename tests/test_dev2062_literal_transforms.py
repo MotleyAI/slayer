@@ -53,7 +53,7 @@ _RANK_FAMILY = {
 @pytest.mark.parametrize("formula", list(_RANK_FAMILY))
 async def test_rank_family_over_literal(exec_engine, formula) -> None:
     resp = await exec_engine.execute(
-        orders_q(dimensions=["region"], measures=[m("sum(amount)", "s"), m(formula, "v")]),
+        orders_q(dimensions=["region"], metrics=[m("sum(amount)", "s"), m(formula, "v")]),
     )
     assert sorted(r["orders.region"] for r in resp.data) == sorted(REGIONS)
     assert [r["orders.v"] for r in resp.data] == [pytest.approx(_RANK_FAMILY[formula])] * len(REGIONS)
@@ -64,7 +64,7 @@ async def test_partitioned_rank_family_over_literal(exec_engine, formula) -> Non
     partitioned = f"{formula[:-1]}, partition_by=region)"
     resp = await exec_engine.execute(orders_q(
         dimensions=["region"], time_dimensions=month_td(),
-        measures=[m("sum(amount)", "s"), m(partitioned, "v")],
+        metrics=[m("sum(amount)", "s"), m(partitioned, "v")],
     ))
     assert len(resp.data) == 6, resp.data
     assert [r["orders.v"] for r in resp.data] == [pytest.approx(_RANK_FAMILY[formula])] * 6
@@ -72,6 +72,6 @@ async def test_partitioned_rank_family_over_literal(exec_engine, formula) -> Non
 
 async def test_ntile_over_literal_splits_rows_into_balanced_buckets(exec_engine) -> None:
     resp = await exec_engine.execute(
-        orders_q(dimensions=["region"], measures=[m("sum(amount)", "s"), m("ntile(1, n=2)", "v")]),
+        orders_q(dimensions=["region"], metrics=[m("sum(amount)", "s"), m("ntile(1, n=2)", "v")]),
     )
     assert sorted(r["orders.v"] for r in resp.data) == [1, 1, 2]

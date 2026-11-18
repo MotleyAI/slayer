@@ -1,0 +1,46 @@
+{
+ "source": "tests/test_dev1910_back_path.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  }
+ ]
+}

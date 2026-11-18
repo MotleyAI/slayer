@@ -1,0 +1,301 @@
+{
+ "source": "tests/test_dev1838_kernels.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=status)",
+    "name": "rm"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=status)",
+    "name": "rm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='1y')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "lb"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "lb"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, customers.signup_at)",
+    "name": "ls"
+   },
+   "new": {
+    "expression": "last(amount, customers.signup_at)",
+    "name": "ls"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend)",
+    "name": "sl"
+   },
+   "new": {
+    "expression": "last(customers.spend)",
+    "name": "sl"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount, shipped_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount, shipped_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "untimed",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount)",
+      "name": "l"
+     }
+    ]
+   },
+   "new": {
+    "population": "untimed",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount)",
+      "name": "l"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, created_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend, created_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(amount)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(amount)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "last(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "last(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=status)",
+    "name": "rm"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=status)",
+    "name": "rm"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 217,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 237,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 259,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 290,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 341,
+   "reason": "not fully literal"
+  }
+ ]
+}

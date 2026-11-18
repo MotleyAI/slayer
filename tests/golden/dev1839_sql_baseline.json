@@ -1,23 +1,23 @@
 {
   "guard/dim_kwarg_outside_union::bigquery": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The partition_by column 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
+    "message": "PartitionKeyError: The partition_by field 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
   },
   "guard/dim_kwarg_outside_union::duckdb": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The partition_by column 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
+    "message": "PartitionKeyError: The partition_by field 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
   },
   "guard/dim_kwarg_outside_union::postgres": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The partition_by column 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
+    "message": "PartitionKeyError: The partition_by field 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
   },
   "guard/dim_kwarg_outside_union::sqlite": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The partition_by column 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
+    "message": "PartitionKeyError: The partition_by field 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
   },
   "guard/dim_kwarg_outside_union::tsql": {
     "error": "PartitionKeyError",
-    "message": "PartitionKeyError: The partition_by column 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
+    "message": "PartitionKeyError: The partition_by field 'channel' is not a query dimension.\n  at transform 'rank'\n  suggestion: Add it to dimensions/time_dimensions, or choose one of: region, city, x."
   },
   "guard/dim_temporal_axis_missing::bigquery": {
     "error": "TimeAxisError",

@@ -13,7 +13,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.sqlite_conn import transaction
@@ -72,21 +72,21 @@ async def orders_server(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT, label="Order Status"),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="qb_by_status", data_source="ds",
         source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
         })],
     ))
     return create_mcp_server(storage=storage)
@@ -156,8 +156,8 @@ class TestQueryDispatch:
         out = await _call(
             orders_server,
             query={
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": ["status"],
             },
             format="json",
@@ -172,13 +172,13 @@ class TestQueryDispatch:
             query=[
                 {
                     "name": "monthly",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "time_dimensions": [
-                        {"dimension": "created_at", "granularity": "month"},
+                        {"field": "created_at", "granularity": "month"},
                     ],
                 },
-                {"source_model": "monthly", "measures": [{"formula": "count(*)"}]},
+                {"population": "monthly", "metrics": [{"expression": "count(*)"}]},
             ],
             dry_run=True,
         )
@@ -203,7 +203,7 @@ class TestQueryDispatch:
             await _call(orders_server, query="orders")
         message = str(ei.value)
         assert "not query-backed" in message
-        assert "source_model='orders'" in message
+        assert "population='orders'" in message
 
     async def test_empty_list_is_rejected(self, orders_server) -> None:
         with pytest.raises(ToolError, match="non-empty"):
@@ -215,10 +215,10 @@ class TestQueryDispatch:
         out = await _call(
             orders_server,
             query={
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "count(*)"}],
-                "order": [{"column": "count(*)", "direction": "desc"}],
+                "metrics": [{"expression": "count(*)"}],
+                "order": [{"field": "count(*)", "direction": "desc"}],
                 "limit": 1,
             },
             format="json",
@@ -241,7 +241,7 @@ class TestInQueryControlFields:
         out = await _call(
             orders_server,
             query={
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
                 "distinct_dimension_values": False,
             },
@@ -260,16 +260,16 @@ async def broadcast_server(tmp_path):
     db_path = str(tmp_path / "data.sqlite")
     fx._seed_sqlite(db_path)
     engine = await build_exec_engine(
-        db_path, dialect="sqlite", models=fx.dev1836_models())
+        db_path, dialect="sqlite", datasets=fx.dev1836_datasets())
     return create_mcp_server(storage=engine.storage)
 
 
 _BROADCAST_QUERY = {
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": ["status"],
-    "measures": [
-        {"formula": "sum(amount)", "name": "m"},
-        {"formula": "sum(customers.spend)", "name": "cm"},
+    "metrics": [
+        {"expression": "sum(amount)", "name": "m"},
+        {"expression": "sum(customers.spend)", "name": "cm"},
     ],
 }
 
@@ -309,9 +309,9 @@ class TestExecutionWrappers:
         out = await _call(
             orders_server,
             query={
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
-                "filters": ["status == '{s}'"],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
+                "filter": ["status == '{s}'"],
                 "variables": {"s": "pending"},
             },
             variables={"s": "completed"},
@@ -325,9 +325,9 @@ class TestExecutionWrappers:
         out = await _call(
             orders_server,
             query={
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
             },
             dry_run=True,
         )
@@ -340,7 +340,7 @@ class TestExecutionWrappers:
     async def test_explain_returns_sql_and_plan(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
             explain=True,
         )
         assert "SQL:" in out
@@ -349,7 +349,7 @@ class TestExecutionWrappers:
     async def test_show_sql_prefixes_results(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
             show_sql=True,
         )
         assert out.startswith("SQL:")
@@ -361,7 +361,7 @@ class TestExecutionWrappers:
         with pytest.raises(ToolError) as ei:
             await _call(
                 orders_server,
-                query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+                query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
                 format="xml",
             )
         message = str(ei.value)
@@ -373,9 +373,9 @@ class TestExecutionWrappers:
         out = await _call(
             orders_server,
             query={
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
             },
             format="JSON",
         )
@@ -416,14 +416,14 @@ class TestRunByNameRefine:
 
     async def test_refine_with_variables(self, refine_server) -> None:
         out = await _call(
-            refine_server, query="revenue_by_status", refine={"measures": ["count(*)"]},
+            refine_server, query="revenue_by_status", refine={"metrics": ["count(*)"]},
             variables={"status": "refunded"}, format="json",
         )
         assert _rows(out) == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
 
     @pytest.mark.parametrize("query", [
-        {"source_model": "orders", "measures": ["count(*)"]},
-        [{"name": "a", "source_model": "orders", "dimensions": ["region"]}, {"source_model": "a", "dimensions": ["region"]}],
+        {"population": "orders", "metrics": ["count(*)"]},
+        [{"name": "a", "population": "orders", "dimensions": ["region"]}, {"population": "a", "dimensions": ["region"]}],
     ], ids=["object", "list"])
     async def test_refine_with_non_name_errors(self, refine_server, query: Any) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
@@ -431,9 +431,9 @@ class TestRunByNameRefine:
 
     async def test_empty_refine_with_non_name_errors(self, refine_server) -> None:
         with pytest.raises(ToolError, match="refine applies only to a saved query run by name"):
-            await _call(refine_server, query={"source_model": "orders", "measures": ["count(*)"]}, refine={})
+            await _call(refine_server, query={"population": "orders", "metrics": ["count(*)"]}, refine={})
 
     async def test_conflict_surfaces_as_error(self, refine_server) -> None:
         with pytest.raises(ToolError, match="revenue"):
             await _call(refine_server, query="monthly_revenue",
-                        refine={"measures": [{"formula": "count(*)", "name": "revenue"}]})
+                        refine={"metrics": [{"expression": "count(*)", "name": "revenue"}]})

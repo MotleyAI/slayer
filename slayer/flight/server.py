@@ -12,8 +12,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from collections.abc import Iterator
+from typing import Protocol
 
 import pyarrow.flight as fl
+from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.auth import (
@@ -32,6 +34,20 @@ from slayer.flight.translator import TranslationError
 logger = logging.getLogger(__name__)
 
 
+class _ActionBody(Protocol):
+    def to_pybytes(self) -> bytes: ...
+
+
+class FlightAction(Protocol):
+    """The members of a ``pyarrow.flight.Action`` (untyped extension class) the servers read."""
+
+    @property
+    def type(self) -> str: ...
+
+    @property
+    def body(self) -> _ActionBody | None: ...
+
+
 _ACTION_CREATE_PREPARED = "CreatePreparedStatement"
 _ACTION_CLOSE_PREPARED = "ClosePreparedStatement"
 
@@ -46,8 +62,6 @@ def _parse_action_body(body_bytes: bytes, msg_cls: type):
     Any first and look for the Flight SQL type-URL prefix — if present,
     use the Any-wrapped decode; otherwise treat as raw.
     """
-    from google.protobuf.any_pb2 import Any as PbAny
-
     probe = PbAny()
     try:
         probe.ParseFromString(body_bytes)
@@ -223,7 +237,7 @@ class FlightSqlServer(fl.FlightServerBase):
         ]
 
     def do_action(
-        self, context: fl.ServerCallContext, action: fl.Action,
+        self, context: fl.ServerCallContext, action: FlightAction,
     ) -> Iterator[fl.Result]:
         action_type = action.type
         body_bytes = action.body.to_pybytes() if action.body is not None else b""

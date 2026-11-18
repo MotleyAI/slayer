@@ -1,0 +1,86 @@
+{
+ "source": "tests/test_cube_import_example.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "order_facts",
+    "measures": [
+     {
+      "formula": "count"
+     }
+    ],
+    "variables": {
+     "region": [
+      "North"
+     ]
+    }
+   },
+   "new": {
+    "population": "order_facts",
+    "metrics": [
+     {
+      "expression": "count"
+     }
+    ],
+    "variables": {
+     "region": [
+      "North"
+     ]
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_overview",
+    "measures": [
+     "total_amount"
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "orders_overview",
+    "metrics": [
+     "total_amount"
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "total_amount"
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "total_amount"
+    ],
+    "dimensions": [
+     "customers.region"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 268,
+   "reason": "not fully literal"
+  }
+ ]
+}

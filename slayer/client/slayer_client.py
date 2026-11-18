@@ -15,10 +15,13 @@ from typing import (
 )
 from urllib.parse import quote
 
+from typing_extensions import deprecated
+
 from slayer.async_utils import run_sync
 from slayer.core.format import NumberFormat
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
-from slayer.core.recommend import RootModelRecommendation
+from slayer.core.recommend import PopulationRecommendation
+from slayer.core.vocabulary import method_twin
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.query_engine import (
     ClientFactory,
@@ -36,6 +39,7 @@ from slayer.memories.models import (
 )
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchResponse, SearchService
+from slayer.storage.base import StorageBackend
 
 # httpx is the optional ``client`` extra; keep it import-safe so local-engine
 # mode loads without it. pandas is heavier and only ``query_df`` needs it, so it
@@ -77,13 +81,13 @@ class SlayerClient:
     def __init__(
         self,
         url: str = "http://localhost:5143",
-        storage: Any | None = None,
+        storage: StorageBackend | None = None,
         *,
         policy: "SessionPolicy | None" = None,
         client_factory: ClientFactory | None = None,
     ):
         self.url = url.rstrip("/")
-        self._storage = storage
+        self._storage: StorageBackend | None = storage
         self._engine = None
         if storage is not None:
             self._engine = SlayerQueryEngine(storage=storage, policy=policy, client_factory=client_factory)
@@ -234,7 +238,7 @@ class SlayerClient:
     @staticmethod
     def _parse_response(result: dict, *, deprecations: list[DeprecatedInputWarning] | None = None) -> SlayerResponse:
         """Parse an API JSON response into a SlayerResponse; its warnings are the server's plus the client's ``deprecations``."""
-        def _parse_meta_dict(d: dict) -> dict[str, FieldMetadata]:
+        def _parse_meta_dict(d: dict | None) -> dict[str, FieldMetadata]:
             out = {}
             for k, v in (d or {}).items():
                 fmt = None
@@ -246,7 +250,7 @@ class SlayerClient:
         attrs_raw = result.get("attributes") or {}
         attributes = ResponseAttributes(
             dimensions=_parse_meta_dict(attrs_raw.get("dimensions")),
-            measures=_parse_meta_dict(attrs_raw.get("measures")),
+            metrics=_parse_meta_dict(attrs_raw.get("metrics")),
         )
         return SlayerResponse(
             data=result["data"],
@@ -302,25 +306,25 @@ class SlayerClient:
         """Run the database's EXPLAIN on a query (same input union)."""
         return await self.query(query=query, refine=refine, variables=variables, explain=True)
 
-    async def list_models(self, data_source: str | None = None) -> list[str]:
+    async def list_datasets(self, data_source: str | None = None) -> list[str]:
         if self._storage is not None:
-            names = await self._storage.list_models(data_source=data_source)
+            names = await self._storage.list_datasets(data_source=data_source)
             return list(names)
         params = {"data_source": data_source} if data_source else None
-        return await self._request(method="GET", path="/models", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
+        return await self._request(method="GET", path="/datasets", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def get_model(
+    async def get_dataset(
         self,
         name: str,
         data_source: str | None = None,
     ) -> Any | None:
         if self._storage is not None:
-            return await self._storage.get_model(name, data_source=data_source)
+            return await self._storage.get_dataset(name, data_source=data_source)
         params = {"data_source": data_source} if data_source else None
-        return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
+        return await self._request(method="GET", path=f"/datasets/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
-    async def create_model(self, model: dict[str, Any]) -> dict[str, Any]:
-        return await self._request(method="POST", path="/models", json=model)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
+    async def create_dataset(self, dataset: dict[str, Any]) -> dict[str, Any]:
+        return await self._request(method="POST", path="/datasets", json=dataset)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def list_datasources(self) -> list[str]:
         return await self._request(method="GET", path="/datasources")
@@ -470,7 +474,7 @@ class SlayerClient:
         descriptions_max_chars: int | None = None,
     ) -> str:
         """Point-lookup one entity, a same-kind batch (``reference`` a list), or
-        a whole collection (``reference`` ``None``/``[]``; ``model``/
+        a whole collection (``reference`` ``None``/``[]``; ``dataset``/
         ``datasource`` only). ``entity_type`` is required and applies to every
         id; a list returns one block per id with per-id error isolation."""
         if self._storage is not None:
@@ -604,15 +608,15 @@ class SlayerClient:
         resp = self._request_sync(method="POST", path="/inspect", json=body)
         return resp["result"]
 
-    async def recommend_root_model(
+    async def recommend_population(
         self, items: list[str], *, data_source: str | None = None,
         root_hint: str | None = None,
-    ) -> "RootModelRecommendation":
-        """Recommend the query root (``source_model``) for a set of
-        ``model.column``/``model.metric`` items, plus each item's path from it.
+    ) -> "PopulationRecommendation":
+        """Recommend the query root (``population``) for a set of
+        ``dataset.field``/``dataset.metric`` items, plus each item's path from it.
         ``root_hint`` forces the root when it reaches every item."""
         if self._engine is not None:
-            return await self._engine.recommend_root_model(
+            return await self._engine.recommend_population(
                 items, data_source=data_source, root_hint=root_hint
             )
         body: dict[str, Any] = {"items": items}
@@ -621,16 +625,16 @@ class SlayerClient:
         if root_hint is not None:
             body["root_hint"] = root_hint
         result = await self._request(
-            method="POST", path="/recommend-root-model", json=body
+            method="POST", path="/recommend-population", json=body
         )
-        return RootModelRecommendation.model_validate(result)
+        return PopulationRecommendation.model_validate(result)
 
-    def recommend_root_model_sync(
+    def recommend_population_sync(
         self, items: list[str], *, data_source: str | None = None,
         root_hint: str | None = None,
-    ) -> "RootModelRecommendation":
-        """Synchronous variant of :meth:`recommend_root_model`."""
-        return self._run_sync(self.recommend_root_model(
+    ) -> "PopulationRecommendation":
+        """Synchronous variant of :meth:`recommend_population`."""
+        return self._run_sync(self.recommend_population(
             items, data_source=data_source, root_hint=root_hint
         ))
 
@@ -643,8 +647,40 @@ class SlayerClient:
         result = self.query_sync(query=query, refine=refine, variables=variables)
         return pd.DataFrame(result.data)
 
-    def list_models_sync(self) -> list[str]:
-        return self._request_sync(method="GET", path="/models")
+    def list_datasets_sync(self) -> list[str]:
+        return self._request_sync(method="GET", path="/datasets")
 
-    def get_model_sync(self, name: str) -> dict[str, Any]:
-        return self._request_sync("GET", f"/models/{name}")
+    def get_dataset_sync(self, name: str) -> dict[str, Any]:
+        return self._request_sync("GET", f"/datasets/{name}")
+
+    @method_twin("list_datasets")
+    @deprecated("list_models is deprecated; use list_datasets", category=None)
+    async def list_models(self, data_source: str | None = None) -> list[str]: ...
+
+    @method_twin("list_datasets_sync")
+    @deprecated("list_models_sync is deprecated; use list_datasets_sync", category=None)
+    def list_models_sync(self) -> list[str]: ...
+
+    @method_twin("get_dataset")
+    @deprecated("get_model is deprecated; use get_dataset", category=None)
+    async def get_model(self, name: str, data_source: str | None = None) -> Any | None: ...
+
+    @method_twin("get_dataset_sync")
+    @deprecated("get_model_sync is deprecated; use get_dataset_sync", category=None)
+    def get_model_sync(self, name: str) -> dict[str, Any]: ...
+
+    @method_twin("create_dataset", arguments={"model": "dataset"})
+    @deprecated("create_model is deprecated; use create_dataset", category=None)
+    async def create_model(self, dataset: dict[str, Any]) -> dict[str, Any]: ...
+
+    @method_twin("recommend_population")
+    @deprecated("recommend_root_model is deprecated; use recommend_population", category=None)
+    async def recommend_root_model(
+        self, items: list[str], *, data_source: str | None = None, root_hint: str | None = None,
+    ) -> "PopulationRecommendation": ...
+
+    @method_twin("recommend_population_sync")
+    @deprecated("recommend_root_model_sync is deprecated; use recommend_population_sync", category=None)
+    def recommend_root_model_sync(
+        self, items: list[str], *, data_source: str | None = None, root_hint: str | None = None,
+    ) -> "PopulationRecommendation": ...

@@ -14,7 +14,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.value_expr import render_scalar_call
-from tests._dev1737_fixtures import PARTS, dt_model, matrix_cases
+from tests._dev1737_fixtures import PARTS, dt_dataset, matrix_cases
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -38,9 +38,9 @@ def _cases() -> dict:
 
 
 async def _generate_one(expr: str, dialect: str):
-    query = {"source_model": "dt", "dimensions": ["id", {"expression": expr, "name": "v"}]}
+    query = {"population": "dt", "dimensions": ["id", {"expression": expr, "name": "v"}]}
     try:
-        return await _engine_generate(query=[query], model=dt_model(), dialect=dialect)
+        return await _engine_generate(query=[query], dataset=dt_dataset(), dialect=dialect)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
 

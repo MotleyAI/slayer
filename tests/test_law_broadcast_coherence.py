@@ -9,7 +9,7 @@ import pytest
 
 from tests._law_harness import (
     OPERANDS,
-    ModelMeasure,
+    DatasetMetric,
     canon,
     make_law_engine,
     month_key,
@@ -64,13 +64,13 @@ def _combine(op: str, a, b):
 async def test_formula_equals_client_side_combine(pair_case):
     engine, pair, grain = pair_case
     kwargs = _pair_kwargs(pair=pair, grain=grain)
-    left = await engine.execute(q(**kwargs, measures=[
-        ModelMeasure(formula=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
+    left = await engine.execute(q(**kwargs, metrics=[
+        DatasetMetric(expression=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
                      name="x"),
     ]))
-    right = await engine.execute(q(**kwargs, measures=[
-        ModelMeasure(formula=OPERANDS[pair.a], name="a"),
-        ModelMeasure(formula=OPERANDS[pair.b], name="b"),
+    right = await engine.execute(q(**kwargs, metrics=[
+        DatasetMetric(expression=OPERANDS[pair.a], name="a"),
+        DatasetMetric(expression=OPERANDS[pair.b], name="b"),
     ]))
     left_rows = {_row_key(row=r, kwargs=kwargs): r["orders.x"] for r in left.data}
     right_rows = {_row_key(row=r, kwargs=kwargs): r for r in right.data}
@@ -94,16 +94,16 @@ async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engi
     typed refusal must not depend on phrasing (formula vs separate measures).
     The rm-grain pair sample excludes part_city for exactly this reason."""
     kwargs: dict = {"dimensions": ["region"], "time_dimensions": month_td()}
-    refusal = r"partition_by column 'city' is not a query dimension"
-    as_formula = q(**kwargs, measures=[
-        ModelMeasure(
-            formula=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
+    refusal = r"partition_by field 'city' is not a query dimension"
+    as_formula = q(**kwargs, metrics=[
+        DatasetMetric(
+            expression=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
             name="x",
         ),
     ])
-    as_separate = q(**kwargs, measures=[
-        ModelMeasure(formula=OPERANDS["part_city"], name="a"),
-        ModelMeasure(formula=OPERANDS["plain"], name="b"),
+    as_separate = q(**kwargs, metrics=[
+        DatasetMetric(expression=OPERANDS["part_city"], name="a"),
+        DatasetMetric(expression=OPERANDS["plain"], name="b"),
     ])
     with pytest.raises(ValueError, match=refusal):
         await exec_engine.execute(as_formula)
@@ -115,14 +115,14 @@ async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):
     """Coercions compose: one region-grain operand read at (region),
     (region, city), and (region, city, month) yields the same per-region value
     all along the chain."""
-    rt = ModelMeasure(formula=OPERANDS["part_region"], name="rt")
+    rt = DatasetMetric(expression=OPERANDS["part_region"], name="rt")
     per_region: list[dict] = []
     for kwargs in (
         {"dimensions": ["region"]},
         {"dimensions": ["region", "city"]},
         {"dimensions": ["region", "city"], "time_dimensions": month_td()},
     ):
-        resp = await exec_engine.execute(q(**kwargs, measures=[rt]))
+        resp = await exec_engine.execute(q(**kwargs, metrics=[rt]))
         values: dict = {}
         for row in resp.data:
             values.setdefault(row["orders.region"], set()).add(

@@ -22,9 +22,9 @@ from slayer.engine.population.inference import (
 from tests._dev1866_fixtures import (
     DS_CHAIN,
     DS_NAMED,
-    chain_models_by_name,
+    chain_datasets_by_name,
     make_inference_storage,
-    named_models_by_name,
+    named_datasets_by_name,
 )
 
 
@@ -39,23 +39,23 @@ async def storage():
 class TestSourceModelOptional:
     def test_constructs_without_source_model(self) -> None:
         q = SlayerQuery(dimensions=["customers.region"])
-        assert q.source_model is None
+        assert q.population is None
 
     def test_validates_from_dict_without_source_model(self) -> None:
         q = SlayerQuery.model_validate({"dimensions": ["customers.region"]})
-        assert q.source_model is None
+        assert q.population is None
         # No schema bump for this change (design §7): same version as an explicit query.
-        assert q.version == SlayerQuery(source_model="orders").version
+        assert q.version == SlayerQuery(population="orders").version
 
     def test_roundtrips_without_source_model(self) -> None:
         q = SlayerQuery(dimensions=["customers.region"])
         dumped = q.model_dump(mode="json", exclude_none=True)
         assert "source_model" not in dumped
         again = SlayerQuery.model_validate(dumped)
-        assert again.source_model is None
+        assert again.population is None
 
     def test_explicit_source_model_still_accepted(self) -> None:
-        assert SlayerQuery(source_model="orders").source_model == "orders"
+        assert SlayerQuery(population="orders").population == "orders"
 
 
 # --------------------------------------------------------------------------- #
@@ -67,19 +67,19 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
             }),
             storage=storage,
         )
         assert isinstance(choice, PopulationChoice)
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
         assert choice.data_source == DS_CHAIN
 
     async def test_measure_does_not_shift_population(self, storage) -> None:
         with_measure = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
             }),
             storage=storage,
         )
@@ -87,40 +87,40 @@ class TestSelection:
             query=SlayerQuery(dimensions=["customers.region"]),
             storage=storage,
         )
-        assert with_measure.model_name == without_measure.model_name == "customers"
+        assert with_measure.dataset_name == without_measure.dataset_name == "customers"
 
     async def test_field_filter_pulls_population_to_its_owner(self, storage) -> None:
         """A field-typed filter on orders makes orders.status a determination item."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["orders.status = 'ok'"],
+                filter=["orders.status = 'ok'"],
             ),
             storage=storage,
         )
-        assert choice.model_name == "orders"
+        assert choice.dataset_name == "orders"
 
     async def test_measure_typed_filter_does_not_participate(self, storage) -> None:
         """An aggregation-bearing filter is dropped ⇒ population unchanged."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["sum(orders.amount) > 100"],
+                filter=["sum(orders.amount) > 100"],
             ),
             storage=storage,
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
     async def test_saved_measure_filter_does_not_participate(self, storage) -> None:
         """A filter on a saved measure (orders.revenue) is dropped ⇒ customers."""
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["orders.revenue > 100"],
+                filter=["orders.revenue > 100"],
             ),
             storage=storage,
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
     async def test_saved_measure_filter_via_named_join_does_not_participate(
         self, storage
@@ -129,11 +129,11 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["tickets.subject"],
-                filters=["tickets.reporter.handled > 0"],
+                filter=["tickets.reporter.handled > 0"],
             ),
             storage=storage,
         )
-        assert choice.model_name == "tickets"
+        assert choice.dataset_name == "tickets"
         assert choice.data_source == DS_NAMED
 
     async def test_raw_row_mode_uses_same_rule(self, storage) -> None:
@@ -144,7 +144,7 @@ class TestSelection:
             ),
             storage=storage,
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
     async def test_to_many_hop_disqualifies_a_candidate(self, storage) -> None:
         """basket cannot to-one-determine basket_items.sku ⇒ the child wins."""
@@ -152,7 +152,7 @@ class TestSelection:
             query=SlayerQuery(dimensions=["basket.id", "basket_items.sku"]),
             storage=storage,
         )
-        assert choice.model_name == "basket_items"
+        assert choice.dataset_name == "basket_items"
 
     async def test_undeclared_cardinality_but_unique_key_covered(self, storage) -> None:
         """events → days is provably to-one via the days.id primary key."""
@@ -160,7 +160,7 @@ class TestSelection:
             query=SlayerQuery(dimensions=["events.kind", "days.label"]),
             storage=storage,
         )
-        assert choice.model_name == "events"
+        assert choice.dataset_name == "events"
 
     async def test_hop_sum_selection_over_multiple_items(self, storage) -> None:
         """customers pays 0+1 hops, orders pays 1+2 — the lower total wins."""
@@ -170,7 +170,7 @@ class TestSelection:
             ),
             storage=storage,
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
     async def test_sql_functional_aggregate_filter_excluded(self, storage) -> None:
         """A SQL-style ``sum(orders.amount) = 100`` filter is aggregate-typed and
@@ -178,11 +178,11 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["sum(orders.amount) = 100"],
+                filter=["sum(orders.amount) = 100"],
             ),
             storage=storage,
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
     async def test_measure_anchor_never_shifts_datasource(self, storage) -> None:
         """A measure referencing a model in another datasource must not affect
@@ -190,11 +190,11 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "count(widgets.x)", "name": "wc"}],
+                "metrics": [{"expression": "count(widgets.x)", "name": "wc"}],
             }),
             storage=storage,
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
         assert choice.data_source == DS_CHAIN
 
 
@@ -204,13 +204,13 @@ class TestSelection:
 class TestDeterminationItems:
     def _items(self, query: SlayerQuery, **kw) -> set[str]:
         return set(determination_items(
-            query, models_by_name=chain_models_by_name(), **kw
+            query, datasets_by_name=chain_datasets_by_name(), **kw
         ))
 
     def test_dimensions_and_field_filters_participate(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
-            filters=["orders.status = 'ok'"],
+            filter=["orders.status = 'ok'"],
         ))
         assert items == {"customers.region", "orders.status"}
 
@@ -218,29 +218,29 @@ class TestDeterminationItems:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
             time_dimensions=[TimeDimension(
-                dimension="orders.ordered_at", granularity=TimeGranularity.MONTH,
+                field="orders.ordered_at", granularity=TimeGranularity.MONTH,
             )],
         ))
         assert items == {"customers.region", "orders.ordered_at"}
 
     def test_order_entries_do_not_participate(self) -> None:
-        items = self._items(SlayerQuery(
-            dimensions=["customers.region"],
-            order=[{"column": "orders.amount", "direction": "desc"}],
-        ))
+        items = self._items(SlayerQuery.model_validate({
+            "dimensions": ["customers.region"],
+            "order": [{"field": "orders.amount", "direction": "desc"}],
+        }))
         assert items == {"customers.region"}
 
     def test_measures_never_participate(self) -> None:
         items = self._items(SlayerQuery.model_validate({
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
         }))
         assert items == {"customers.region"}
 
     def test_saved_measure_filter_ref_dropped(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
-            filters=["orders.revenue > 100"],
+            filter=["orders.revenue > 100"],
         ))
         assert items == {"customers.region"}
 
@@ -249,9 +249,9 @@ class TestDeterminationItems:
         items = set(determination_items(
             SlayerQuery(
                 dimensions=["tickets.subject"],
-                filters=["tickets.reporter.handled > 0"],
+                filter=["tickets.reporter.handled > 0"],
             ),
-            models_by_name=named_models_by_name(),
+            datasets_by_name=named_datasets_by_name(),
         ))
         assert items == {"tickets.subject"}
 
@@ -260,16 +260,16 @@ class TestDeterminationItems:
         items = set(determination_items(
             SlayerQuery(
                 dimensions=["tickets.subject"],
-                filters=["tickets.reporter.score > 0"],
+                filter=["tickets.reporter.score > 0"],
             ),
-            models_by_name=named_models_by_name(),
+            datasets_by_name=named_datasets_by_name(),
         ))
         assert items == {"tickets.subject", "tickets.reporter.score"}
 
     def test_aggregation_filter_dropped(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
-            filters=["sum(orders.amount) > 100"],
+            filter=["sum(orders.amount) > 100"],
         ))
         assert items == {"customers.region"}
 
@@ -296,12 +296,12 @@ class TestDeterminationItems:
         assert items == {"customers.tier"}
 
     def test_model_level_filters_never_participate(self) -> None:
-        models = chain_models_by_name()
+        models = chain_datasets_by_name()
         models["customers"] = models["customers"].model_copy(
-            update={"filters": ["regions.name <> 'Nowhere'"]}
+            update={"filter": ["regions.name <> 'Nowhere'"]}
         )
         items = set(determination_items(
-            SlayerQuery(dimensions=["customers.region"]), models_by_name=models
+            SlayerQuery(dimensions=["customers.region"]), datasets_by_name=models
         ))
         assert items == {"customers.region"}
 
@@ -309,23 +309,23 @@ class TestDeterminationItems:
         items = determination_items(
             SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["customers.region = 'North'"],
+                filter=["customers.region = 'North'"],
             ),
-            models_by_name=chain_models_by_name(),
+            datasets_by_name=chain_datasets_by_name(),
         )
         assert sorted(items) == ["customers.region"]
 
     def test_unresolved_variable_is_masked_not_a_ref(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
-            filters=["customers.region = {reg}"],
+            filter=["customers.region = {reg}"],
         ))
         assert items == {"customers.region"}
 
     def test_ref_introduced_only_by_variable_value_does_not_participate(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
-            filters=["customers.region = {reg}"],
+            filter=["customers.region = {reg}"],
             variables={"reg": "customers.tier"},
         ))
         assert items == {"customers.region"}
@@ -335,7 +335,7 @@ class TestDeterminationItems:
         items = self._items(
             SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["customers.region = {reg}"],
+                filter=["customers.region = {reg}"],
             ),
         )
         assert items == {"customers.region"}

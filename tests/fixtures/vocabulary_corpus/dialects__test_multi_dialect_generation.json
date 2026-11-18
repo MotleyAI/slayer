@@ -1,0 +1,486 @@
+{
+ "source": "tests/dialects/test_multi_dialect_generation.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   },
+   "new": {
+    "expression": "time_shift(sum(revenue), -1, 'year')",
+    "name": "rev_prev_year"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='1y2m3d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='1y2m3d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='7d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='7d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='7d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='7d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='1y2m3d')",
+    "name": "rev_w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='1y2m3d')",
+    "name": "rev_w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(log_amount)"
+   },
+   "new": {
+    "expression": "max(log_amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(log2_amount)"
+   },
+   "new": {
+    "expression": "max(log2_amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(log_completed_amount)"
+   },
+   "new": {
+    "expression": "max(log_completed_amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(log_amount) / count(*)",
+    "name": "ratio"
+   },
+   "new": {
+    "expression": "max(log_amount) / count(*)",
+    "name": "ratio"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(log3_amount)"
+   },
+   "new": {
+    "expression": "max(log3_amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(ln_amount)"
+   },
+   "new": {
+    "expression": "max(ln_amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 216,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 219,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 233,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 301,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 304,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 327,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 330,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 345,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 348,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 386,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 418,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 420,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 454,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 473,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 475,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 503,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 508,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 509,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 510,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 513,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 514,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 517,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 520,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 529,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 558,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 592,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 597,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 598,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 599,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 600,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 609,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 632,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 651,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 675,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 706,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 732,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 757,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 783,
+   "reason": "not fully literal"
+  }
+ ]
+}

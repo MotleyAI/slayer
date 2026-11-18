@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_agg_positional_params.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  }
+ ]
+}

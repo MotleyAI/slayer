@@ -1,0 +1,61 @@
+{
+ "source": "tests/test_dev1836_producer_execution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.gold_spend)",
+    "name": "gs"
+   },
+   "new": {
+    "expression": "sum(customers.gold_spend)",
+    "name": "gs"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.spend)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.spend)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend) / sum(amount)",
+    "name": "ratio"
+   },
+   "new": {
+    "expression": "sum(customers.spend) / sum(amount)",
+    "name": "ratio"
+   }
+  }
+ ],
+ "skipped": []
+}

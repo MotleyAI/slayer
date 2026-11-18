@@ -20,34 +20,34 @@ duckdb ~/.local/share/slayer/demo/jaffle_shop.duckdb \
 ## 2. Inspect the drift
 
 ```bash
-slayer validate-models --datasource demo
+slayer validate-datasets --datasource demo
 ```
 
 Output:
 
 ```text
-EDIT MODEL: products (datasource: demo)
-  drop columns: sku
-    - column:sku: Live column 'sku' not found
+EDIT DATASET: products (datasource: demo)
+  drop fields: sku
+    - field:sku: Live column 'sku' not found
 ```
 
 The output is a punch list of replayable operations. Each entry maps
-directly onto an `edit_model` or `delete_model` call.
+directly onto an `edit_dataset` or `delete_dataset` call.
 
 ## 3. Try a query that touches the drifted column
 
 ```bash
-slayer query '{"source_model": "products", "dimensions": ["sku"]}'
+slayer query '{"population": "products", "dimensions": ["sku"]}'
 ```
 
-The engine catches the DBAPI error, checks the models the failed query
+The engine catches the DBAPI error, checks the datasets the failed query
 read for drift, and surfaces a `SchemaDriftError` with the structured
 delete payload. Compared to a raw "column not found" trace, you get a
 direct pointer to the diff and the suggested next step:
 
 ```text
-slayer validate-models --datasource demo
-slayer validate-models --datasource demo --force-clean
+slayer validate-datasets --datasource demo
+slayer validate-datasets --datasource demo --force-clean
 ```
 
 ## 4. Apply the deletes
@@ -56,16 +56,16 @@ Use `--force-clean --yes` to apply non-interactively (the `--yes` flag
 auto-approves the apply prompt):
 
 ```bash
-slayer validate-models --datasource demo --force-clean --yes
+slayer validate-datasets --datasource demo --force-clean --yes
 ```
 
 The CLI applies each entry through the engine's storage helpers, then
-re-runs `validate_models` to confirm there's no residual drift:
+re-runs `validate_datasets` to confirm there's no residual drift:
 
 ```text
-EDIT MODEL: products (datasource: demo)
-  drop columns: sku
-    - column:sku: Live column 'sku' not found
+EDIT DATASET: products (datasource: demo)
+  drop fields: sku
+    - field:sku: Live column 'sku' not found
 
 Applied 1 entry/entries.
 
@@ -88,10 +88,10 @@ slayer ingest --datasource demo
 Output:
 
 ```text
-Updated: products (+columns: ...)
+Updated: products (+fields: ...)
 ```
 
 If type drift is detected on existing columns, it shows up under
-"Pending drift" in the same output — re-run `slayer validate-models
---force-clean` (or apply manually via `edit_model`) and then re-ingest
+"Pending drift" in the same output — re-run `slayer validate-datasets
+--force-clean` (or apply manually via `edit_dataset`) and then re-ingest
 to pick up the new live type.

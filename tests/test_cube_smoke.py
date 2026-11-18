@@ -9,7 +9,7 @@ referenced a Cube measure *name* instead of the underlying Column would raise
 
 
 from slayer.core.models import DatasourceConfig
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import (
     CubeCube,
@@ -74,10 +74,10 @@ async def _save_converted(tmp_path) -> tuple[SlayerQueryEngine, dict]:
     await storage.save_datasource(
         DatasourceConfig(name=DS, type="sqlite", database=":memory:")
     )
-    for model in result.models:
-        await storage.save_model(model)
+    for model in result.datasets:
+        await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
-    return engine, {m.name: m for m in result.models}
+    return engine, {m.name: m for m in result.datasets}
 
 
 async def _gen_sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
@@ -99,11 +99,11 @@ async def test_view_cross_model_measure_resolves_to_underlying_column(tmp_path):
     """The facade measure `customers_lifetime_value` must resolve through the
     join to the underlying `ltv` column — this is the Codex #1 regression."""
     engine, _models = await _save_converted(tmp_path)
-    query = SlayerQuery(
-        source_model="orders_overview",
-        dimensions=[ColumnRef(name="status")],
-        measures=[{"formula": "customers_lifetime_value"}],
-    )
+    query = SlayerQuery.model_validate({
+        "population": "orders_overview",
+        "dimensions": [FieldRef(name="status")],
+        "metrics": [{"expression": "customers_lifetime_value"}],
+    })
     sql = await _gen_sql(engine, query)  # must not raise "Column not found"
     assert "ltv" in sql.lower()
     assert "sum" in sql.lower()
@@ -111,11 +111,11 @@ async def test_view_cross_model_measure_resolves_to_underlying_column(tmp_path):
 
 async def test_view_status_dimension_generates(tmp_path):
     engine, _models = await _save_converted(tmp_path)
-    query = SlayerQuery(
-        source_model="orders_overview",
-        dimensions=[ColumnRef(name="status")],
-        measures=[{"formula": "total_revenue"}],
-    )
+    query = SlayerQuery.model_validate({
+        "population": "orders_overview",
+        "dimensions": [FieldRef(name="status")],
+        "metrics": [{"expression": "total_revenue"}],
+    })
     sql = await _gen_sql(engine, query)
     assert "status" in sql.lower()
 
@@ -124,10 +124,10 @@ async def test_filtered_and_unfiltered_measures_emit_distinct_sql(tmp_path):
     """Codex #4 at the SQL layer: total_revenue (plain SUM) and
     completed_revenue (SUM over CASE WHEN) must both appear, distinctly."""
     engine, _models = await _save_converted(tmp_path)
-    query = SlayerQuery(
-        source_model="orders",
-        measures=[{"formula": "total_revenue"}, {"formula": "completed_revenue"}],
-    )
+    query = SlayerQuery.model_validate({
+        "population": "orders",
+        "metrics": [{"expression": "total_revenue"}, {"expression": "completed_revenue"}],
+    })
     sql = await _gen_sql(engine, query)
     assert sql.lower().count("sum(") >= 2
     assert "case" in sql.lower()  # the filtered one wraps amount in CASE WHEN

@@ -1,0 +1,63 @@
+{
+ "source": "tests/test_dev1847_reaggregation_exec.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount))",
+    "name": "acr"
+   },
+   "new": {
+    "expression": "avg(sum(amount))",
+    "name": "acr"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(corders.amount, partition_by=region_id))",
+    "name": "art"
+   },
+   "new": {
+    "expression": "avg(sum(corders.amount, partition_by=region_id))",
+    "name": "art"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 173,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  }
+ ]
+}

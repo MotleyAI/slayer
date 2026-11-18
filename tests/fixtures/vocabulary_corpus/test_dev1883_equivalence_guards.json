@@ -1,0 +1,105 @@
+{
+ "source": "tests/test_dev1883_equivalence_guards.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 87,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 98,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 99,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 119,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 120,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 132,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 133,
+   "reason": "unclassifiable"
+  }
+ ]
+}

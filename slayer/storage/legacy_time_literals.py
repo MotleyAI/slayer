@@ -47,7 +47,7 @@ def _legacy_literal(node: Any) -> bool:
 
 
 def legacy_literal_sites(filter_text: str) -> list[tuple[exp.Literal, exp.Column]] | None:
-    """Each legacy time literal ``filter_text`` directly compares with a column, or ``None`` when there is none."""
+    """Each legacy time literal ``filter_text`` directly compares with a field, or ``None`` when there is none."""
     if "'" not in filter_text:
         return None
     try:

@@ -20,18 +20,21 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
 )
-from slayer.facade.catalog_sql import CatalogSqlExecutor, executor_for
+from slayer.facade.catalog_sql import CatalogSqlExecutor, build_catalog_relations, executor_for
+from slayer.facade.probe_queries import match_probe as facade_match_probe
 from slayer.facade.translator import (
     NoOpResult,
     PgCatalogResult,
     ProbeResult,
     translate,
 )
+from slayer.pg_facade.identity import version_string
+from slayer.pg_facade.probes import match_pg_probe
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "metabase_v0_62_sync_corpus.sql"
@@ -39,42 +42,42 @@ FIXTURE = Path(__file__).parent / "fixtures" / "metabase_v0_62_sync_corpus.sql"
 
 def _demo_catalog() -> FacadeCatalog:
     """A 2-table catalog mirroring the captured Postgres (public.orders + public.customers)."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
         description="Demo orders table",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="total", type=DataType.DOUBLE, description="Order total"),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="total", datatype=DataType.DOUBLE, description="Order total"),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="email", type=DataType.TEXT, description="Customer email"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="email", datatype=DataType.TEXT, description="Customer email"),
         ],
     )
     return build_catalog_grouped_by_schema(
-        models_by_datasource={"jaffle": [orders, customers]}
+        datasets_by_datasource={"jaffle": [orders, customers]}
     )
 
 
 def _seven_table_demo_catalog() -> FacadeCatalog:
     """7-table jaffle-shop-shaped catalog so #9 asserts ``count == 7``."""
     models = [
-        SlayerModel(
+        SlayerDataset(
             name=tn, data_source="jaffle", sql_table=tn,
             description=f"jaffle {tn}",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
         )
         for tn in ("customers", "orders", "products", "stores", "supplies",
                    "items", "tweets")
     ]
     return build_catalog_grouped_by_schema(
-        models_by_datasource={"jaffle": models}
+        datasets_by_datasource={"jaffle": models}
     )
 
 
@@ -87,9 +90,6 @@ def _pg_probe_matcher(catalog: FacadeCatalog):
     runtime (DEV-1556 added SHOW + current_catalog/current_user/etc.).
     The corpus tests rely on this so SHOW statements are routed to a
     ProbeResult rather than to the noop classifier."""
-    from slayer.pg_facade.identity import version_string
-    from slayer.pg_facade.probes import match_pg_probe
-    from slayer.facade.probe_queries import match_probe as facade_match_probe
     datasource = catalog.schemas[0].name if catalog.schemas else catalog.catalog_name
 
     def matcher(parsed):
@@ -546,7 +546,6 @@ def test_corpus_18_field_type_lookup_substitutes_slayer_oid() -> None:
     of the captured literal 16384 happens; the captured literal is a property
     of the original Postgres, not of SLayer's catalog."""
     catalog = _demo_catalog()
-    from slayer.facade.catalog_sql import build_catalog_relations
     relations = {r.name: r for r in build_catalog_relations(catalog)}
     orders_oid = next(r["oid"] for r in relations["pg_class"].rows if r["relname"] == "orders")
 

@@ -54,9 +54,9 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     BAND35,
     BAND35_OF,
     CITY_TOTAL,
-    ColumnRef,
+    FieldRef,
     GRAND_TOTAL,
-    ModelMeasure,
+    DatasetMetric,
     REGION_LAST,
     REGION_TOTAL,
     SlayerQuery,
@@ -316,8 +316,8 @@ def dim_key(row: dict, *, family: str, with_month: bool):
 
 __all__ = [
     "BAND35", "BAND35_OF", "BARE_DIM", "CITY_TOTAL", "CM_TOTAL", "COL_WM",
-    "CP_PRED", "ColumnRef", "DIM_FAMILY_DIMS", "GRAND_TOTAL", "GROUP_M",
-    "GROUP_M_MONTH", "MIXED_DIM", "ModelMeasure", "RANK_DIM", "REGION_LAST",
+    "CP_PRED", "FieldRef", "DIM_FAMILY_DIMS", "GRAND_TOTAL", "GROUP_M",
+    "GROUP_M_MONTH", "MIXED_DIM", "DatasetMetric", "RANK_DIM", "REGION_LAST",
     "REGION_TOTAL",
     "SlayerQuery", "TD_TRANSFORM_OPS", "TRAILING_90D_REGION", "TRANSFORM_FORMULAS",
     "TRANSFORM_X", "TimeDimension", "TimeGranularity", "dev1837_models", "dim_key",

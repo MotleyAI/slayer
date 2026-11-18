@@ -26,7 +26,7 @@ class DataType(StrEnum):
 
     @property
     def is_opaque(self) -> bool:
-        """True when SLayer can store/display the column but not operate on it."""
+        """True when SLayer can store/display the field but not operate on it."""
         return self is DataType.UNKNOWN
 
     @property
@@ -244,8 +244,8 @@ class JoinType(StrEnum):
     INNER = "inner"
 
 
-class JoinCardinality(StrEnum):
-    """Arity of a join, read source->target ("many orders -> one customer").
+class RelationshipCardinality(StrEnum):
+    """Arity of a relationship, read source->target ("many orders -> one customer").
 
     Descriptive metadata, orthogonal to ``JoinType`` — it does not change the
     emitted join.
@@ -257,19 +257,19 @@ class JoinCardinality(StrEnum):
 
 
 def invert_cardinality(
-    cardinality: "JoinCardinality | None",
-) -> "JoinCardinality | None":
+    cardinality: "RelationshipCardinality | None",
+) -> "RelationshipCardinality | None":
     """Cardinality of the reverse edge; one_to_one / many_to_many / None are
     self-inverse.
     """
-    if cardinality is JoinCardinality.MANY_TO_ONE:
-        return JoinCardinality.ONE_TO_MANY
-    if cardinality is JoinCardinality.ONE_TO_MANY:
-        return JoinCardinality.MANY_TO_ONE
+    if cardinality is RelationshipCardinality.MANY_TO_ONE:
+        return RelationshipCardinality.ONE_TO_MANY
+    if cardinality is RelationshipCardinality.ONE_TO_MANY:
+        return RelationshipCardinality.MANY_TO_ONE
     return cardinality
 
 
-# The kind of database object a ``sql_table``-mode model points at. A plain
+# The kind of database object a ``sql_table``-mode dataset points at. A plain
 # ``Literal`` (not ``StrEnum``) so the values persist as bare strings in
 # YAML/SQLite without an enum-serialisation round-trip.
 ObjectKind = Literal["table", "view", "materialized_view"]
@@ -279,7 +279,7 @@ ObjectKind = Literal["table", "view", "materialized_view"]
 # Aggregation constants
 # ---------------------------------------------------------------------------
 
-# Built-in aggregation names (always available without model-level definition).
+# Built-in aggregation names (always available without dataset-level definition).
 BUILTIN_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max",
     "count", "count_distinct", "count_distinct_approx",
@@ -328,7 +328,7 @@ AXIS_COLLAPSING_TRANSFORMS = frozenset({"first", "last"})
 # ``classify_aggregation`` buckets each aggregation by result-vs-source relation;
 # slot type and display format both read the bucket, so the axes cannot drift.
 
-# Result is always an integer count, independent of the source column.
+# Result is always an integer count, independent of the source field.
 INTEGER_AGGREGATIONS: frozenset[str] = frozenset({
     "count", "count_distinct", "count_distinct_approx",
 })
@@ -347,14 +347,14 @@ FLOAT_SOURCE_UNIT_AGGREGATIONS: frozenset[str] = frozenset({
 FLOAT_PLAIN_AGGREGATIONS: frozenset[str] = frozenset({
     "corr", "var_samp", "var_pop", "covar_samp", "covar_pop",
 })
-# Result preserves the source column's type AND format.
+# Result preserves the source field's type AND format.
 PRESERVING_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "min", "max", "first", "last",
 })
 
 
 class AggregationValueClass(StrEnum):
-    """How an aggregation's result relates to its source column, for slot-type
+    """How an aggregation's result relates to its source field, for slot-type
     and display-format inference."""
 
     COUNT = "count"                            # INT type, INTEGER format
@@ -365,14 +365,14 @@ class AggregationValueClass(StrEnum):
 
 
 def classify_aggregation(
-    *, measure_name: Optional[str], aggregation: str, source_type: Optional[DataType],
+    *, metric_name: Optional[str], aggregation: str, source_type: Optional[DataType],
 ) -> AggregationValueClass:
     """Bucket an aggregation for slot-type / display-format inference.
 
     ``measure_name == "*"`` (``count(*)``) and a boolean ``sum`` (a count of trues) are
     COUNT; custom/unknown aggregations fall through to PRESERVING (inherit source type & format).
     """
-    if measure_name == "*":
+    if metric_name == "*":
         return AggregationValueClass.COUNT
     if aggregation in INTEGER_AGGREGATIONS:
         return AggregationValueClass.COUNT
@@ -409,11 +409,11 @@ def normalize_aggregation_name(name: str) -> str:
     return candidate if candidate in BUILTIN_AGGREGATIONS else name
 
 
-# Built-in aggregation SQL formulas (for aggregations that use a template).
-# {value} = measure's SQL expression; {param_name} = parameter values.
+# Built-in aggregation SQL expressions (for aggregations that use a template).
+# {value} = metric's SQL expression; {param_name} = parameter values.
 # Note: percentile is dialect-dependent (no single template works on
 # SQLite/ClickHouse/MySQL) and lives in render_aggregate instead.
-BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
+BUILTIN_AGGREGATION_EXPRESSIONS: dict[str, str] = {
     # A NULL value's weight is skipped like the value; ``* 1.0`` keeps integer inputs from dividing as integers.
     "weighted_avg": "SUM({value} * {weight}) * 1.0 / NULLIF(SUM(CASE WHEN {value} IS NOT NULL THEN {weight} END), 0)",
 }
@@ -429,13 +429,13 @@ BUILTIN_AGGREGATION_REQUIRED_PARAMS: dict[str, list[str]] = {
 
 # Declared parameter order for built-in parametric aggregations: positional
 # call values fold onto these names at binding (`percentile(x, 0.9)` ≡ `p=0.9`).
-# first/last are absent on purpose — their positional arg is the ranking column.
+# first/last are absent on purpose — their positional arg is the ranking field.
 BUILTIN_AGGREGATION_PARAM_ORDER: dict[str, list[str]] = {
     "percentile": ["p"],
     **BUILTIN_AGGREGATION_REQUIRED_PARAMS,
 }
 
-# Rejected at binding on non-numeric measures; min/max/count*/first/last
+# Rejected at binding on non-numeric metrics; min/max/count*/first/last
 # work on any type and are deliberately absent.
 NUMERIC_ONLY_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "median", "weighted_avg", "percentile",
@@ -449,7 +449,7 @@ BOOLEAN_RESTORED_AGGREGATIONS: frozenset[str] = frozenset({"min", "max"})
 BOOLEAN_LOWERED_AGGREGATIONS: frozenset[str] = NUMERIC_ONLY_AGGREGATIONS | BOOLEAN_RESTORED_AGGREGATIONS
 
 
-# Per-type default whitelist, used when a column declares no explicit
+# Per-type default whitelist, used when a field declares no explicit
 # ``allowed_aggregations``.
 _NUMERIC_AGGREGATIONS: frozenset[str] = frozenset({
     "sum", "avg", "min", "max", "count", "count_distinct", "count_distinct_approx",
@@ -471,7 +471,7 @@ DEFAULT_AGGREGATIONS_BY_TYPE: dict[DataType, frozenset[str]] = {
     DataType.BOOLEAN: _NUMERIC_AGGREGATIONS,
     DataType.DATE: _ORDERED_AGGREGATIONS,
     DataType.TIMESTAMP: _ORDERED_AGGREGATIONS,
-    # A list counts as a whole or by distinct element sets; its elements aggregate through ``<column>.value``.
+    # A list counts as a whole or by distinct element sets; its elements aggregate through ``<field>.value``.
     DataType.ARRAY: frozenset({"count", "count_distinct"}),
 }
 

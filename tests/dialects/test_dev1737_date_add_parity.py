@@ -9,7 +9,7 @@ import pytest
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.dialects import SqlDialect, get_dialect
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -20,32 +20,32 @@ TG = TimeGranularity
 SHIFT_GRANULARITIES = [TG.HOUR, TG.DAY, TG.WEEK, TG.WEEK_SUNDAY, TG.MONTH, TG.QUARTER, TG.YEAR]
 
 
-def _ev_model() -> SlayerModel:
-    return SlayerModel(
+def _ev_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ts", type=DataType.TIMESTAMP),
-            Column(name="v", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+            DatasetField(name="v", datatype=DataType.DOUBLE),
         ],
     )
 
 
 def _query(granularity: str, *measures) -> dict:
     return {
-        "source_model": "ev",
-        "time_dimensions": [{"dimension": "ts", "granularity": granularity}],
-        "measures": list(measures),
+        "population": "ev",
+        "time_dimensions": [{"field": "ts", "granularity": granularity}],
+        "metrics": list(measures),
     }
 
 
 def _shift(granularity: TimeGranularity, offset: int, *, bucket: TimeGranularity | None = None) -> dict:
     return _query((bucket or granularity).value, "sum(v)", {
-        "formula": f"time_shift(sum(v), {offset}, '{granularity.value}')", "name": "x"})
+        "expression": f"time_shift(sum(v), {offset}, '{granularity.value}')", "name": "x"})
 
 
 def _window(duration: str, bucket: str) -> dict:
-    return _query(bucket, {"formula": f"sum(v, window='{duration}')", "name": "x"})
+    return _query(bucket, {"expression": f"sum(v, window='{duration}')", "name": "x"})
 
 
 def _cases() -> dict:
@@ -65,7 +65,7 @@ def _cases() -> dict:
 
 async def _generate_one(query: dict, dialect: str):
     try:
-        return await _engine_generate(query=[query], model=_ev_model(), dialect=dialect)
+        return await _engine_generate(query=[query], dataset=_ev_dataset(), dialect=dialect)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
 
@@ -115,7 +115,7 @@ def _count(node: Expression) -> int:
 
 
 @pytest.fixture
-def spy(monkeypatch):
+def spy(monkeypatch: pytest.MonkeyPatch):
     calls: list[tuple[str, int]] = []
 
     def install(dialect: str) -> list[tuple[str, int]]:
@@ -138,7 +138,7 @@ def spy(monkeypatch):
 @pytest.mark.parametrize("granularity", SHIFT_GRANULARITIES)
 async def test_time_shift_uses_date_add(spy, dialect: str, granularity: TimeGranularity) -> None:
     calls = spy(dialect)
-    await _engine_generate(query=[_shift(granularity, -1)], model=_ev_model(), dialect=dialect)
+    await _engine_generate(query=[_shift(granularity, -1)], dataset=_ev_dataset(), dialect=dialect)
     kind, amount = _span(granularity, 1)
     assert (kind, amount) in calls or (kind, -amount) in calls, calls
 
@@ -146,7 +146,7 @@ async def test_time_shift_uses_date_add(spy, dialect: str, granularity: TimeGran
 @pytest.mark.parametrize("dialect", [d for d in TIER1 if d != "bigquery"])
 async def test_sunday_week_truncation_uses_date_add(spy, dialect: str) -> None:
     calls = spy(dialect)
-    await _engine_generate(query=[_query("week_sunday", "sum(v)")], model=_ev_model(), dialect=dialect)
+    await _engine_generate(query=[_query("week_sunday", "sum(v)")], dataset=_ev_dataset(), dialect=dialect)
     assert ("days", 1) in calls, calls
     assert ("days", -1) in calls, calls
 
@@ -154,7 +154,7 @@ async def test_sunday_week_truncation_uses_date_add(spy, dialect: str) -> None:
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_window_frame_parts_apply_in_written_order(spy, dialect: str) -> None:
     calls = spy(dialect)
-    await _engine_generate(query=[_window("1y2m3w5d6h7min8s", "day")], model=_ev_model(), dialect=dialect)
+    await _engine_generate(query=[_window("1y2m3w5d6h7min8s", "day")], dataset=_ev_dataset(), dialect=dialect)
     assert ("days", 1) in calls, calls
     expected = [("months", -12), ("months", -2), ("days", -21), ("days", -5),
                 ("seconds", -21600), ("seconds", -420), ("seconds", -8)]

@@ -1,0 +1,230 @@
+{
+ "source": "tests/dialects/test_bigquery.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue) / sum(quantity)",
+    "name": "aov"
+   },
+   "new": {
+    "expression": "sum(revenue) / sum(quantity)",
+    "name": "aov"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "created_at",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 275,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 321,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 335,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 372,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 377,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 378,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 509,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 514,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 515,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 562,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 567,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 568,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 856,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 862,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 863,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 864,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 865,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 868,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 871,
+   "reason": "not fully literal"
+  }
+ ]
+}

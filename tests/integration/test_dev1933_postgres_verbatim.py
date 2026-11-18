@@ -13,8 +13,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 import sqlglot
 
@@ -96,14 +96,14 @@ async def pg_client(_pg_datasource) -> AsyncIterator[SlayerSQLClient]:
 
 @pytest.fixture
 async def pg_env(_pg_datasource, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="testpg",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ],
     )
-    async with pg_query_engine(_pg_datasource, base_dir=str(tmp_path), models=[model]) as engine:
+    async with pg_query_engine(_pg_datasource, base_dir=str(tmp_path), datasets=[model]) as engine:
         yield engine
 
 
@@ -124,15 +124,15 @@ class TestPostgresVerbatimExecution:
         assert [r["status"] for r in rows] == ["pending", "pending"]
 
     async def test_regexp_replace_column_end_to_end(self, pg_env: SlayerQueryEngine) -> None:
-        orders = await pg_env.storage.get_model("orders")
+        orders = await pg_env.storage.get_dataset("orders")
         assert orders is not None
-        await pg_env.storage.save_model(orders.model_copy(update={"name": "orders_rx", "columns": [
-            *orders.columns, Column(name="rx", sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')", type=DataType.TEXT),
+        await pg_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
+            *orders.fields, DatasetField(name="rx", sql=f"REGEXP_REPLACE(status, '{_REGEX_LITERAL}', 'X')", datatype=DataType.TEXT),
         ]}))
         query = SlayerQuery(
-            source_model="orders_rx",
-            dimensions=[ColumnRef(name="rx")],
-            measures=[ModelMeasure(formula="count(*)")],
+            population="orders_rx",
+            dimensions=[FieldRef(name="rx")],
+            metrics=[DatasetMetric(expression="count(*)")],
         )
         result = await pg_env.execute(query=query)
         # No status matches the pattern, so REGEXP_REPLACE returns each unchanged.

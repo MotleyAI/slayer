@@ -26,16 +26,17 @@ from tests._dev2046_fixtures import (
     as_bool,
     by_dim,
     by_month,
-    customers_model,
+    customers_dataset,
     m,
     make_exec_engine,
     month_td,
-    orders_model,
+    orders_dataset,
     orders_q,
     seed_sqlite,
     single,
 )
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -50,19 +51,19 @@ def _num(value):
 
 class TestColumnAggregates:
     async def test_sum_counts_trues(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[m("sum(flag)")]))
+        resp = await engine.execute(orders_q(metrics=[m("sum(flag)")]))
         value = single(resp)
         assert not isinstance(value, bool)
         assert value == FLAG_TOTALS["sum"]
 
     async def test_avg_is_share_of_true_rows(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[m("avg(flag)")]))
+        resp = await engine.execute(orders_q(metrics=[m("avg(flag)")]))
         assert _num(single(resp)) == pytest.approx(FLAG_TOTALS["avg"])
 
     async def test_by_region(self, engine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["region"],
-            measures=[m(f"{agg}(flag)", agg) for agg in ("sum", "avg", "min", "max")],
+            metrics=[m(f"{agg}(flag)", agg) for agg in ("sum", "avg", "min", "max")],
         ))
         assert {r: v for r, v in by_dim(resp, "region", "sum").items()} == FLAG_BY_REGION["sum"]
         assert {r: pytest.approx(_num(v)) for r, v in by_dim(resp, "region", "avg").items()} == FLAG_BY_REGION["avg"]
@@ -71,7 +72,7 @@ class TestColumnAggregates:
 
     async def test_min_max_counts(self, engine) -> None:
         """min / max stay boolean; the count family keeps the boolean (false counted, NULL not)."""
-        resp = await engine.execute(orders_q(measures=[
+        resp = await engine.execute(orders_q(metrics=[
             m("min(flag)", "mn"), m("max(flag)", "mx"), m("count(flag)", "c"),
             m("count_distinct(flag)", "cd"), m("sum(flag)", "s"),
         ]))
@@ -84,33 +85,33 @@ class TestColumnAggregates:
         assert not isinstance(row["orders.s"], bool)
 
     async def test_derived_boolean_column(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[m("sum(big_order)", "s"), m("avg(big_order)", "a")]))
+        resp = await engine.execute(orders_q(metrics=[m("sum(big_order)", "s"), m("avg(big_order)", "a")]))
         row = resp.data[0]
         assert row["orders.s"] == GT15_TOTALS["sum"]
         assert not isinstance(row["orders.s"], bool)
         assert _num(row["orders.a"]) == pytest.approx(GT15_TOTALS["avg"])
 
-    async def test_measure_formats(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[m("sum(flag)", "s"), m("avg(flag)", "a")]))
-        assert resp.attributes.measures["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
-        assert resp.attributes.measures["orders.a"].format == NumberFormat(type=NumberFormatType.PERCENT)
+    async def test_measure_formats(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(orders_q(metrics=[m("sum(flag)", "s"), m("avg(flag)", "a")]))
+        assert resp.attributes.metrics["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
+        assert resp.attributes.metrics["orders.a"].format == NumberFormat(type=NumberFormatType.PERCENT)
 
 
 class TestExpressionSources:
     @pytest.mark.parametrize("agg", ["sum", "avg", "count"])
     async def test_comparison(self, engine, agg: str) -> None:
-        resp = await engine.execute(orders_q(measures=[m(f"{agg}(amount > 15)")]))
+        resp = await engine.execute(orders_q(metrics=[m(f"{agg}(amount > 15)")]))
         value = single(resp)
         assert not isinstance(value, bool)
         assert _num(value) == pytest.approx(GT15_TOTALS[agg])
 
     async def test_comparison_by_region(self, engine) -> None:
-        resp = await engine.execute(orders_q(dimensions=["region"], measures=[m("sum(amount > 15)")]))
+        resp = await engine.execute(orders_q(dimensions=["region"], metrics=[m("sum(amount > 15)")]))
         # West's amounts are all NULL: a SUM over no non-NULL input is NULL (Axiom 4).
         assert by_dim(resp, "region") == {"east": 2, "west": None}
 
     async def test_boolean_expressions(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[
+        resp = await engine.execute(orders_q(metrics=[
             m("sum(coalesce(flag, false))", "sc"),
             m("avg(coalesce(flag, false))", "ac"),
             m("sum(nullif(flag, false))", "sn"),
@@ -125,7 +126,7 @@ class TestExpressionSources:
         assert as_bool(row["orders.mc"]) is True
 
     async def test_in_predicate(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[
+        resp = await engine.execute(orders_q(metrics=[
             m("sum(status in ('ok', 'hold'))", "s"),
             m("count_distinct(status in ('ok', 'hold'))", "cd"),
             m("sum(status not in ('ok', 'hold'))", "sn"),
@@ -136,18 +137,18 @@ class TestExpressionSources:
         assert row["orders.cd"] == 2
         assert row["orders.sn"] == 1
 
-    async def test_time_point_comparison(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[
+    async def test_time_point_comparison(self, engine: SlayerQueryEngine) -> None:
+        resp = await engine.execute(orders_q(metrics=[
             m("sum(ordered_at >= '2025-02')", "s"), m("max(ordered_at >= '2025-03')", "mx"),
         ]))
         row = resp.data[0]
         assert row["orders.s"] == 3
         assert not isinstance(row["orders.s"], bool)
         assert as_bool(row["orders.mx"]) is True
-        assert resp.attributes.measures["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
+        assert resp.attributes.metrics["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
 
     async def test_connective(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[m("sum(flag and amount > 15)", "a"), m("sum(not flag)", "n")]))
+        resp = await engine.execute(orders_q(metrics=[m("sum(flag and amount > 15)", "a"), m("sum(not flag)", "n")]))
         row = resp.data[0]
         assert row["orders.a"] == 1
         assert row["orders.n"] == 2
@@ -162,7 +163,7 @@ class TestPredicateOverAttachedValue:
         ("sum(max(ordered_at) >= '2025-03')", {100: 0, 200: 1}),
     ])
     async def test_per_customer(self, engine, formula: str, expected: dict) -> None:
-        resp = await engine.execute(orders_q(dimensions=["customer_id"], measures=[m(formula)]))
+        resp = await engine.execute(orders_q(dimensions=["customer_id"], metrics=[m(formula)]))
         assert by_dim(resp, "customer_id") == expected
 
 
@@ -170,7 +171,7 @@ class TestPostAggregationFilters:
     @pytest.mark.parametrize("having", ["max(flag) = true", "sum(flag) > 1", "sum(amount > 15) > 1", "avg(flag) > 0.5"])
     async def test_keeps_matching_groups(self, engine, having: str) -> None:
         resp = await engine.execute(orders_q(
-            dimensions=["region"], measures=[m("sum(flag)")], filters=[having],
+            dimensions=["region"], metrics=[m("sum(flag)")], filter=[having],
         ))
         assert by_dim(resp, "region") == {"east": 2}
 
@@ -178,18 +179,18 @@ class TestPostAggregationFilters:
 class TestComposition:
     async def test_cross_model_sum(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers", "dimensions": ["name"], "measures": [m("sum(orders.flag)")],
+            "population": "customers", "dimensions": ["name"], "metrics": [m("sum(orders.flag)")],
         }))
-        values = by_dim(resp, "name", model="customers")
+        values = by_dim(resp, "name", dataset="customers")
         assert values == CROSS_MODEL_FLAG_SUM_BY_NAME
         assert not any(isinstance(v, bool) for v in values.values())
 
     async def test_stage_reaggregation(self, engine) -> None:
         resp = await engine.execute([
-            {"name": "s1", "source_model": "orders", "dimensions": ["customer_id"],
-             "measures": [{"formula": "sum(flag)", "name": "fs"}, {"formula": "max(flag)", "name": "fm"}]},
-            {"source_model": "s1",
-             "measures": [{"formula": "sum(fs)", "name": "a"}, {"formula": "max(fm)", "name": "b"}]},
+            {"name": "s1", "population": "orders", "dimensions": ["customer_id"],
+             "metrics": [{"expression": "sum(flag)", "name": "fs"}, {"expression": "max(flag)", "name": "fm"}]},
+            {"population": "s1",
+             "metrics": [{"expression": "sum(fs)", "name": "a"}, {"expression": "max(fm)", "name": "b"}]},
         ])
         row = resp.data[0]
         assert row["s1.a"] == sum(FLAG_SUM_BY_CUSTOMER.values())
@@ -198,28 +199,28 @@ class TestComposition:
 
     async def test_first_stage_values(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            dimensions=["customer_id"], measures=[m("sum(flag)", "s"), m("max(flag)", "mx")],
+            dimensions=["customer_id"], metrics=[m("sum(flag)", "s"), m("max(flag)", "mx")],
         ))
         assert by_dim(resp, "customer_id", "s") == FLAG_SUM_BY_CUSTOMER
         assert {k: as_bool(v) for k, v in by_dim(resp, "customer_id", "mx").items()} == FLAG_MAX_BY_CUSTOMER
 
     async def test_cumsum(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            time_dimensions=month_td(), measures=[m("sum(flag)", "s"), m("cumsum(sum(flag))", "cs")],
+            time_dimensions=month_td(), metrics=[m("sum(flag)", "s"), m("cumsum(sum(flag))", "cs")],
         ))
         assert by_month(resp, "s") == FLAG_SUM_BY_MONTH
         assert {k: _num(v) for k, v in by_month(resp, "cs").items()} == FLAG_CUMSUM_BY_MONTH
         assert "AS BOOLEAN" not in (resp.sql or "").upper()
 
     async def test_trailing_window(self, engine) -> None:
-        resp = await engine.execute(orders_q(time_dimensions=month_td(), measures=[m("sum(flag, window='90d')")]))
+        resp = await engine.execute(orders_q(time_dimensions=month_td(), metrics=[m("sum(flag, window='90d')")]))
         values = by_month(resp)
         assert values == FLAG_90D_BY_MONTH
         assert not any(isinstance(v, bool) for v in values.values())
 
     async def test_partition_by(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            dimensions=["region", "status"], measures=[m("sum(flag, partition_by=region)")],
+            dimensions=["region", "status"], metrics=[m("sum(flag, partition_by=region)")],
         ))
         got = {(r["orders.region"], r["orders.status"]): r["orders.v"] for r in resp.data}
         assert got == {("east", "ok"): 2, ("east", "hold"): 2, ("west", "void"): 0, ("west", "ok"): 0}
@@ -227,7 +228,7 @@ class TestComposition:
 
     async def test_association_pick(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            dimensions=["region"], measures=[m("sum(customers.vip)")], to_many_handling="associate",
+            dimensions=["region"], metrics=[m("sum(customers.vip)")], to_many_handling="associate",
         ))
         values = by_dim(resp, "region")
         assert values == VIP_ASSOC_SUM_BY_REGION
@@ -237,12 +238,12 @@ class TestComposition:
 class TestGates:
     async def test_avg_allowed_by_default_after_validation(self) -> None:
         """Scenario: a BOOLEAN column without allowed_aggregations validates and serves avg."""
-        models = [orders_model(), customers_model()]
-        flag = models[0].get_column("flag")
+        models = [orders_dataset(), customers_dataset()]
+        flag = models[0].get_field("flag")
         assert flag is not None
         assert flag.allowed_aggregations is None
-        async with seeded_exec_engine(dialect="sqlite", seed=seed_sqlite, models=models, validate=True) as (engine, _):
-            resp = await engine.execute(orders_q(measures=[m("avg(flag)")]))
+        async with seeded_exec_engine(dialect="sqlite", seed=seed_sqlite, datasets=models, validate=True) as (engine, _):
+            resp = await engine.execute(orders_q(metrics=[m("avg(flag)")]))
             assert _num(single(resp)) == pytest.approx(FLAG_TOTALS["avg"])
 
     @pytest.mark.parametrize("formula,expected", [
@@ -254,13 +255,13 @@ class TestGates:
         ("weighted_avg(flag, weight=amount)", 0.5),
     ])
     async def test_statistical_over_boolean_reads_the_integer(self, engine, formula: str, expected: float) -> None:
-        resp = await engine.execute(orders_q(measures=[m(formula)]))
+        resp = await engine.execute(orders_q(metrics=[m(formula)]))
         assert _num(single(resp)) == pytest.approx(expected)
 
 
 class TestLiteralSources:
     async def test_by_region(self, engine) -> None:
-        resp = await engine.execute(orders_q(dimensions=["region"], measures=[
+        resp = await engine.execute(orders_q(dimensions=["region"], metrics=[
             m("sum(True)", "s"), m("avg(True)", "a"), m("max(True)", "mx"), m("count(True)", "c"), m("sum(1 > 2)", "f"),
         ]))
         assert by_dim(resp, "region", "s") == {"east": 3, "west": 2}
@@ -274,7 +275,7 @@ class TestNumericPositions:
     """Outside aggregation a boolean is its integer wherever a number is needed."""
 
     async def test_arithmetic_and_scalars(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[
+        resp = await engine.execute(orders_q(metrics=[
             m("sum(flag * amount)", "fa"), m("sum((amount > 15) + 1)", "p1"), m("max(round(flag))", "r"),
             m("sum(coalesce(flag, 0))", "c"), m("sum(iif(amount > 15, flag, 2))", "i"),
         ]))
@@ -286,12 +287,12 @@ class TestNumericPositions:
         assert row["orders.i"] == 7
 
     async def test_compared_with_a_number(self, engine) -> None:
-        resp = await engine.execute(orders_q(measures=[m("count(*)")], filters=["flag = 1"]))
+        resp = await engine.execute(orders_q(metrics=[m("count(*)")], filter=["flag = 1"]))
         assert single(resp) == 2
 
     async def test_arithmetic_over_boolean_measures(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            dimensions=["region"], measures=[m("(sum(amount) > 50) + (count(*) > 1)")],
+            dimensions=["region"], metrics=[m("(sum(amount) > 50) + (count(*) > 1)")],
         ))
         assert by_dim(resp, "region") == {"east": 2, "west": None}
 
@@ -299,5 +300,5 @@ class TestNumericPositions:
 class TestWeightedAvg:
     async def test_null_values_skip_their_weight(self, engine) -> None:
         """Values 10/20/30 weighted 100/100/200; the two NULL-amount rows' weights (200 each) don't count."""
-        resp = await engine.execute(orders_q(measures=[m("weighted_avg(amount, weight=customer_id)")]))
+        resp = await engine.execute(orders_q(metrics=[m("weighted_avg(amount, weight=customer_id)")]))
         assert _num(single(resp)) == pytest.approx(9000 / 400)

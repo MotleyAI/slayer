@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_stored_upgrade_distinct_and_gate.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(distinct)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(distinct)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "total"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "total"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

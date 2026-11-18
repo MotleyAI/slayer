@@ -71,7 +71,7 @@ result type.
 
 #### Scenario: Explicit type still casts
 
-- WHEN a query declares an explicit result type (e.g. `type: DOUBLE`) on a
+- WHEN a query declares an explicit result type (e.g. `datatype: DOUBLE`) on a
   measure over a `DECIMAL(18,2)` column
 - THEN the generated SQL casts the aggregate to the declared type and the
   result value has that type

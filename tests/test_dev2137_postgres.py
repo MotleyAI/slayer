@@ -6,9 +6,9 @@ from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
 from slayer.live_schema.ingestion import ingest_datasource_async
-from tests._dev2120_fixtures import contractors_model, contractors_statements
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
-from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._dev2120_fixtures import contractors_dataset, contractors_statements
+from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._pg_helpers import client_datasource, pg_query_engine
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -23,9 +23,9 @@ async def pg(postgresql, tmp_path):
         cur.execute(stmt)
     postgresql.commit()
     ds = client_datasource(postgresql.info)
-    models = [contractors_model(data_source="pg"), assignments_model(data_source="pg"),
-              mixed_numbers_model(data_source="pg")]
-    async with pg_query_engine(ds, base_dir=str(tmp_path), models=models) as engine:
+    models = [contractors_dataset(data_source="pg"), assignments_dataset(data_source="pg"),
+              mixed_numbers_dataset(data_source="pg")]
+    async with pg_query_engine(ds, base_dir=str(tmp_path), datasets=models) as engine:
         yield engine, ds
 
 
@@ -40,5 +40,5 @@ async def test_mixed_numeric_lists(pg) -> None:
 async def test_ingested_list_columns(pg) -> None:
     engine, ds = pg
     (model,) = await ingest_datasource_async(ds, client=engine.client_for(ds), include_tables=["contractors"])
-    typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
+    typed = {c.name: (c.datatype, c.element_type) for c in model.fields if c.name in ("skills", "scores")}
     assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}

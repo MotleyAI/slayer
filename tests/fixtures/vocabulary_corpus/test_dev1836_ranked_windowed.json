@@ -1,0 +1,99 @@
+{
+ "source": "tests/test_dev1836_ranked_windowed.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "pt"
+   },
+   "new": {
+    "expression": "sum(customers.spend, partition_by=customers.tier)",
+    "name": "pt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers.spend, customers.signup_at)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(customers.spend, customers.signup_at)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='1y')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='1y', partition_by=customers.tier)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='1y', partition_by=customers.tier)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='1y')",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  }
+ ]
+}

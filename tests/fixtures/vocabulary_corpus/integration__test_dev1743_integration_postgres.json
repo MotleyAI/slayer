@@ -1,0 +1,189 @@
+{
+ "source": "tests/integration/test_dev1743_integration_postgres.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customer__region",
+    "join_pairs": [
+     [
+      "cr_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customer__region",
+    "join_pairs": [
+     [
+      "cr_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customer__region.label"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customer__region.label"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "household_entity_record_north",
+    "join_pairs": [
+     [
+      "north_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "household_entity_record_north",
+    "join_pairs": [
+     [
+      "north_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "household_entity_record_south",
+    "join_pairs": [
+     [
+      "south_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "household_entity_record_south",
+    "join_pairs": [
+     [
+      "south_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "consumer_entity_record",
+    "join_pairs": [
+     [
+      "consumer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "consumer_entity_record",
+    "join_pairs": [
+     [
+      "consumer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customer_entity_record",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customer_entity_record",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 149,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "not fully literal"
+  }
+ ]
+}

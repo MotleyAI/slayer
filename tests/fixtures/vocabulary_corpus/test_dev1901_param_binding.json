@@ -1,0 +1,66 @@
+{
+ "source": "tests/test_dev1901_param_binding.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wbad_agg(amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wbad_agg(amount)",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 313,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 317,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 318,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 322,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 323,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 325,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 326,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 328,
+   "reason": "not fully literal"
+  }
+ ]
+}

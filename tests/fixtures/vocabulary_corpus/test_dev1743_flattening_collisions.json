@@ -1,0 +1,249 @@
+{
+ "source": "tests/test_dev1743_flattening_collisions.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "cust_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "cust_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "inner",
+    "source_model": "hostm",
+    "dimensions": [
+     "customers.region",
+     "customers__region"
+    ]
+   },
+   "new": {
+    "name": "inner",
+    "population": "hostm",
+    "dimensions": [
+     "customers.region",
+     "customers__region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "inner"
+   },
+   "new": {
+    "population": "inner"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "cumsum(sum(amount))",
+      "name": "dup"
+     },
+     {
+      "formula": "cumsum(sum(amount))",
+      "name": "dup"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": {
+       "name": "created_at"
+      },
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "cumsum(sum(amount))",
+      "name": "dup"
+     },
+     {
+      "expression": "cumsum(sum(amount))",
+      "name": "dup"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": {
+       "name": "created_at"
+      },
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hostm",
+    "dimensions": [
+     "customers.region",
+     "customers__region"
+    ]
+   },
+   "new": {
+    "population": "hostm",
+    "dimensions": [
+     "customers.region",
+     "customers__region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hostm",
+    "dimensions": [
+     "customers.region",
+     "customers__region"
+    ]
+   },
+   "new": {
+    "population": "hostm",
+    "dimensions": [
+     "customers.region",
+     "customers__region"
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "cust_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "cust_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hostm",
+    "dimensions": [
+     "customers.region",
+     {
+      "expression": "amount",
+      "name": "customers__region"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "hostm",
+    "dimensions": [
+     "customers.region",
+     {
+      "expression": "amount",
+      "name": "customers__region"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 228,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 233,
+   "reason": "not fully literal"
+  }
+ ]
+}

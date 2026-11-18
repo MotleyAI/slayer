@@ -1,0 +1,17 @@
+{
+ "source": "tests/_dev1953_fixtures.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,22 @@
+{
+ "source": "tests/_edge_graph_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 15,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 17,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 20,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 21,
+   "reason": "not fully literal"
+  }
+ ]
+}

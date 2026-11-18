@@ -1,0 +1,107 @@
+{
+ "source": "tests/test_drift_list_retype.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "players",
+    "measures": [
+     {
+      "formula": "sum(scores)",
+      "name": "s"
+     }
+    ]
+   },
+   "new": {
+    "population": "players",
+    "metrics": [
+     {
+      "expression": "sum(scores)",
+      "name": "s"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "players",
+    "measures": [
+     {
+      "formula": "sum(bad)"
+     }
+    ]
+   },
+   "new": {
+    "population": "players",
+    "metrics": [
+     {
+      "expression": "sum(bad)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 126,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 149,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  }
+ ]
+}

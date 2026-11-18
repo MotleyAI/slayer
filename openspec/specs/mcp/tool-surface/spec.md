@@ -55,19 +55,19 @@ The `query` tool description SHALL open with `ONE QUESTION = ONE QUERY. Build th
 
 ### Requirement: Query-language guidance lives on the owning schema field, once
 Each piece of query-language guidance SHALL appear in exactly one place across the `query` tool description and every description in its input schema (field- and definition-level), namely the field where an agent writes that value:
-- `measures`: aggregation call form; `agg(x) FILTER (WHERE c)` aggregating only the rows where `c` holds; arithmetic combining aggregates over different models, with a cross-model ratio example rooted at customers; `partition_by=` with keys spelled like the query's dimensions (dotted paths), a share-of-group example and `partition_by=[]` for the grand total; `window=` with compact durations (`'90d'`, `'3m'`); nested aggregation; one line per transform (`cumsum`, `change` / `change_pct`, `time_shift`, `lag` / `lead`, `rank` / `dense_rank` with required direction, `ntile`, `consecutive_periods`); a joined model's aggregate is computed over that model's own rows and split per group by association across dimensions it cannot be attributed to, repeating its total instead only when `to_many_handling` is `broadcast`; aggregates over several child models in one query (orders and returns from customers) are each computed over their own rows; a child row without a parent counts in the NULL row of a parent dimension when that row exists and in an ungrouped total, and is never added again; an aggregate over a model no join path reaches from the population is computed over that model's own rows and repeated on every row, per bucket when a `time_spine` time dimension attributes it through that model's own axis, with an `unrelated_dataset` warning.
+- `metrics`: aggregation call form; `agg(x) FILTER (WHERE c)` aggregating only the rows where `c` holds; arithmetic combining aggregates over different models, with a cross-model ratio example rooted at customers; `partition_by=` with keys spelled like the query's dimensions (dotted paths), a share-of-group example and `partition_by=[]` for the grand total; `window=` with compact durations (`'90d'`, `'3m'`); nested aggregation; one line per transform (`cumsum`, `change` / `change_pct`, `time_shift`, `lag` / `lead`, `rank` / `dense_rank` with required direction, `ntile`, `consecutive_periods`); a joined model's aggregate is computed over that model's own rows and split per group by association across dimensions it cannot be attributed to, repeating its total instead only when `to_many_handling` is `broadcast`; aggregates over several child models in one query (orders and returns from customers) are each computed over their own rows; a child row without a parent counts in the NULL row of a parent dimension when that row exists and in an ungrouped total, and is never added again; an aggregate over a model no join path reaches from the population is computed over that model's own rows and repeated on every row, per bucket when a `time_spine` time dimension attributes it through that model's own axis, with an `unrelated_dataset` warning.
 - `dimensions`: group by naturally readable labels: a name, never an id alone unless ids are asked for, and the id and the name when a name may repeat.
-- `filters`: routing to row / aggregate / post-aggregation filtering; the SQL operators, including `IS [NOT] TRUE` / `IS [NOT] FALSE`, `IS [NOT] DISTINCT FROM` and `CAST`; the list functions `contains`, `contains_any` and `contains_all`; transforms in filters (top N per group via a rank); the anti-join (a joined model's key `is null`); the time-point forms.
+- `filter`: routing to row / aggregate / post-aggregation filtering; the SQL operators, including `IS [NOT] TRUE` / `IS [NOT] FALSE`, `IS [NOT] DISTINCT FROM` and `CAST`; the list functions `contains`, `contains_any` and `contains_all`; transforms in filters (top N per group via a rank); the anti-join (a joined model's key `is null`); the time-point forms.
 - `variables` (a query object's): a placeholder binds a literal value only — its text inside quotes (`'{s}'`), a number, numeric string or boolean in a bare slot, a list as the whole right-hand side of `IN` or as a list-function argument (an empty list only as a list-function argument) — and a placeholder in a name position is an error.
 - `order`: sorting by any aggregate or transform, displayed or not, with `limit` for top N; returning only the columns the question asks for, never adding the sort value to the measures.
 - `time_dimensions`: buckets without rows are absent; a time dimension on `time_spine.timestamp` with a lower `date_range` bound returns every bucket, empty ones included, and lines several models up on one time axis.
 - a time dimension's `date_range`: its forms; that `change`, `change_pct`, `time_shift` and `window=` read rows before the range (a forward `time_shift`, after it) so the range is not widened; that `cumsum` starts at the range start.
-- `source_model`: rooting at the model whose every row must appear when the question asks for every such row, with a named conditional aggregate; otherwise rooting where the facts are, so rows without facts drop out, or omitting it to infer the smallest model determining every dimension and row-level condition column; a per-query column written as an expression in the position that uses it.
+- `population`: rooting at the model whose every row must appear when the question asks for every such row, with a named conditional aggregate; otherwise rooting where the facts are, so rows without facts drop out, or omitting it to infer the smallest model determining every dimension and row-level condition column; a per-query column written as an expression in the position that uses it.
 - `name` (stages): what needs no stage (top N per group, averaging or bucketing per-entity totals, shares and totals); that a filter on a transform's value applies after it, which is computed over every row the other filters keep; that a stage is needed only to drop rows by a dimension or time condition that a cross-row value must still see, or to join or reuse a whole result, because a row filter or `date_range` applies before a running total, `lag` / `lead`, rank, `ntile`, `consecutive_periods` or `partition_by` total while `change`, `change_pct`, `time_shift` and `window=` read past `date_range` or a filter on their own time dimension only; and that an outer stage references inner dotted columns by their flattened `__` names.
 
 The one-query rule SHALL appear only in the server `instructions` and the `query` tool description. The gap-filling, several-child-models, parentless-child-row, cross-model-ratio, unrelated-model, projection, conditional-rooting and stage guidance SHALL also appear in no help topic and not in the server `instructions`; the instructions' fan-out reason SHALL appear only in the instructions. No description, the instructions or a help topic SHALL tell agents to use a stage to filter after a rank or window, to re-query a whole result, or to answer with one query only "whenever" it can.
 
-Fields that reuse another field's syntax (a refinement's clauses, a measure's `formula`) SHALL point to the owning field instead of repeating its guidance. Guidance too long for its field SHALL be cited by the exact `inspect` call of the help topic that holds it.
+Fields that reuse another field's syntax (a refinement's clauses, a measure's `expression`) SHALL point to the owning field instead of repeating its guidance. Guidance too long for its field SHALL be cited by the exact `inspect` call of the help topic that holds it.
 
 #### Scenario: Each guidance marker has one owner
 - **WHEN** the `query` tool description and every description in its input schema are collected
@@ -75,7 +75,7 @@ Fields that reuse another field's syntax (a refinement's clauses, a measure's `f
 
 #### Scenario: New grammar guidance has one owner
 - **WHEN** the same texts are collected
-- **THEN** the `FILTER (WHERE` marker occurs only in `measures`, the `IS DISTINCT FROM` and `contains_any` markers only in `filters`, the whole-`IN` list-binding marker only in a query object's `variables`, and the per-query-expression marker only in `source_model`
+- **THEN** the `FILTER (WHERE` marker occurs only in `metrics`, the `IS DISTINCT FROM` and `contains_any` markers only in `filter`, the whole-`IN` list-binding marker only in a query object's `variables`, and the per-query-expression marker only in `population`
 
 #### Scenario: No inline-extension-column advice remains
 - **WHEN** the same texts are collected
@@ -94,8 +94,8 @@ Fields that reuse another field's syntax (a refinement's clauses, a measure's `f
 - **THEN** no example groups, partitions or flattens by a column whose name ends in `_id`
 
 #### Scenario: A refinement clause points to the query field
-- **WHEN** a client reads the `refine` argument's `measures` description
-- **THEN** it refers to the query object's `measures` instead of repeating its guidance
+- **WHEN** a client reads the `refine` argument's `metrics` description
+- **THEN** it refers to the query object's `metrics` instead of repeating its guidance
 
 #### Scenario: date_range is described
 - **WHEN** a client reads a time dimension's `date_range` description
@@ -109,14 +109,14 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - `cumsum` with a `date_range` accumulates from the range start only;
 - `ntile(x, n=4)` puts the lowest values in bucket 1;
 - `agg(x) FILTER (WHERE c)` aggregates only the rows where `c` holds: `count(*) FILTER (WHERE status = 'paid')` counts the paid rows;
-- a filter `<joined model>.<key> is null` keeps exactly the rows with no joined row;
+- a filter `<joined dataset>.<key> is null` keeps exactly the rows with no joined row;
 - a query rooted at a model keeps every row of that model, counting 0 where no joined rows exist;
 - ordering by an undisplayed aggregate with a `limit` returns the top rows by that aggregate without projecting it;
 - a filter on `rank(..., partition_by=customers.regions.name, direction='desc') <= N` keeps the top N per region;
 - `x / x(partition_by=customers.regions.name)` and `x / x(partition_by=[])` give the share of region and of grand total;
 - a joined model's aggregate sliced by a non-attributable dimension splits per group by association by default and broadcasts its total under `broadcast`;
 - a nested aggregation averages the inner per-group values within the outer group;
-- a granularity call as a dimension (`date_trunc('month', created_at)`) and the time-dimension string `"date_trunc('month', created_at)"` bucket like the equivalent `{"dimension": ..., "granularity": "month"}` time dimension;
+- a granularity call as a dimension (`date_trunc('month', created_at)`) and the time-dimension string `"date_trunc('month', created_at)"` bucket like the equivalent `{"field": ..., "granularity": "month"}` time dimension;
 - a computed dimension `iif(sum(amount, partition_by=customers.id) > 150, 'high', 'low')` labels each row by its customer's total;
 - an outer stage reads an inner dotted dimension by its flattened `__` name (`customers.regions.name` as `customers__regions__name`);
 - a monthly time dimension on `time_spine.timestamp` with a `date_range` returns every month of the range, months without rows included (count 0, other aggregates NULL);
@@ -163,7 +163,7 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - **THEN** by default each row carries the credit of the distinct customers with orders in that status with an associated-cells warning, and with `to_many_handling` `broadcast` each row carries the total credit of all customers with a broadcast warning
 
 #### Scenario: Granularity calls bucket like a time dimension
-- **WHEN** one query groups by the dimension `date_trunc('month', created_at)`, another by the time dimension `"date_trunc('month', created_at)"`, and a third by `{"dimension": "created_at", "granularity": "month"}`, each measuring `count(*)`
+- **WHEN** one query groups by the dimension `date_trunc('month', created_at)`, another by the time dimension `"date_trunc('month', created_at)"`, and a third by `{"field": "created_at", "granularity": "month"}`, each measuring `count(*)`
 - **THEN** all three return the same monthly buckets and counts
 
 #### Scenario: A computed dimension over a fixed-grain aggregate
@@ -239,14 +239,14 @@ Every query idiom given as an example in the tool or schema descriptions SHALL e
 - **THEN** the first fails with an error naming `statuses` as an empty list, and the second keeps every row whose `tags` is not NULL
 
 ### Requirement: Help topics hold the long-form reference and are reachable
-The server SHALL seed the help topics `help.intro`, `help.models`, `help.workflow`, `help.aggregations`, `help.transforms`, `help.time`, `help.joins` and `help.queries`. Each topic SHALL be self-contained and carry a one-line description stating when to read it. Every `memory:help.<topic>` reference in the tool descriptions, input schemas or instructions SHALL name a seeded topic. Seeding a store that holds earlier bodies under these ids SHALL replace them with the current bodies, and re-seeding SHALL keep them.
+The server SHALL seed the help topics `help.intro`, `help.datasets`, `help.workflow`, `help.aggregations`, `help.transforms`, `help.time`, `help.relationships` and `help.queries`. Each topic SHALL be self-contained and carry a one-line description stating when to read it. Every `memory:help.<topic>` reference in the tool descriptions, input schemas or instructions SHALL name a seeded topic. Seeding a store that holds earlier bodies under these ids SHALL replace them with the current bodies, and re-seeding SHALL keep them.
 
 #### Scenario: Every help reference resolves
 - **WHEN** all `memory:help.<topic>` references are collected from the tool descriptions, input schemas and instructions
 - **THEN** each names a topic present after seeding
 
 #### Scenario: A previously retired topic id is reused
-- **WHEN** a store holding stale bodies under `help.aggregations`, `help.transforms`, `help.time`, `help.joins` and `help.queries` is seeded, then seeded again
+- **WHEN** a store holding stale bodies under `help.aggregations`, `help.transforms`, `help.time`, `help.relationships` and `help.queries` is seeded, then seeded again
 - **THEN** each id holds the current body after the first seed and still holds it after the second
 
 ### Requirement: Help topics are returned in full by inspect
@@ -286,7 +286,7 @@ the same process while it runs. A filter exceeding the limit SHALL fail with an 
 connection, and rebuilding the search graph SHALL wait for an in-flight filter to finish.
 
 #### Scenario: A runaway variable-length traversal times out
-- **WHEN** a search runs `MATCH (a)-[:JOINS*]->(b) RETURN DISTINCT b.id AS id` over a model graph with cycles
+- **WHEN** a search runs `MATCH (a)-[:RELATIONSHIPS*]->(b) RETURN DISTINCT b.id AS id` over a model graph with cycles
   that would take longer than the limit
 - **THEN** the search fails within the limit with the timed-out error
 
@@ -299,30 +299,30 @@ connection, and rebuilding the search graph SHALL wait for an in-flight filter t
 - **THEN** each returns exactly the ids its own filter selects
 
 ### Requirement: The order column's string form is advertised
-The query input schema SHALL advertise an order entry's `column` as either a string (a column name or
-an expression) or a column-reference object, and SHALL NOT publish the internal `raw_formula` field of
-an order entry. Input carrying `raw_formula` — such as a stored query — SHALL still be accepted and
+The query input schema SHALL advertise an order entry's `field` as either a string (a column name or
+an expression) or a column-reference object, and SHALL NOT publish the internal `raw_expression` field of
+an order entry. Input carrying `raw_expression` — such as a stored query — SHALL still be accepted and
 persisted unchanged.
 
 #### Scenario: Schema shows both column forms
 - **WHEN** a client lists the server's tools and reads the `query` tool's order entry schema
-- **THEN** `column` accepts a string or a column-reference object, and no `raw_formula` property appears
+- **THEN** `field` accepts a string or a column-reference object, and no `raw_expression` property appears
 
 #### Scenario: Stored order expressions still load
-- **WHEN** a saved query whose order entry carries `raw_formula` is loaded and executed
+- **WHEN** a saved query whose order entry carries `raw_expression` is loaded and executed
 - **THEN** it sorts by that expression exactly as before
 
 ### Requirement: Database failures are tool errors
-When a database failure stops the `query`, `create_model`, `validate_models` or `ingest_datasource_models` tool from completing, the tool call SHALL fail as an MCP tool error (`isError: true`) whose text carries the friendly database-error message ("Database error: …"), never return that message as a successful result. A database rejection the tool reports as one of its own findings is not such a failure.
+When a database failure stops the `query`, `create_dataset`, `validate_datasets` or `ingest_datasource` tool from completing, the tool call SHALL fail as an MCP tool error (`isError: true`) whose text carries the friendly database-error message ("Database error: …"), never return that message as a successful result. A database rejection the tool reports as one of its own findings is not such a failure.
 
 #### Scenario: Query hits a database failure
 - **WHEN** a `query` call fails because the database rejects the generated SQL
 - **THEN** the result has `isError: true` and its text holds the "Database error:" message
 
 #### Scenario: Model creation hits a database failure
-- **WHEN** `create_model`, `validate_models` or `ingest_datasource_models` fails because the database is unreachable
+- **WHEN** `create_dataset`, `validate_datasets` or `ingest_datasource` fails because the database is unreachable
 - **THEN** the result has `isError: true` and its text holds the "Database error:" message
 
 #### Scenario: Rejected model SQL is a validation finding
-- **WHEN** `validate_models` runs against a reachable database that rejects a SQL model's own SQL
+- **WHEN** `validate_datasets` runs against a reachable database that rejects a SQL model's own SQL
 - **THEN** the result is not an error and reports that model with an `invalid_sql` finding

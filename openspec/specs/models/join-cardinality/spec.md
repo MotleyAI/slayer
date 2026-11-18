@@ -24,7 +24,7 @@ Every stage output that another model or stage reads as a model — a model crea
 - THEN its columns carry no uniqueness claims and joins onto it remain unproven
 
 #### Scenario: A join onto a sibling stage's grain is proven
-- WHEN a multi-stage query declares a stage `c` over `customers` with dimensions `["id"]` and measure `{"formula": "max(tier)", "name": "tr"}`, and a later stage over `orders` joins `c` on `customer_id → id` and reports `c.tr` with `sum(amount)`
+- WHEN a multi-stage query declares a stage `c` over `customers` with dimensions `["id"]` and measure `{"expression": "max(tier)", "name": "tr"}`, and a later stage over `orders` joins `c` on `customer_id → id` and reports `c.tr` with `sum(amount)`
 - THEN the join is provably many-to-one: each tier's total is exact and no broadcast warning is raised
 
 #### Scenario: A join covering part of a sibling's composite grain stays unproven
@@ -40,7 +40,7 @@ Every stage output that another model or stage reads as a model — a model crea
 - THEN the join is unproven — a metric across it broadcasts with a warning and is never multiplied
 
 #### Scenario: A measure is never part of the grain
-- WHEN a query's dimensions are `["status", "city"]` and its measure is `{"formula": "sum(amount, partition_by=status)", "name": "st"}`
+- WHEN a query's dimensions are `["status", "city"]` and its measure is `{"expression": "sum(amount, partition_by=status)", "name": "st"}`
 - THEN its grain is `status` and `city`, and `st` carries no uniqueness claim
 
 #### Scenario: A single-column grain is unique, not an identifier
@@ -52,7 +52,7 @@ Every stage output that another model or stage reads as a model — a model crea
 - THEN the aggregation succeeds
 
 ### Requirement: Cube import maps relationship to cardinality
-The Cube importer SHALL map the parsed join `relationship` onto `Join.cardinality`:
+The Cube importer SHALL map the parsed join `relationship` onto `DatasetRelationship.cardinality`:
 `many_to_one`/`belongs_to` → many-to-one, `one_to_many`/`has_many` → one-to-many,
 `one_to_one`/`has_one` → one-to-one. An unrecognized relationship string SHALL leave
 cardinality unset and add a conversion-report warning — never coerce into safety

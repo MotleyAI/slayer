@@ -46,7 +46,7 @@ from __future__ import annotations
 from typing import List
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -213,106 +213,106 @@ def seed_dev1748_sqlite(db_path: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def dev1748_models() -> List[SlayerModel]:
+def dev1748_datasets() -> List[SlayerDataset]:
     """``orders -> customers -> regions`` plus 1:N ``order_tags`` and an empty
     twin of ``orders``.
 
     Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
     """
-    regions = SlayerModel(
+    regions = SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="opened_at", type=DataType.TIMESTAMP),
-            Column(name="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="opened_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="population", datatype=DataType.DOUBLE),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
             # A LOCAL derived time column on the target — the explicit
             # cross-model time arg that needs no further join.
-            Column(
-                name="signup_alias", type=DataType.TIMESTAMP, sql="signup_at",
+            DatasetField(
+                name="signup_alias", datatype=DataType.TIMESTAMP, sql="signup_at",
             ),
             # A derived time column whose sql CROSSES customers -> regions.
             # Used as an explicit time arg this is the residual-hop shape.
-            Column(
-                name="deep_opened", type=DataType.TIMESTAMP,
+            DatasetField(
+                name="deep_opened", datatype=DataType.TIMESTAMP,
                 sql="regions.opened_at",
             ),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
-    order_tags = SlayerModel(
+    order_tags = SlayerDataset(
         name="order_tags", sql_table="order_tags", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INT),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
             # Filtered on a LOCAL column.
-            Column(
-                name="big_amount", type=DataType.DOUBLE, sql="amount",
+            DatasetField(
+                name="big_amount", datatype=DataType.DOUBLE, sql="amount",
                 filter=f"amount > {BIG_AMOUNT_THRESHOLD}",
             ),
             # Filtered on a JOINED column.
-            Column(
-                name="gold_amount", type=DataType.DOUBLE, sql="amount",
+            DatasetField(
+                name="gold_amount", datatype=DataType.DOUBLE, sql="amount",
                 filter="customers.tier = 'gold'",
             ),
             # Filtered on a DERIVED column (``amount_x2`` is local-derived).
-            Column(
-                name="doubled_big", type=DataType.DOUBLE, sql="amount",
+            DatasetField(
+                name="doubled_big", datatype=DataType.DOUBLE, sql="amount",
                 filter=f"amount * 2 > {BIG_AMOUNT_THRESHOLD * 2}",
             ),
             # A derived value whose sql CROSSES into regions.
-            Column(
-                name="cust_region", type=DataType.TEXT,
+            DatasetField(
+                name="cust_region", datatype=DataType.TEXT,
                 sql="customers.regions.name",
             ),
             # A local derived value — the non-crossing control.
-            Column(name="amount_x2", type=DataType.DOUBLE, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.DOUBLE, sql="amount * 2"),
             # A local derived TIME column, for an explicit derived time arg.
-            Column(
-                name="created_alias", type=DataType.TIMESTAMP, sql="created_at",
+            DatasetField(
+                name="created_alias", datatype=DataType.TIMESTAMP, sql="created_at",
             ),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="order_tags", join_pairs=[["id", "order_id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="order_tags", join_pairs=[["id", "order_id"]]),
         ],
     )
-    empty_orders = SlayerModel(
+    empty_orders = SlayerDataset(
         name="empty_orders", sql_table="empty_orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(
-                name="big_amount", type=DataType.DOUBLE, sql="amount",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(
+                name="big_amount", datatype=DataType.DOUBLE, sql="amount",
                 filter=f"amount > {BIG_AMOUNT_THRESHOLD}",
             ),
         ],
@@ -326,17 +326,17 @@ def dev1748_bundle() -> "ResolvedSourceBundle":
     Plan-level tests assert on the plan the planner builds; going through the
     engine would only add a render step they do not care about.
     """
-    models = dev1748_models()
+    models = dev1748_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
 async def make_sqlite_engine(base_dir: str, db_path: str) -> SlayerQueryEngine:
     """Storage + engine bound to the seeded SQLite file at ``db_path``."""
     return await make_seeded_sqlite_engine(
-        base_dir=base_dir, db_path=db_path, models=dev1748_models()
+        base_dir=base_dir, db_path=db_path, datasets=dev1748_datasets()
     )
 
 

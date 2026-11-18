@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_dev1771_bare_identifier.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -28,9 +28,9 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    SlayerModel,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
@@ -42,12 +42,13 @@ from slayer.live_schema.ingestion import (
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
-    ModelAddition,
-    WholeModelDelete,
-    EditModelDelete,
+    DatasetAddition,
+    WholeDatasetDelete,
+    EditDatasetDelete,
 )
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
 @pytest.fixture
@@ -88,21 +89,21 @@ def _create_schema(db_path: str) -> None:
         )
 
 
-async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple:
+async def _setup(workspace: Path, *, persist_datasets: bool = True) -> tuple[YAMLStorage, DatasourceConfig, str]:
     db_path = str(workspace / "live.db")
     _create_schema(db_path)
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
     await storage.save_datasource(ds)
-    if persist_models:
+    if persist_datasets:
         # Run ingest once so that subsequent calls test idempotency.
         await _ingest(datasource=ds, storage=storage)
     return storage, ds, db_path
 
 
-def _addition_for(name: str, additions: Iterable[ModelAddition]):
+def _addition_for(name: str, additions: Iterable[DatasetAddition]):
     for a in additions:
-        if a.model_name == name:
+        if a.dataset_name == name:
             return a
     return None
 
@@ -118,8 +119,8 @@ class TestIdempotency:
         # Nothing new
         for addition in result.additions:
             assert addition.created is False
-            assert addition.new_columns == []
-            assert addition.new_joins == []
+            assert addition.new_fields == []
+            assert addition.new_relationships == []
         assert result.to_delete == []
         assert result.errors == []
 
@@ -135,12 +136,12 @@ class TestAdditive:
         result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
-        assert "delivery_address" in addition.new_columns
+        assert "delivery_address" in addition.new_fields
         assert addition.created is False
         # Persisted model now has the new column
-        loaded = await storage.get_model("orders", data_source="ds")
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
-        assert any(c.name == "delivery_address" for c in loaded.columns)
+        assert any(c.name == "delivery_address" for c in loaded.fields)
 
     async def test_new_table_creates_model(self, workspace: Path) -> None:
         storage, ds, db_path = await _setup(workspace)
@@ -154,10 +155,10 @@ class TestAdditive:
         addition = _addition_for("products", result.additions)
         assert addition is not None
         assert addition.created is True
-        assert {"id", "sku"} <= set(addition.new_columns)
-        loaded = await storage.get_model("products", data_source="ds")
+        assert {"id", "sku"} <= set(addition.new_fields)
+        loaded = await storage.get_dataset("products", data_source="ds")
         assert loaded is not None
-        assert {c.name for c in loaded.columns} == {"id", "sku"}
+        assert {c.name for c in loaded.fields} == {"id", "sku"}
 
     async def test_new_fk_creates_join(self, workspace: Path) -> None:
         # Build a DB with no FK initially, then add one. SQLite doesn't
@@ -182,36 +183,36 @@ class TestAdditive:
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
         # Persist orders model with no joins
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="ds",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="region", sql="region", type=DataType.TEXT),
+                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
                 ],
             )
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="ds",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                    Column(
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(
                         name="customer_id",
                         sql="customer_id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                     ),
                 ],
-                joins=[],
+                relationships=[],
             )
         )
         # Recreate orders with an FK now via DROP + CREATE (SQLite has no
@@ -231,36 +232,36 @@ class TestAdditive:
             )
 
         result = await _ingest(datasource=ds, storage=storage)
-        loaded = await storage.get_model("orders", data_source="ds")
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
-        assert any(j.target_model == "customers" for j in loaded.joins)
+        assert any(j.to == "customers" for j in loaded.relationships)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
-        assert "customers" in addition.new_joins
+        assert "customers" in addition.new_relationships
 
 
 class TestPreservation:
     async def test_existing_column_metadata_preserved(self, workspace: Path) -> None:
         storage, ds, db_path = await _setup(workspace)
         # Mutate the persisted orders model: customize amount's metadata
-        loaded = await storage.get_model("orders", data_source="ds")
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
-        for c in loaded.columns:
+        for c in loaded.fields:
             if c.name == "amount":
                 c.description = "Order amount in USD"
                 c.label = "Amount"
                 c.format = NumberFormat(type=NumberFormatType.CURRENCY)
                 c.meta = {"unit": "usd"}
-        await storage.save_model(loaded)
+        await storage.save_dataset(loaded)
 
         # Add a new live column to trigger the additive pass.
         with transaction(db_path) as conn:
             conn.execute("ALTER TABLE orders ADD COLUMN extra TEXT")
 
         await _ingest(datasource=ds, storage=storage)
-        loaded2 = await storage.get_model("orders", data_source="ds")
+        loaded2 = await storage.get_dataset("orders", data_source="ds")
         assert loaded2 is not None
-        amount = next(c for c in loaded2.columns if c.name == "amount")
+        amount = next(c for c in loaded2.fields if c.name == "amount")
         # Untouched: customizations preserved
         assert amount.description == "Order amount in USD"
         assert amount.label == "Amount"
@@ -268,28 +269,28 @@ class TestPreservation:
         assert amount.format.type == NumberFormatType.CURRENCY
         assert amount.meta == {"unit": "usd"}
         # New column appended
-        assert any(c.name == "extra" for c in loaded2.columns)
+        assert any(c.name == "extra" for c in loaded2.fields)
 
 
 class TestSkipNonSqlTableModes:
     async def test_sql_mode_model_skipped(self, workspace: Path) -> None:
-        storage, ds, _ = await _setup(workspace, persist_models=False)
-        await storage.save_model(
-            SlayerModel(
+        storage, ds, _ = await _setup(workspace, persist_datasets=False)
+        await storage.save_dataset(
+            SlayerDataset(
                 name="custom_orders",
                 sql="SELECT id, amount FROM orders WHERE amount > 0",
                 data_source="ds",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
                 ],
             )
         )
         result = await _ingest(datasource=ds, storage=storage)
         # custom_orders is sql-mode — additive pass must not touch it.
-        loaded = await storage.get_model("custom_orders", data_source="ds")
+        loaded = await storage.get_dataset("custom_orders", data_source="ds")
         assert loaded is not None
         assert loaded.sql is not None
         assert _addition_for("custom_orders", result.additions) is None
@@ -299,17 +300,17 @@ class TestSkipNonSqlTableModes:
         # Save a query-backed model that references orders. Use the engine
         # so the cache populates correctly.
         engine = SlayerQueryEngine(storage=storage)
-        await engine.create_model_from_query(
+        await engine.create_dataset_from_query(
             query=SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)", "name": "total"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)", "name": "total"}],
             }),
             name="orders_summary",
         )
         result = await _ingest(datasource=ds, storage=storage)
         assert _addition_for("orders_summary", result.additions) is None
         # And the persisted query-backed model is unchanged.
-        loaded = await storage.get_model("orders_summary", data_source="ds")
+        loaded = await storage.get_dataset("orders_summary", data_source="ds")
         assert loaded is not None
         assert loaded.source_queries is not None
 
@@ -342,11 +343,11 @@ class TestCombinedReturnShape:
         # name (it is taken in the persisted model) and lets validate_models
         # surface the bucket mismatch.
         addition = _addition_for("orders", result.additions)
-        assert addition is None or "amount" not in addition.new_columns
+        assert addition is None or "amount" not in addition.new_fields
         # Nor a delete: a type mismatch on an existing column is a re-type finding.
         assert not any(
-            isinstance(e, WholeModelDelete) or (isinstance(e, EditModelDelete) and "amount" in e.remove.columns)
-            for e in result.to_delete if e.model_name == "orders"
+            isinstance(e, WholeDatasetDelete) or (isinstance(e, EditDatasetDelete) and "amount" in e.remove.fields)
+            for e in result.to_delete if e.dataset_name == "orders"
         ), result.to_delete
 
 
@@ -361,19 +362,19 @@ class TestErrorIsolation:
             conn.execute("CREATE TABLE b_new (id INTEGER PRIMARY KEY, y TEXT)")
 
         # Patch save_model on the storage to fail for "a_new" only.
-        original_save = storage.save_model
+        original_save = storage.save_dataset
 
         async def flaky_save(model, **kwargs):
             if model.name == "a_new":
                 raise RuntimeError("disk full")
             return await original_save(model, **kwargs)
 
-        monkeypatch.setattr(storage, "save_model", flaky_save)
+        monkeypatch.setattr(storage, "save_dataset", flaky_save)
 
         result = await _ingest(datasource=ds, storage=storage)
         # One success (b_new), one failure (a_new)
         assert _addition_for("b_new", result.additions) is not None
-        assert any(e.model_name == "a_new" for e in result.errors)
+        assert any(e.dataset_name == "a_new" for e in result.errors)
 
 
 class TestMemoryEmbeddingRefresh:
@@ -500,7 +501,7 @@ class TestMemoryEmbeddingRefresh:
         )
         memory_errors = [
             e for e in result.errors
-            if e.model_name == f"memory:{saved.id}"
+            if e.dataset_name == f"memory:{saved.id}"
         ]
         assert memory_errors, (
             f"expected an IngestionError with "
@@ -609,7 +610,7 @@ class TestMemoryEmbeddingRefresh:
         )
         memory_errors = [
             e for e in result.errors
-            if e.model_name == f"memory:{saved.id}"
+            if e.dataset_name == f"memory:{saved.id}"
         ]
         assert memory_errors, (
             f"expected an IngestionError with "
@@ -655,11 +656,11 @@ class TestExcludeTables:
         # No addition for orders
         assert _addition_for("orders", result.additions) is None
         # to_delete also doesn't reference orders
-        assert not any(e.model_name == "orders" for e in result.to_delete)
+        assert not any(e.dataset_name == "orders" for e in result.to_delete)
         # Persisted orders model is unchanged (no extra column appended)
-        loaded = await storage.get_model("orders", data_source="ds")
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
-        assert not any(c.name == "extra" for c in loaded.columns)
+        assert not any(c.name == "extra" for c in loaded.fields)
 
 
 # ---------------------------------------------------------------------------
@@ -683,8 +684,8 @@ def _create_probe_workspace_db(
             )
 
 
-async def _persist_int_model(
-    storage, ds_name: str, table: str, column: str,
+async def _persist_int_dataset(
+    storage: StorageBackend, ds_name: str, table: str, column: str,
     *,
     column_format: NumberFormat | None = None,
     extra_meta: dict | None = None,
@@ -696,7 +697,7 @@ async def _persist_int_model(
     col_kwargs: dict[str, Any] = {
         "name": column,
         "sql": column,
-        "type": DataType.INT,
+        "datatype": DataType.INT,
         "format": column_format or NumberFormat(type=NumberFormatType.INTEGER),
         "description": description,
     }
@@ -704,16 +705,16 @@ async def _persist_int_model(
         col_kwargs["label"] = label
     if extra_meta is not None:
         col_kwargs["meta"] = extra_meta
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name=table,
             sql_table=table,
             data_source=ds_name,
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.INT, primary_key=True,
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
                 ),
-                Column(**col_kwargs),
+                DatasetField(**col_kwargs),
             ],
         )
     )
@@ -732,13 +733,13 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+        await _persist_int_dataset(storage, "ds", "sensordata", "tempstabidx")
 
         await _ingest(datasource=ds, storage=storage)
 
-        loaded = await storage.get_model("sensordata", data_source="ds")
-        col = next(c for c in loaded.columns if c.name == "tempstabidx")
-        assert col.type is DataType.DOUBLE
+        loaded = await storage.get_dataset("sensordata", data_source="ds")
+        col = next(c for c in loaded.fields if c.name == "tempstabidx")
+        assert col.datatype is DataType.DOUBLE
         assert col.format is not None
         assert col.format.type is NumberFormatType.FLOAT
 
@@ -750,13 +751,13 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "status")
+        await _persist_int_dataset(storage, "ds", "sensordata", "status")
 
         await _ingest(datasource=ds, storage=storage)
 
-        loaded = await storage.get_model("sensordata", data_source="ds")
-        col = next(c for c in loaded.columns if c.name == "status")
-        assert col.type is DataType.TEXT
+        loaded = await storage.get_dataset("sensordata", data_source="ds")
+        col = next(c for c in loaded.fields if c.name == "status")
+        assert col.datatype is DataType.TEXT
         # On widening to TEXT, the auto-default integer format must be cleared.
         assert col.format is None
 
@@ -775,19 +776,19 @@ class TestSqliteProbeWideningOnReingest:
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
 
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="sensordata",
                 sql_table="sensordata",
                 data_source="ds",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.INT, primary_key=True,
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.INT, primary_key=True,
                     ),
-                    Column(
+                    DatasetField(
                         name="tempstabidx",
                         sql="tempstabidx",
-                        type=DataType.INT,
+                        datatype=DataType.INT,
                         format=NumberFormat(type=NumberFormatType.INTEGER),
                         description="hand-authored note",
                         label="Temp Stab",
@@ -801,9 +802,9 @@ class TestSqliteProbeWideningOnReingest:
 
         await _ingest(datasource=ds, storage=storage)
 
-        loaded = await storage.get_model("sensordata", data_source="ds")
-        col = next(c for c in loaded.columns if c.name == "tempstabidx")
-        assert col.type is DataType.DOUBLE
+        loaded = await storage.get_dataset("sensordata", data_source="ds")
+        col = next(c for c in loaded.fields if c.name == "tempstabidx")
+        assert col.datatype is DataType.DOUBLE
         # User metadata preserved verbatim.
         assert col.description == "hand-authored note"
         assert col.label == "Temp Stab"
@@ -823,7 +824,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "t", "qty")
+        await _persist_int_dataset(storage, "ds", "t", "qty")
 
         with patch(
             "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
@@ -831,9 +832,9 @@ class TestSqliteProbeWideningOnReingest:
         ):
             await _ingest(datasource=ds, storage=storage)
 
-        loaded = await storage.get_model("t", data_source="ds")
-        col = next(c for c in loaded.columns if c.name == "qty")
-        assert col.type is DataType.INT
+        loaded = await storage.get_dataset("t", data_source="ds")
+        col = next(c for c in loaded.fields if c.name == "qty")
+        assert col.datatype is DataType.INT
 
     async def test_non_sqlite_with_live_schema_drift_stays_strict_additive(
         self, workspace: Path
@@ -856,14 +857,14 @@ class TestSqliteProbeWideningOnReingest:
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
         await storage.save_datasource(ds)
         # Persist with stale INT type (e.g. left over from a prior schema).
-        await _persist_int_model(storage, "ds", "t", "qty")
+        await _persist_int_dataset(storage, "ds", "t", "qty")
 
         await _ingest(datasource=ds, storage=storage)
 
-        loaded = await storage.get_model("t", data_source="ds")
-        col = next(c for c in loaded.columns if c.name == "qty")
+        loaded = await storage.get_dataset("t", data_source="ds")
+        col = next(c for c in loaded.fields if c.name == "qty")
         # Non-SQLite: persisted INT stays INT, even though fresh said DOUBLE.
-        assert col.type is DataType.INT
+        assert col.datatype is DataType.INT
 
     async def test_widened_columns_in_model_addition(
         self, workspace: Path
@@ -878,15 +879,15 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+        await _persist_int_dataset(storage, "ds", "sensordata", "tempstabidx")
 
         result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
         assert addition is not None
-        assert hasattr(addition, "widened_columns"), (
+        assert hasattr(addition, "widened_fields"), (
             "ModelAddition must expose widened_columns: List[str]"
         )
-        assert "tempstabidx" in addition.widened_columns
+        assert "tempstabidx" in addition.widened_fields
 
     async def test_cli_renderer_shows_widened_columns(
         self, workspace: Path
@@ -901,7 +902,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+        await _persist_int_dataset(storage, "ds", "sensordata", "tempstabidx")
 
         result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
@@ -925,17 +926,17 @@ class TestSqliteProbeWideningOnReingest:
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
         # Persist column as DOUBLE.
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="sensordata",
                 sql_table="sensordata",
                 data_source="ds",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.INT, primary_key=True,
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.INT, primary_key=True,
                     ),
-                    Column(
-                        name="qty", sql="qty", type=DataType.DOUBLE,
+                    DatasetField(
+                        name="qty", sql="qty", datatype=DataType.DOUBLE,
                         format=NumberFormat(type=NumberFormatType.FLOAT),
                     ),
                 ],
@@ -944,10 +945,10 @@ class TestSqliteProbeWideningOnReingest:
 
         await _ingest(datasource=ds, storage=storage)
 
-        loaded = await storage.get_model("sensordata", data_source="ds")
-        col = next(c for c in loaded.columns if c.name == "qty")
+        loaded = await storage.get_dataset("sensordata", data_source="ds")
+        col = next(c for c in loaded.fields if c.name == "qty")
         # DOUBLE preserved, never narrowed.
-        assert col.type is DataType.DOUBLE
+        assert col.datatype is DataType.DOUBLE
 
     async def test_custom_format_preserved_on_widening(
         self, workspace: Path, caplog
@@ -970,7 +971,7 @@ class TestSqliteProbeWideningOnReingest:
             symbol="€",
             precision=3,
         )
-        await _persist_int_model(
+        await _persist_int_dataset(
             storage, "ds", "sensordata", "amount",
             column_format=custom_format,
         )
@@ -978,9 +979,9 @@ class TestSqliteProbeWideningOnReingest:
         with caplog.at_level(_logging.INFO, logger="slayer.live_schema.ingestion"):
             await _ingest(datasource=ds, storage=storage)
 
-        loaded = await storage.get_model("sensordata", data_source="ds")
-        col = next(c for c in loaded.columns if c.name == "amount")
-        assert col.type is DataType.DOUBLE
+        loaded = await storage.get_dataset("sensordata", data_source="ds")
+        col = next(c for c in loaded.fields if c.name == "amount")
+        assert col.datatype is DataType.DOUBLE
         # Custom format must be preserved verbatim.
         assert col.format is not None
         assert col.format.type is NumberFormatType.CURRENCY

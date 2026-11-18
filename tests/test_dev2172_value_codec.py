@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.format import encode_json, encode_text
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.facade.translator import QueryResult
 from slayer.flight.handlers import FlightHandlers
@@ -28,6 +28,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.types import value_to_binary, value_to_text
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._arrow_types import ArrowTable
 from tests._cli_inprocess import run_cli_in_process
 from tests._dev2172_fixtures import strict_json
 from tests.flight.test_handlers import _FakeEngine as _FlightEngine
@@ -35,7 +36,7 @@ from tests.flight.test_handlers import _FakeStorage as _FlightStorage
 
 DS = "vals_ds"
 COL = "vals.v"
-QUERY = {"source_model": "vals", "dimensions": ["v"], "limit": 5}
+QUERY = {"population": "vals", "dimensions": ["v"], "limit": 5}
 UID = uuid.UUID("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
 BIG = Decimal("12345678901234567890.12")
 PLUS_TWO = dt.timezone(dt.timedelta(hours=2))
@@ -218,21 +219,21 @@ def pg_binary(value: Any) -> str:
     return raw.decode("utf-8")
 
 
-def _vals_model(column_type: DataType = DataType.TEXT) -> SlayerModel:
-    return SlayerModel(name="vals", sql_table="vals", data_source=DS,
-                       columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                                Column(name="v", type=column_type)])
+def _vals_dataset(column_type: DataType = DataType.TEXT) -> SlayerDataset:
+    return SlayerDataset(name="vals", sql_table="vals", data_source=DS,
+                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                                DatasetField(name="v", datatype=column_type)])
 
 
 def flight_cell(value: Any, *, column_type: DataType = DataType.TEXT) -> Any:
     handlers = FlightHandlers(
         engine=_FlightEngine(  # type: ignore[arg-type]
-            response=_response(value), storage=_FlightStorage({DS: [_vals_model(column_type)]}),
+            response=_response(value), storage=_FlightStorage({DS: [_vals_dataset(column_type)]}),
         ),
     )
     result = handlers._translate("SELECT v FROM vals")
     assert isinstance(result, QueryResult), result
-    table = handlers._execute_full(result)
+    table: ArrowTable = handlers._execute_full(result)
     if column_type in (DataType.TEXT, DataType.UNKNOWN, DataType.ARRAY):
         assert table.schema.field("v").type == pa.utf8()
     return table.to_pylist()[0]["v"]

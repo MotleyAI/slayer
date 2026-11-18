@@ -1,0 +1,380 @@
+{
+ "source": "tests/test_column_dependency.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "A",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "A",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 92,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 102,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 125,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 188,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 189,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 206,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 220,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 253,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 254,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 255,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 263,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 268,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 270,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 290,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 295,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 296,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 297,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 319,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 387,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 392,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 403,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 426,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 432,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 433,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 498,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 503,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 504,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  }
+ ]
+}

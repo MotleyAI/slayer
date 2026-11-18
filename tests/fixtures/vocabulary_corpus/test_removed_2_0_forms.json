@@ -1,0 +1,27 @@
+{
+ "source": "tests/test_removed_2_0_forms.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

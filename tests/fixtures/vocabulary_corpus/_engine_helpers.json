@@ -1,0 +1,38 @@
+{
+ "source": "tests/_engine_helpers.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 387,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 388,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 389,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 390,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  }
+ ]
+}

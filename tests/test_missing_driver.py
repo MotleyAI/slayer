@@ -16,7 +16,7 @@ from sqlalchemy.exc import NoSuchModuleError
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import MissingDriverError, SlayerError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.database import client as client_module
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
@@ -85,7 +85,7 @@ def _assert_names(err: MissingDriverError, *, ds: DatasourceConfig, missing: str
         ("mssql", "pyodbc", "sqlserver"),
     ],
 )
-def test_sync_missing_dbapi_names_extra(monkeypatch, ds_type, blocked_module, extra) -> None:
+def test_sync_missing_dbapi_names_extra(monkeypatch: pytest.MonkeyPatch, ds_type, blocked_module, extra) -> None:
     ds = _structured(ds_type)
     _block_modules(monkeypatch, blocked_module)
     client = SlayerSQLClient(ds)
@@ -104,7 +104,7 @@ def test_sync_missing_dbapi_names_extra(monkeypatch, ds_type, blocked_module, ex
     ],
 )
 def test_sync_missing_plugin_names_scheme_and_extra(
-    monkeypatch, ds_type, entrypoint, scheme, extra,
+    monkeypatch: pytest.MonkeyPatch, ds_type, entrypoint, scheme, extra,
 ) -> None:
     ds = _structured(ds_type)
     _hide_plugin(monkeypatch, entrypoint)
@@ -114,7 +114,7 @@ def test_sync_missing_plugin_names_scheme_and_extra(
     assert f"pip install 'motley-slayer[{extra}]'" in str(info.value)
 
 
-def test_snowflake_inline_missing_plugin_names_extra(monkeypatch) -> None:
+def test_snowflake_inline_missing_plugin_names_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("snowflake.sqlalchemy")
     ds = DatasourceConfig(
         name="sf_ds", type="snowflake", host="acct", username="u", password="p", database="db",
@@ -126,7 +126,7 @@ def test_snowflake_inline_missing_plugin_names_extra(monkeypatch) -> None:
     assert "pip install 'motley-slayer[snowflake]'" in str(info.value)
 
 
-def test_installed_plugin_with_missing_import_names_extra(monkeypatch) -> None:
+def test_installed_plugin_with_missing_import_names_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("sqlalchemy_bigquery")
     ds = _structured("bigquery")
     _block_modules(monkeypatch, "sqlalchemy_bigquery")
@@ -136,7 +136,7 @@ def test_installed_plugin_with_missing_import_names_extra(monkeypatch) -> None:
     assert "pip install 'motley-slayer[bigquery]'" in str(info.value)
 
 
-def test_missing_transitive_module_of_default_driver_still_names_extra(monkeypatch) -> None:
+def test_missing_transitive_module_of_default_driver_still_names_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = _structured("postgres")
 
     def _fail():
@@ -170,7 +170,7 @@ def test_missing_transitive_module_of_default_driver_still_names_extra(monkeypat
     ids=["default-psycopg", "named-asyncpg", "named-aiomysql"],
 )
 async def test_async_missing_driver_raises_without_sync_fallback(
-    monkeypatch, ds, blocked_module, extra,
+    monkeypatch: pytest.MonkeyPatch, ds, blocked_module, extra,
 ) -> None:
     _block_modules(monkeypatch, blocked_module)
     sync_engine = MagicMock(side_effect=AssertionError("fell back to the sync engine"))
@@ -187,7 +187,7 @@ async def test_async_missing_driver_raises_without_sync_fallback(
     sync_engine.assert_not_called()
 
 
-async def test_async_psycopg_kept_without_asyncpg(monkeypatch) -> None:
+async def test_async_psycopg_kept_without_asyncpg(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("psycopg")
     ds = DatasourceConfig(
         name="pg3", type="postgres", connection_string=f"postgresql+psycopg://u:p@{_HOST}:5432/d",
@@ -202,7 +202,7 @@ async def test_async_psycopg_kept_without_asyncpg(monkeypatch) -> None:
         await client.aclose()
 
 
-async def test_async_missing_named_default_driver_names_extra(monkeypatch) -> None:
+async def test_async_missing_named_default_driver_names_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = DatasourceConfig(
         name="pg3", type="postgres", connection_string=f"postgresql+psycopg://u:p@{_HOST}:5432/d",
     )
@@ -214,7 +214,7 @@ async def test_async_missing_named_default_driver_names_extra(monkeypatch) -> No
     assert "pip install 'motley-slayer[postgres]'" in str(info.value)
 
 
-def test_missing_psycopg2_is_not_attributed_to_the_extra(monkeypatch) -> None:
+def test_missing_psycopg2_is_not_attributed_to_the_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = DatasourceConfig(
         name="pg2", type="postgres", connection_string=f"postgresql+psycopg2://u:p@{_HOST}:5432/d",
     )
@@ -240,7 +240,7 @@ def test_missing_psycopg2_is_not_attributed_to_the_extra(monkeypatch) -> None:
     ],
     ids=lambda ds: ds.name,
 )
-async def test_async_execute_runs_sync_in_thread(monkeypatch, ds) -> None:
+async def test_async_execute_runs_sync_in_thread(monkeypatch: pytest.MonkeyPatch, ds) -> None:
     sync_engine = MagicMock()
     monkeypatch.setattr(engine_factory, "get_engine", MagicMock(return_value=sync_engine))
     monkeypatch.setattr(
@@ -260,7 +260,7 @@ async def test_async_execute_runs_sync_in_thread(monkeypatch, ds) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_custom_driver_not_attributed_to_extra(monkeypatch) -> None:
+def test_custom_driver_not_attributed_to_extra(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = DatasourceConfig(
         name="pg8k", type="postgres", connection_string=f"postgresql+pg8000://u:p@{_HOST}:5432/d",
     )
@@ -293,7 +293,7 @@ def test_unregistered_type_missing_plugin_gets_generic_hint() -> None:
     assert "configuration/datasources" in str(info.value)
 
 
-def test_tier2_missing_plugin_gets_generic_hint(monkeypatch) -> None:
+def test_tier2_missing_plugin_gets_generic_hint(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = _structured("redshift")
     _hide_plugin(monkeypatch, "redshift")
     with pytest.raises(MissingDriverError) as info:
@@ -309,7 +309,7 @@ def test_tier2_missing_plugin_gets_generic_hint(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_snowflake_connection_name_missing_connector_fails_at_engine_build(monkeypatch) -> None:
+def test_snowflake_connection_name_missing_connector_fails_at_engine_build(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("snowflake.sqlalchemy")
     ds = DatasourceConfig(name="sf_ds", type="snowflake", connection_name="default")
     _block_modules(monkeypatch, "snowflake.connector")
@@ -319,7 +319,7 @@ def test_snowflake_connection_name_missing_connector_fails_at_engine_build(monke
     assert "pip install 'motley-slayer[snowflake]'" in str(info.value)
 
 
-def test_snowflake_inline_missing_sqlalchemy_package(monkeypatch) -> None:
+def test_snowflake_inline_missing_sqlalchemy_package(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = DatasourceConfig(
         name="sf_ds", type="snowflake", host="acct", username="u", password="p", database="db",
     )
@@ -330,7 +330,7 @@ def test_snowflake_inline_missing_sqlalchemy_package(monkeypatch) -> None:
     assert "pip install 'motley-slayer[snowflake]'" in str(info.value)
 
 
-def test_bigquery_oauth_missing_google_library(monkeypatch) -> None:
+def test_bigquery_oauth_missing_google_library(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("sqlalchemy_bigquery")
     grant = {
         "type": "authorized_user", "client_id": "cid", "client_secret": "sec",
@@ -357,7 +357,7 @@ def test_missing_driver_error_is_slayer_and_import_error() -> None:
     assert issubclass(MissingDriverError, ImportError)
 
 
-def test_unrelated_import_error_in_build_hook_propagates_unchanged(monkeypatch) -> None:
+def test_unrelated_import_error_in_build_hook_propagates_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
     ds = _structured("postgres")
     original = ModuleNotFoundError("No module named 'not_a_driver'", name="not_a_driver")
 
@@ -371,19 +371,19 @@ def test_unrelated_import_error_in_build_hook_propagates_unchanged(monkeypatch) 
     assert not isinstance(info.value, MissingDriverError)
 
 
-async def test_rest_query_reports_install_hint(monkeypatch, tmp_path) -> None:
+async def test_rest_query_reports_install_hint(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(_structured("postgres"))
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders", data_source="postgres_ds", sql_table="orders",
-            columns=[Column(name="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", datatype=DataType.INT)],
         ),
         _validate=False,
     )
     _block_modules(monkeypatch, "psycopg")
     resp = TestClient(create_app(storage=storage)).post(
-        "/query", json={"source_model": "orders", "dimensions": ["id"]},
+        "/query", json={"population": "orders", "dimensions": ["id"]},
     )
     assert resp.status_code == 400, resp.text
     assert "pip install 'motley-slayer[postgres]'" in resp.json()["detail"]

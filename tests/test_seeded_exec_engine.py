@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
@@ -43,9 +43,9 @@ def _seed_nums(dialect: str):
     return seed
 
 
-_MODEL = SlayerModel(
+_MODEL = SlayerDataset(
     name="nums", data_source="test", sql_table="nums",
-    columns=[Column(name="v", sql="v", type=DataType.INT)],
+    fields=[DatasetField(name="v", sql="v", datatype=DataType.INT)],
 )
 
 
@@ -75,12 +75,12 @@ async def test_seeded_exec_engine_smoke(dialect: str) -> None:
             patch.object(engine_factory, "invalidate_engine", side_effect=watching_invalidate):
         warnings.simplefilter("always")
         async with seeded_exec_engine(
-            dialect=dialect, seed=_seed_nums(dialect), models=[_MODEL],
+            dialect=dialect, seed=_seed_nums(dialect), datasets=[_MODEL],
         ) as (engine, db_path):
             holder["path"] = db_path
             assert Path(db_path).exists()
             response = await engine.execute(
-                SlayerQuery(source_model="nums", measures=["count(*)"]),  # type: ignore[arg-type]
+                SlayerQuery(population="nums", metrics=["count(*)"]),  # type: ignore[arg-type]
             )
             assert response.data[0]["nums._count"] == 3
         # D9: close() ran, then invalidate_engine(), while the db file still existed

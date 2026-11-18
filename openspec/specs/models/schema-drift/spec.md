@@ -33,14 +33,14 @@ When a data or EXPLAIN query fails, the system SHALL attribute the failure to sc
 - **THEN** the original database error propagates, not `SchemaDriftError`
 
 ### Requirement: The drift payload names the blamed models
-`SchemaDriftError.models` (the REST 422 `schema_drift` body's `models`) SHALL list, sorted and without duplicates, exactly the models named by its `to_delete` entries.
+`SchemaDriftError.datasets` (the REST 422 `schema_drift` body's `datasets`) SHALL list, sorted and without duplicates, exactly the models named by its `to_delete` entries.
 
 #### Scenario: Only drifted read models are listed
 - **WHEN** a query reads `orders` and `customers`, only the live `customers` table has drift that does not cascade to `orders`, and the query fails
-- **THEN** `SchemaDriftError.models` is `["customers"]`
+- **THEN** `SchemaDriftError.datasets` is `["customers"]`
 
 ### Requirement: Attribution inspects only read models
-Attribution SHALL introspect only the live objects of read `sql_table` models, trial-execute only read `sql` models, and run the SQLite affinity probe only on read models, resolving each model's table exactly as full validation does. Explicit validation (`validate_models`, ingest validation, `validate-models --force-clean`) SHALL remain whole-datasource.
+Attribution SHALL introspect only the live objects of read `sql_table` models, trial-execute only read `sql` models, and run the SQLite affinity probe only on read models, resolving each model's table exactly as full validation does. Explicit validation (`validate_datasets`, ingest validation, `validate-datasets --force-clean`) SHALL remain whole-datasource.
 
 #### Scenario: Unread tables are not introspected
 - **WHEN** a datasource holds ten tables and a failing query reads one of them
@@ -51,11 +51,11 @@ Attribution SHALL introspect only the live objects of read `sql_table` models, t
 - **THEN** attribution trial-executes no `sql` model
 
 #### Scenario: Explicit validation stays whole-datasource
-- **WHEN** `validate_models` is called for a datasource
+- **WHEN** `validate_datasets` is called for a datasource
 - **THEN** it reports drift on every model of that datasource, as before
 
 #### Scenario: Explicit validation of an unreachable datasource reports no sql drift
-- **WHEN** `validate_models` is called for a datasource that cannot be connected to
+- **WHEN** `validate_datasets` is called for a datasource that cannot be connected to
 - **THEN** it raises the connection error instead of reporting its `sql` models as dropped
 
 ### Requirement: Attribution reuses live-schema facts for a bounded time
@@ -94,8 +94,8 @@ Attribution SHALL reuse the live-schema facts it gathered for a datasource (sche
 - **THEN** each failure raises `SchemaDriftError` and the schemas are listed once
 
 #### Scenario: Explicit validation reads live
-- **WHEN** a failed query cached live facts and `validate_models` is then called within 60 seconds
-- **THEN** `validate_models` introspects the live schema afresh
+- **WHEN** a failed query cached live facts and `validate_datasets` is then called within 60 seconds
+- **THEN** `validate_datasets` introspects the live schema afresh
 
 ### Requirement: Attribution uses the query's resolved datasource
 Attribution SHALL validate only against the datasource the failed statement executed on, including when the source model declares no `data_source`.
@@ -108,13 +108,13 @@ Attribution SHALL validate only against the datasource the failed statement exec
 Validation, explicit and query-time, SHALL NOT report a model as drifted when its table is present in the schema listing but its metadata could not be read; such a model SHALL get no verdict.
 
 #### Scenario: A listed table that fails to introspect is not reported dropped
-- **WHEN** a datasource's tables `a` and `b` are listed, reading `b`'s metadata fails while `a` succeeds, and `validate_models` runs
+- **WHEN** a datasource's tables `a` and `b` are listed, reading `b`'s metadata fails while `a` succeeds, and `validate_datasets` runs
 - **THEN** no entry names `b`'s model
 
 ### Requirement: A join drop addresses exactly one edge
 Explicit validation SHALL report a dropped join by its edge reference (the target model's name when it
 is the only join from the model to that target, else the edge name) and SHALL additionally carry an
-exact reference (`target_model`, `name`, `join_pairs`) for every dropped join. Applying the drift SHALL
+exact reference (`to`, `name`, `join_pairs`) for every dropped join. Applying the drift SHALL
 remove exactly the joins whose live keys or target are gone, never another join to the same target.
 The exact references SHALL be accepted unchanged by the model-editing surface.
 
@@ -147,7 +147,7 @@ The exact references SHALL be accepted unchanged by the model-editing surface.
 When a stored column's type is not `ARRAY` and its live column is a native list, explicit validation and query-time attribution SHALL report a re-type finding naming the model, the column, the live list type, and re-ingesting as the remedy. They SHALL NOT report it as a type mismatch to delete. Re-ingesting SHALL re-type such a column to the live list in place, keeping its description, label and meta, keeping among its allowed aggregations only those a list column allows, and dropping its `format` and time granularity; a second re-ingest SHALL change nothing. A query failure explained by such a column SHALL raise `SchemaDriftError` carrying the finding. A stored `ARRAY` column whose live column is a native list SHALL NOT be reported as drift; this includes `sql`-mode models, whose live types are read from the query result. An `sql`-mode model SHALL get the same finding and the same in-place re-type on re-ingest, each result column typed from the live schema of the tables its query reads, else from the type the database reports for the result column; a result column neither yields as a list is not detected. An `sql`-mode model whose query takes variables is exempt, since that query runs only with its variables bound.
 
 #### Scenario: Stale TEXT list column
-- **WHEN** `validate_models` runs on a datasource whose stored `contractors.skills` is `TEXT` and whose live column is `VARCHAR[]`
+- **WHEN** `validate_datasets` runs on a datasource whose stored `contractors.skills` is `TEXT` and whose live column is `VARCHAR[]`
 - **THEN** it reports a re-type finding for `contractors.skills` with the re-ingest remedy, and no deletion of `skills`
 
 #### Scenario: A refused GROUP BY explained
@@ -159,16 +159,16 @@ When a stored column's type is not `ARRAY` and its live column is a native list,
 - **THEN** validation reports no drift for `skills`
 
 #### Scenario: An imported DOUBLE measure column over a list
-- **WHEN** `validate_models` runs on a model whose stored `scores` is `DOUBLE` and whose live column is `INTEGER[]`
+- **WHEN** `validate_datasets` runs on a model whose stored `scores` is `DOUBLE` and whose live column is `INTEGER[]`
 - **THEN** it reports a re-type finding for `scores`, no deletion, and re-ingesting re-types `scores` to the list with only `count` allowed
 
 #### Scenario: Re-typing drops format and granularity
 - **WHEN** a stored `TIMESTAMP` column `seen` with a description, label, meta, a `format` and a time granularity reads a live `TIMESTAMP[]` column, and the datasource is re-ingested twice
-- **THEN** after the first re-ingest `seen` is `type: ARRAY`, `element_type: TIMESTAMP`, with no `format` or granularity and its description, label and meta kept, and the second re-ingest changes nothing
+- **THEN** after the first re-ingest `seen` is `datatype: ARRAY`, `element_type: TIMESTAMP`, with no `format` or granularity and its description, label and meta kept, and the second re-ingest changes nothing
 
 #### Scenario: A stale column in an sql-mode model
 - **WHEN** an `sql`-mode model declares `scores` as `DOUBLE` and its query selects the live `INTEGER[]` column `scores`
-- **THEN** `validate_models` reports a re-type finding for `scores` with the re-ingest remedy and no deletion, a query failing on `scores` raises `SchemaDriftError` carrying it, and re-ingesting re-types `scores` to a list of `INT` with only `count` allowed
+- **THEN** `validate_datasets` reports a re-type finding for `scores` with the re-ingest remedy and no deletion, a query failing on `scores` raises `SchemaDriftError` carrying it, and re-ingesting re-types `scores` to a list of `INT` with only `count` allowed
 
 ### Requirement: Attribution blames only drift the failing statement reads
 
@@ -200,12 +200,12 @@ On SQLite, a stored `DATE` or `TIMESTAMP` column whose live column is `TEXT` SHA
 
 #### Scenario: Hand-typed SQLite date column
 
-- **WHEN** `validate_models` runs on a SQLite model declaring `signup_at` as `TIMESTAMP` over a live `TEXT` column
+- **WHEN** `validate_datasets` runs on a SQLite model declaring `signup_at` as `TIMESTAMP` over a live `TEXT` column
 - **THEN** it reports nothing for `signup_at`
 
 ### Requirement: A bare sql_table resolves in the connection's default schema
-Schema-drift checks — explicit validation (`validate_models`, ingest validation,
-`validate-models --force-clean`) and query-time drift attribution — SHALL resolve a model
+Schema-drift checks — explicit validation (`validate_datasets`, ingest validation,
+`validate-datasets --force-clean`) and query-time drift attribution — SHALL resolve a model
 whose `sql_table` is unqualified against the connection's default schema, however many other
 schemas the database holds. The default schema SHALL be the one the connection itself uses
 for unqualified names; on BigQuery that is the dataset in the connection URL
@@ -214,15 +214,15 @@ in any other schema.
 
 #### Scenario: A bare model in the URL dataset survives a second dataset
 - **WHEN** a BigQuery datasource's connection URL names dataset `a`, the project also holds dataset `b`, and a model's `sql_table` is the bare name of a table in `a`
-- **THEN** `validate_models` reports no `WholeModelDelete` for that model
+- **THEN** `validate_datasets` reports no `WholeDatasetDelete` for that model
 
 #### Scenario: Column drift on a bare model is still reported
 - **WHEN** the default schema is known from the connection, the database holds a second schema, and a column of the live table behind a bare-named model was dropped
-- **THEN** `validate_models` reports an edit removing that column, not a `WholeModelDelete`
+- **THEN** `validate_datasets` reports an edit removing that column, not a `WholeDatasetDelete`
 
 #### Scenario: A bare name never resolves to another schema
 - **WHEN** a model's bare `sql_table` names an object that exists only in a non-default schema
-- **THEN** `validate_models` reports a `WholeModelDelete` for that model
+- **THEN** `validate_datasets` reports a `WholeDatasetDelete` for that model
 
 #### Scenario: A same-named object elsewhere does not shadow the default
 - **WHEN** an object named like a model's bare `sql_table` exists in both the default schema and another schema, and only the other schema's object has the model's columns
@@ -238,18 +238,18 @@ in any other schema.
 
 ### Requirement: A type mismatch on an existing column is a re-type finding
 
-When a stored column's live column exists but its type conflicts with the live type (different type buckets, an operable stored type over an opaque live type, or an `INT` column SQLite's storage probe finds holding non-integer values), explicit validation and query-time attribution SHALL report a re-type finding and SHALL NOT delete the column or cascade from it, for table-backed and `sql`-mode models alike. Lists and scalars SHALL share one re-type finding kind (`finding: "retype"`), naming the model, data source, column, stored type, live SLayer type, the live database type name where the database reports one, the typed remedy kind, and the remedy. The remedy kind SHALL be `reingest` for a live list on a table-backed model or a SQLite column the storage probe widened, and `set_type` otherwise, including every conflict on an `sql`-mode model. The remedy SHALL agree with the remedy kind: re-ingesting the datasource for `reingest`, setting the column's type to the live type for `set_type`. A serialized re-type finding without a remedy kind SHALL still load, taking its kind from its remedy text; a remedy text that is neither form SHALL be refused. `validate_models` SHALL return it as a report-only entry, `--force-clean` SHALL NOT apply it, the CLI SHALL print it as a `RE-TYPE:` line, and REST and MCP SHALL return it in the same serialized shape. A query failure explained by such a column SHALL raise `SchemaDriftError` carrying the finding, under the existing read-set attribution rules. A column absent from the live table or result, a missing table, and a missing join key SHALL still be deletions and cascade as before.
+When a stored column's live column exists but its type conflicts with the live type (different type buckets, an operable stored type over an opaque live type, or an `INT` column SQLite's storage probe finds holding non-integer values), explicit validation and query-time attribution SHALL report a re-type finding and SHALL NOT delete the column or cascade from it, for table-backed and `sql`-mode models alike. Lists and scalars SHALL share one re-type finding kind (`finding: "retype"`), naming the model, data source, column, stored type, live SLayer type, the live database type name where the database reports one, the typed remedy kind, and the remedy. The remedy kind SHALL be `reingest` for a live list on a table-backed model or a SQLite column the storage probe widened, and `set_type` otherwise, including every conflict on an `sql`-mode model. The remedy SHALL agree with the remedy kind: re-ingesting the datasource for `reingest`, setting the column's type to the live type for `set_type`. A serialized re-type finding without a remedy kind SHALL still load, taking its kind from its remedy text; a remedy text that is neither form SHALL be refused. `validate_datasets` SHALL return it as a report-only entry, `--force-clean` SHALL NOT apply it, the CLI SHALL print it as a `RE-TYPE:` line, and REST and MCP SHALL return it in the same serialized shape. A query failure explained by such a column SHALL raise `SchemaDriftError` carrying the finding, under the existing read-set attribution rules. A column absent from the live table or result, a missing table, and a missing join key SHALL still be deletions and cascade as before.
 
 #### Scenario: A column typed by 1.6.0 reflection
-- **WHEN** a table-backed model ingested by 1.6.0 stores `duration: TIMESTAMP` over a live Postgres `interval` column and `kind: TEXT` over a live MySQL `YEAR` column, and `validate_models` runs
+- **WHEN** a table-backed model ingested by 1.6.0 stores `duration: TIMESTAMP` over a live Postgres `interval` column and `kind: TEXT` over a live MySQL `YEAR` column, and `validate_datasets` runs
 - **THEN** it reports a re-type finding for each, naming the live types, and no deletion
 
 #### Scenario: A column typed by the 1.6.0 probe
-- **WHEN** an `sql`-mode model stores `payload: TEXT` over a live Postgres `json` result column and `validate_models` runs
+- **WHEN** an `sql`-mode model stores `payload: TEXT` over a live Postgres `json` result column and `validate_datasets` runs
 - **THEN** it reports a re-type finding naming `UNKNOWN` and `json`, and no deletion
 
 #### Scenario: Force-clean keeps the column
-- **WHEN** `slayer validate-models --force-clean` runs on that datasource
+- **WHEN** `slayer validate-datasets --force-clean` runs on that datasource
 - **THEN** every such column and the measures over it are still stored, and the output carries a `RE-TYPE:` line per column
 
 #### Scenario: A genuinely retyped column

@@ -12,7 +12,7 @@ from collections.abc import Iterator
 import pytest
 
 from slayer.core.errors import MemoryNotFoundError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.storage.yaml_storage import YAMLStorage, _exact_entry_exists
 
 
@@ -43,36 +43,36 @@ class TestExactEntryExists:
 class TestModelReads:
     @pytest.fixture(autouse=True)
     async def _seed(self, storage: YAMLStorage) -> None:
-        await storage.save_model(
-            SlayerModel(name="orders", data_source="db", sql_table="t"),
+        await storage.save_dataset(
+            SlayerDataset(name="orders", data_source="db", sql_table="t"),
         )
 
     async def test_get_case_variant_name_returns_none(
         self, storage: YAMLStorage,
     ) -> None:
-        assert await storage.get_model("Orders", data_source="db") is None
-        assert await storage.get_model("orders", data_source="db") is not None
+        assert await storage.get_dataset("Orders", data_source="db") is None
+        assert await storage.get_dataset("orders", data_source="db") is not None
 
     async def test_get_case_variant_data_source_returns_none(
         self, storage: YAMLStorage,
     ) -> None:
-        assert await storage.get_model("orders", data_source="DB") is None
+        assert await storage.get_dataset("orders", data_source="DB") is None
 
     async def test_delete_case_variant_is_noop(
         self, storage: YAMLStorage,
     ) -> None:
-        assert await storage.delete_model("Orders", data_source="db") is False
+        assert await storage.delete_dataset("Orders", data_source="db") is False
         # The real file is still there.
-        assert await storage.get_model("orders", data_source="db") is not None
+        assert await storage.get_dataset("orders", data_source="db") is not None
 
     async def test_update_column_sampled_case_variant_raises(
         self, storage: YAMLStorage,
     ) -> None:
         with pytest.raises(ValueError, match="not found"):
-            await storage.update_column_sampled(
+            await storage.update_field_sampled(
                 data_source="db",
-                model_name="Orders",
-                column_name="c",
+                dataset_name="Orders",
+                field_name="c",
                 sampled=None,
                 sampled_values=None,
                 distinct_count=None,

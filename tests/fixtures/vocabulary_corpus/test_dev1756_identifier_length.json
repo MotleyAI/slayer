@@ -1,0 +1,257 @@
+{
+ "source": "tests/test_dev1756_identifier_length.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "SandboxSubscription",
+    "join_pairs": [
+     [
+      "subscription_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "SandboxSubscription",
+    "join_pairs": [
+     [
+      "subscription_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "SandboxCustomer",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "SandboxCustomer",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "SandboxConsumer",
+    "join_pairs": [
+     [
+      "consumer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "SandboxConsumer",
+    "join_pairs": [
+     [
+      "consumer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "avg(totalAmount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "avg(totalAmount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(totalAmount)"
+   },
+   "new": {
+    "expression": "sum(totalAmount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(totalAmount) / count(*)",
+    "name": "avg_ticket"
+   },
+   "new": {
+    "expression": "sum(totalAmount) / count(*)",
+    "name": "avg_ticket"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 137,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 139,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 200,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 601,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 603,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 604,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 701,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 705,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 706,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 707,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 712,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 714,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 716,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 858,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 872,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 888,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 914,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 968,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 971,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 972,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 1005,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 1033,
+   "reason": "not fully literal"
+  }
+ ]
+}

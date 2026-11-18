@@ -1,0 +1,274 @@
+{
+ "source": "tests/test_model_access_surfaces.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr_summary",
+    "measures": [
+     {
+      "formula": "sum(total)"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr_summary",
+    "metrics": [
+     {
+      "expression": "sum(total)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pay",
+    "measures": [
+     {
+      "formula": "sum(gross)"
+     }
+    ]
+   },
+   "new": {
+    "population": "pay",
+    "metrics": [
+     {
+      "expression": "sum(gross)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "dimensions": [
+     "hr.dept"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "measures": [
+     {
+      "formula": "sum(hr.salary)"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "metrics": [
+     {
+      "expression": "sum(hr.salary)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "filters": [
+     "hr.dept = 'eng'"
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "filter": [
+     "hr.dept = 'eng'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "extensions": [
+     {
+      "source_name": "fin",
+      "joins": [
+       {
+        "target_model": "hr",
+        "join_pairs": [
+         [
+          "staff_id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "hr.dept"
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "extensions": [
+     {
+      "source_name": "fin",
+      "relationships": [
+       {
+        "to": "hr",
+        "join_pairs": [
+         [
+          "staff_id",
+          "id"
+         ]
+        ]
+       }
+      ]
+     }
+    ],
+    "dimensions": [
+     "hr.dept"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "dimensions": [
+     "dept"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "dimensions": [
+     "dept"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "fin",
+    "dimensions": [
+     "hrr.dept"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "fin",
+    "dimensions": [
+     "hrr.dept"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pub_link",
+    "dimensions": [
+     "salary"
+    ]
+   },
+   "new": {
+    "population": "pub_link",
+    "dimensions": [
+     "salary"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 298,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 300,
+   "reason": "not fully literal"
+  }
+ ]
+}

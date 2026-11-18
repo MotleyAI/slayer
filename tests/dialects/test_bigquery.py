@@ -14,8 +14,8 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import ExplainUnsupportedError
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects import (
@@ -270,15 +270,15 @@ async def test_bigquery_outer_wrap_uses_backticks_for_aliases() -> None:
 # not a hard-coded ``if dialect == "bigquery":`` branch. Codex HIGH #1.
 
 
-def _minimal_orders_model() -> SlayerModel:
+def _minimal_orders_dataset() -> SlayerDataset:
     """Helper: the two-column model the generator-dispatch test renders."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ],
     )
 
@@ -286,8 +286,8 @@ def _minimal_orders_model() -> SlayerModel:
 async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
     """``SQLGenerator.generate()`` dispatches to the dialect's ``rewrite_emitted_sql``."""
     query = SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
     )
     with patch.object(
         PostgresDialect,
@@ -296,7 +296,7 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
         side_effect=lambda self, sql, **kw: sql,
     ) as spy:
         await _engine_generate(
-            query=query, model=_minimal_orders_model(), dialect="postgres",
+            query=query, dataset=_minimal_orders_dataset(), dialect="postgres",
         )
     assert spy.called, (
         "SQLGenerator.generate() must dispatch through self._dialect."
@@ -312,16 +312,16 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         storage = YAMLStorage(base_dir=tmp.name)
         ds = DatasourceConfig(name="pg", type="postgres", database=":memory:")
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders_t",
             data_source="pg",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(
             rows=[{"orders.status": "paid"}], datasource=ds,
@@ -333,8 +333,8 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
             side_effect=lambda self, rows, **kw: rows,
         ) as spy:
             await engine.execute(SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
             ))
         assert spy.called, (
             "SlayerQueryEngine.execute() must dispatch through the active "
@@ -369,16 +369,16 @@ async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, t
         database="proj.dataset",
     )
     await storage.save_datasource(ds)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="proj.dataset.orders_t",
         data_source="bq",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(rows, datasource=ds)
     return engine, tmp, ds
@@ -398,8 +398,8 @@ class TestEngineDecodeIntegration:
         engine, tmp, _ = await _build_bigquery_engine(rows)
         try:
             query = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(query)
@@ -413,8 +413,8 @@ class TestEngineDecodeIntegration:
         engine, tmp, _ = await _build_bigquery_engine(rows=[])
         try:
             query = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(query)
@@ -506,16 +506,16 @@ async def _build_labeled_bigquery_engine(
     storage = YAMLStorage(base_dir=tmp.name)
     ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
     await storage.save_datasource(ds)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="proj.dataset.orders_t",
         data_source="bq",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT, label="Order Status"),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     engine._sql_clients[client_cache_key(ds)] = _FakeBigQueryClient(rows, datasource=ds)
     return engine, tmp, ds
@@ -526,7 +526,7 @@ async def test_bigquery_attributes_survive_alias_mangling() -> None:
     rows = [{"orders___status": "paid"}]
     engine, tmp, _ = await _build_labeled_bigquery_engine(rows)
     try:
-        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        query = SlayerQuery(population="orders", dimensions=["status"])
         resp = await engine.execute(query)
         assert "orders.status" in resp.attributes.dimensions, (
             f"BigQuery attributes lost the dimension after mangling: "
@@ -559,16 +559,16 @@ async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> 
         storage = YAMLStorage(base_dir=tmp.name)
         ds = DatasourceConfig(name="bq", type="bigquery", database="proj.dataset")
         await storage.save_datasource(ds)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="proj.dataset.orders_t",
             data_source="bq",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         engine._sql_clients[client_cache_key(ds)] = _EchoTypesClient(datasource=ds)
         types = await engine.get_result_column_types("orders")
@@ -583,17 +583,17 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
     """The virtual model's rename wrapper references the mangled inner aliases."""
     engine, tmp, _ = await _build_bigquery_engine(rows=[])
     try:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="qb_orders",
             data_source="bq",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": ["status"],
             })],
         )
-        vmodel = await engine._expand_query_backed_model(
-            model=model,
+        vmodel = await engine._expand_query_backed_dataset(
+            dataset=model,
             runtime_kwarg=None,
         )
         wrapped = vmodel.sql
@@ -606,7 +606,7 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
         assert "orders___status" in wrapped, wrapped
         assert "orders____count" in wrapped, wrapped
         # The outer rename exposes the flat bind names downstream stages use.
-        assert [c.name for c in vmodel.columns] == ["status", "_count"], vmodel.columns
+        assert [c.name for c in vmodel.fields] == ["status", "_count"], vmodel.fields
     finally:
         tmp.cleanup()
 
@@ -616,7 +616,7 @@ async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
     data_rows = [{"orders___status": "paid"}]
     engine, tmp, _ = await _build_bigquery_engine(rows=data_rows)
     try:
-        query = SlayerQuery(source_model="orders", dimensions=["status"])
+        query = SlayerQuery(population="orders", dimensions=["status"])
         with patch.object(
             BigqueryDialect, "decode_result_keys", autospec=True,
             side_effect=lambda self, rows, **kw: rows,
@@ -845,7 +845,7 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
 )
 async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias: str) -> None:
     """No empty backtick qualifier; the alias keeps its model prefix (public or hidden)."""
-    sql = await gen(cumsum_chain(order=[{"column": column, "direction": "desc"}]),
+    sql = await gen(cumsum_chain(order=[{"field": column, "direction": "desc"}]),
                     dialect="bigquery")
     assert "``" not in sql, f"empty identifier emitted: {sql}"
     assert outer_order(sql, "bigquery") == [(alias, "", True)], sql
@@ -853,28 +853,28 @@ async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias:
 
 async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
     """A computed measure ordered by time renders a valid BigQuery outer wrap."""
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="bq",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
         ],
     )
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[
-            TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
+            TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
         ],
-        measures=[ModelMeasure(formula="sum(revenue) / sum(quantity)", name="aov")],
-        order=[OrderItem(column="created_at", direction="desc")],
+        metrics=[DatasetMetric(expression="sum(revenue) / sum(quantity)", name="aov")],
+        order=[OrderItem(field="created_at", direction="desc")],
         limit=6,
     )
-    sql = await _engine_generate(query=query, model=model, dialect="bigquery")
+    sql = await _engine_generate(query=query, dataset=model, dialect="bigquery")
     assert "``" not in sql, f"empty identifier emitted: {sql}"
     # BigQuery bans dots in output aliases, so the dotted result key
     # ``orders.created_at`` is mangled to ``orders___created_at`` and must

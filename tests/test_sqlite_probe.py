@@ -339,7 +339,7 @@ class TestProbeBlob:
 
 
 class TestProbeSampleSaturation:
-    async def test_sample_saturated_all_int_returns_none(self, conn, caplog, monkeypatch) -> None:
+    async def test_sample_saturated_all_int_returns_none(self, conn, caplog, monkeypatch: pytest.MonkeyPatch) -> None:
         """When the sample exhausts at PROBE_SCAN_CAP + 1 and would otherwise
         verdict INT, return None so the caller keeps declared INT but logs."""
         monkeypatch.setattr(sqlite_introspect, "PROBE_SCAN_CAP", 50)  # tiny cap for test speed
@@ -354,7 +354,7 @@ class TestProbeSampleSaturation:
         assert any("saturat" in r.getMessage().lower() for r in warnings)
 
     async def test_sample_saturated_with_real_still_returns_double(
-        self, conn, monkeypatch
+        self, conn, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When the sample saturates but we already saw REAL values in the
         sample, we have enough evidence for DOUBLE — saturation doesn't
@@ -376,7 +376,7 @@ class TestProbeSampleSaturation:
 
 
 class TestProbeDistinctTextSaturation:
-    async def test_distinct_text_saturated_returns_text(self, conn, monkeypatch) -> None:
+    async def test_distinct_text_saturated_returns_text(self, conn, monkeypatch: pytest.MonkeyPatch) -> None:
         """When the distinct-text coerce probe saturates, we can't prove
         every distinct value coerces — widen to TEXT conservatively.
 
@@ -400,7 +400,7 @@ class TestProbeDistinctTextSaturation:
         )
         assert verdict is DataType.TEXT
 
-    async def test_many_duplicate_low_distinct_text_returns_double(self, conn, monkeypatch) -> None:
+    async def test_many_duplicate_low_distinct_text_returns_double(self, conn, monkeypatch: pytest.MonkeyPatch) -> None:
         """A column with many duplicate numeric-text values but very few
         DISTINCT values must NOT trigger saturation — distinct-text count
         is the trigger, not row count. Verdict: DOUBLE.

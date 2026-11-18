@@ -1,0 +1,201 @@
+{
+ "source": "tests/test_dev1892_review_fixes.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.north_spend, weight=customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.north_spend, weight=customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum6(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum6(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum7(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum7(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum8(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum8(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum9(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum9(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wphys(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wphys(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cwavg(sum(amount, partition_by=customer_id))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "cwavg(sum(amount, partition_by=customer_id))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wlit(sum(amount, partition_by=[city, region]))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wlit(sum(amount, partition_by=[city, region]))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wconst(sum(amount, partition_by=[city, region]))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wconst(sum(amount, partition_by=[city, region]))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cwavg(sum(amount, partition_by=amount))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "cwavg(sum(amount, partition_by=amount))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wopq(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wopq(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wugly(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wugly(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wroot(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wroot(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend * (orders.amount + 0))",
+    "name": "oracle"
+   },
+   "new": {
+    "expression": "sum(customers.spend * (orders.amount + 0))",
+    "name": "oracle"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 60,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 80,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  }
+ ]
+}

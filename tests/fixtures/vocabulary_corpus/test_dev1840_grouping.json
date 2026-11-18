@@ -1,0 +1,39 @@
+{
+ "source": "tests/test_dev1840_grouping.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(stores.rent)",
+    "name": "rm"
+   },
+   "new": {
+    "expression": "sum(stores.rent)",
+    "name": "rm"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dev2189_statement_consumers.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 137,
+   "reason": "not fully literal"
+  }
+ ]
+}

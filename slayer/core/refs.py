@@ -1,5 +1,5 @@
 """Shared identifier and aggregation-suffix definitions for SLayer references (single source
-of truth). Depends only on ``slayer.core.keys`` so model/query validators avoid circular imports."""
+of truth). Depends only on ``slayer.core.keys`` so dataset/query validators avoid circular imports."""
 from __future__ import annotations
 
 import hashlib
@@ -17,8 +17,8 @@ from slayer.core.keys import (
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     ListSetKey,
     LiteralKey,
@@ -37,7 +37,7 @@ from slayer.core.keys import (
 # A bare SQL identifier; the dunder restriction is applied at user-input time.
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
-# An identifier or dotted path; used to scan formula text for reference candidates.
+# An identifier or dotted path; used to scan expression text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
 
@@ -61,7 +61,7 @@ def auto_name_from_expression(expression: str) -> str:
 
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
-# is a same-model scalar EXPRESSION rather than a column / star.
+# is a same-dataset scalar EXPRESSION rather than a field / star.
 EXPRESSION_SOURCE_KINDS = (
     ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey, CastKey, ListSetKey,
 )
@@ -73,10 +73,10 @@ EXPRESSION_SOURCE_KINDS = (
 _LegacyFields = tuple[tuple[str, Callable[[Any], Any]], ...]
 
 _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
-    ColumnKey: ("ColumnKey", (
+    FieldKey: ("ColumnKey", (
         ("path", attrgetter("path")), ("leaf", attrgetter("leaf")),
     )),
-    ColumnSqlKey: ("ColumnSqlKey", (
+    FieldSqlKey: ("ColumnSqlKey", (
         ("path", attrgetter("path")), ("model", attrgetter("model")),
         ("column_name", attrgetter("column_name")),
     )),
@@ -156,6 +156,12 @@ def _legacy_key_fields(key: Any) -> tuple[str, list[tuple[str, str]]]:
     ]
 
 
+def legacy_class_name(cls: type) -> str:
+    """The pinned class spelling of a key kind; any other class its own name."""
+    spelled = _LEGACY_KEY_SPELLINGS.get(cls)
+    return spelled[0] if spelled is not None else cls.__name__
+
+
 def legacy_key_repr(key: Any) -> str:
     """``repr``-position spelling: ``ClassName(field=..., ...)``."""
     spelled_cls, fields = _legacy_key_fields(key)
@@ -195,10 +201,10 @@ def agg_signature_suffix(
 def _partition_key_display(key: Any) -> str:
     if isinstance(key, (TimeTruncKey, ListSetKey)):
         key = key.source
-    if isinstance(key, ColumnKey):
+    if isinstance(key, FieldKey):
         parts = [*key.path, key.leaf]
-    elif isinstance(key, ColumnSqlKey):
-        parts = [*key.path, key.column_name]
+    elif isinstance(key, FieldSqlKey):
+        parts = [*key.path, key.field_name]
     else:
         parts = [legacy_key_str(key)]
     return _NON_IDENT_RE.sub("_", "_".join(parts)).strip("_")
@@ -276,10 +282,10 @@ def _fragment_display(key: SqlFragmentKey) -> str:
 
 
 def _leaf_display(key: ValueKey) -> str | None:
-    if isinstance(key, ColumnKey):
+    if isinstance(key, FieldKey):
         return ".".join((*key.path, key.leaf))
-    if isinstance(key, ColumnSqlKey):
-        return ".".join((*key.path, key.column_name))
+    if isinstance(key, FieldSqlKey):
+        return ".".join((*key.path, key.field_name))
     if isinstance(key, StarKey):
         return ".".join((*key.path, "*"))
     if isinstance(key, LiteralKey):
@@ -291,7 +297,7 @@ def _listed_display(key: ValueKey) -> str | None:
     """Display of a key reading or holding several values, else ``None``."""
     if isinstance(key, InKey):
         values = ", ".join(key_display(v) for v in key.values)
-        return f"{key_display(key.column)} {'not in' if key.negated else 'in'} ({values})"
+        return f"{key_display(key.field)} {'not in' if key.negated else 'in'} ({values})"
     if isinstance(key, ArrayLiteralKey):
         return f"[{', '.join(key_display(v) for v in key.values)}]"
     if isinstance(key, ListSetKey):
@@ -314,7 +320,7 @@ def first_bucket_remedy(keys: Any) -> str | None:
 
 
 def key_display(key: ValueKey) -> str:
-    """User-facing formula text of any key kind."""
+    """User-facing expression text of any key kind."""
     shown = _leaf_display(key) or _listed_display(key)
     if shown is not None:
         return shown
@@ -355,8 +361,8 @@ def _decimal_to_plain_str(value: Decimal) -> str:
 
 def agg_kwarg_canonical_str(value: Any) -> str:
     """Canonicalize an AggregateKey kwarg/arg value to the SQL-string form the generator's
-    ``_validate_agg_param_value`` accepts (so a ``ColumnKey`` never leaks as Pydantic repr).
-    ``bool``/``None`` raise (kept distinct from numerics to fail loudly); ``ColumnKey`` → ``[path.]leaf``."""
+    ``_validate_agg_param_value`` accepts (so a ``FieldKey`` never leaks as Pydantic repr).
+    ``bool``/``None`` raise (kept distinct from numerics to fail loudly); ``FieldKey`` → ``[path.]leaf``."""
     if isinstance(value, bool):
         # bool is-a int, must check first.
         raise TypeError(
@@ -373,8 +379,8 @@ def agg_kwarg_canonical_str(value: Any) -> str:
         return _decimal_to_plain_str(Decimal(str(value)))
     if isinstance(value, str):
         return value
-    if isinstance(value, (ColumnKey, ColumnSqlKey)):
-        return ".".join((*value.path, value.leaf if isinstance(value, ColumnKey) else value.column_name))
+    if isinstance(value, (FieldKey, FieldSqlKey)):
+        return ".".join((*value.path, value.leaf if isinstance(value, FieldKey) else value.field_name))
     if isinstance(value, AggregateKey):
         return _agg_key_canonical_str(value)
     if isinstance(value, TransformKey):
@@ -399,11 +405,11 @@ def sql_fragment_digest(value: SqlFragmentKey) -> str:
 
 def _agg_key_canonical_str(value: AggregateKey) -> str:
     """Canonical fragment for an aggregate-valued parameter (alias/identity only;
-    render-time reads the picked ``_p<i>`` column). Ordered positional args are
+    render-time reads the picked ``_p<i>`` field). Ordered positional args are
     included so aggregates differing only in positionals (a ranked ``first``'s
     ranking key) never collapse to the same fragment."""
     parts = [value.agg]
-    if isinstance(value.source, (ColumnKey, ColumnSqlKey)):
+    if isinstance(value.source, (FieldKey, FieldSqlKey)):
         parts.append(agg_kwarg_canonical_str(value.source))
     parts.extend(
         f"arg{i}_{agg_kwarg_canonical_str(a)}" for i, a in enumerate(value.args)
@@ -412,7 +418,7 @@ def _agg_key_canonical_str(value: AggregateKey) -> str:
     if value.partition_keys is not None:
         pks = sorted(
             agg_kwarg_canonical_str(p)
-            if isinstance(p, (ColumnKey, ColumnSqlKey)) else str(p)
+            if isinstance(p, (FieldKey, FieldSqlKey)) else str(p)
             for p in value.partition_keys
         )
         if pks:
@@ -422,7 +428,7 @@ def _agg_key_canonical_str(value: AggregateKey) -> str:
 
 def _time_aware_key_display(key: ValueKey) -> str:
     """A partition/time key's display with a ``TimeTruncKey``'s granularity kept, so
-    the same column bucketed month vs year yields distinct fragments (identity)."""
+    the same field bucketed month vs year yields distinct fragments (identity)."""
     display = _partition_key_display(key)
     if isinstance(key, TimeTruncKey):
         return f"{display}_{key.granularity}"
@@ -431,12 +437,12 @@ def _time_aware_key_display(key: ValueKey) -> str:
 
 def _transform_key_canonical_str(value: TransformKey) -> str:
     """Canonical fragment for a transform-valued parameter (alias/identity
-    only — render reads the picked column). Op, its scalar kwargs, the input
+    only — render reads the picked field). Op, its scalar kwargs, the input
     fragment, its rank partition keys, and the resolved time key — every time key
     carrying its granularity (a bucketed ``cumsum`` differs from an unbucketed one)."""
     parts = [value.op]
     parts.extend(f"{k}_{agg_kwarg_canonical_str(v)}" for k, v in value.kwargs)
-    if isinstance(value.input, (ColumnKey, ColumnSqlKey, AggregateKey, TransformKey)):
+    if isinstance(value.input, (FieldKey, FieldSqlKey, AggregateKey, TransformKey)):
         parts.append(agg_kwarg_canonical_str(value.input))
     else:
         parts.append(_NON_IDENT_RE.sub("_", legacy_key_str(value.input)).strip("_"))
@@ -450,16 +456,16 @@ def _transform_key_canonical_str(value: TransformKey) -> str:
 
 
 def canonical_agg_name(
-    measure_name: str,
+    metric_name: str,
     aggregation_name: str,
     agg_args: list[str] | None = None,
     agg_kwargs: dict | None = None,
 ) -> str:
-    """Canonical hidden-column name for an aggregated measure ref (``sum(revenue)`` → ``revenue_sum``, ``count(*)`` → ``_count``)."""
+    """Canonical hidden-field name for an aggregated metric ref (``sum(revenue)`` → ``revenue_sum``, ``count(*)`` → ``_count``)."""
     suffix = agg_signature_suffix(agg_args, agg_kwargs)
-    if measure_name == "*":
+    if metric_name == "*":
         return f"_{aggregation_name}{suffix}"
-    return f"{measure_name}_{aggregation_name}{suffix}"
+    return f"{metric_name}_{aggregation_name}{suffix}"
 
 
 def functional_agg_text(*, source: str, suffix: str) -> str:

@@ -204,11 +204,11 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
     """One row per metric AND per dimension on every table, flattened
     into the JDBC ``COLUMNS`` shape. BI tools introspecting a "table"
     via the wire-facade driver see this as the column list of the
-    underlying semantic model.
+    underlying SLayer dataset.
 
-    DEV-1567: cross-model entries are excluded — they leak as dotted
+    Cross-dataset entries are excluded — they leak as dotted
     "columns" that Metabase / dbt fingerprint scans then project, landing
-    a dotted name in ``SlayerQuery.measures[*].name`` (Pydantic rejects
+    a dotted name in ``SlayerQuery.metrics[*].name`` (Pydantic rejects
     the dot). Catalog-namespaced surfaces (``INFORMATION_SCHEMA.METRICS``
     / ``.DIMENSIONS``) and the catalog SQL fingerprint hash continue to
     use the raw ``tbl.metrics`` / ``tbl.dimensions``.

@@ -185,7 +185,7 @@ An aggregate whose inputs — positional args, keyword args (including aggregati
 - THEN the error names the argument `li_ts` and the hop `line_items` (the "ranks/reads by" form), not the closure's hop-only message; `last(amount, line_items.created_at)` keeps naming `created_at` and `line_items`
 
 #### Scenario: Default ranking key whose column filter crosses an unproven hop fails closed
-- WHEN `orders.default_time_dimension` names a column whose `Column.filter` references `line_items.qty` across the unproven hop, and a query selects `last(amount)` with no time dimension
+- WHEN `orders.default_time_dimension` names a column whose `DatasetField.filter` references `line_items.qty` across the unproven hop, and a query selects `last(amount)` with no time dimension
 - THEN the query fails with the input-safety error naming that column and the hop `line_items`
 
 #### Scenario: Unanalyzable default ranking key fails closed
@@ -235,8 +235,8 @@ under `"associate"` (per `queries/attribution-modes`).
 
 #### Scenario: Population-rooted window over a fanning time axis fails closed
 - **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
-  `time_dimensions: [{"dimension": "orders.ordered_at", "granularity": "month"}]`, with or
-  without `filters: ["orders.status = 'ok'"]`, in any `to_many_handling` mode
+  `time_dimensions: [{"field": "orders.ordered_at", "granularity": "month"}]`, with or
+  without `filter: ["orders.status = 'ok'"]`, in any `to_many_handling` mode
 - **THEN** the query fails at plan time with a typed error naming `orders.ordered_at` and the
   remedy, containing no issue reference — never a value counting a customer once per order
 
@@ -466,7 +466,7 @@ only in the filter.
 #### Scenario: Two spellings of one edge bind to the same related row
 - **WHEN** the `customers → orders` edge is named `purchases` and a query rooted at
   `customers` selects `sum(spend)` by `tier` with
-  `filters: ["purchases.status = 'ok'", "orders.channel = 'app'"]`
+  `filter: ["purchases.status = 'ok'", "orders.channel = 'app'"]`
 - **THEN** by executed values each cell counts the customers having one order that is both
   `ok` and `app` (gold 60, silver 80 on the reference dataset, never gold 160 / silver 230),
   and the generated SQL correlates a single `orders` relation for both conjuncts
@@ -486,7 +486,7 @@ only in the filter.
 
 #### Scenario: Mixed disjunction stays dropped and warned
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by `customers.tier`
-  with `filters: ["customers.tier = 'bronze' OR channel = 'app'"]`, in any mode
+  with `filter: ["customers.tier = 'bronze' OR channel = 'app'"]`, in any mode
 - **THEN** it is no longer dropped: by executed values each cell counts the distinct customers
   that are bronze or have at least one `app` order, each once (gold 160, silver 230, bronze 40
   on the reference dataset, never gold 245), the response carries the informational entry naming the
@@ -495,7 +495,7 @@ only in the filter.
 
 #### Scenario: Mixed disjunction on the association producer binds to the same related row
 - **WHEN** a query rooted at `orders` selects `sum(customers.spend)` by `status` under
-  `to_many_handling: "associate"` with `filters: ["customers.tier = 'gold' OR channel = 'app'"]`
+  `to_many_handling: "associate"` with `filter: ["customers.tier = 'gold' OR channel = 'app'"]`
 - **THEN** by executed values each status cell counts the distinct customers having an
   order of that status that is itself `app` or belongs to a gold customer (ok 270, new 250 on
   the reference dataset), reported through the informational entry with no dropped-filter
@@ -579,7 +579,7 @@ only in the filter.
 
 #### Scenario: Partitioned local producer restricts by association
 - **WHEN** a query rooted at `customers` selects `sum(spend, partition_by=tier)` by `tier`
-  with `filters: ["orders.status = 'ok'"]`, and one gold customer has two `ok` orders
+  with `filter: ["orders.status = 'ok'"]`, and one gold customer has two `ok` orders
 - **THEN** by executed values each tier cell equals the spend of that tier's distinct
   customers with at least one `ok` order, each once (gold 190 and silver 230 on the
   reference dataset, never gold 290), and the response carries a `semi_join_pushed` entry
@@ -587,8 +587,8 @@ only in the filter.
 
 #### Scenario: Windowed producer over a local axis inherits the restriction
 - **WHEN** a query rooted at `customers` selects `sum(spend, window='1y')` over
-  `time_dimensions: [{"dimension": "customers.signup_at", "granularity": "month"}]` with
-  `filters: ["orders.status = 'ok'"]`, and one customer has two `ok` orders
+  `time_dimensions: [{"field": "customers.signup_at", "granularity": "month"}]` with
+  `filter: ["orders.status = 'ok'"]`, and one customer has two `ok` orders
 - **THEN** by executed values each bucket sums the trailing-year signups among the distinct
   customers with at least one `ok` order, each once (April 420 on the reference dataset,
   never 520), the window's source relation carries the semi-join and no `orders` join, and
@@ -596,14 +596,14 @@ only in the filter.
 
 #### Scenario: Nested producer rooted at the population inherits the restriction
 - **WHEN** a query rooted at `customers` selects `avg(sum(spend, partition_by=tier))` with
-  `dimensions: ["tier"]` and `filters: ["orders.status = 'ok'"]`
+  `dimensions: ["tier"]` and `filter: ["orders.status = 'ok'"]`
 - **THEN** by executed values the inner per-tier totals count each customer once (the
   average over tiers is 210 on the reference dataset, never 260), and the generated SQL
   carries the semi-join in the host-rooted producer body and no `orders` join
 
 #### Scenario: Population restriction reaches the producer-only spine
 - **WHEN** a query rooted at `customers` selects only `sum(orders.amount)` with
-  `filters: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
+  `filter: ["orders.status = 'ok'"]`, and a second run uses a predicate no order passes
 - **THEN** the first run returns one row with the producer's value by executed values (82 on
   the reference dataset) and the second returns zero rows — never one row carrying a NULL
 
@@ -619,7 +619,7 @@ only in the filter.
 A result cell whose attached aggregate has no home rows SHALL take the aggregation's
 **empty value**: 0 for the built-in count family (`count`, `count_distinct`,
 `count_distinct_approx`, including `count(x.*)`), NULL for every other aggregation. A
-model-level aggregation declaring its own `formula` — including one named after a
+model-level aggregation declaring its own `expression` — including one named after a
 built-in count — and every custom aggregation SHALL have the empty value NULL; a
 formula-less declaration of a built-in name keeps the built-in's empty value; the
 declaration consulted is the one on the aggregation's owning model. The empty value
@@ -640,7 +640,7 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
 - **THEN** the childless customer's cell holds NULL for both
 
 #### Scenario: Inferred population
-- **WHEN** a query without `source_model` has `dimensions=[customers.name]` and selects
+- **WHEN** a query without `population` has `dimensions=[customers.name]` and selects
   `count(orders.id)`
 - **THEN** the population is `customers` and the childless customer's cell holds 0
 
@@ -686,7 +686,7 @@ bucket is absent) SHALL stay NULL, and no population cell SHALL be fabricated.
   and a cell whose shifted prior bucket is absent from the result holds NULL
 
 #### Scenario: Custom formula override stays NULL, formula-less declaration keeps 0
-- **WHEN** the owning model declares an aggregation named `count` with its own `formula`
+- **WHEN** the owning model declares an aggregation named `count` with its own `expression`
   and a query selects `count(orders.id)` from `customers`
 - **THEN** the childless customer's cell holds NULL; with a formula-less `count`
   declaration it holds 0

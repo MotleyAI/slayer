@@ -1,0 +1,20 @@
+{
+ "source": "tests/test_search_example_query_stale_warning.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  }
+ ]
+}

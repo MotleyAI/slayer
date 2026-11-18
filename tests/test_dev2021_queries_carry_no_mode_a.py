@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import UnanalyzableAggregationParameterError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -59,25 +59,25 @@ def _seed(db_path: str, dialect: str) -> None:
             cur.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(rows[0]))})", rows)
 
 
-def _models() -> list[SlayerModel]:
-    customers = SlayerModel(
+def _datasets() -> list[SlayerDataset]:
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=DS,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
         ],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source=DS,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="scaled", sql="amount * {k}", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
     return [customers, orders]
 
@@ -96,8 +96,8 @@ async def shop(request) -> AsyncIterator[_Shop]:
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         ds = DatasourceConfig(name=DS, type=request.param, database=db_path)
         async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-            for model in _models():
-                await storage.save_model(model)
+            for model in _datasets():
+                await storage.save_dataset(model)
             yield _Shop(storage=storage, engine=engine)
 
 
@@ -117,9 +117,9 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _ext_column(column: dict[str, Any], *, source_name: str = "orders") -> dict[str, Any]:
     return {
-        "source_model": "orders",
+        "population": "orders",
         "extensions": [{"source_name": source_name, "columns": [column]}],
-        "measures": [{"formula": "count(*)"}],
+        "metrics": [{"expression": "count(*)"}],
     }
 
 
@@ -128,12 +128,12 @@ _CONSTRUCTION_ROUTES = {
     "extension-filter-oracle": _ext_column({"name": "oracle", "sql": "amount", "filter": "EXISTS (SELECT 1 FROM secrets)"}),
     "extension-sql-less-hidden-column": _ext_column({"name": "cost", "type": "DOUBLE"}),
     "inline-sql-table": {
-        "source_model": {"name": "s", "sql_table": "secrets", "data_source": DS,
+        "population": {"name": "s", "sql_table": "secrets", "data_source": DS,
                          "columns": [{"name": "pw", "type": "TEXT"}]},
         "dimensions": ["pw"],
     },
     "inline-sql": {
-        "source_model": {"name": "s", "sql": "SELECT pw FROM secrets", "data_source": DS,
+        "population": {"name": "s", "sql": "SELECT pw FROM secrets", "data_source": DS,
                          "columns": [{"name": "pw", "type": "TEXT"}]},
         "dimensions": ["pw"],
     },
@@ -147,9 +147,9 @@ class TestEachRouteIsRefused:
             SlayerQuery.model_validate(payload)
 
     def test_legacy_root_extension_with_columns_is_refused(self) -> None:
-        legacy = {"source_name": "orders", "columns": [{"name": "leak", "sql": "(SELECT max(pw) FROM secrets)"}]}
-        with pytest.raises(ValidationError, match="columns"):
-            SlayerQuery.model_validate({"source_model": legacy, "measures": ["count(*)"]})
+        legacy = {"source_name": "orders", "fields": [{"name": "leak", "sql": "(SELECT max(pw) FROM secrets)"}]}
+        with pytest.raises(ValidationError, match="fields"):
+            SlayerQuery.model_validate({"population": legacy, "metrics": ["count(*)"]})
 
     @pytest.mark.parametrize(("column", "replacement"), [
         ({"name": "q", "sql": "amount", "filter": "status = 'ok'", "type": "DOUBLE"},
@@ -158,18 +158,18 @@ class TestEachRouteIsRefused:
     ])
     def test_the_suggested_replacement_keeps_the_columns_meaning(self, column: dict, replacement: str) -> None:
         with pytest.raises(ValidationError) as exc:
-            SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)"],
+            SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"],
                                         "extensions": [{"source_name": "orders", "columns": [column]}]})
         assert replacement in str(exc.value)
 
     def test_a_slayer_model_instance_is_refused(self) -> None:
-        inline = SlayerModel(name="s", sql_table="secrets", data_source=DS, columns=[Column(name="pw", type=DataType.TEXT)])
+        inline = SlayerDataset(name="s", sql_table="secrets", data_source=DS, fields=[DatasetField(name="pw", datatype=DataType.TEXT)])
         with pytest.raises(ValidationError, match="inline"):
-            SlayerQuery(source_model=inline, dimensions=["pw"])  # pyright: ignore[reportArgumentType]  # the removed form must fail
+            SlayerQuery(population=inline, dimensions=["pw"])  # pyright: ignore[reportArgumentType]  # the removed form must fail
 
     async def test_a_hostile_variable_is_refused_before_sql_runs(self, shop: _Shop, executed: list[str]) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": "sum(scaled)"}],
+            "population": "orders", "metrics": [{"expression": "sum(scaled)"}],
             "variables": {"k": "(SELECT count(*) FROM secrets)"},
         })
         with pytest.raises(ValueError, match="literal values"):
@@ -180,8 +180,8 @@ class TestEachRouteIsRefused:
         self, shop: _Shop, executed: list[str],
     ) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "weighted_avg(amount, weight='length(sqlite_version())')"}],
+            "population": "orders",
+            "metrics": [{"expression": "weighted_avg(amount, weight='length(sqlite_version())')"}],
         })
         with pytest.raises(UnanalyzableAggregationParameterError):
             await shop.engine.execute(query)
@@ -208,7 +208,7 @@ class TestSurfaces:
         server = create_mcp_server(storage=shop.storage)
         with pytest.raises(ToolError, match="literal values"):
             await server.call_tool(name="query", arguments={"query": {
-                "source_model": "orders", "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders", "metrics": [{"expression": "sum(scaled)"}],
                 "variables": {"k": "(SELECT count(*) FROM secrets)"},
             }})
         assert not any("secrets" in sql or "sqlite_version" in sql for sql in executed)
@@ -217,15 +217,15 @@ class TestSurfaces:
 class TestModeBSpellingsRun:
     async def test_an_expression_dimension_replaces_the_extension_column(self, shop: _Shop) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": [{"expression": "upper(customers.tier)", "name": "tier_label"}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         }))
         assert {r["orders.tier_label"]: r["orders.rev"] for r in resp.data} == {"GOLD": 70.0, "SILVER": 30.0}
 
     async def test_a_literal_variable_binds_into_stored_mode_a(self, shop: _Shop) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": "sum(scaled)", "name": "s"}], "variables": {"k": 2},
+            "population": "orders", "metrics": [{"expression": "sum(scaled)", "name": "s"}], "variables": {"k": 2},
         }))
         assert resp.data[0]["orders.s"] == pytest.approx(200.0)
 
@@ -235,7 +235,7 @@ class TestModeBSpellingsRun:
     ])
     async def test_a_string_argument_is_mode_b(self, shop: _Shop, formula: str) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [{"formula": formula, "name": "w"}],
+            "population": "orders", "metrics": [{"expression": formula, "name": "w"}],
         }))
         # sum(amount * id * 2) / sum(id * 2) = 600 / 20
         assert resp.data[0]["orders.w"] == pytest.approx(30.0)

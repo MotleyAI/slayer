@@ -21,174 +21,174 @@ from __future__ import annotations
 import os
 import tempfile
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1866_fixtures import DS_CHAIN, chain_models
+from tests._dev1866_fixtures import DS_CHAIN, chain_datasets
 
 DS_LIT = "ds_lit"
 DS_FANROUTE = "ds_fanroute"
 DS_TWOROUTES = "ds_tworoutes"
 
 
-def lit_models() -> list[SlayerModel]:
+def lit_datasets() -> list[SlayerDataset]:
     """stores —(unknown card)→ plants, plus the to-one route stores → hub → plants."""
-    plants = SlayerModel(
+    plants = SlayerDataset(
         name="plants", data_source=DS_LIT, sql_table="plants",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="code", type=DataType.INT),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="code", datatype=DataType.INT),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
-    hub = SlayerModel(
+    hub = SlayerDataset(
         name="hub", data_source=DS_LIT, sql_table="hub",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="plant_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="plant_id", datatype=DataType.INT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="plants", join_pairs=[["plant_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="plants", join_pairs=[["plant_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
-    stores = SlayerModel(
+    stores = SlayerDataset(
         name="stores", data_source=DS_LIT, sql_table="stores",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="kind", type=DataType.TEXT),
-            Column(name="plant_ref", type=DataType.INT),
-            Column(name="hub_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="kind", datatype=DataType.TEXT),
+            DatasetField(name="plant_ref", datatype=DataType.INT),
+            DatasetField(name="hub_id", datatype=DataType.INT),
         ],
-        joins=[
+        relationships=[
             # Direct edge: undeclared cardinality into a non-unique column —
             # resolvable literally, never provably to-one.
-            ModelJoin(
-                target_model="plants", join_pairs=[["plant_ref", "code"]],
+            DatasetRelationship(
+                to="plants", join_pairs=[["plant_ref", "code"]],
                 cardinality=None,
             ),
-            ModelJoin(
-                target_model="hub", join_pairs=[["hub_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+            DatasetRelationship(
+                to="hub", join_pairs=[["hub_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
     return [plants, hub, stores]
 
 
-def fanroute_models() -> list[SlayerModel]:
+def fanroute_datasets() -> list[SlayerDataset]:
     """firm → office to-one; office → desks fans out (unique route overall)."""
-    office = SlayerModel(
+    office = SlayerDataset(
         name="office", data_source=DS_FANROUTE, sql_table="office",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
         ],
     )
-    firm = SlayerModel(
+    firm = SlayerDataset(
         name="firm", data_source=DS_FANROUTE, sql_table="firm",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="title", type=DataType.TEXT),
-            Column(name="office_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="title", datatype=DataType.TEXT),
+            DatasetField(name="office_id", datatype=DataType.INT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="office", join_pairs=[["office_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="office", join_pairs=[["office_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
-    desks = SlayerModel(
+    desks = SlayerDataset(
         name="desks", data_source=DS_FANROUTE, sql_table="desks",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="office_ref", type=DataType.INT),
-            Column(name="id_tag", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="office_ref", datatype=DataType.INT),
+            DatasetField(name="id_tag", datatype=DataType.TEXT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="office", join_pairs=[["office_ref", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="office", join_pairs=[["office_ref", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
     return [office, firm, desks]
 
 
-def lit_models_by_name() -> dict[str, SlayerModel]:
-    return {m.name: m for m in lit_models()}
+def lit_datasets_by_name() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in lit_datasets()}
 
 
-def fanroute_models_by_name() -> dict[str, SlayerModel]:
-    return {m.name: m for m in fanroute_models()}
+def fanroute_datasets_by_name() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in fanroute_datasets()}
 
 
-def tworoutes_models() -> list[SlayerModel]:
+def tworoutes_datasets() -> list[SlayerDataset]:
     """sale → cust → city and sale → store → city, every hop to-one."""
-    city = SlayerModel(
+    city = SlayerDataset(
         name="city", data_source=DS_TWOROUTES, sql_table="city",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
-    cust = SlayerModel(
+    cust = SlayerDataset(
         name="cust", data_source=DS_TWOROUTES, sql_table="cust",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="city_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="city_id", datatype=DataType.INT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="city", join_pairs=[["city_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="city", join_pairs=[["city_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
-    store = SlayerModel(
+    store = SlayerDataset(
         name="store", data_source=DS_TWOROUTES, sql_table="store",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="city_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="city_id", datatype=DataType.INT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="city", join_pairs=[["city_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="city", join_pairs=[["city_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
-    sale = SlayerModel(
+    sale = SlayerDataset(
         name="sale", data_source=DS_TWOROUTES, sql_table="sale",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="code", type=DataType.TEXT),
-            Column(name="cust_id", type=DataType.INT),
-            Column(name="store_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="code", datatype=DataType.TEXT),
+            DatasetField(name="cust_id", datatype=DataType.INT),
+            DatasetField(name="store_id", datatype=DataType.INT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="cust", join_pairs=[["cust_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="cust", join_pairs=[["cust_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
-            ModelJoin(
-                target_model="store", join_pairs=[["store_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+            DatasetRelationship(
+                to="store", join_pairs=[["store_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
     return [city, cust, store, sale]
 
 
-_TOPOLOGIES: list[tuple[str, list[SlayerModel]]] = [
-    (DS_CHAIN, chain_models()),
-    (DS_LIT, lit_models()),
-    (DS_FANROUTE, fanroute_models()),
-    (DS_TWOROUTES, tworoutes_models()),
+_TOPOLOGIES: list[tuple[str, list[SlayerDataset]]] = [
+    (DS_CHAIN, chain_datasets()),
+    (DS_LIT, lit_datasets()),
+    (DS_FANROUTE, fanroute_datasets()),
+    (DS_TWOROUTES, tworoutes_datasets()),
 ]
 
 
@@ -201,5 +201,5 @@ async def make_routing_storage() -> YAMLStorage:
             DatasourceConfig(name=ds, type="sqlite", database=":memory:"),
         )
         for model in models:
-            await storage.save_model(model, _validate=False)
+            await storage.save_dataset(model, _validate=False)
     return storage

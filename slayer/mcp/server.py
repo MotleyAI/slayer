@@ -17,25 +17,25 @@ from slayer import __version__, usage_reporting
 from slayer import otel
 from slayer.usage_reporting.payload import USAGE_KEYS
 from slayer.core.errors import (
-    AmbiguousModelError,
-    EntityResolutionError,
+    AmbiguousDatasetError,
     MemoryNotFoundError,
     SlayerError,
 )
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.format import encode_json, encode_text
 from slayer.core.granularity import CustomGranularity
-from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
+from slayer.core.relationship_edges import RelationshipEdgeRef, edge_reference, resolve_relationship_refs, without_relationships
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import render_recommendation_markdown
-from slayer.core.warnings import ResponseTruncationWarning, SlayerWarning
+from slayer.core.vocabulary import DATASET_KEYS, deprecated_spelling, renamed_arguments
+from slayer.core.warnings import DeprecatedInputWarning, ResponseTruncationWarning, SlayerWarning
 from slayer import async_utils
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.live_schema.ingestion import (
@@ -49,12 +49,14 @@ from slayer.live_schema.ingestion import (
     key_read_failures_header,
     list_ingestable_objects,
 )
+from slayer.live_schema.schema_drift import IdempotentIngestResult, IngestionError, DatasetAddition, ToDeleteEntry
 from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerResponse
+from slayer.engine.response_meta import FieldMetadata, ResponseAttributes
 from slayer.database.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
-from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
+from slayer.inspect.dataset_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
     _escape_md_cell,
     _format_meta,
@@ -64,13 +66,13 @@ from slayer.inspect.model_render import (  # noqa: F401 — re-exported for back
     _render_inspect_footer,
     _resolve_inspect_sections,
     _source_type_for,
-    _strip_model_prefix,
+    _strip_dataset_prefix,
     _truncate_description,
-    render_model_inspection,
+    render_dataset_inspection,
 )
 from slayer.inspect.collection_render import (
     render_datasource_list,
-    render_models_summary,
+    render_datasets_summary,
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
@@ -106,11 +108,11 @@ _MCP_REMEDY = (
 # Claude Code's default cap on each tool description and on the server instructions.
 MAX_TOOL_DESCRIPTION_CHARS = 2048
 
-SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (measures, dimensions, filters) and SLayer writes the SQL, joins included.
-ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Do NOT split it into several queries, do NOT combine or recompute query results yourself (by hand or in Python), and do NOT add stages for what one stage can do. One SLayer query computes all of these together: totals at any coarser grain and shares of them, ranks and top N per group, period-over-period changes, running totals, trailing windows, aggregates of aggregates, and aggregates over several joined models. Each aggregate runs over its own model's rows, so one query NEVER fans out or double counts. Explore the data first if you need to; then write the one query.
-The query syntax is in the descriptions of the query tool's input fields. Overview: inspect(reference='memory:help.intro', entity_type='memory'). Full reference: inspect(reference=['memory:help.aggregations', 'memory:help.transforms', 'memory:help.time', 'memory:help.joins', 'memory:help.queries'], entity_type='memory').
-Typical workflow: search(question='...') → inspect the model → query.
-To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource_models → models_summary."""
+SERVER_INSTRUCTIONS = """SLayer is a semantic layer for querying databases: describe the data you want (metrics, dimensions, filters) and SLayer writes the SQL, joins included.
+ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Do NOT split it into several queries, do NOT combine or recompute query results yourself (by hand or in Python), and do NOT add stages for what one stage can do. One SLayer query computes all of these together: totals at any coarser grain and shares of them, ranks and top N per group, period-over-period changes, running totals, trailing windows, aggregates of aggregates, and aggregates over several joined datasets. Each aggregate runs over its own dataset's rows, so one query NEVER fans out or double counts. Explore the data first if you need to; then write the one query.
+The query syntax is in the descriptions of the query tool's input fields. Overview: inspect(reference='memory:help.intro', entity_type='memory'). Full reference: inspect(reference=['memory:help.aggregations', 'memory:help.transforms', 'memory:help.time', 'memory:help.relationships', 'memory:help.queries'], entity_type='memory').
+Typical workflow: search(question='...') → inspect the dataset → query.
+To connect a new database: create_datasource → describe_datasource (verify + list tables) → ingest_datasource → datasets_summary."""
 
 _ALWAYS_LOAD_META = {"anthropic/alwaysLoad": True}
 
@@ -189,6 +191,62 @@ def _tool_operation(bound: Any) -> dict[str, str]:
     }
 
 
+#: Pre-2.0 tool arguments, by tool.
+_OLD_ARGUMENTS: dict[str, dict[str, str]] = {
+    "create_dataset": DATASET_KEYS,
+    "edit_dataset": {"model_name": "dataset_name", **DATASET_KEYS},
+}
+_OLD_REMOVE_KEYS = {**DATASET_KEYS, "join_edges": "relationship_edges"}
+
+
+def _respelled(
+    arguments: dict[str, Any], renames: dict[str, str], reported: dict[tuple[str, str], DeprecatedInputWarning],
+) -> dict[str, Any]:
+    out = renamed_arguments(arguments, renames=renames)
+    for old, new in renames.items():
+        if old in arguments and (old, new) not in reported:
+            reported[(old, new)] = deprecated_spelling(old, new)
+    return out
+
+
+def _converted_arguments(
+    *, tool: str, arguments: dict[str, Any],
+) -> tuple[dict[str, Any], list[DeprecatedInputWarning]]:
+    """``arguments`` with their pre-2.0 spellings replaced, and one deprecation per old spelling."""
+    reported: dict[tuple[str, str], DeprecatedInputWarning] = {}
+    out = _respelled(arguments, _OLD_ARGUMENTS.get(tool, {}), reported)
+    if tool == "edit_dataset" and isinstance(out.get("remove"), dict):
+        out["remove"] = _respelled(out["remove"], _OLD_REMOVE_KEYS, reported)
+    return out, list(reported.values())
+
+
+def _reported_text(text: str, lines: list[str]) -> str:
+    """``text`` reporting ``lines``: in a JSON object's ``warnings`` list, else as trailing warning lines."""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        payload["warnings"] = [*payload.get("warnings", []), *lines]
+        return json.dumps(payload, indent=2)
+    return text + "".join(f"\nWarning: {line}" for line in lines)
+
+
+def _with_deprecations(result: Any, renamed: list[DeprecatedInputWarning]) -> Any:
+    """A tool result (content blocks, optionally with structured output) whose first text reports ``renamed``."""
+    if not renamed:
+        return result
+    lines = [r.human_message() for r in renamed]
+    blocks, structured = result if isinstance(result, tuple) else (result, None)
+    blocks = list(blocks)
+    first = next((i for i, b in enumerate(blocks) if getattr(b, "type", None) == "text"), None)
+    if first is not None:
+        blocks[first] = blocks[first].model_copy(update={"text": _reported_text(blocks[first].text, lines)})
+    if isinstance(structured, dict) and isinstance(structured.get("result"), str):
+        structured = {**structured, "result": _reported_text(structured["result"], lines)}
+    return (blocks, structured) if isinstance(result, tuple) else blocks
+
+
 def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
     """``fastmcp_cls`` counting every tool call, and each session's client once."""
 
@@ -202,7 +260,8 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             session = self._observe_session()
             with usage_reporting.action() as action:
                 try:
-                    result = await super().call_tool(name, arguments)
+                    arguments, renamed = _converted_arguments(tool=name, arguments=arguments)
+                    result = _with_deprecations(await super().call_tool(name, arguments), renamed)
                 except BaseException as exc:
                     usage_reporting.record(
                         surface="mcp", token=name, error=_counted_error(exc), dry_run=action.dry_run, session=session,
@@ -244,7 +303,7 @@ def _set_server_version(mcp) -> None:
         logger.debug("MCP serverInfo.version is read-only; leaving it", exc_info=True)
 
 
-def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
+def _ambiguous_with_mcp_hint(exc: AmbiguousDatasetError) -> str:
     """Render an ``AmbiguousModelError`` with an MCP-specific remediation hint."""
     return (
         f"{exc} Pass data_source=... to this tool, or use the "
@@ -311,93 +370,93 @@ async def _empty_ingest_message(*, schema_name: str, client: SqlClient) -> str:
         schema_name=schema_name,
         client=client,
         retry_hint=(
-            "Try: ingest_datasource_models with schema_name set to one of these."
+            "Try: ingest_datasource with schema_name set to one of these."
         ),
     )
 
 
-def _addition_has_changes(a: Any) -> bool:
+def _addition_has_changes(a: DatasetAddition) -> bool:
     """True when a non-created addition carries any change worth rendering."""
     return bool(
-        a.new_columns
-        or a.new_joins
-        or getattr(a, "named_joins", None)
-        or getattr(a, "widened_columns", None)
+        a.new_fields
+        or a.new_relationships
+        or getattr(a, "named_relationships", None)
+        or getattr(a, "widened_fields", None)
         or getattr(a, "kind_change", None)
-        or getattr(a, "described_columns", None)
-        or getattr(a, "model_described", False)
+        or getattr(a, "described_fields", None)
+        or getattr(a, "dataset_described", False)
     )
 
 
-def _render_new_models_section(new_models: list[Any]) -> list[str]:
-    if not new_models:
+def _render_new_datasets_section(new_datasets: list[DatasetAddition]) -> list[str]:
+    if not new_datasets:
         return []
-    lines = [f"Created {len(new_models)} new model(s):"]
-    for a in new_models:
-        described = getattr(a, "described_columns", []) or []
+    lines = [f"Created {len(new_datasets)} new dataset(s):"]
+    for a in new_datasets:
+        described = getattr(a, "described_fields", []) or []
         suffix = f", {len(described)} described" if described else ""
         lines.append(
-            f"- {a.model_name} ({len(a.new_columns)} columns, "
-            f"{len(a.new_joins)} joins{suffix})"
+            f"- {a.dataset_name} ({len(a.new_fields)} fields, "
+            f"{len(a.new_relationships)} relationships{suffix})"
         )
     return lines
 
 
-def _addition_update_details(a: Any) -> list[str]:
+def _addition_update_details(a: DatasetAddition) -> list[str]:
     """Detail fragments for one non-created addition, in CLI-renderer order."""
     details = []
-    if a.new_columns:
-        details.append(f"+columns: {', '.join(a.new_columns)}")
-    if a.new_joins:
-        details.append(f"+joins: {', '.join(a.new_joins)}")
-    named = getattr(a, "named_joins", []) or []
+    if a.new_fields:
+        details.append(f"+fields: {', '.join(a.new_fields)}")
+    if a.new_relationships:
+        details.append(f"+relationships: {', '.join(a.new_relationships)}")
+    named = getattr(a, "named_relationships", []) or []
     if named:
-        details.append(f"named joins: {', '.join(named)}")
-    widened = getattr(a, "widened_columns", []) or []
+        details.append(f"named relationships: {', '.join(named)}")
+    widened = getattr(a, "widened_fields", []) or []
     if widened:
         details.append(f"widened: {', '.join(widened)}")
     kind_change = getattr(a, "kind_change", None)
     if kind_change:
         details.append(f"source_kind: {kind_change}")
-    described = getattr(a, "described_columns", []) or []
+    described = getattr(a, "described_fields", []) or []
     if described:
         details.append(f"+descriptions: {', '.join(described)}")
-    if getattr(a, "model_described", False):
-        details.append("+model description")
+    if getattr(a, "dataset_described", False):
+        details.append("+dataset description")
     return details
 
 
-def _render_updated_section(updated: list[Any]) -> list[str]:
+def _render_updated_section(updated: list[DatasetAddition]) -> list[str]:
     if not updated:
         return []
-    lines = [f"Updated {len(updated)} existing model(s):"]
+    lines = [f"Updated {len(updated)} existing dataset(s):"]
     for a in updated:
-        lines.append(f"- {a.model_name} ({'; '.join(_addition_update_details(a))})")
+        lines.append(f"- {a.dataset_name} ({'; '.join(_addition_update_details(a))})")
     return lines
 
 
-def _render_unchanged_section(unchanged: list[Any]) -> list[str]:
+def _render_unchanged_section(unchanged: list[DatasetAddition]) -> list[str]:
     if not unchanged:
         return []
     return [
-        f"Re-introspected {len(unchanged)} unchanged model(s): "
-        f"{', '.join(a.model_name for a in unchanged)}"
+        f"Re-introspected {len(unchanged)} unchanged dataset(s): "
+        f"{', '.join(a.dataset_name for a in unchanged)}"
     ]
 
 
-def _render_drift_section(to_delete: list[Any]) -> list[str]:
+def _render_drift_section(to_delete: list[ToDeleteEntry]) -> list[str]:
     if not to_delete:
         return []
-    out = ["", "Pending drift (run validate_models / apply manually):"]
-    out.extend(f"- {entry.tool}: {entry.model_name}" for entry in to_delete)
+    out = ["", "Pending drift (run validate_datasets / apply manually):"]
+    out.extend(f"- {entry.tool}: {entry.dataset_name}" for entry in to_delete)
     return out
 
 
 def _render_skipped_section(skipped: list[Any]) -> list[str]:
-    """Objects that produced no model at all (no --exclude hint; the agent has none)."""
+    """Objects that produced no dataset at all (no --exclude hint; the agent has none)."""
     if not skipped:
         return []
-    out = ["", f"Skipped ({len(skipped)}) — not modellable, no model created:"]
+    out = ["", f"Skipped ({len(skipped)}) — not modellable, no dataset created:"]
     out.extend(f"- {entry.table_name}: {entry.reason}" for entry in skipped)
     return out
 
@@ -422,15 +481,15 @@ def _render_hidden_internals_section(
 ) -> list[str]:
     """Recognised ELT/migration internals modelled ``hidden``.
 
-    Queryable but absent from models_summary; reporting them tells a hidden
-    model from an uncreated one. The unhide hint is datasource-qualified.
+    Queryable but absent from datasets_summary; reporting them tells a hidden
+    dataset from an uncreated one. The unhide hint is datasource-qualified.
     """
     if not hidden:
         return []
     out = [
         "",
         f"Hidden ({len(hidden)}) — recognised ELT/migration internals "
-        f"(excluded from models_summary; still queryable by name):",
+        f"(excluded from datasets_summary; still queryable by name):",
     ]
     out.extend(f"- {_hidden_internal_line(entry)}" for entry in hidden)
     out.append(f"  Use {_unhide_hint(data_source)} to surface one.")
@@ -443,22 +502,22 @@ def _render_broken_dependents_section(broken: list[Any]) -> list[str]:
     return ["", f"Broken by a list re-type ({len(broken)}):", *(f"- {b.human_message()}" for b in broken)]
 
 
-def _render_errors_section(errors: list[Any]) -> list[str]:
+def _render_errors_section(errors: list[IngestionError]) -> list[str]:
     if not errors:
         return []
     out = ["", f"Errors ({len(errors)}):"]
-    out.extend(f"- {err.model_name}: {err.error}" for err in errors)
+    out.extend(f"- {err.dataset_name}: {err.error}" for err in errors)
     return out
 
 
 async def _render_ingest_result(
-    result: Any,
+    result: IdempotentIngestResult,
     *,
     schema_name: str,
     ds: DatasourceConfig,
     client: SqlClient,
 ) -> str:
-    """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
+    """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource`` tool."""
     additions = list(result.additions)
     # Read defensively — older result shapes may lack these attributes.
     skipped = list(getattr(result, "skipped", None) or [])
@@ -478,7 +537,7 @@ async def _render_ingest_result(
         and not hidden_internals
         and not datasource_described
     ):
-        # Empty result: either no tables in scope, or all models already
+        # Empty result: either no tables in scope, or all datasets already
         # skipped. Use the scan's own discovered objects (not _fetch_tables,
         # which only sees the default schema) to tell the two apart.
         scanned_objects = getattr(result, "objects", None) or []
@@ -486,14 +545,14 @@ async def _render_ingest_result(
             return await _empty_ingest_message(schema_name=schema_name, client=client)
         return "Datasource already in sync — no additive changes."
 
-    new_models = [a for a in additions if a.created]
+    new_datasets = [a for a in additions if a.created]
     updated = [a for a in additions if not a.created and _addition_has_changes(a)]
     unchanged = [
         a for a in additions if not a.created and not _addition_has_changes(a)
     ]
 
     lines: list[str] = []
-    lines.extend(_render_new_models_section(new_models))
+    lines.extend(_render_new_datasets_section(new_datasets))
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
     if datasource_described:
@@ -536,7 +595,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "SLayer help-memory seeding skipped: %s", exc, exc_info=True
             )
 
-    # Every tool reads models, and the live database, through the server's engine.
+    # Every tool reads datasets, and the live database, through the server's engine.
     storage = engine.storage
     if ingest_on_startup:
         engine.run_sync(
@@ -560,34 +619,34 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     @tool(meta=_ALWAYS_LOAD_META if always_load_query else None)
     async def query(
         query: Annotated[QueryArgument, Field(
-            description="A query object, a list of query objects (stages), or a saved query-backed model's name.",
+            description="A query object, a list of query objects (stages), or a saved query-backed dataset's name.",
         )],
         variables: Annotated[dict[str, Any] | None, Field(
             description=(
-                "Values for {placeholder}s in conditions, formulas, date_range bounds and model SQL; "
-                "override a stage's own variables, an outer query's variables and the saved model's defaults."
+                "Values for {placeholder}s in conditions, expressions, date_range bounds and dataset SQL; "
+                "override a stage's own variables, an outer query's variables and the saved dataset's defaults."
             ),
         )] = None,
         refine: Annotated[QueryRefinement | None, Field(
-            description="Saved-model-name form only: clauses merged into the saved query's final stage.",
+            description="Saved-dataset-name form only: clauses merged into the saved query's final stage.",
         )] = None,
         show_sql: Annotated[bool, Field(description="Include the generated SQL in the response.")] = False,
         dry_run: Annotated[bool, Field(description="Return the generated SQL without executing it.")] = False,
         explain: Annotated[bool, Field(description="Run the database's EXPLAIN and return the query plan.")] = False,
         format: Annotated[str, Field(description='"markdown" (default), "json" or "csv".')] = "markdown",
     ) -> str:
-        """ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (measures, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:
+        """ONE QUESTION = ONE QUERY. Build the whole answer in a single `query` call. Describe the result you want (metrics, dimensions, filters, order) and SLayer writes the SQL, including the joins. A single query can:
         - put several grains on one row: a group's share of its total or of the grand total, the region total next to each city;
         - rank, keep the top N per group, and sort by values it does not display;
         - compute period-over-period changes and trailing windows (90 days, 3 months), which look back before date_range by themselves, and running totals;
-        - aggregate fields of joined models over their own rows, without double counting;
+        - aggregate fields of joined datasets over their own rows, without double counting;
         - nest aggregates (the average of per-city totals) and chain stages.
 
-        The syntax is in the descriptions of the query object's fields: measures, filters, order, time_dimensions[].date_range, source_model and dimensions. Full reference: inspect(reference=["memory:help.aggregations", "memory:help.transforms", "memory:help.time", "memory:help.joins", "memory:help.queries"], entity_type="memory").
+        The syntax is in the descriptions of the query object's fields: metrics, filter, order, time_dimensions[].date_range, population and dimensions. Full reference: inspect(reference=["memory:help.aggregations", "memory:help.transforms", "memory:help.time", "memory:help.relationships", "memory:help.queries"], entity_type="memory").
 
-        `query` is a query object, a list of them (stages: all but the last carry a name; later stages use earlier ones as source_model), or a saved query-backed model's name (optionally with `refine`).
+        `query` is a query object, a list of them (stages: all but the last carry a name; later stages use earlier ones as population), or a saved query-backed dataset's name (optionally with `refine`).
 
-        First inspect the model and search for saved learnings. Then run the final query and check the row count, each aggregate's scope, NULLs and the sort. Without a `limit`, responses stop at 20 rows.
+        First inspect the dataset and search for saved learnings. Then run the final query and check the row count, each aggregate's scope, NULLs and the sort. Without a `limit`, responses stop at 20 rows.
         """
         if dry_run:
             usage_reporting.mark_dry_run()
@@ -625,21 +684,21 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         except _DB_FAILURES as e:
             raise _db_tool_failure(e) from e
 
-    # Model discovery
+    # Dataset discovery
 
     @tool()
-    async def models_summary(
+    async def datasets_summary(
         datasource_name: Annotated[str, Field(description="Datasource name (from list_datasources).")],
         format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",
         compact: Annotated[bool, Field(
-            description="Default true: per model its name, description, column count, measure names and join targets. False adds the full column and measure tables.",
+            description="Default true: per dataset its name, description, field count, metric names and relationship targets. False adds the full field and metric tables.",
         )] = True,
     ) -> str:
-        """Brief summary of every non-hidden model in a datasource."""
+        """Brief summary of every non-hidden dataset in a datasource."""
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
             raise ValueError(
-                f"Invalid format '{format}' for models_summary. Must be 'markdown' or 'json'."
+                f"Invalid format '{format}' for datasets_summary. Must be 'markdown' or 'json'."
             )
 
         try:
@@ -650,16 +709,16 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
 
-        loaded = DocumentLoadFailures().skip(await storage.load_models(data_source=datasource_name))
+        loaded = DocumentLoadFailures().skip(await storage.load_datasets(data_source=datasource_name))
         matched = [m for m in loaded if not m.hidden]
-        matched.extend(await storage.builtin_models(datasource_name))
+        matched.extend(await storage.builtin_datasets(datasource_name))
         matched.sort(key=lambda m: m.name)
 
         # Rendering delegates to the shared renderer (also used by
-        # the ``inspect`` model collection view) — one code path, no drift.
-        return render_models_summary(
+        # the ``inspect`` dataset collection view) — one code path, no drift.
+        return render_datasets_summary(
             datasource_name=datasource_name,
-            models=matched,
+            datasets=matched,
             fmt=fmt,
             compact=compact,
         )
@@ -668,30 +727,30 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     async def inspect(
         entity_type: Annotated[str, Field(
             description=(
-                "Required: datasource, model, column, measure, aggregation or memory. Asserts the "
-                "resolved kind and disambiguates a name shared by, e.g., a column and an aggregation."
+                "Required: datasource, dataset, field, metric, aggregation or memory. Asserts the "
+                "resolved kind and disambiguates a name shared by, e.g., a field and an aggregation."
             ),
         )],
         reference: Annotated[str | list[str] | None, Field(
             description=(
                 "One reference, a list of same-kind references (batch), or omitted for the collection. "
-                "Canonical (mydb, mydb.orders, mydb.orders.amount), a bare name, a join path "
+                "Canonical (mydb, mydb.orders, mydb.orders.amount), a bare name, a relationship path "
                 "(orders.customers.region), or memory:<id>."
             ),
         )] = None,
         compact: Annotated[bool, Field(
             description=(
-                "Default true: the description only for column / measure / aggregation / datasource / "
+                "Default true: the description only for field / metric / aggregation / datasource / "
                 "memory (never shortens a help.* topic), a schema skeleton without "
-                "database calls for a model. False: the full render."
+                "database calls for a dataset. False: the full render."
             ),
         )] = True,
         format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",
-        num_rows: Annotated[int, Field(description="Sample rows for a model; ignored for other kinds.")] = 3,
-        show_sql: Annotated[bool, Field(description="Include generated SQL for a model; ignored for other kinds.")] = False,
+        num_rows: Annotated[int, Field(description="Sample rows for a dataset; ignored for other kinds.")] = 3,
+        show_sql: Annotated[bool, Field(description="Include generated SQL for a dataset; ignored for other kinds.")] = False,
         sections: Annotated[list[str] | None, Field(
             description=(
-                "Model sections to render: columns, measures, aggregations, joins, samples, learnings, "
+                "Dataset sections to render: fields, metrics, aggregations, relationships, samples, learnings, "
                 "saved_queries; default all. Ignored for other kinds."
             ),
         )] = None,
@@ -701,9 +760,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Inspect one entity by reference and kind, a batch when `reference` is a list, or a whole collection when `reference` is omitted. A point lookup: use `search` to find entities by meaning, with related memories.
 
-        Before using a column as a filter, projection, group-by or join key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a column by its name alone.
+        Before using a field as a filter, projection, group-by or join key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a field by its name alone.
 
-        Collection: omit `reference` with entity_type "model" (every model, grouped by datasource) or "datasource".
+        Collection: omit `reference` with entity_type "dataset" (every dataset, grouped by datasource) or "datasource".
         Batch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.
         Help: reference "memory:help.intro" (entity_type "memory") for the overview; batch several help topics in one call.
         """
@@ -718,65 +777,65 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             descriptions_max_chars=descriptions_max_chars,
         )
 
-    # Model creation and editing
+    # Dataset creation and editing
 
     @tool()
-    async def create_model(
-        name: Annotated[str, Field(description="Unique model name (lowercase, underscores).")],
+    async def create_dataset(
+        name: Annotated[str, Field(description="Unique dataset name (lowercase, underscores).")],
         sql_table: Annotated[str | None, Field(description='Database table, e.g. "public.orders".')] = None,
-        sql: Annotated[str | None, Field(description="A SQL query as the model's source, instead of sql_table.")] = None,
+        sql: Annotated[str | None, Field(description="A SQL query as the dataset's source, instead of sql_table.")] = None,
         data_source: Annotated[str | None, Field(description="Datasource name (from list_datasources).")] = None,
-        description: Annotated[str | None, Field(description="What one row of this model represents.")] = None,
-        columns: Annotated[list[dict[str, Any]] | None, Field(
+        description: Annotated[str | None, Field(description="What one row of this dataset represents.")] = None,
+        fields: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Column definitions: {"name", "sql", "type"} with type TEXT, INT, DOUBLE, BOOLEAN, '
+                'Field definitions: {"name", "sql", "datatype"} with datatype TEXT, INT, DOUBLE, BOOLEAN, '
                 "DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional "
-                "primary_key, unique (single-column uniqueness other than the primary key), "
-                "allowed_aggregations, filter (a condition masking the column's value "
-                "inside aggregates), granularity (only for a column truly bucketed at that grain), "
+                "primary_key, unique (single-field uniqueness other than the primary key), "
+                "allowed_aggregations, filter (a condition masking the field's value "
+                "inside aggregates), granularity (only for a field truly bucketed at that grain), "
                 "label, description, hidden, meta."
             ),
         )] = None,
-        measures: Annotated[list[dict[str, Any]] | None, Field(
+        metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Saved formulas, {"name": "aov", "formula": "sum(revenue) / count(*)"} plus optional '
-                'label, description, meta; queries reference them by bare name ({"formula": "aov"}).'
+                'Saved metrics, {"name": "aov", "expression": "sum(revenue) / count(*)"} plus optional '
+                'label, description, meta; queries reference them by bare name ({"expression": "aov"}).'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Custom aggregations, {"name": "sum_sq", "formula": "SUM({value} * {value})", '
-                '"params": [{"name": "weight", "sql": "quantity"}], "description": ...}; the formula '
-                "is SQL with {value} for the aggregated column."
+                'Custom aggregations, {"name": "sum_sq", "expression": "SUM({value} * {value})", '
+                '"params": [{"name": "weight", "sql": "quantity"}], "description": ...}; the expression '
+                "is SQL with {value} for the aggregated field."
             ),
         )] = None,
         query: Annotated[Any | None, Field(
             description=(
-                "A query object or list of stages; makes the model query-backed. Excludes sql_table, "
-                "sql, columns, measures and aggregations."
+                "A query object or list of stages; makes the dataset query-backed. Excludes sql_table, "
+                "sql, fields, metrics and aggregations."
             ),
         )] = None,
         variables: Annotated[dict[str, Any] | None, Field(
             description="Default values for {var} placeholders in the backing query.",
         )] = None,
         access_tags: Annotated[list[str] | None, Field(
-            description="Access groups allowed to see the model; omit for public.",
+            description="Access groups allowed to see the dataset; omit for public.",
         )] = None,
     ) -> str:
-        """Create a semantic model from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the model becomes query-backed and its columns come from the result).
+        """Create a semantic dataset from a database table (sql_table), a SQL query (sql), or a SLayer query (query: the dataset becomes query-backed and its fields come from the result).
 
-        Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
+        Host a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: create_model(name="orders", sql_table="public.orders", data_source="mydb", columns=[{"name": "amount", "sql": "amount", "type": "DOUBLE"}], measures=[{"name": "aov", "formula": "sum(amount) / count(*)"}])
+        Example: create_dataset(name="orders", sql_table="public.orders", data_source="mydb", fields=[{"name": "amount", "sql": "amount", "datatype": "DOUBLE"}], metrics=[{"name": "aov", "expression": "sum(amount) / count(*)"}])
 
-        A custom aggregation named sum_sq is called like a built-in: sum_sq(column). Authoring guide: inspect(reference="memory:help.models", entity_type="memory").
+        A custom aggregation named sum_sq is called like a built-in: sum_sq(field). Authoring guide: inspect(reference="memory:help.datasets", entity_type="memory").
         """
         notes: list[SlayerWarning] = []
         if query is not None:
             table_params = {
                 k: v for k, v in {
                     "sql_table": sql_table, "sql": sql, "data_source": data_source,
-                    "columns": columns, "measures": measures, "aggregations": aggregations,
+                    "fields": fields, "metrics": metrics, "aggregations": aggregations,
                 }.items()
                 if v
             }
@@ -791,7 +850,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     parsed_query = [SlayerQuery.model_validate(q) for q in query]
                 else:
                     parsed_query = SlayerQuery.model_validate(query)
-                model = await engine.create_model_from_query(
+                dataset = await engine.create_dataset_from_query(
                     query=parsed_query,
                     name=name,
                     description=description or "",
@@ -802,12 +861,12 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             except _DB_FAILURES as e:
                 raise _db_tool_failure(e) from e
             except Exception as e:
-                return f"Error creating model from query: {e}"
-            cols = [c.name for c in model.columns]
-            meas = [m.name for m in model.measures]
+                return f"Error creating dataset from query: {e}"
+            field_names = [c.name for c in dataset.fields]
+            metric_names = [m.name for m in dataset.metrics]
             return (
-                f"Model '{name}' created from query. "
-                f"Columns: {cols}. Measures: {meas}."
+                f"Dataset '{name}' created from query. "
+                f"Fields: {field_names}. Metrics: {metric_names}."
             ) + _warning_lines(notes)
 
         data = _build_dict(
@@ -816,26 +875,26 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             sql=sql,
             data_source=data_source,
             description=description,
-            columns=columns,
-            measures=measures,
+            fields=fields,
+            metrics=metrics,
             aggregations=aggregations,
             access_tags=access_tags,
         )
-        model = SlayerModel.model_validate(data)
+        dataset = SlayerDataset.model_validate(data)
         existed = (
-            await storage.get_model(name, data_source=model.data_source)
+            await storage.get_dataset(name, data_source=dataset.data_source)
             is not None
         )
-        # save_model normalizes, validates Mode-A join paths, and trial-executes
+        # save_dataset normalizes, validates Mode-A relationship paths, and trial-executes
         # a raw-sql source against its datasource before it persists.
         try:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(dataset, warnings_out=notes)
         except _DB_FAILURES as e:
             raise _db_tool_failure(e) from e
         except Exception as e:
-            return f"Error creating model '{model.name}': {e}"
+            return f"Error creating dataset '{dataset.name}': {e}"
         verb = "replaced" if existed else "created"
-        return f"Model '{model.name}' {verb}." + _warning_lines(notes)
+        return f"Dataset '{dataset.name}' {verb}." + _warning_lines(notes)
 
     def _upsert_entity(
         entity_list: list,
@@ -874,167 +933,167 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             changes.append(f"created {label} '{entity_id}'")
         return None
 
-    def _upsert_join(*, joins: list[ModelJoin], spec: dict, changes: list) -> str | None:
-        """Upsert one join: match by name, else target + key pairs, else the sole join to the target."""
-        target = spec.get("target_model", "")
+    def _upsert_relationship(*, relationships: list[DatasetRelationship], spec: dict, changes: list) -> str | None:
+        """Upsert one relationship: match by name, else target + key pairs, else the sole relationship to the target."""
+        target = spec.get("to", "")
         if not target:
-            return "Missing 'target_model' in join specification."
+            return "Missing 'to' in relationship specification."
         name = spec.get("name")
         pairs = {tuple(p) for p in spec.get("join_pairs") or [] if isinstance(p, list)}
-        to_target = [j for j in joins if j.target_model == target]
+        to_target = [j for j in relationships if j.to == target]
         existing = (
-            next((j for j in joins if name and j.name == name), None)
+            next((j for j in relationships if name and j.name == name), None)
             or next((j for j in to_target if pairs and {tuple(p) for p in j.join_pairs} == pairs), None)
-            # A differently named sole join is another edge, never this one.
+            # A differently named sole relationship is another edge, never this one.
             or (to_target[0] if len(to_target) == 1 and not (name and to_target[0].name) else None)
         )
-        label = f"join '{name or target}'"
+        label = f"relationship '{name or target}'"
         if existing is None and not name and to_target:
             return (
-                f"Model already joins '{target}'; give the new join a 'name' so the "
+                f"Dataset already has a relationship to '{target}'; give the new one a 'name' so the "
                 f"parallel edges stay addressable."
             )
         try:
-            updated = ModelJoin.model_validate({**(existing.model_dump() if existing else {}), **spec})
+            updated = DatasetRelationship.model_validate({**(existing.model_dump() if existing else {}), **spec})
         except Exception as exc:
             return f"Invalid {label}: {exc}"
         if existing is None:
-            joins.append(updated)
+            relationships.append(updated)
             changes.append(f"created {label}")
         else:
-            joins[joins.index(existing)] = updated
+            relationships[relationships.index(existing)] = updated
             changes.append(f"updated {label}")
         return None
 
-    VALID_REMOVE_KEYS = {"columns", "measures", "aggregations", "joins", "join_edges"}
+    VALID_REMOVE_KEYS = {"fields", "metrics", "aggregations", "relationships", "relationship_edges"}
 
     @tool()
-    async def edit_model(
-        model_name: Annotated[str, Field(description="Model to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
+    async def edit_dataset(
+        dataset_name: Annotated[str, Field(description="Dataset to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         *,
-        description: Annotated[str | None, Field(description="New model description.")] = None,
+        description: Annotated[str | None, Field(description="New dataset description.")] = None,
         data_source: Annotated[str | None, Field(
-            description="The model's datasource; required when the name exists in several datasources.",
+            description="The dataset's datasource; required when the name exists in several datasources.",
         )] = None,
-        new_data_source: Annotated[str | None, Field(description="Move the model to another datasource (rare).")] = None,
+        new_data_source: Annotated[str | None, Field(description="Move the dataset to another datasource (rare).")] = None,
         default_time_dimension: Annotated[str | None, Field(
-            description="A date/time column: the default time axis for transforms.",
+            description="A date/time field: the default time axis for transforms.",
         )] = None,
         sql_table: Annotated[str | None, Field(description="Database table; clears sql and source_queries.")] = None,
         sql: Annotated[str | None, Field(description="SQL query as the source; clears sql_table and source_queries.")] = None,
         source_queries: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 "Replace the backing query with these stages (all but the last carry a name); makes the "
-                "model query-backed, clears sql_table and sql, and refreshes the cached columns."
+                "dataset query-backed, clears sql_table and sql, and refreshes the cached fields."
             ),
         )] = None,
         query_variables: Annotated[Any, Field(
             default_factory=_unset,
             description="Replace the backing query's default {var} values; null clears them.",
         )],
-        hidden: Annotated[bool | None, Field(description="Hide the model from discovery (still queryable).")] = None,
+        hidden: Annotated[bool | None, Field(description="Hide the dataset from discovery (still queryable).")] = None,
         access_tags: Annotated[list[str] | None, Field(
-            description="Replace the access groups allowed to see the model; [] makes it public.",
+            description="Replace the access groups allowed to see the dataset; [] makes it public.",
         )] = None,
-        columns: Annotated[list[dict[str, Any]] | None, Field(
+        fields: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Columns to upsert by name; only the given fields change. {"name", "type", "element_type", "sql", '
+                'Fields to upsert by name; only the given keys change. {"name", "datatype", "element_type", "sql", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
-                '"label", "granularity"}; type TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
+                '"label", "granularity"}; datatype TEXT, INT, DOUBLE, BOOLEAN, DATE, TIMESTAMP, UNKNOWN, or '
                 'ARRAY with element_type (one of the others); unique marks '
-                "single-column uniqueness other than the primary key (used for join cardinality); set "
-                "granularity only for a column truly bucketed at that grain (null clears it)."
+                "single-field uniqueness other than the primary key (used for relationship cardinality); set "
+                "granularity only for a field truly bucketed at that grain (null clears it)."
             ),
         )] = None,
-        measures: Annotated[list[dict[str, Any]] | None, Field(
+        metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Saved formulas to upsert by name, {"name": "aov", "formula": "sum(revenue) / '
+                'Saved metrics to upsert by name, {"name": "aov", "expression": "sum(revenue) / '
                 'count(*)"} plus optional label, description, meta; queries use them by bare name.'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Custom aggregations to upsert by name, {"name", "formula" (SQL with {value} and '
+                'Custom aggregations to upsert by name, {"name", "expression" (SQL with {value} and '
                 '{param} placeholders), "params": [{"name", "sql"}], "description", "meta"}.'
             ),
         )] = None,
-        joins: Annotated[list[dict[str, Any]] | None, Field(
+        relationships: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Joins to upsert, {"target_model": "customers", "join_pairs": [["customer_id", "id"]], '
+                'Relationships to upsert, {"to": "customers", "join_pairs": [["customer_id", "id"]], '
                 '"name", "cardinality": "many_to_one", "description", "meta"}, matched by name, else '
-                "target and join_pairs, else the sole join to the target; a second join to a target needs a name. "
-                "Keys name columns by name; a composite key is one join with several pairs. "
+                "target and join_pairs, else the sole relationship to the target; a second relationship to a target needs a name. "
+                "Keys name fields by name; a composite key is one relationship with several pairs. "
                 "cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read "
                 "source->target) is descriptive only; omit it when unknown."
             ),
         )] = None,
         add_filters: Annotated[list[str] | None, Field(
-            description='SQL conditions always applied to the model, e.g. ["deleted_at IS NULL"].',
+            description='SQL conditions always applied to the dataset, e.g. ["deleted_at IS NULL"].',
         )] = None,
-        remove_filters: Annotated[list[str] | None, Field(description="Model filters to remove (exact text).")] = None,
+        remove_filters: Annotated[list[str] | None, Field(description="Dataset filters to remove (exact text).")] = None,
         remove: Annotated[dict[str, list[str | dict[str, Any]]] | None, Field(
             description=(
-                'Entities to delete before the upserts: {"columns": [...], "measures": [...], '
-                '"aggregations": [...], "joins": [target_model or edge name, ...], '
-                '"join_edges": [{"target_model", "name", "join_pairs"}, ...]}.'
+                'Entities to delete before the upserts: {"fields": [...], "metrics": [...], '
+                '"aggregations": [...], "relationships": [target dataset or edge name, ...], '
+                '"relationship_edges": [{"to", "name", "join_pairs"}, ...]}.'
             ),
         )] = None,
         meta: Annotated[dict[str, Any] | None, Field(
             default_factory=_unset,
-            description="JSON metadata replacing the model's meta; null clears it.",
+            description="JSON metadata replacing the dataset's meta; null clears it.",
         )],
     ) -> str:
-        """Edit an existing model in one call: metadata, upserts of columns / measures / aggregations / joins (by name; only the given fields change), model filters, and removals (applied first).
+        """Edit an existing dataset in one call: metadata, upserts of fields / metrics / aggregations / relationships (by name; only the given keys change), dataset filters, and removals (applied first).
 
-        Host a column or measure on the model whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose join keys by column Description (author intent); on ties take the shortest declared join path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
+        Host a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: edit_model(model_name="orders", columns=[{"name": "status", "type": "TEXT"}], measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}], remove={"measures": ["old_metric"]})
+        Example: edit_dataset(dataset_name="orders", fields=[{"name": "status", "datatype": "TEXT"}], metrics=[{"name": "aov", "expression": "sum(revenue) / count(*)"}], remove={"metrics": ["old_metric"]})
         """
         try:
-            model = await storage.get_model(model_name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            dataset = await storage.get_dataset(dataset_name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
-        if model is None:
-            return f"Model '{model_name}' not found."
+        if dataset is None:
+            return f"Dataset '{dataset_name}' not found."
 
-        original_data_source = model.data_source
+        original_data_source = dataset.data_source
         changes: list[str] = []
-        # Track column-level vs model-level changes so the post-save hook
-        # refreshes only the touched columns when possible.
-        changed_columns: set = set()
-        model_level_change = False
-        # Model-doc changes (measures / joins) don't invalidate Column.sampled
+        # Track field-level vs dataset-level changes so the post-save hook
+        # refreshes only the touched fields when possible.
+        changed_fields: set = set()
+        dataset_level_change = False
+        # Dataset-doc changes (metrics / relationships) don't invalidate DatasetField.sampled
         # but do change the embedding text — track separately to refresh
-        # embeddings without a full per-column re-profile.
-        model_doc_changed = False
+        # embeddings without a full per-field re-profile.
+        dataset_doc_changed = False
 
         # --- Phase 1: Scalar metadata ---
         if description is not None:
-            model.description = description
+            dataset.description = description
             changes.append("updated description")
-        if new_data_source is not None and new_data_source != model.data_source:
-            # Moving a model is delete-old + save-new: refuse if the target key
+        if new_data_source is not None and new_data_source != dataset.data_source:
+            # Moving a dataset is delete-old + save-new: refuse if the target key
             # is taken and defer the delete until after the new save (Phase 5).
-            # Here we only mutate the in-memory model.
+            # Here we only mutate the in-memory dataset.
             try:
-                existing_target = await storage.get_model(
-                    model.name, data_source=new_data_source
+                existing_target = await storage.get_dataset(
+                    dataset.name, data_source=new_data_source
                 )
-            except AmbiguousModelError:
+            except AmbiguousDatasetError:
                 existing_target = None  # Strict lookup; ambiguity is for bare names only.
             if existing_target is not None:
                 return (
-                    f"Model '{model.name}' already exists in datasource "
+                    f"Dataset '{dataset.name}' already exists in datasource "
                     f"'{new_data_source}'. Pick a different name, delete "
                     f"the existing target first, or move to a different "
                     f"datasource."
                 )
-            model.data_source = new_data_source
+            dataset.data_source = new_data_source
             changes.append(
                 f"moved data_source from '{original_data_source}' to '{new_data_source}'"
             )
         if default_time_dimension is not None:
-            model.default_time_dimension = default_time_dimension
+            dataset.default_time_dimension = default_time_dimension
             changes.append(f"set default_time_dimension to '{default_time_dimension}'")
         explicit_sources = sum(
             1 for v in (sql_table, sql, source_queries) if v is not None
@@ -1042,45 +1101,45 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if explicit_sources > 1:
             return (
                 "Specify at most one of 'sql_table', 'sql', or 'source_queries' "
-                "when editing a model — the three source modes are mutually exclusive."
+                "when editing a dataset — the three source modes are mutually exclusive."
             )
 
         if sql_table is not None:
-            model.sql_table = sql_table
-            model.sql = None
-            model.source_queries = None
-            model_level_change = True
+            dataset.sql_table = sql_table
+            dataset.sql = None
+            dataset.source_queries = None
+            dataset_level_change = True
             changes.append(f"set sql_table to '{sql_table}'")
         if sql is not None:
-            model.sql = sql
-            model.sql_table = None
-            model.source_queries = None
-            model_level_change = True
+            dataset.sql = sql
+            dataset.sql_table = None
+            dataset.source_queries = None
+            dataset_level_change = True
             changes.append(f"set sql to '{sql}'")
         if source_queries is not None:
-            # Switching to query-backed source mode; the cached columns are
-            # refreshed when we save via engine.save_model.
-            model.source_queries = [SlayerQuery.model_validate(q) for q in source_queries]
-            model.sql_table = None
-            model.sql = None
-            # Clear the user-managed columns so the cache write succeeds.
-            model.columns = []
+            # Switching to query-backed source mode; the cached fields are
+            # refreshed when we save via engine.save_dataset.
+            dataset.source_queries = [SlayerQuery.model_validate(q) for q in source_queries]
+            dataset.sql_table = None
+            dataset.sql = None
+            # Clear the user-managed fields so the cache write succeeds.
+            dataset.fields = []
             changes.append(f"set source_queries ({len(source_queries)} stage(s))")
         if query_variables is not _UNSET:
-            model.query_variables = query_variables or {}
+            dataset.query_variables = query_variables or {}
             changes.append(
                 "updated query_variables"
                 if query_variables
                 else "cleared query_variables"
             )
         if hidden is not None:
-            model.hidden = hidden
+            dataset.hidden = hidden
             changes.append(f"set hidden to {hidden}")
         if access_tags is not None:
-            model.access_tags = list(access_tags)
+            dataset.access_tags = list(access_tags)
             changes.append(f"set access_tags to {access_tags}")
         if meta is not _UNSET:
-            model.meta = meta
+            dataset.meta = meta
             changes.append("updated meta" if meta is not None else "cleared meta")
 
         # --- Phase 2: Removals ---
@@ -1092,163 +1151,163 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                         f"Must be one of: {', '.join(sorted(VALID_REMOVE_KEYS))}."
                     )
 
-            for name in remove.get("columns", []):
-                match = next((c for c in model.columns if c.name == name), None)
+            for name in remove.get("fields", []):
+                match = next((c for c in dataset.fields if c.name == name), None)
                 if match is None:
-                    return f"Column '{name}' not found on model '{model_name}'."
-                model.columns.remove(match)
-                changes.append(f"removed column '{name}'")
+                    return f"Field '{name}' not found on dataset '{dataset_name}'."
+                dataset.fields.remove(match)
+                changes.append(f"removed field '{name}'")
 
-            for name in remove.get("measures", []):
-                match = next((m for m in model.measures if m.name == name), None)
+            for name in remove.get("metrics", []):
+                match = next((m for m in dataset.metrics if m.name == name), None)
                 if match is None:
-                    return f"Measure '{name}' not found on model '{model_name}'."
-                model.measures.remove(match)
-                changes.append(f"removed measure '{name}'")
-                model_doc_changed = True
+                    return f"Metric '{name}' not found on dataset '{dataset_name}'."
+                dataset.metrics.remove(match)
+                changes.append(f"removed metric '{name}'")
+                dataset_doc_changed = True
 
             for name in remove.get("aggregations", []):
-                match = next((a for a in model.aggregations if a.name == name), None)
+                match = next((a for a in dataset.aggregations if a.name == name), None)
                 if match is None:
-                    return f"Aggregation '{name}' not found on model '{model_name}'."
-                model.aggregations.remove(match)
+                    return f"Aggregation '{name}' not found on dataset '{dataset_name}'."
+                dataset.aggregations.remove(match)
                 changes.append(f"removed aggregation '{name}'")
-                model_doc_changed = True
+                dataset_doc_changed = True
 
             try:
-                removed = resolve_join_refs(model=model, refs=[
-                    r if isinstance(r, str) else JoinEdgeRef.model_validate(r)
-                    for r in (*remove.get("joins", []), *remove.get("join_edges", []))
+                removed = resolve_relationship_refs(dataset=dataset, refs=[
+                    r if isinstance(r, str) else RelationshipEdgeRef.model_validate(r)
+                    for r in (*remove.get("relationships", []), *remove.get("relationship_edges", []))
                 ])
             except ValueError as exc:
                 return str(exc)
-            for join in removed:
-                changes.append(f"removed join '{edge_reference(model=model, join=join)}'")
+            for relationship in removed:
+                changes.append(f"removed relationship '{edge_reference(dataset=dataset, relationship=relationship)}'")
             if removed:
-                model.joins = without_joins(model=model, joins=removed)
-                model_doc_changed = True
+                dataset.relationships = without_relationships(dataset=dataset, relationships=removed)
+                dataset_doc_changed = True
 
         # --- Phase 3: Entity upserts ---
-        for spec in columns or []:
-            col_name = spec.get("name")
-            if isinstance(col_name, str):
-                changed_columns.add(col_name)
+        for spec in fields or []:
+            field_name = spec.get("name")
+            if isinstance(field_name, str):
+                changed_fields.add(field_name)
             err = _upsert_entity(
-                entity_list=model.columns, spec=spec, entity_cls=Column,
-                id_field="name", changes=changes, label="column",
+                entity_list=dataset.fields, spec=spec, entity_cls=DatasetField,
+                id_field="name", changes=changes, label="field",
             )
             if err:
                 return err
 
-        for spec in measures or []:
+        for spec in metrics or []:
             err = _upsert_entity(
-                entity_list=model.measures, spec=spec, entity_cls=ModelMeasure,
-                id_field="name", changes=changes, label="measure",
+                entity_list=dataset.metrics, spec=spec, entity_cls=DatasetMetric,
+                id_field="name", changes=changes, label="metric",
             )
             if err:
                 return err
-            model_doc_changed = True
+            dataset_doc_changed = True
 
         for spec in aggregations or []:
             err = _upsert_entity(
-                entity_list=model.aggregations, spec=spec, entity_cls=Aggregation,
+                entity_list=dataset.aggregations, spec=spec, entity_cls=Aggregation,
                 id_field="name", changes=changes, label="aggregation",
             )
             if err:
                 return err
-            model_doc_changed = True
+            dataset_doc_changed = True
 
-        for spec in joins or []:
-            err = _upsert_join(joins=model.joins, spec=spec, changes=changes)
+        for spec in relationships or []:
+            err = _upsert_relationship(relationships=dataset.relationships, spec=spec, changes=changes)
             if err:
                 return err
-            model_doc_changed = True
+            dataset_doc_changed = True
 
         # --- Phase 4: Filters ---
         if add_filters:
-            existing_filters = set(model.filters)
+            existing_filters = set(dataset.filters)
             for f in add_filters:
                 if f not in existing_filters:
-                    model.filters.append(f)
+                    dataset.filters.append(f)
                     existing_filters.add(f)
                     changes.append(f"added filter '{f}'")
-                    model_level_change = True
+                    dataset_level_change = True
 
         if remove_filters:
             for f in remove_filters:
-                if f not in model.filters:
-                    return f"Filter not found on model '{model_name}': {f}"
-                model.filters.remove(f)
+                if f not in dataset.filters:
+                    return f"Filter not found on dataset '{dataset_name}': {f}"
+                dataset.filters.remove(f)
                 changes.append(f"removed filter '{f}'")
-                model_level_change = True
+                dataset_level_change = True
 
         if not changes:
-            return f"No changes specified for model '{model_name}'."
+            return f"No changes specified for dataset '{dataset_name}'."
 
         # --- Phase 5: Validate and save ---
-        # Query-backed models route through engine.save_model so the
-        # engine-managed column cache is refreshed and user-supplied cache
+        # Query-backed datasets route through engine.save_dataset so the
+        # engine-managed field cache is refreshed and user-supplied cache
         # fields are rejected.
         # Before the round trip below, which drops what the converted source queries carry.
-        notes: list[SlayerWarning] = [*deprecated_inputs_of(model.source_queries or [])]
+        notes: list[SlayerWarning] = [*deprecated_inputs_of(dataset.source_queries or [])]
         try:
-            validated = SlayerModel.model_validate(model.model_dump(mode="json"))
+            validated = SlayerDataset.model_validate(dataset.model_dump(mode="json"))
         except Exception as exc:
             return f"Validation error: {exc}"
 
         if validated.source_queries:
-            # columns are engine-managed here; reject explicit user supply
+            # fields are engine-managed here; reject explicit user supply
             # rather than silently dropping it.
-            if columns is not None:
+            if fields is not None:
                 return (
-                    "Validation error: cannot supply 'columns' on a "
-                    f"query-backed model ('{model_name}'). Columns are "
+                    "Validation error: cannot supply 'fields' on a "
+                    f"query-backed dataset ('{dataset_name}'). Fields are "
                     "engine-managed (auto-derived from the backing query)."
                 )
-            # Strip the cached columns so save_model repopulates them from a
+            # Strip the cached fields so save_dataset repopulates them from a
             # fresh expansion of the backing query.
-            validated = validated.model_copy(update={"columns": []})
-        # save_model refreshes a query-backed model's cache (and may recompute its
+            validated = validated.model_copy(update={"fields": []})
+        # save_dataset refreshes a query-backed dataset's cache (and may recompute its
         # data_source, so cleanup below uses the returned identity); otherwise it
-        # normalizes, validates Mode-A join paths and trial-executes a raw-sql source.
+        # normalizes, validates Mode-A relationship paths and trial-executes a raw-sql source.
         try:
-            saved_model = await engine.save_model(validated, warnings_out=notes)
+            saved_dataset = await engine.save_dataset(validated, warnings_out=notes)
         except Exception as exc:
             return f"Validation error: {exc}"
 
         # Atomic move: remove the source row only after the save succeeded and
-        # only if the saved model actually landed at a different data_source
+        # only if the saved dataset actually landed at a different data_source
         # (the cache populator can override new_data_source).
-        if saved_model.data_source != original_data_source:
-            await storage.delete_model(
-                name=saved_model.name, data_source=original_data_source
+        if saved_dataset.data_source != original_data_source:
+            await storage.delete_dataset(
+                name=saved_dataset.name, data_source=original_data_source
             )
-        # Refresh sampled column values and subtree embeddings. Best-effort —
+        # Refresh sampled field values and subtree embeddings. Best-effort —
         # a raise is captured into refresh_warnings so the save still succeeds.
         refresh_warnings: list[str] = []
-        if changed_columns or model_level_change or model_doc_changed:
+        if changed_fields or dataset_level_change or dataset_doc_changed:
             try:
                 refresh_warnings = await handle_edit_refresh(
                     engine=engine,
                     storage=storage,
-                    data_source=saved_model.data_source,
-                    model_name=saved_model.name,
-                    changed_columns=changed_columns,
-                    model_level_change=model_level_change,
+                    data_source=saved_dataset.data_source,
+                    dataset_name=saved_dataset.name,
+                    changed_fields=changed_fields,
+                    dataset_level_change=dataset_level_change,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort post-save
                 logger.warning(
-                    "edit_model refresh hook raised for %s.%s: %s",
-                    saved_model.data_source, saved_model.name, exc,
+                    "edit_dataset refresh hook raised for %s.%s: %s",
+                    saved_dataset.data_source, saved_dataset.name, exc,
                 )
                 refresh_warnings = [
                     f"refresh hook raised: {exc}",
                 ]
         response_payload: dict = {
             "success": True,
-            "model_name": model_name,
+            "dataset_name": dataset_name,
             "changes": changes,
-            "message": f"Applied {len(changes)} change(s) to '{model_name}'",
+            "message": f"Applied {len(changes)} change(s) to '{dataset_name}'",
         }
         reply_warnings = [*(n.human_message() for n in notes), *refresh_warnings]
         if reply_warnings:
@@ -1278,7 +1337,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         all_schemas: Annotated[bool, Field(
             description="Ingest every non-system schema; excludes schema_name and schemas.",
         )] = False,
-        auto_ingest: Annotated[bool, Field(description="Create models from the schema (default true).")] = True,
+        auto_ingest: Annotated[bool, Field(description="Create datasets from the schema (default true).")] = True,
         granularities: Annotated[list[CustomGranularity] | None, Field(
             description=(
                 "Custom time granularities, each {name, base, multiple, origin}: buckets start at "
@@ -1287,7 +1346,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             ),
         )] = None,
     ) -> str:
-        """Create a database connection, verify it, and auto-ingest models. Use ${ENV_VAR} in credentials to read environment variables.
+        """Create a database connection, verify it, and auto-ingest datasets. Use ${ENV_VAR} in credentials to read environment variables.
 
         Example: create_datasource(name="mydb", type="postgres", host="localhost", port=5432, database="app", username="user", password="${DB_PASSWORD}")
         """
@@ -1335,7 +1394,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if not auto_ingest:
             return "\n".join(lines)
 
-        # Auto-ingest models
+        # Auto-ingest datasets
         try:
             # Via the module so tests can monkeypatch the seam.
             ingest_output = await engine_ingestion.ingest_datasource_report_async(
@@ -1350,7 +1409,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
-        models = ingest_output.models
+        datasets = ingest_output.datasets
 
         if ingest_output.schema_description and not ds.description:
             try:
@@ -1363,30 +1422,30 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 lines.append(f"Could not save datasource description: {exc}")
 
         save_errors: list[str] = []
-        saved_models = []
-        for model in models:
+        saved_datasets: list[SlayerDataset] = []
+        for dataset in datasets:
             try:
-                await storage.save_model(model)
-                saved_models.append(model)
+                await storage.save_dataset(dataset)
+                saved_datasets.append(dataset)
             except ValueError as exc:
                 # e.g. quoted case-variant tables — report and continue.
-                save_errors.append(f"- {model.name}: {exc}")
-        models = saved_models
+                save_errors.append(f"- {dataset.name}: {exc}")
+        datasets = saved_datasets
 
-        if not models and not save_errors:
+        if not datasets and not save_errors:
             lines.append("No tables found to ingest.")
             available = await _get_schemas(client)
             if available:
                 lines.append(f"Available schemas: {', '.join(available)}")
-        elif models:
-            lines.append(f"Ingested {len(models)} model(s):")
-            for m in models:
-                lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
+        elif datasets:
+            lines.append(f"Ingested {len(datasets)} dataset(s):")
+            for m in datasets:
+                lines.append(f"- {m.name} ({len(m.fields)} fields, {len(m.metrics)} metrics)")
             lines.append("")
-            lines.append("Use models_summary and inspect to explore, then query to fetch data.")
+            lines.append("Use datasets_summary and inspect to explore, then query to fetch data.")
 
         if save_errors:
-            lines.append(f"Failed to save {len(save_errors)} model(s):")
+            lines.append(f"Failed to save {len(save_errors)} dataset(s):")
             lines.extend(save_errors)
         lines.extend(_render_key_read_failures_section(ingest_output.key_read_failures))
 
@@ -1417,7 +1476,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Show datasource details: connection status, available schemas, and (by default) the tables in the given or default schema.
 
-        Use it after create_datasource to verify the connection and see what is queryable before ingest_datasource_models.
+        Use it after create_datasource to verify the connection and see what is queryable before ingest_datasource.
         """
         try:
             ds = await storage.get_datasource(name)
@@ -1464,7 +1523,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     suffix = "" if o.kind == "table" else f" ({o.kind})"
                     lines.append(f"  - {o.name}{suffix}")
                 lines.append(
-                    "\nUse ingest_datasource_models to create models from these tables."
+                    "\nUse ingest_datasource to create datasets from these tables."
                 )
             else:
                 lines.append(f"\nNo tables found{schema_label}.")
@@ -1505,11 +1564,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # partial success rather than failing the already-committed save.
         refresh_warning: str | None = None
         if description is not None and description != old_description:
-            models_in_ds = DocumentLoadFailures().skip(await storage.load_models(data_source=name))
+            datasets_in_ds = DocumentLoadFailures().skip(await storage.load_datasets(data_source=name))
             try:
                 await search_service.refresh_datasource(
                     name=name,
-                    models=models_in_ds,
+                    datasets=datasets_in_ds,
                     description=ds.description,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh
@@ -1527,28 +1586,28 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # Delete operations
 
     @tool()
-    async def delete_model(
-        name: Annotated[str, Field(description="Model to delete.")],
+    async def delete_dataset(
+        name: Annotated[str, Field(description="Dataset to delete.")],
         data_source: Annotated[str | None, Field(
-            description="The model's datasource; required when the name exists in several datasources.",
+            description="The dataset's datasource; required when the name exists in several datasources.",
         )] = None,
     ) -> str:
-        """Delete a semantic model."""
+        """Delete a semantic dataset."""
         try:
-            deleted = await storage.delete_model(name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            deleted = await storage.delete_dataset(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
         if deleted:
-            return f"Model '{name}' deleted."
-        return f"Model '{name}' not found."
+            return f"Dataset '{name}' deleted."
+        return f"Dataset '{name}' not found."
 
     @tool()
-    async def validate_models(
+    async def validate_datasets(
         data_source: Annotated[str | None, Field(description="Datasource to validate; omit for all.")] = None,
     ) -> str:
-        """Diff stored models against the live database schemas.
+        """Diff stored datasets against the live database schemas.
 
-        Returns, as JSON, the deletes (columns, measures, joins, filters, whole models) needed to keep the stored models valid. Read-only.
+        Returns, as JSON, the deletes (fields, metrics, relationships, filters, whole datasets) needed to keep the stored datasets valid. Read-only.
         """
         if data_source is not None:
             # Fail loudly on an unknown name — an empty result is otherwise
@@ -1559,48 +1618,48 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # Reuse the closure engine so its schema-drift SQL client is cached and
         # disposed at teardown.
         try:
-            entries = await engine.validate_models(data_source=data_source)
+            entries = await engine.validate_datasets(data_source=data_source)
         except _DB_FAILURES as exc:
             raise _db_tool_failure(exc) from exc
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
     @tool()
-    async def recommend_root_model(
+    async def recommend_population(
         items: Annotated[list[str], Field(
-            description="Entity references: orders.revenue, customers.name, sum(orders.revenue), a saved measure's bare name, ...",
+            description="Entity references: orders.revenue, customers.name, sum(orders.revenue), a saved metric's bare name, ...",
         )],
         data_source: Annotated[str | None, Field(
             description="Datasource scope; omitted, names resolve via the datasource priority list.",
         )] = None,
         root_hint: Annotated[str | None, Field(
             description=(
-                "Intended root (model or <data_source>.<model>); honoured when it reaches every item, "
+                "Intended root (dataset or <data_source>.<dataset>); honoured when it reaches every item, "
                 "else the automatic pick is used with a warning."
             ),
         )] = None,
         format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",  # noqa: A002
     ) -> str:
-        """Recommend the root model (a query's source_model) for a set of model.column / measure items, with each item's reference path from that root, ready to drop into the query (a joined column comes back as customers.regions.name, a root-owned one as status; aggregations are kept).
+        """Recommend the population (a query's root dataset) for a set of dataset.field / metric items, with each item's reference path from that root, ready to drop into the query (a joined field comes back as customers.regions.name, a root-owned one as status; aggregations are kept).
 
-        The root is the model from which every item is reachable with the fewest join hops. With at least one column item, an aggregated item on a model with no join path to the root does not block it: its path is flagged unrelated (aggregated over that model's own rows). When none reaches everything, root_model is null and coverage lists the best partial roots for a multi-stage query.
+        The root is the dataset from which every item is reachable with the fewest relationship hops. With at least one field item, an aggregated item on a dataset with no relationship path to the root does not block it: its path is flagged unrelated (aggregated over that dataset's own rows). When none reaches everything, population is null and coverage lists the best partial roots for a multi-stage query.
 
         Call it once the item list is final; explore with search / inspect first.
         """
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
             return (
-                f"recommend_root_model failed: unknown format '{format}'. "
+                f"recommend_population failed: unknown format '{format}'. "
                 f"Use 'markdown' or 'json'."
             )
-        # Reuse the closure engine (see validate_models above).
+        # Reuse the closure engine (see validate_datasets above).
         try:
-            rec = await engine.recommend_root_model(
+            rec = await engine.recommend_population(
                 items, data_source=data_source, root_hint=root_hint
             )
-        except AmbiguousModelError as exc:
+        except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
-        except (ValueError, EntityResolutionError) as exc:
-            return f"recommend_root_model failed: {exc}"
+        except ValueError as exc:
+            return f"recommend_population failed: {exc}"
         if fmt == "json":
             return json.dumps(rec.model_dump(mode="json"), indent=2)
         return render_recommendation_markdown(rec)
@@ -1615,7 +1674,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # Ingestion
 
     @tool()
-    async def ingest_datasource_models(
+    async def ingest_datasource(
         datasource_name: Annotated[str, Field(description="An existing datasource (from list_datasources).")],
         include_tables: Annotated[str, Field(description="Comma-separated tables to ingest; empty for all.")] = "",
         schema_name: Annotated[str, Field(description='One schema, e.g. "public"; empty is the default schema.')] = "",
@@ -1626,9 +1685,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description="Every non-system schema; excludes schema_name and schemas.",
         )] = False,
     ) -> str:
-        """Discover a database's tables and create or additively update models from them.
+        """Discover a database's tables and create or additively update datasets from them.
 
-        Idempotent and additive: new columns and joins are appended; existing definitions are never overwritten. Also returns the pending validate_models deletes.
+        Idempotent and additive: new fields and relationships are appended; existing definitions are never overwritten. Also returns the pending validate_datasets deletes.
         """
 
         ds = await storage.get_datasource(datasource_name)
@@ -1670,7 +1729,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description="Existing datasource names, most preferred first; an empty list clears it.",
         )],
     ) -> str:
-        """Set how a bare model name that exists in several datasources resolves: the first datasource in this list that has it wins; otherwise the name is ambiguous and errors."""
+        """Set how a bare dataset name that exists in several datasources resolves: the first datasource in this list that has it wins; otherwise the name is ambiguous and errors."""
         try:
             await storage.set_datasource_priority(list(priority))
         except ValueError as exc:
@@ -1693,7 +1752,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         """Convert a typed resolution / not-found / ambiguous error into
         a friendly text response (matches the existing convention of
         never raising back to the agent)."""
-        if isinstance(exc, AmbiguousModelError):
+        if isinstance(exc, AmbiguousDatasetError):
             return _ambiguous_with_mcp_hint(exc)
         prefix = f"{type(exc).__name__}: "
         return f"Error: {exc}" if str(exc).startswith(prefix) else f"Error: {prefix}{exc}"
@@ -1703,7 +1762,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         learning: Annotated[str, Field(description="The note text; required, non-empty.")],
         linked_entities: Annotated[Any, Field(
             description=(
-                "A list of entity references (resolved to <datasource>.<model>[.<leaf>]; memory:<id> "
+                "A list of entity references (resolved to <datasource>.<dataset>[.<leaf>]; memory:<id> "
                 "links another memory), or a query object whose entities are extracted and which is "
                 "stored as an example query."
             ),
@@ -1720,11 +1779,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Save an agent memory: a free-form note plus the SLayer entities it concerns.
 
-        With a list of entity references the memory appears among search's memories; with a query object it appears among search's example queries. Returns the memory_id, the canonical entities stored and any warnings. Deleting a model, datasource or measure strips references to it from every memory; the note itself is kept.
+        With a list of entity references the memory appears among search's memories; with a query object it appears among search's example queries. Returns the memory_id, the canonical entities stored and any warnings. Deleting a dataset, datasource or metric strips references to it from every memory; the note itself is kept.
 
         Examples:
         save_memory(learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned", linked_entities=["orders.is_returned"])
-        save_memory(learning="Paid revenue by status", linked_entities={"source_model": "orders", "measures": [{"formula": "sum(amount)"}], "filters": ["status = 'paid'"]}, id="kb.paid-revenue")
+        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": [{"expression": "sum(amount)"}], "filter": ["status = 'paid'"]}, id="kb.paid-revenue")
         """
         try:
             response = await memory_service.save_memory(
@@ -1733,11 +1792,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 id=id,
                 description=description,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousModelError,
-            ValueError,
-        ) as exc:
+        except ValueError as exc:  # EntityResolutionError / AmbiguousDatasetError included
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
@@ -1756,7 +1811,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         return response.model_dump_json(indent=2)
 
     # Semantic search. Pass the engine so the search service's post-fusion
-    # column-hit hook can auto-refresh stale categorical columns.
+    # field-hit hook can auto-refresh stale categorical fields.
     search_service = SearchService(storage=storage, engine=engine)
 
     @tool()
@@ -1775,8 +1830,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         cypher_filter: Annotated[str | None, Field(
             description=(
                 "openCypher MATCH ... RETURN <node>.id AS id pre-filtering hits to the returned ids, e.g. "
-                "MATCH (n:ModelColumn) RETURN n.id AS id to spend max_results on columns only. Labels: "
-                "Memory, Datasource, Model, ModelColumn, Measure, Aggregation; without the "
+                "MATCH (n:DatasetField) RETURN n.id AS id to spend max_results on fields only. Labels: "
+                "Memory, Datasource, Dataset, DatasetField, Metric, Aggregation; without the "
                 "advanced_search extra only such label filters work."
             ),
         )] = None,
@@ -1784,7 +1839,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description="Default true: one-line hits. False returns full renders; avoid it for broad searches.",
         )] = True,
     ) -> str:
-        """Search saved memories, example queries and entities (models, columns, measures, ...) by entity overlap and by meaning.
+        """Search saved memories, example queries and entities (datasets, fields, metrics, ...) by entity overlap and by meaning.
 
         Call it before `query` to surface notes and example queries saved against the entities you plan to use. Discovery, not detail: hits are one-line descriptions; read the ones you need with `inspect`, batching same-kind ids in one call.
 
@@ -1978,7 +2033,7 @@ def _population_comment(population: str | None) -> str:
     return "" if population is None else f"# population: {population} (inferred)\n"
 
 
-def _format_field_meta(entries: dict[str, Any]) -> list[str]:
+def _format_field_meta(entries: dict[str, FieldMetadata]) -> list[str]:
     """Format a dict of field metadata entries into lines."""
     lines = []
     for col, fm in entries.items():
@@ -1997,22 +2052,22 @@ def _format_field_meta(entries: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _format_attributes(attributes) -> str:
+def _format_attributes(attributes: ResponseAttributes) -> str:
     """Format response attributes as a compact section."""
     lines = []
     dim_lines = _format_field_meta(attributes.dimensions)
     if dim_lines:
         lines.append("Dimension attributes:")
         lines.extend(dim_lines)
-    measure_lines = _format_field_meta(attributes.measures)
-    if measure_lines:
-        lines.append("Measure attributes:")
-        lines.extend(measure_lines)
+    metric_lines = _format_field_meta(attributes.metrics)
+    if metric_lines:
+        lines.append("Metric attributes:")
+        lines.extend(metric_lines)
     return "\n".join(lines) if lines else ""
 
 
-def _has_attributes(attributes) -> bool:
-    return bool(attributes and (attributes.dimensions or attributes.measures))
+def _has_attributes(attributes: ResponseAttributes | None) -> bool:
+    return bool(attributes and (attributes.dimensions or attributes.metrics))
 
 
 def _attributes_footer(attributes) -> str:

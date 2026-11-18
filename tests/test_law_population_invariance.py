@@ -13,6 +13,7 @@ import pytest
 from slayer.core.query import SlayerQuery
 
 from tests._dev1866_fixtures import make_chain_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 
 # (label, dimensions, filters, expected inferred population)
 _BASES = [
@@ -23,10 +24,10 @@ _BASES = [
 # Measure sets layered onto each base; all bind under either population.
 _MEASURE_SETS = [
     [],
-    [{"formula": "sum(orders.amount)", "name": "m1"}],
+    [{"expression": "sum(orders.amount)", "name": "m1"}],
     [
-        {"formula": "sum(orders.amount)", "name": "m1"},
-        {"formula": "avg(orders.amount)", "name": "m2"},
+        {"expression": "sum(orders.amount)", "name": "m1"},
+        {"expression": "avg(orders.amount)", "name": "m2"},
     ],
 ]
 
@@ -42,9 +43,9 @@ def _law(condition: bool, *, detail: str) -> None:
 
 
 @pytest.mark.parametrize("label, dims, filters, population", _BASES)
-async def test_measure_does_not_requantify(chain_engine, label, dims, filters,
+async def test_measure_does_not_requantify(chain_engine: SlayerQueryEngine, label, dims, filters,
                                            population) -> None:
-    base = await chain_engine.execute(SlayerQuery(dimensions=dims, filters=filters))
+    base = await chain_engine.execute(SlayerQuery(dimensions=dims, filter=filters))
     _law(base.population == population,
          detail=f"{label}: base population {base.population!r} != {population!r}")
     dim_cols = list(base.columns)
@@ -52,7 +53,7 @@ async def test_measure_does_not_requantify(chain_engine, label, dims, filters,
 
     for measures in _MEASURE_SETS:
         resp = await chain_engine.execute(SlayerQuery(
-            dimensions=dims, filters=filters, measures=measures or None,
+            dimensions=dims, filter=filters, metrics=measures or None,
         ))
         _law(resp.population == population,
              detail=f"{label}: population moved to {resp.population!r} "

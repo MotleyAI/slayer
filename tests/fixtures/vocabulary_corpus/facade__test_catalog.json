@@ -1,0 +1,479 @@
+{
+ "source": "tests/facade/test_catalog.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(revenue) / count(*)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(revenue) / count(*)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_count",
+    "formula": "COUNT(DISTINCT {value})"
+   },
+   "new": {
+    "name": "my_count",
+    "expression": "COUNT(DISTINCT {value})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "notes",
+    "join_pairs": [
+     [
+      "id",
+      "order_id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "notes",
+    "join_pairs": [
+     [
+      "id",
+      "order_id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "b",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "b",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "d",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "d",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 117,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 215,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 237,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 238,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 258,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 259,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 270,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 305,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 306,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 307,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 333,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 336,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 338,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 340,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 347,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 348,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 384,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 386,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 388,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 390,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 404,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 409,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 410,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 424,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 442,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 443,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 444,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 463,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 466,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 467,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 483,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 484,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 485,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 486,
+   "reason": "not fully literal"
+  }
+ ]
+}

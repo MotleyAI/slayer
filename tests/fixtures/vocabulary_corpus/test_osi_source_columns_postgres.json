@@ -1,0 +1,21 @@
+{
+ "source": "tests/test_osi_source_columns_postgres.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "units"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "units"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,112 @@
+{
+ "source": "tests/test_dev1883_equivalence.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 30,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 75,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 76,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 92,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 107,
+   "reason": "unclassifiable"
+  }
+ ]
+}

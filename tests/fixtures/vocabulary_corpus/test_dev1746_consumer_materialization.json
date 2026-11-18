@@ -1,0 +1,123 @@
+{
+ "source": "tests/test_dev1746_consumer_materialization.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers_v2.lifetime_value)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(customers_v2.lifetime_value)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers_v2.deep_weight)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(customers_v2.deep_weight)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers_v2.deep_weight)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "first(customers_v2.deep_weight)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers_v2.deep_pop)",
+    "name": "p"
+   },
+   "new": {
+    "expression": "first(customers_v2.deep_pop)",
+    "name": "p"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers_v2.deep_weight)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(customers_v2.deep_weight)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers_v2.deep_weight)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "first(customers_v2.deep_weight)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers_v2.deep_weight)",
+    "name": "b"
+   },
+   "new": {
+    "expression": "last(customers_v2.deep_weight)",
+    "name": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(cust_ltv)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(cust_ltv)",
+    "name": "f"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 226,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 245,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 275,
+   "reason": "not fully literal"
+  }
+ ]
+}

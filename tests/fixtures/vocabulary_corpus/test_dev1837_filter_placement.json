@@ -1,0 +1,105 @@
+{
+ "source": "tests/test_dev1837_filter_placement.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "change(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "prev"
+   }
+  }
+ ],
+ "skipped": []
+}

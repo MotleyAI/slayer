@@ -1,0 +1,123 @@
+{
+ "source": "tests/test_deprecated_input_saves.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "pub",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "pub",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "pub.label"
+    ],
+    "measures": [
+     {
+      "formula": "count(pub.id)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "pub.label"
+    ],
+    "metrics": [
+     {
+      "expression": "count(pub.id)",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s",
+    "source_model": "pub",
+    "dimensions": [
+     "label"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "s",
+    "population": "pub",
+    "dimensions": [
+     "label"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "measures": [
+     {
+      "formula": "sum(n)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "population": "s",
+    "metrics": [
+     {
+      "expression": "sum(n)",
+      "name": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "hr",
+    "measures": [
+     {
+      "formula": "sum(salary)",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "hr",
+    "metrics": [
+     {
+      "expression": "sum(salary)",
+      "name": "v"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

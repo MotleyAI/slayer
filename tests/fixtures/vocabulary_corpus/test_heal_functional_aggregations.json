@@ -1,0 +1,51 @@
+{
+ "source": "tests/test_heal_functional_aggregations.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "count(*)"
+    ],
+    "filters": [
+     "my_agg(amount) > 0"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "count(*)"
+    ],
+    "filter": [
+     "my_agg(amount) > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "max(n_customers)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "max(n_customers)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 199,
+   "reason": "not a standalone query: ValidationError"
+  }
+ ]
+}

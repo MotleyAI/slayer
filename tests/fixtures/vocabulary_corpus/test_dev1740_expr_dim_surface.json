@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dev1740_expr_dim_surface.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 19,
+   "reason": "not fully literal"
+  }
+ ]
+}

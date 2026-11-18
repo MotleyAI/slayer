@@ -1,0 +1,822 @@
+{
+ "source": "tests/test_dev1476_first_last_explicit_time.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, created_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, created_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "last(customers.amount, customers.signup_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "last(customers.amount, customers.signup_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(net_amount, created_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(net_amount, created_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "last(customers.amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "last(customers.amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "last(customers.amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "last(customers.amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.amount, customers.signup_at_alias)"
+   },
+   "new": {
+    "expression": "last(customers.amount, customers.signup_at_alias)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "last(customers.amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "last(customers.amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "last(customers.active_amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "last(customers.active_amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, created_day)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, created_day)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, customers.signup_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, customers.signup_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, customers.regions.opened_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, customers.regions.opened_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, cust_signup)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, cust_signup)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, customers.signup_at) + 1",
+      "name": "plus1"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, customers.signup_at) + 1",
+      "name": "plus1"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "last(customers.amount, customers.signup_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "last(customers.amount, customers.signup_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, customers.signup_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, customers.signup_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, customers.regions.opened_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, customers.regions.opened_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, cust_signup)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, cust_signup)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "last(amount, customers.signup_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "last(amount, customers.signup_at)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 120,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 231,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 233,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 234,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 262,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 268,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 272,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 302,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 304,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 335,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 342,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 343,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 344,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 345,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 346,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 390,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 397,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 398,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 399,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 400,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 401,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 451,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 453,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 462,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 463,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 464,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 493,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 496,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 497,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 498,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 504,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 507,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 508,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 509,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 510,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 511,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 512,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 520,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 521,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 522,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 523,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 524,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 527,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 661,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 761,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 835,
+   "reason": "not fully literal"
+  }
+ ]
+}

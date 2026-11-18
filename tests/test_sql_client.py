@@ -21,7 +21,7 @@ from slayer.database.client import (
     _is_unreachable_db_error,
     _read_only_transaction_sql,
     ResultColumnType,
-    classify_model_sql,
+    classify_dataset_sql,
     get_result_column_types_sync,
     render_type_probe,
 )
@@ -409,7 +409,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         invalidate.assert_not_called()
         assert client._sync_engine is engine
 
-    async def test_async_engine_is_disposed_too(self, monkeypatch) -> None:
+    async def test_async_engine_is_disposed_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An async driver's pool is one ``invalidate_engine`` knows nothing about."""
         client = sql_client.SlayerSQLClient(
             datasource=DatasourceConfig(name="pg", type="postgres", connection_string="postgresql://u@db.invalid/d"),
@@ -606,11 +606,11 @@ class TestClassifyModelSql:
         "SELECT id FROM orders FOR UPDATE",     # locking read (write-intent locks)
     ])
     def test_not_read_only(self, sql: str) -> None:
-        assert classify_model_sql(sql, dialect="postgres") == "modifying"
+        assert classify_dataset_sql(sql, dialect="postgres") == "modifying"
 
     def test_next_value_for_is_not_read_only(self) -> None:
         # SELECT NEXT VALUE FOR seq advances sequence state (T-SQL).
-        assert classify_model_sql("SELECT NEXT VALUE FOR s", dialect="tsql") == "modifying"
+        assert classify_dataset_sql("SELECT NEXT VALUE FOR s", dialect="tsql") == "modifying"
 
     @pytest.mark.parametrize("sql", [
         "SELECT 1",
@@ -619,13 +619,13 @@ class TestClassifyModelSql:
         "VALUES (1, 'a'), (2, 'b')",           # standalone constant table is read-only
     ])
     def test_read_only(self, sql: str) -> None:
-        assert classify_model_sql(sql, dialect="postgres") == "read_only"
+        assert classify_dataset_sql(sql, dialect="postgres") == "read_only"
 
     @pytest.mark.parametrize("sql", ["SELECT (((", "totally not sql", ""])
     def test_unparseable(self, sql: str) -> None:
         # Unparseable SQL is rejected without a DB call — the generator can't
         # parse it either, so the model would be non-functional anyway.
-        assert classify_model_sql(sql, dialect="postgres") == "unparseable"
+        assert classify_dataset_sql(sql, dialect="postgres") == "unparseable"
 
 
 class TestReadOnlyTransactionSql:

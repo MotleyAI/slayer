@@ -1,0 +1,198 @@
+{
+ "source": "tests/test_dev1859_attached_param_exec.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, sum(amount, partition_by=region))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, sum(amount, partition_by=region))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(amount, weight=sum(amount))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum(amount, weight=sum(amount))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(customers.spend, weight=sum(amount))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum(customers.spend, weight=sum(amount))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(sum(amount, partition_by=[city, region]), weight=count(id))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum(sum(amount, partition_by=[city, region]), weight=count(id))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(1, weight=sum(amount, partition_by=region))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum(1, weight=sum(amount, partition_by=region))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=sum(customers.spend, partition_by=customers.plans.level))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=sum(customers.spend, partition_by=customers.plans.level))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.spend, weight=sum(amount, partition_by=status))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.spend, weight=sum(amount, partition_by=status))",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "w",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "w",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 106,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 132,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 193,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 251,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 345,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 356,
+   "reason": "not fully literal"
+  }
+ ]
+}

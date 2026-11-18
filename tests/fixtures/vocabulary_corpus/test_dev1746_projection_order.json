@@ -1,0 +1,616 @@
+{
+ "source": "tests/test_dev1746_projection_order.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "cm_first"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "cm_first"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "local_second"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "local_second"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w_first"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w_first"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "local_second"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "local_second"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a_local"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a_local"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "b_cross"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "b_cross"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(amount)",
+    "name": "c_local"
+   },
+   "new": {
+    "expression": "avg(amount)",
+    "name": "c_local"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm_first"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm_first"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "local_second"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "local_second"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(customers_v2.lifetime_value))",
+    "name": "running"
+   },
+   "new": {
+    "expression": "cumsum(sum(customers_v2.lifetime_value))",
+    "name": "running"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "ltv"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.spend)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.spend)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "wa"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "wa"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "wb"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "wb"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "zz_running"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "zz_running"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(amount)",
+    "name": "aa_total"
+   },
+   "new": {
+    "expression": "avg(amount)",
+    "name": "aa_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "zz_running"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "zz_running"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)",
+    "name": "aa_cross"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)",
+    "name": "aa_cross"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "zz_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "zz_prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(amount)",
+    "name": "aa_total"
+   },
+   "new": {
+    "expression": "avg(amount)",
+    "name": "aa_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 0)",
+    "name": "zz_streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 0)",
+    "name": "zz_streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(amount)",
+    "name": "aa_total"
+   },
+   "new": {
+    "expression": "avg(amount)",
+    "name": "aa_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "zz_running"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "zz_running"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "aa_total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "aa_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "zz_running"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "zz_running"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "aa_cross"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "aa_cross"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), -1)",
+    "name": "zz_prev"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), -1)",
+    "name": "zz_prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "aa_total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "aa_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "consecutive_periods(sum(amount) > 0)",
+    "name": "zz_streak"
+   },
+   "new": {
+    "expression": "consecutive_periods(sum(amount) > 0)",
+    "name": "zz_streak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "aa_total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "aa_total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers_v2.lifetime_value)"
+   },
+   "new": {
+    "expression": "sum(customers_v2.lifetime_value)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 182,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 298,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 355,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 357,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 458,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 469,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 471,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 484,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 486,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 497,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 499,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 564,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 566,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 587,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 589,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 612,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 614,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 641,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 643,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 664,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 676,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 693,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 711,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 732,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 748,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 765,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 780,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 816,
+   "reason": "not fully literal"
+  }
+ ]
+}

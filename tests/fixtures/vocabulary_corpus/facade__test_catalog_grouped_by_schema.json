@@ -1,0 +1,40 @@
+{
+ "source": "tests/facade/test_catalog_grouped_by_schema.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 16,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 19,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 20,
+   "reason": "not fully literal"
+  }
+ ]
+}

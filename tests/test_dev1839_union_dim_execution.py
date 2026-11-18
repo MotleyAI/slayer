@@ -33,7 +33,7 @@ from tests._dev1839_fixtures import (
     KEYLESS_RANK_OF,
     MIXED_RANK,
     MIXED_RANK_OF,
-    ModelMeasure,
+    DatasetMetric,
     NESTED_RANK,
     NESTED_RANK_OF,
     RCC_TOTAL,
@@ -104,7 +104,7 @@ class TestMixedGrainRank:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -120,7 +120,7 @@ class TestMixedGrainRank:
         tier = f"CASE WHEN {MIXED_RANK} <= 1 THEN 'top' ELSE 'rest' END"
         resp = await engine.execute(q(
             dimensions=[{"expression": tier, "name": "tier"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         got = {r["orders.tier"]: float(r["orders.s"]) for r in resp.data}
         # rank<=1 groups: (N,CityA)=30 + (N,NULL)=30; the rest total 150.
@@ -132,7 +132,7 @@ class TestKeylessMixed:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", {"expression": KEYLESS_RANK, "name": "kr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")
@@ -152,7 +152,7 @@ class TestSubsetGrain:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city", {"expression": SUBSET_RANK, "name": "sr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -175,7 +175,7 @@ class TestNestedTransform:
         query = q(
             dimensions=["region", "city", {"expression": NESTED_RANK, "name": "nr"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         got = {
@@ -200,7 +200,7 @@ class TestExplicitUnionPartition:
             dimensions=[
                 "region", "city", {"expression": EXPLICIT_PART_RANK, "name": "er"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -220,11 +220,11 @@ class TestUnionAttachStructure:
         _, engine = exec_backend
         base = await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         plus = await engine.execute(q(
             dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         base_by = rows_by(base, "orders.region", "orders.city")
         plus_by = rows_by(plus, "orders.region", "orders.city")
@@ -241,7 +241,7 @@ class TestUnionAttachStructure:
         dialect, engine = exec_backend
         sql = await _dry_scope_closed(engine, q(
             dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ), dialect)
         # ``_cm_`` is the pinned attach-CTE naming contract (``cm_cte_bodies``
         # in the DEV-1739+ suites relies on it), not renderer-private detail.
@@ -266,9 +266,9 @@ class TestDuplicateProducerRoles:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="s"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
         )
         resp = await engine.execute(query)
@@ -296,9 +296,9 @@ class TestDualRole:
                 "region", "city", "channel",
                 {"expression": MIXED_RANK, "name": "rr"},
             ],
-            measures=[
-                ModelMeasure(formula=MIXED_RANK, name="rm"),
-                ModelMeasure(formula="sum(amount)", name="s"),
+            metrics=[
+                DatasetMetric(expression=MIXED_RANK, name="rm"),
+                DatasetMetric(expression="sum(amount)", name="s"),
             ],
         )
         resp = await engine.execute(query)

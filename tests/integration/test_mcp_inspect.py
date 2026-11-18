@@ -8,15 +8,16 @@ Run with: poetry run pytest tests/integration/test_mcp_inspect.py -m integration
 """
 
 import json as _json
-from typing import Any
+from pathlib import Path
+from typing import Any, TypedDict
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    SlayerModel,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
@@ -31,16 +32,22 @@ from slayer.storage.yaml_storage import YAMLStorage
 pytestmark = pytest.mark.integration
 
 
-async def _profile(*, model: SlayerModel, engine: SlayerQueryEngine) -> dict[str, Column]:
-    """Profile every column of ``model`` through the owner; ``{name: refreshed column}``."""
+class InspectEnv(TypedDict):
+    storage: YAMLStorage
+    engine: SlayerQueryEngine
+    dataset: SlayerDataset
+
+
+async def _profile(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> dict[str, DatasetField]:
+    """Profile every column of ``dataset`` through the owner; ``{name: refreshed column}``."""
     outcome = await ensure_samples_fresh(
-        model=model, columns=list(model.columns), engine=engine, storage=engine.storage,
+        dataset=dataset, fields=list(dataset.fields), engine=engine, storage=engine.storage,
     )
-    return {c.name: c for c in outcome.columns}
+    return {c.name: c for c in outcome.fields}
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path: Path) -> InspectEnv:
     """Real SQLite DB + YAMLStorage + a saved ``orders`` model."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
@@ -72,25 +79,25 @@ async def env(tmp_path):
     ds = DatasourceConfig(name="test_sqlite", type="sqlite", database=str(db_path))
     await storage.save_datasource(ds)
 
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="test_sqlite",
         description="Orders model used in integration tests.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT, label="Status", description="Order state"),
-            Column(name="is_paid", type=DataType.BOOLEAN),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE, description="Revenue per order"),
-            Column(name="quantity", sql="quantity", type=DataType.INT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="notes", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT, label="Status", description="Order state"),
+            DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE, description="Revenue per order"),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.INT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="notes", datatype=DataType.TEXT),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
     engine = SlayerQueryEngine(storage=storage)
-    return {"storage": storage, "engine": engine, "model": model}
+    return {"storage": storage, "engine": engine, "dataset": model}
 
 
 class TestDescribeDatasourceTables:
@@ -106,18 +113,18 @@ class TestDescribeDatasourceTables:
         )
         return content[0].text
 
-    async def test_tables_appear_by_default(self, env) -> None:
+    async def test_tables_appear_by_default(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
         out = await self._call_describe(server, name="test_sqlite")
         assert "Tables (1):" in out
         assert "  - orders" in out
 
-    async def test_list_tables_false_suppresses_section(self, env) -> None:
+    async def test_list_tables_false_suppresses_section(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
         out = await self._call_describe(server, name="test_sqlite", list_tables=False)
         assert "Tables" not in out.split("Connection:")[1]
 
-    async def test_schema_name_is_forwarded(self, env) -> None:
+    async def test_schema_name_is_forwarded(self, env: InspectEnv) -> None:
         """An unknown schema name is tolerated — error surfaces inline, rest of
         the response still renders."""
         server = create_mcp_server(storage=env["storage"])
@@ -131,8 +138,8 @@ class TestDescribeDatasourceTables:
 
 
 class TestGetRowCount:
-    async def test_non_empty_table(self, env) -> None:
-        count = await _get_row_count(model=env["model"], engine=env["engine"])
+    async def test_non_empty_table(self, env: InspectEnv) -> None:
+        count = await _get_row_count(dataset=env["dataset"], engine=env["engine"])
         assert count == 6
 
     async def test_empty_table(self, tmp_path) -> None:
@@ -144,19 +151,19 @@ class TestGetRowCount:
         await storage.save_datasource(DatasourceConfig(
             name="empty_ds", type="sqlite", database=str(db_path),
         ))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="empty_ds",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
-        assert await _get_row_count(model=model, engine=engine) == 0
+        assert await _get_row_count(dataset=model, engine=engine) == 0
 
 
 class TestCollectDimProfile:
-    async def test_categorical_enumerated(self, env) -> None:
+    async def test_categorical_enumerated(self, env: InspectEnv) -> None:
         """string/boolean dims get distinct values with counts."""
-        by_name = await _profile(model=env["model"], engine=env["engine"])
+        by_name = await _profile(dataset=env["dataset"], engine=env["engine"])
 
         status = by_name["status"]
         assert status.distinct_count == 3
@@ -165,9 +172,9 @@ class TestCollectDimProfile:
         is_paid = by_name["is_paid"]
         assert is_paid.distinct_count == 2
 
-    async def test_numeric_and_temporal_min_max(self, env) -> None:
+    async def test_numeric_and_temporal_min_max(self, env: InspectEnv) -> None:
         """number/date/time dims get min/max via the batched query."""
-        by_name = await _profile(model=env["model"], engine=env["engine"])
+        by_name = await _profile(dataset=env["dataset"], engine=env["engine"])
 
         amt = by_name["amount"]
         assert amt.sampled_values is None
@@ -193,16 +200,16 @@ class TestCollectDimProfile:
         await storage.save_datasource(DatasourceConfig(
             name="hc_ds", type="sqlite", database=str(db_path),
         ))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="hc_ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="label", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="label", datatype=DataType.TEXT),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
-        label = (await _profile(model=model, engine=engine))["label"]
+        label = (await _profile(dataset=model, engine=engine))["label"]
         assert len(label.sampled_values or []) == 50
         assert label.distinct_count is None  # overflow signal
 
@@ -217,18 +224,18 @@ class TestCollectDimProfile:
         await storage.save_datasource(DatasourceConfig(
             name="empty_ds2", type="sqlite", database=str(db_path),
         ))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="empty_ds2",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        by_name = await _profile(model=model, engine=engine)
+        by_name = await _profile(dataset=model, engine=engine)
         # Categorical dim on empty table returns 0 distinct values (not overflow).
         assert by_name["status"].distinct_count == 0
         assert by_name["status"].sampled_values == []
@@ -244,12 +251,12 @@ class TestInspectModelEndToEnd:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 
-    async def test_full_response(self, env) -> None:
+    async def test_full_response(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
-        result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "num_rows": 5})
+        result = await self._call(server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 5})
 
         # Header + description + metadata
-        assert result.startswith("# Model: `orders`")
+        assert result.startswith("# Dataset: `orders`")
         assert "Orders model used in integration tests." in result
         assert "**data_source:** `test_sqlite`" in result
         assert "**sql_table:** `orders`" in result
@@ -259,10 +266,10 @@ class TestInspectModelEndToEnd:
         # The `sampled` column is folded in, so the same section now carries the
         # enumerated values for string/boolean cols and `min .. max` for numeric
         # and temporal cols.
-        assert "## Columns (7)" in result
+        assert "## Fields (7)" in result
         assert "| status |" in result
 
-        col_section = result.split("## Columns")[1].split("## Measures")[0]
+        col_section = result.split("## Fields")[1].split("## Metrics")[0]
         # The sampled column carries the profile data inline now.
         # status (string, 3 distinct) enumerates its values
         assert "completed" in col_section
@@ -278,12 +285,12 @@ class TestInspectModelEndToEnd:
         assert "| sampled |" in col_section
 
         # Measures table (formula list — empty by default in v2)
-        assert "## Measures (0)" in result
+        assert "## Metrics (0)" in result
         # Per-column description for revenue lives in the Columns table now.
         assert "Revenue per order" in result
 
         # Joins table (empty model has no joins but header always rendered)
-        assert "## Joins (0)" in result
+        assert "## Relationships (0)" in result
 
         # No standalone dim-profile section anymore
         assert "## Dimension profile" not in result
@@ -298,11 +305,11 @@ class TestInspectModelEndToEnd:
 
         # No leaked error artefacts from the old implementation
         assert "sample_data_error" not in result
-        assert "is not a saved measure" not in result
+        assert "is not a saved metric" not in result
 
-    async def test_no_longer_json(self, env) -> None:
+    async def test_no_longer_json(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
-        result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False})
+        result = await self._call(server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False})
         with pytest.raises(_json.JSONDecodeError):
             _json.loads(result)
 
@@ -319,18 +326,18 @@ class TestInspectModelSectionGatingIntegration:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 
-    async def test_columns_only_short_circuits_samples(self, env) -> None:
+    async def test_columns_only_short_circuits_samples(self, env: InspectEnv) -> None:
         """sections=['columns'] keeps the columns table populated and skips
         sample-data entirely; the footer documents what was trimmed."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
             server, name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False, "sections": ["columns"]},
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "sections": ["fields"]},
         )
         # Columns full table is rendered — `sampled` column populated by the
         # live profile query (proves columns-section is fully included).
-        assert "## Columns (7)" in result
-        col_section = result.split("## Columns")[1]
+        assert "## Fields (7)" in result
+        col_section = result.split("## Fields")[1]
         # Profile data still in the columns table when columns is included
         assert "completed" in col_section
         # No sample data section; the removed reachable-via-joins heading must never appear.
@@ -339,18 +346,18 @@ class TestInspectModelSectionGatingIntegration:
         # Empty list-only headings for the rest are OK (model has no measures /
         # aggregations / joins, so they render nothing); footer should still
         # document what was omitted.
-        assert "> Sections shown: columns." in result
+        assert "> Sections shown: fields." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
 
-    async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
+    async def test_descriptions_max_chars_truncates_in_columns_table(self, env: InspectEnv) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
             server, name="inspect",
             arguments={
-                "entity_type": "model", "reference": "orders", "compact": False,
+                "entity_type": "dataset", "reference": "orders", "compact": False,
                 "descriptions_max_chars": 5,
-                "sections": ["columns"],
+                "sections": ["fields"],
             },
         )
         # Long description "Revenue per order" (17 chars) → truncates to 5 + marker
@@ -362,10 +369,10 @@ class TestInspectModelSectionGatingIntegration:
 class TestMeasureTypeInference:
     """get_result_column_types infers column types via LIMIT 0 against a real DB."""
 
-    async def test_infers_numeric_types(self, env) -> None:
+    async def test_infers_numeric_types(self, env: InspectEnv) -> None:
         """amount (REAL) infers as DOUBLE and quantity (INTEGER) as INT."""
         engine = env["engine"]
-        types = await engine.get_result_column_types(model_name="orders")
+        types = await engine.get_result_column_types(dataset_name="orders")
         assert types["amount"].type == DataType.DOUBLE
         assert types["quantity"].type == DataType.INT
 
@@ -380,35 +387,35 @@ class TestMeasureTypeInference:
         await storage.save_datasource(DatasourceConfig(
             name="types_ds", type="sqlite", database=str(db_path),
         ))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="types_ds",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
 
-                Column(name="label", sql="label", type=DataType.TEXT),
-                Column(name="price", sql="price", type=DataType.DOUBLE),
+                DatasetField(name="label", sql="label", datatype=DataType.TEXT),
+                DatasetField(name="price", sql="price", datatype=DataType.DOUBLE),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        types = await engine.get_result_column_types(model_name="t")
+        types = await engine.get_result_column_types(dataset_name="t")
         assert types["label"].type == DataType.TEXT
         assert types["price"].type == DataType.DOUBLE
 
-    async def test_type_appears_in_model_inspect(self, env) -> None:
+    async def test_type_appears_in_model_inspect(self, env: InspectEnv) -> None:
         """The model inspect columns table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
-            name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "num_rows": 0},
+            name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 0},
         )
         result = content[0].text
-        columns_section = result.split("## Columns")[1].split("##")[0]
-        assert "| type |" in columns_section
+        columns_section = result.split("## Fields")[1].split("##")[0]
+        assert "| datatype |" in columns_section
         assert "DOUBLE" in columns_section
 
-    async def test_measure_sampled_shows_min_max(self, env) -> None:
+    async def test_measure_sampled_shows_min_max(self, env: InspectEnv) -> None:
         """Measures with data show min .. max in the sampled column."""
-        profile = await _profile(model=env["model"], engine=env["engine"])
+        profile = await _profile(dataset=env["dataset"], engine=env["engine"])
         amount, quantity = profile["amount"].sampled, profile["quantity"].sampled
         assert amount is not None
         assert quantity is not None
@@ -432,16 +439,16 @@ class TestMeasureTypeInference:
         await storage.save_datasource(DatasourceConfig(
             name="null_ds", type="sqlite", database=str(db_path),
         ))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="null_ds",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True),
-Column(name="val", sql="val", type=DataType.DOUBLE)
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+DatasetField(name="val", sql="val", datatype=DataType.DOUBLE)
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        profile = await _profile(model=model, engine=engine)
+        profile = await _profile(dataset=model, engine=engine)
         assert profile["val"].sampled == "all NULL"
 
 
@@ -454,41 +461,41 @@ class TestStringAggregationRejection:
     Triggering ``sum(status)`` / ``avg(status)`` etc. should produce a clear
     ValueError, not a database-level type error."""
 
-    async def _run(self, env, formula: str) -> None:
+    async def _run(self, env: InspectEnv, expression: str) -> None:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": formula}],
+            "population": "orders",
+            "metrics": [{"expression": expression}],
         })
         await env["engine"].execute(query=q)
 
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
-    async def test_numeric_only_aggregations_rejected_on_string(self, env, agg: str) -> None:
-        with pytest.raises(ValueError, match="is not applicable to TEXT column"):
+    async def test_numeric_only_aggregations_rejected_on_string(self, env: InspectEnv, agg: str) -> None:
+        with pytest.raises(ValueError, match="is not applicable to TEXT field"):
             await self._run(env, f"{agg}(status)")
 
-    async def test_min_max_allowed_on_string(self, env) -> None:
+    async def test_min_max_allowed_on_string(self, env: InspectEnv) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "min(status)"}, {"formula": "max(status)"}],
+            "population": "orders",
+            "metrics": [{"expression": "min(status)"}, {"expression": "max(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
 
-    async def test_count_and_count_distinct_allowed_on_string(self, env) -> None:
+    async def test_count_and_count_distinct_allowed_on_string(self, env: InspectEnv) -> None:
         """count/count_distinct always work regardless of type."""
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(status)"}, {"formula": "count_distinct(status)"}],
+            "population": "orders",
+            "metrics": [{"expression": "count(status)"}, {"expression": "count_distinct(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
 
-    async def test_numeric_aggregations_allowed_on_numeric_measure(self, env) -> None:
+    async def test_numeric_aggregations_allowed_on_numeric_measure(self, env: InspectEnv) -> None:
         """avg/sum on the numeric `amount` measure must still work."""
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}, {"formula": "avg(amount)"}],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount)"}, {"expression": "avg(amount)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -498,20 +505,20 @@ class TestPrimaryKeyAggregationRule:
     """v2 contract: primary-key columns are restricted to count/count_distinct
     regardless of type or any explicit ``allowed_aggregations`` whitelist."""
 
-    async def test_sum_on_pk_rejected(self, env) -> None:
+    async def test_sum_on_pk_rejected(self, env: InspectEnv) -> None:
         """`:sum` on a numeric primary-key column is rejected at enrichment."""
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(id)"}],
+            "population": "orders",
+            "metrics": [{"expression": "sum(id)"}],
         })
-        with pytest.raises(ValueError, match="primary-key column"):
+        with pytest.raises(ValueError, match="primary-key field"):
             await env["engine"].execute(query=q)
 
-    async def test_count_on_pk_allowed(self, env) -> None:
+    async def test_count_on_pk_allowed(self, env: InspectEnv) -> None:
         """`:count` on a primary-key column is always allowed."""
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "count(id)"}],
+            "population": "orders",
+            "metrics": [{"expression": "count(id)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -538,16 +545,16 @@ class TestIngestDatasourceModelsTool:
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
-            name="ingest_datasource_models",
+            name="ingest_datasource",
             arguments={"datasource_name": "ingest_ds"},
         )
         text = content[0].text
 
         # Idempotent ingest renders "Created N new model(s):" for new
         # tables (replaces the legacy "Ingested N model(s):" wording).
-        assert "Created 1 new model(s):" in text
+        assert "Created 1 new dataset(s):" in text
         assert "widgets" in text
-        assert "columns" in text  # v2 wording
+        assert "fields" in text
         assert "dims" not in text  # v1 leftover would crash before reaching here
 
 
@@ -559,20 +566,20 @@ class TestIngestDatasourceModelsTool:
 class TestInspectModelSampledValuesAndDistinctCount:
     """End-to-end sampled_values + distinct_count contract through the model ``inspect``."""
 
-    async def _call_json(self, server, *, model_name: str) -> dict:
+    async def _call_json(self, server, *, dataset_name: str) -> dict:
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": model_name, "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": dataset_name, "compact": False, "format": "json"},
         )
         return _json.loads(content[0].text)
 
     async def test_json_output_includes_sampled_values_and_distinct_count(
-        self, env,
+        self, env: InspectEnv,
     ) -> None:
         """JSON model inspect output carries both new fields per column."""
         server = create_mcp_server(storage=env["storage"])
-        payload = await self._call_json(server, model_name="orders")
-        cols_by_name = {c["name"]: c for c in payload["columns"]}
+        payload = await self._call_json(server, dataset_name="orders")
+        cols_by_name = {c["name"]: c for c in payload["fields"]}
         # Categorical column: both new fields populated.
         status = cols_by_name["status"]
         assert "sampled_values" in status
@@ -584,17 +591,17 @@ class TestInspectModelSampledValuesAndDistinctCount:
         assert amount["sampled_values"] is None
         assert amount["distinct_count"] is None
 
-    async def test_markdown_table_unchanged_no_new_column(self, env) -> None:
+    async def test_markdown_table_unchanged_no_new_column(self, env: InspectEnv) -> None:
         """The markdown ``## Columns`` table must not gain new headers — the
         issue explicitly says the text format does not change. New data is
         carried only in JSON (and in the persisted model)."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False},  # markdown by default
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
-        col_section = text.split("## Columns")[1].split("## Measures")[0]
+        col_section = text.split("## Fields")[1].split("## Metrics")[0]
         # No new column headers in the markdown table.
         assert "| sampled_values |" not in col_section
         assert "| distinct_count |" not in col_section
@@ -602,7 +609,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         assert "| sampled |" in col_section
 
     async def test_v6_stale_cache_re_profiles_to_populate_sampled_values(
-        self, env,
+        self, env: InspectEnv,
     ) -> None:
         """A v6 model with ``sampled`` set but no ``sampled_values`` is
         cache-miss and re-profiles on the next model ``inspect``. Pins
@@ -610,18 +617,20 @@ class TestInspectModelSampledValuesAndDistinctCount:
         storage = env["storage"]
         # Simulate a v6-era persisted state: ``sampled`` set, structured field
         # absent. Via storage so the on-disk dict matches.
-        await storage.update_column_sampled(
-            data_source="test_sqlite", model_name="orders",
-            column_name="status",
+        await storage.update_field_sampled(
+            data_source="test_sqlite", dataset_name="orders",
+            field_name="status",
             sampled="legacy text from v6",
             sampled_values=None,
             distinct_count=None,
         )
         server = create_mcp_server(storage=storage)
-        await self._call_json(server, model_name="orders")
+        await self._call_json(server, dataset_name="orders")
         # After the model inspect runs, the structured field has been populated.
-        reloaded = await storage.get_model("orders", data_source="test_sqlite")
-        status = reloaded.get_column("status")
+        reloaded = await storage.get_dataset("orders", data_source="test_sqlite")
+        assert reloaded is not None
+        status = reloaded.get_field("status")
+        assert status is not None
         assert status.sampled_values is not None
         assert status.distinct_count == 3
 
@@ -645,22 +654,22 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_datasource(DatasourceConfig(
             name="nulls_ds", type="sqlite", database=str(db_path),
         ))
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="nulls_ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="notes", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="notes", datatype=DataType.TEXT),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "t", "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
-        notes = next(c for c in payload["columns"] if c["name"] == "notes")
+        notes = next(c for c in payload["fields"] if c["name"] == "notes")
         # All-NULL categorical column contract:
         assert notes["sampled_values"] == []
         assert notes["distinct_count"] == 0
@@ -689,23 +698,23 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_datasource(DatasourceConfig(
             name="mv_ds", type="sqlite", database=str(db_path),
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="many_values", sql_table="many_values", data_source="mv_ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="kind", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="kind", datatype=DataType.TEXT),
             ],
         ))
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "many_values", "compact": False},  # markdown
+            arguments={"entity_type": "dataset", "reference": "many_values", "compact": False},  # markdown
         )
         text = content[0].text
-        col_section = text.split("## Columns")[1]
+        col_section = text.split("## Fields")[1]
         kind_row_start = col_section.find("| kind ")
         if kind_row_start < 0:
-            pytest.fail("``kind`` row not found in markdown ## Columns table")
+            pytest.fail("``kind`` row not found in markdown ## Fields table")
         # Scan only the kind row (terminated by newline).
         kind_row = col_section[kind_row_start:col_section.find("\n", kind_row_start)]
         # Codex round-3 finding #9: positive AND negative assertions.
@@ -728,24 +737,24 @@ class TestInspectModelSampledValuesAndDistinctCount:
             "hits, not the all-columns model inspect markdown surface."
         )
         # And the persisted ``sampled_values`` still carries the full set.
-        reloaded = await storage.get_model("many_values", data_source="mv_ds")
+        reloaded = await storage.get_dataset("many_values", data_source="mv_ds")
         assert reloaded is not None
-        kind_col = reloaded.get_column("kind")
+        kind_col = reloaded.get_field("kind")
         assert kind_col is not None
         assert kind_col.sampled_values is not None
         assert len(kind_col.sampled_values) == 30
 
     async def test_legacy_sampled_text_preserved_in_markdown_on_profile_failure(
-        self, env, monkeypatch,
+        self, env: InspectEnv, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When profiling fails, the markdown ``sampled`` cell still shows the
         LEGACY persisted text: the owner returns the input column on failure,
         and the render reads from it. Don't surface an empty cell."""
         storage = env["storage"]
         # Pre-populate a v6-style legacy state: ``sampled`` set, no list.
-        await storage.update_column_sampled(
-            data_source="test_sqlite", model_name="orders",
-            column_name="status",
+        await storage.update_field_sampled(
+            data_source="test_sqlite", dataset_name="orders",
+            field_name="status",
             sampled="legacy text from v6",
             sampled_values=None,
             distinct_count=None,
@@ -756,7 +765,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
 
         async def explodes(self, *args, **kwargs):
             q = kwargs.get("query", args[0] if args else None)
-            if isinstance(q, SlayerQuery) and (q.dimensions or not isinstance(q.source_model, str)):
+            if isinstance(q, SlayerQuery) and (q.dimensions or not isinstance(q.population, str)):
                 raise RuntimeError("simulated profile failure")
             return await original_execute(self, *args, **kwargs)
 
@@ -765,10 +774,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False},  # markdown by default
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
-        col_section = text.split("## Columns")[1]
+        col_section = text.split("## Fields")[1]
         status_row_start = col_section.find("| status ")
         assert status_row_start >= 0
         status_row = col_section[status_row_start:col_section.find("\n", status_row_start)]
@@ -802,22 +811,22 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_datasource(DatasourceConfig(
             name="wide_ds", type="sqlite", database=str(db_path),
         ))
-        cols = [Column(name="id", type=DataType.INT, primary_key=True)]
+        cols = [DatasetField(name="id", datatype=DataType.INT, primary_key=True)]
         cols.extend(
-            Column(name=f"c{i}", type=DataType.TEXT) for i in range(col_count)
+            DatasetField(name=f"c{i}", datatype=DataType.TEXT) for i in range(col_count)
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="wide", sql_table="wide", data_source="wide_ds",
-            columns=cols,
+            fields=cols,
         ))
 
         server = create_mcp_server(storage=storage)
-        await self._call_json(server, model_name="wide")
+        await self._call_json(server, dataset_name="wide")
 
-        reloaded = await storage.get_model("wide", data_source="wide_ds")
+        reloaded = await storage.get_dataset("wide", data_source="wide_ds")
         # Every one of the 15 categorical columns has structured profile.
         for i in range(col_count):
-            col = reloaded.get_column(f"c{i}")
+            col = reloaded.get_field(f"c{i}")
             assert col.sampled_values is not None, (
                 f"c{i}.sampled_values is None — max_dims cap not removed"
             )
@@ -827,8 +836,8 @@ class TestCollectMeasureProfileTypeRestriction:
     """Text/boolean columns are served only by the categorical query (structured
     ``sampled_values``); numeric/temporal only by the min/max query."""
 
-    async def test_text_and_boolean_columns_skipped(self, env) -> None:
-        result = await _profile(model=env["model"], engine=env["engine"])
+    async def test_text_and_boolean_columns_skipped(self, env: InspectEnv) -> None:
+        result = await _profile(dataset=env["dataset"], engine=env["engine"])
         for name in ("status", "notes", "is_paid"):
             assert result[name].sampled_values is not None, name
         for name in ("amount", "quantity", "ordered_at"):
@@ -856,19 +865,19 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         await storage.save_datasource(DatasourceConfig(
             name="nulls_ds", type="sqlite", database=str(db_path),
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="t", sql_table="t", data_source="nulls_ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="notes", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="notes", datatype=DataType.TEXT),
             ],
         ))
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "t", "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
-        notes = next(c for c in payload["columns"] if c["name"] == "notes")
+        notes = next(c for c in payload["fields"] if c["name"] == "notes")
         assert notes["sampled"] == ""

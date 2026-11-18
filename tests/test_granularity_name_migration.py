@@ -19,9 +19,11 @@ import yaml
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
+from slayer.core.vocabulary import stored_query
 from slayer.engine.query_engine import SlayerResponse
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_keys import CURRENT_KEYS, dataset_in
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from tests._granularity_rename_fixtures import (
@@ -69,7 +71,7 @@ async def _store(
     db_path = live_db(base)
     ds = {**datasource_doc(db_path=db_path), "granularities": list(granularities)}
     datasources = [ds, datasource_doc(db_path=db_path, name=OTHER_DS)] if other else [ds]
-    storage = await write_raw_store(backend=backend, base=base, datasources=datasources, models=models,
+    storage = await write_raw_store(backend=backend, base=base, datasources=datasources, datasets=models,
                                     memories=memories)
     return _Store(storage=storage, backend=backend, base=base)
 
@@ -86,7 +88,7 @@ async def _granularity_names(storage: StorageBackend, name: str = DS) -> list[st
 
 
 async def _stage(storage: StorageBackend, name: str) -> SlayerQuery:
-    model = await storage.get_model(name, data_source=DS)
+    model = await storage.get_dataset(name, data_source=DS)
     assert model is not None
     [stage] = model.source_queries or []
     return stage
@@ -143,7 +145,7 @@ class TestLeft:
         )
         loaders: dict[str, Callable[[], Any]] = {
             "datasource": lambda: store.storage.get_datasource(DS),
-            "model": lambda: store.storage.get_model("bucketed", data_source=DS),
+            "model": lambda: store.storage.get_dataset("bucketed", data_source=DS),
             "memory": lambda: store.storage.get_memory("m"),
         }
         with _captured(caplog) as texts:
@@ -161,20 +163,20 @@ class TestLeft:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_other_datasource_untouched(self, tmp_path: Any, backend: str) -> None:
         initials = {"name": "initials", "formula": "count_distinct(left(status, 1))"}
-        other_query = stage_doc(source_model="other_events", measures=[SUM],
+        other_query = stage_doc(source_dataset="other_events", measures=[SUM],
                                 dimensions=[{"expression": "left(status, 1)", "name": "initial"}])
         store = await _store(
             tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")], other=True,
-            models=[events_doc(), events_doc(name="other_events", data_source=OTHER_DS, measures=[initials])],
+            models=[events_doc(), events_doc(name="other_events", data_source=OTHER_DS, metrics=[initials])],
             memories=[memory_doc(memory_id="m_other", query=other_query)],
         )
         assert await _granularity_names(store.storage) == ["left_granularity"]
-        other = await store.storage.get_model("other_events", data_source=OTHER_DS)
+        other = await store.storage.get_dataset("other_events", data_source=OTHER_DS)
         assert other is not None
-        assert [m.formula for m in other.measures] == ["count_distinct(left(status, 1))"]
+        assert [m.expression for m in other.metrics] == ["count_distinct(left(status, 1))"]
         mem_query = await _memory_query(store.storage, "m_other")
         assert [getattr(d, "expression", None) for d in mem_query.dimensions or []] == ["left(status, 1)"]
-        resp = await run(store.storage, {"source_model": "other_events", "measures": ["initials"]})
+        resp = await run(store.storage, {"population": "other_events", "metrics": ["initials"]})
         assert [int(v) for v in resp.data[0].values()] == [2]
         by_initial = {r["other_events.initial"]: float(r["other_events.s"]) for r in (await run(store.storage, mem_query)).data}
         assert by_initial == {"o": 5.0, "n": 10.0}
@@ -265,7 +267,7 @@ class TestSettleBeforeFirstLoad:
         db_path = os.path.join(store.base, "live.db")
         text = yaml.safe_dump(datasource_doc(db_path=db_path, granularities=["contains"], name="shop"))
         _write_raw_datasource(store, name="shop", text=text, suffix=".yml")
-        assert await store.storage.get_model("events", data_source=DS) is not None
+        assert await store.storage.get_dataset("events", data_source=DS) is not None
         with open(os.path.join(store.base, "datasources", "shop.yml"), encoding="utf-8") as f:  # NOSONAR(S7493) — test read
             assert f.read() == text
         assert not os.path.exists(os.path.join(store.base, "datasources", "shop.yaml"))
@@ -300,22 +302,19 @@ async def test_a_foreign_dotted_model_file_does_not_block_the_rename(tmp_path: A
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path: Any, backend: str) -> None:
-    def current(doc: dict, entity: str) -> dict:
-        return {**doc, "version": CURRENT_VERSIONS[entity]}
-
-    stage = current(stage_doc(dimensions=["date_trunc('left', created_at)"], measures=[SUM]), "SlayerQuery")
+    stage = _current(stage_doc(dimensions=["date_trunc('left', created_at)"], measures=[SUM]), "SlayerQuery")
     storage = await write_raw_store(
         backend=backend, base=str(tmp_path),
-        datasources=[current(datasource_doc(db_path=live_db(str(tmp_path)), granularities=["left"]),
+        datasources=[_current(datasource_doc(db_path=live_db(str(tmp_path)), granularities=["left"]),
                              "DatasourceConfig")],
-        models=[current(events_doc(), "SlayerModel"),
-                current(query_backed_doc(name="bucketed", stage=stage), "SlayerModel")],
+        datasets=[_current(events_doc(), "SlayerModel"),
+                  _current(query_backed_doc(name="bucketed", stage=stage), "SlayerModel")],
     )
     assert await _granularity_names(storage) == ["left_granularity"]
     loaded = await _stage(storage, "bucketed")
-    assert [(str(t.dimension), str(t.granularity)) for t in loaded.time_dimensions or []] == [
+    assert [(str(t.field), str(t.granularity)) for t in loaded.time_dimensions or []] == [
         ("created_at", "left_granularity")]
-    resp = await run(storage, {"source_model": "bucketed", "dimensions": ["created_at"], "measures": ["sum(s)"]})
+    resp = await run(storage, {"population": "bucketed", "dimensions": ["created_at"], "metrics": ["sum(s)"]})
     assert {str(r["bucketed.created_at"])[:10]: float(r["bucketed.s_sum"]) for r in resp.data} == EXPECTED_BUCKETS
 
 
@@ -351,8 +350,8 @@ class TestTakenName:
         assert sorted(await _granularity_names(store.storage)) == sorted([expected, *taken])
         assert _td_granularity(await _stage(store.storage, "by_left")) == expected
         assert _td_granularity(await _stage(store.storage, "by_taken")) == taken[0]
-        assert await bucket_totals(store.storage, model="by_left") == EXPECTED_BUCKETS
-        assert await bucket_totals(store.storage, model="by_taken") == CALENDAR_BUCKETS
+        assert await bucket_totals(store.storage, dataset="by_left") == EXPECTED_BUCKETS
+        assert await bucket_totals(store.storage, dataset="by_taken") == CALENDAR_BUCKETS
 
 
 # Every position of a stored query that accepts a granularity name.
@@ -387,12 +386,12 @@ QUERY_POSITIONS: dict[str, Callable[[str], dict]] = {
 MODEL_POSITIONS: dict[str, tuple[Callable[[str], dict], Callable[[str], dict]]] = {
     "column-granularity": (
         lambda g: events_doc(name="dep", column_granularity=g),
-        lambda g: {"source_model": "dep", "measures": [SUM],
-                   "time_dimensions": [{"dimension": "created_at", "granularity": g}]},
+        lambda g: {"population": "dep", "metrics": [SUM],
+                   "time_dimensions": [{"field": "created_at", "granularity": g}]},
     ),
     "model-measure": (
-        lambda g: events_doc(name="dep", measures=[{"name": "n", "formula": f"count_distinct({g}(created_at))"}]),
-        lambda _: {"source_model": "dep", "measures": ["n"]},
+        lambda g: events_doc(name="dep", metrics=[{"name": "n", "formula": f"count_distinct({g}(created_at))"}]),
+        lambda _: {"population": "dep", "metrics": ["n"]},
     ),
 }
 
@@ -409,7 +408,7 @@ async def _query_dependant(*, tmp_path: Any, backend: str, kind: str, position: 
     store = await _store(tmp_path=tmp_path, backend=backend, granularities=[granularity_definition(g)],
                          models=models, memories=memories, label=label)
     if kind == "query-backed-model":
-        model = await store.storage.get_model("dep", data_source=DS)
+        model = await store.storage.get_dataset("dep", data_source=DS)
         assert model is not None
         [loaded] = model.source_queries or []
         return store, json.dumps(model.model_dump(mode="json")), loaded
@@ -440,7 +439,7 @@ class TestEveryPosition:
         expected = _rows(await run(control.storage, query_fn(CONTROL)))
         store = await _store(tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
                              models=[doc_fn("left")], label="store")
-        model = await store.storage.get_model("dep", data_source=DS)
+        model = await store.storage.get_dataset("dep", data_source=DS)
         assert model is not None
         dumped = json.dumps(model.model_dump(mode="json"))
         assert "left_granularity" in dumped, dumped
@@ -450,7 +449,7 @@ class TestEveryPosition:
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_an_unaffected_extension_memory_is_not_rewritten(tmp_path: Any, backend: str) -> None:
-    query = stage_doc(source_model={"source_name": "events"}, measures=[SUM])
+    query = stage_doc(source_dataset={"source_name": "events"}, measures=[SUM])
     store = await _store(tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
                          models=[events_doc()], memories=[memory_doc(memory_id="m", query=query)])
     before = store.raw()["memories/m"]
@@ -466,7 +465,7 @@ async def test_concurrent_first_loads_all_see_the_rename(tmp_path: Any, backend:
         memories=[memory_doc(memory_id="m", query=bucket_stage("left"))],
     )
     loads = await asyncio.gather(
-        *(store.storage.get_model("bucketed", data_source=DS) for _ in range(4)),
+        *(store.storage.get_dataset("bucketed", data_source=DS) for _ in range(4)),
         *(store.storage.get_memory("m") for _ in range(4)),
     )
     for loaded in loads:
@@ -480,7 +479,7 @@ async def test_concurrent_first_loads_all_see_the_rename(tmp_path: Any, backend:
 async def test_a_rename_converges(tmp_path: Any, caplog: pytest.LogCaptureFixture, backend: str) -> None:
     store = await _contains_store(tmp_path=tmp_path, backend=backend)
     await store.storage.get_datasource(DS)
-    await store.storage.get_model("bucketed", data_source=DS)
+    await store.storage.get_dataset("bucketed", data_source=DS)
     await store.storage.get_memory("m")
     before = store.raw()
     storage = reopen(backend=backend, base=store.base)
@@ -494,7 +493,9 @@ async def test_a_rename_converges(tmp_path: Any, caplog: pytest.LogCaptureFixtur
 
 
 def _current(doc: dict, entity: str) -> dict:
-    return {**doc, "version": CURRENT_VERSIONS[entity]}
+    """``doc`` (spelled as the previous release stored it) as the current release stores it."""
+    respelled = {"SlayerModel": lambda d: dataset_in(d, CURRENT_KEYS), "SlayerQuery": stored_query}
+    return {**respelled.get(entity, dict)(doc), "version": CURRENT_VERSIONS[entity]}
 
 
 def _assert_consistent(raw: dict[str, str]) -> None:
@@ -519,7 +520,7 @@ class TestInterruptedLoad:
         assert await _granularity_names(store.storage) == ["left_granularity"]
         for name in ("done", "pending"):
             assert _td_granularity(await _stage(store.storage, name)) == "left_granularity"
-            assert await bucket_totals(store.storage, model=name) == EXPECTED_BUCKETS
+            assert await bucket_totals(store.storage, dataset=name) == EXPECTED_BUCKETS
         for memory_id in ("m_done", "m_pending"):
             query = await _memory_query(store.storage, memory_id)
             assert _td_granularity(query) == "left_granularity"

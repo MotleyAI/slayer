@@ -13,19 +13,19 @@ from slayer.core.keys import Grain
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     ScalarCallKey,
     TransformKey,
 )
 from slayer.engine.compile.stages import (
     _prune_functionally_determined_grain,
-    _scalar_free_columns,
+    _scalar_free_fields,
 )
 
-REGION = ColumnKey(path=(), leaf="region")
-CITY = ColumnKey(path=(), leaf="city")
+REGION = FieldKey(path=(), leaf="region")
+CITY = FieldKey(path=(), leaf="city")
 SUM_BY_REGION = AggregateKey(
-    source=ColumnKey(path=(), leaf="amount"), agg="sum",
+    source=FieldKey(path=(), leaf="amount"), agg="sum",
     partition_keys=Grain.of({REGION}),
 )
 # rank(amount:sum(partition_by=region) + city) — city is a free scalar axis.
@@ -40,14 +40,14 @@ SCALAR_CALL_OVER_RANK = ScalarCallKey(name="abs", args=(RANK_WITH_FREE_CITY,))
 
 def test_scalar_free_columns_descends_transform_input():
     out: set = set()
-    _scalar_free_columns(node=RANK_WITH_FREE_CITY, out=out)
+    _scalar_free_fields(node=RANK_WITH_FREE_CITY, out=out)
     assert CITY in out, "the free column inside the transform input was missed"
     assert REGION not in out, "aggregate internals must stay opaque"
 
 
 def test_scalar_free_columns_descends_transform_inside_scalar_call():
     out: set = set()
-    _scalar_free_columns(node=SCALAR_CALL_OVER_RANK, out=out)
+    _scalar_free_fields(node=SCALAR_CALL_OVER_RANK, out=out)
     assert CITY in out, "free column inside a transform nested in a scalar call was missed"
     assert REGION not in out, "aggregate internals must stay opaque"
 

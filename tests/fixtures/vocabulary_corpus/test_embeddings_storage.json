@@ -1,0 +1,37 @@
+{
+ "source": "tests/test_embeddings_storage.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev",
+    "formula": "sum(id)"
+   },
+   "new": {
+    "name": "rev",
+    "expression": "sum(id)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "custom_agg",
+    "formula": "SUM({x})"
+   },
+   "new": {
+    "name": "custom_agg",
+    "expression": "SUM({x})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 198,
+   "reason": "not fully literal"
+  }
+ ]
+}

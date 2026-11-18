@@ -30,9 +30,9 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.mcp.server import create_mcp_server
 from slayer.sql.generator import SQLGenerator
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -40,51 +40,51 @@ from slayer.storage.yaml_storage import YAMLStorage
 # Fixtures — a host filter mixing a producer-root-local ref with a cross-path
 # ref under OR: pushed into the producer by semi-join (DEV-1935).
 # --------------------------------------------------------------------------- #
-def _warehouses() -> SlayerModel:
-    return SlayerModel(
+def _warehouses() -> SlayerDataset:
+    return SlayerDataset(
         name="warehouses", data_source="test", sql_table="warehouses",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="code", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="code", datatype=DataType.TEXT),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _shippers() -> SlayerModel:
-    return SlayerModel(
+def _shippers() -> SlayerDataset:
+    return SlayerDataset(
         name="shippers", data_source="test", sql_table="shippers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="cost", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="cost", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="shipper_id", type=DataType.INT),
-            Column(name="warehouse_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="shipper_id", datatype=DataType.INT),
+            DatasetField(name="warehouse_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="shippers", join_pairs=[["shipper_id", "id"]]),
-            ModelJoin(target_model="warehouses", join_pairs=[["warehouse_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="shippers", join_pairs=[["shipper_id", "id"]]),
+            DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
         ],
     )
 
@@ -95,10 +95,10 @@ PUSHED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "orders",
-        "dimensions": [{"formula": "status", "name": "status"}],
-        "measures": [{"formula": "sum(customers.revenue)"}],
-        "filters": [PUSHED_FILTER, *(extra_filters or [])],
+        "population": "orders",
+        "dimensions": [{"expression": "status", "name": "status"}],
+        "metrics": [{"expression": "sum(customers.revenue)"}],
+        "filter": [PUSHED_FILTER, *(extra_filters or [])],
     })
 
 
@@ -137,7 +137,7 @@ async def _engine(tmpdir: str, *, with_tables: bool = False) -> SlayerQueryEngin
         DatasourceConfig(name="test", type="duckdb", database=database)
     )
     for m in (_orders(), _customers(), _warehouses(), _shippers()):
-        await storage.save_model(m, _validate=False)
+        await storage.save_dataset(m, _validate=False)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -145,21 +145,21 @@ def _two_plan_query() -> SlayerQuery:
     """ONE user filter pushed into TWO different cross-model producers — one
     entry per (location, measure, text), never one per consumer."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[{"formula": "status", "name": "status"}],
-        measures=[
-            {"formula": "sum(customers.revenue)"},
-            {"formula": "sum(shippers.cost)"},
+        population="orders",
+        dimensions=[ComputedDimension(expression="status", name="status")],
+        metrics=[
+            {"expression": "sum(customers.revenue)"},
+            {"expression": "sum(shippers.cost)"},
         ],
-        filters=["customers.revenue > 0 or shippers.cost > 0"],
+        filter=["customers.revenue > 0 or shippers.cost > 0"],
     )
 
 
-def _pushed(response) -> list:
+def _pushed(response: SlayerResponse) -> list[SemiJoinPushedWarningPayload]:
     """Semi-join-pushed payloads on a SlayerResponse."""
     return [
         w for w in (response.warnings or [])
-        if getattr(w, "kind", None) == "semi_join_pushed"
+        if isinstance(w, SemiJoinPushedWarningPayload)
     ]
 
 
@@ -198,7 +198,7 @@ class TestExecuteEntryPoint:
             f"{payload.filter_text!r} vs {PUSHED_FILTER!r}"
         )
         assert payload.location, "the payload must carry a location"
-        assert payload.measure, "the payload must name the producer's measure"
+        assert payload.metric, "the payload must name the producer's measure"
         assert payload.kind == "semi_join_pushed", payload.kind
 
     async def test_two_pushed_filters_produce_two_entries(self) -> None:
@@ -217,9 +217,9 @@ class TestExecuteEntryPoint:
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             clean = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": [{"formula": "status", "name": "status"}],
-                "measures": [{"formula": "sum(amount)", "name": "m0"}],
+                "population": "orders",
+                "dimensions": [{"expression": "status", "name": "status"}],
+                "metrics": [{"expression": "sum(amount)", "name": "m0"}],
             })
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -258,7 +258,7 @@ class TestEmissionIsBoundaryNotRender:
             resp = await engine.execute(_two_plan_query(), dry_run=True)
         pushed = _pushed(resp)
         assert len(pushed) == 2, pushed
-        assert len({w.measure for w in pushed}) == 2, pushed
+        assert len({w.metric for w in pushed}) == 2, pushed
         assert {w.filter_text for w in pushed} == {
             "customers.revenue > 0 or shippers.cost > 0",
         }
@@ -268,16 +268,16 @@ class TestEmissionIsBoundaryNotRender:
         carrying the same filter text are two distinct user filters."""
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "orders",
-            "dimensions": [{"formula": "status", "name": "status"}],
-            "measures": [{"formula": "sum(customers.revenue)"}],
-            "filters": [PUSHED_FILTER],
+            "population": "orders",
+            "dimensions": [{"expression": "status", "name": "status"}],
+            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "filter": [PUSHED_FILTER],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "dimensions": [{"formula": "status", "name": "status"}],
-            "measures": [{"formula": "sum(customers.revenue)"}],
-            "filters": [PUSHED_FILTER],
+            "population": "orders",
+            "dimensions": [{"expression": "status", "name": "status"}],
+            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "filter": [PUSHED_FILTER],
         })
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
@@ -294,15 +294,15 @@ class TestEmissionIsBoundaryNotRender:
         entry's location must name the stage that pushed the filter, not
         whichever stage sits at the same input index."""
         # Input order [a, b, root]; topo order [b, a, root] — a reads from b.
-        stage_a = SlayerQuery.model_validate({"name": "a", "source_model": "b", "measures": [{"formula": "count(*)"}]})
+        stage_a = SlayerQuery.model_validate({"name": "a", "population": "b", "metrics": [{"expression": "count(*)"}]})
         stage_b = SlayerQuery.model_validate({
             "name": "b",
-            "source_model": "orders",
-            "dimensions": [{"formula": "status", "name": "status"}],
-            "measures": [{"formula": "sum(customers.revenue)"}],
-            "filters": [PUSHED_FILTER],
+            "population": "orders",
+            "dimensions": [{"expression": "status", "name": "status"}],
+            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "filter": [PUSHED_FILTER],
         })
-        root = SlayerQuery.model_validate({"source_model": "a", "measures": [{"formula": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "a", "metrics": [{"expression": "count(*)"}]})
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(
@@ -355,8 +355,8 @@ class TestLowerLayersStaySilent:
 
         bundle = ResolvedSourceBundle(
             dialect="duckdb",
-            source_model=_orders(),
-            referenced_models=[_customers(), _warehouses(), _shippers()],
+            population=_orders(),
+            referenced_datasets=[_customers(), _warehouses(), _shippers()],
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -370,8 +370,8 @@ class TestLowerLayersStaySilent:
 
         bundle = ResolvedSourceBundle(
             dialect="duckdb",
-            source_model=_orders(),
-            referenced_models=[_customers(), _warehouses(), _shippers()],
+            population=_orders(),
+            referenced_datasets=[_customers(), _warehouses(), _shippers()],
         )
         planned = plan_query(query=_query(), bundle=bundle)
         gen = SQLGenerator(dialect="duckdb")
@@ -393,10 +393,10 @@ class TestInternalFailuresRaise:
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             bad = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "dimensions": [{"formula": "status", "name": "status"}],
-                "measures": [{"formula": "sum(customers.revenue)"}],
-                "filters": ["no_such_column == 'X'"],
+                "population": "orders",
+                "dimensions": [{"expression": "status", "name": "status"}],
+                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "filter": ["no_such_column == 'X'"],
             })
             with pytest.raises(SlayerError):
                 await engine.execute(bad, dry_run=True)
@@ -419,7 +419,7 @@ class TestRestEntryPoint:
                     DatasourceConfig(name="test", type="duckdb")
                 )
                 for m in (_orders(), _customers(), _warehouses()):
-                    await storage.save_model(m, _validate=False)
+                    await storage.save_dataset(m, _validate=False)
 
             asyncio.run(_seed())
             client = TestClient(create_app(storage=storage))
@@ -448,17 +448,17 @@ class TestMcpEntryPoint:
                 DatasourceConfig(name="test", type="duckdb")
             )
             for m in (_orders(), _customers(), _warehouses()):
-                await storage.save_model(m, _validate=False)
+                await storage.save_dataset(m, _validate=False)
             server = create_mcp_server(storage=storage)
             # The MCP query tool takes one polymorphic `query` argument (model
             # name, single query object, or list of stage objects) plus the
             # execution wrappers.
             result = await server.call_tool("query", {
                 "query": {
-                    "source_model": "orders",
+                    "population": "orders",
                     "dimensions": ["status"],
-                    "measures": [{"formula": "sum(customers.revenue)"}],
-                    "filters": [PUSHED_FILTER],
+                    "metrics": [{"expression": "sum(customers.revenue)"}],
+                    "filter": [PUSHED_FILTER],
                 },
                 "dry_run": True,
             })
@@ -481,7 +481,7 @@ class TestCliEntryPoint:
                     DatasourceConfig(name="test", type="duckdb")
                 )
                 for m in (_orders(), _customers(), _warehouses()):
-                    await storage.save_model(m, _validate=False)
+                    await storage.save_dataset(m, _validate=False)
 
             asyncio.run(_seed())
             args = SimpleNamespace(

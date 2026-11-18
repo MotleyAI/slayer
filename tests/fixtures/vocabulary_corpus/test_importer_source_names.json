@@ -1,0 +1,27 @@
+{
+ "source": "tests/test_importer_source_names.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "payments",
+    "measures": [
+     {
+      "formula": "total",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "payments",
+    "metrics": [
+     {
+      "expression": "total",
+      "name": "v"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

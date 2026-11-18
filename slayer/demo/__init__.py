@@ -5,8 +5,8 @@ The Jaffle Shop demo is the canonical getting-started dataset; see
 """
 
 from slayer.demo.jaffle_shop import (
-    CENTS_COLUMNS,
-    DATE_COLUMNS,
+    CENTS_FIELDS,
+    DATE_FIELDS,
     DEFAULT_TIME_DIMENSIONS,
     DEMO_NAME,
     JAFFLE_SCHEMA_SQL,
@@ -16,7 +16,7 @@ from slayer.demo.jaffle_shop import (
     create_schema,
     ensure_demo_datasource,
     generate_data,
-    ingest_demo_models,
+    ingest_demo_datasets,
     load_data,
     resolve_demo_db_path,
     shift_dates_to_today,
@@ -24,8 +24,8 @@ from slayer.demo.jaffle_shop import (
 )
 
 __all__ = [
-    "CENTS_COLUMNS",
-    "DATE_COLUMNS",
+    "CENTS_FIELDS",
+    "DATE_FIELDS",
     "DEFAULT_TIME_DIMENSIONS",
     "DEMO_NAME",
     "JAFFLE_SCHEMA_SQL",
@@ -35,7 +35,7 @@ __all__ = [
     "create_schema",
     "ensure_demo_datasource",
     "generate_data",
-    "ingest_demo_models",
+    "ingest_demo_datasets",
     "load_data",
     "resolve_demo_db_path",
     "shift_dates_to_today",

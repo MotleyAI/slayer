@@ -1,9 +1,10 @@
 """FastAPI server for SLayer."""
 
 import contextlib
+import functools
 import logging
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
@@ -18,20 +19,21 @@ from slayer import usage_reporting
 from slayer import otel
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
-    AmbiguousModelError,
+    AmbiguousDatasetError,
     MemoryNotFoundError,
     SchemaDriftError,
 )
 from slayer.core.format import NumberFormat, encode_json
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import (
-    ModelExtension,
+    DatasetExtension,
     QueryRefinement,
     SlayerQuery,
     SourceSpec,
     check_unique_extensions,
     prepare_query_input,
 )
+from slayer.core.vocabulary import deprecated_spelling
 from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.async_utils import run_sync
 from slayer.live_schema import ingestion as engine_ingestion
@@ -55,20 +57,20 @@ class QueryRequest(BaseModel):
     # to pass through to SlayerQuery's pre-validate hook.
     model_config = ConfigDict(extra="allow")
 
-    name: str | None = None  # Run-by-name: backing query for a query-backed model
-    source_model: SourceSpec | None = None
-    extensions: list[ModelExtension] | None = None
-    # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
+    name: str | None = None  # Run-by-name: backing query for a query-backed dataset
+    population: SourceSpec | None = None
+    extensions: list[DatasetExtension] | None = None
+    # ``metrics`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"count(*)"`` is lifted to
-    # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
-    # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
+    # ``{"expression": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
+    # ``SlayerQuery``'s before-validators (``_coerce_metrics`` /
     # ``_coerce_dimensions``) do the actual lifting downstream.
-    measures: list[str | dict[str, Any]] | None = None
+    metrics: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
     # A string entry is the ``date_trunc('<unit>', expr)`` form, coerced downstream by
     # ``SlayerQuery``.
     time_dimensions: list[str | dict[str, Any]] | None = None
-    filters: list[str] | None = None
+    filter: list[str] | None = None
     order: list[dict[str, Any]] | None = None
     limit: int | None = None
     offset: int | None = None
@@ -103,7 +105,7 @@ class QueryRequest(BaseModel):
         return self._deprecated_inputs
 
     @model_validator(mode="after")
-    def _one_extension_per_model(self) -> "QueryRequest":
+    def _one_extension_per_dataset(self) -> "QueryRequest":
         check_unique_extensions(self.extensions)
         return self
 
@@ -140,7 +142,7 @@ class FieldMetadataResponse(BaseModel):
 
 class AttributesResponse(BaseModel):
     dimensions: dict[str, FieldMetadataResponse] = {}
-    measures: dict[str, FieldMetadataResponse] = {}
+    metrics: dict[str, FieldMetadataResponse] = {}
 
 
 class QueryResponse(BaseModel):
@@ -149,7 +151,7 @@ class QueryResponse(BaseModel):
     columns: list[str]
     sql: str | None = None
     attributes: AttributesResponse | None = None
-    # The effective population model and whether it was inferred.
+    # The effective population dataset and whether it was inferred.
     population: str | None = None
     population_inferred: bool = False
     # Advisories about the query itself — slack-normalization
@@ -168,7 +170,7 @@ class IngestRequest(BaseModel):
     schemas: list[str] | None = None
     all_schemas: bool = False
     # Ingest recognised ELT/migration internals visible rather than hidden.
-    # Governs models this call creates; unhide an existing one via edit_model.
+    # Governs datasets this call creates; unhide an existing one via edit_dataset.
     surface_internals: bool = False
 
     @model_validator(mode="after")
@@ -181,12 +183,12 @@ class IngestRequest(BaseModel):
         return self
 
 
-class ValidateModelsRequest(BaseModel):
+class ValidateDatasetsRequest(BaseModel):
     data_source: str | None = None
 
 
-class RecommendRootModelRequest(BaseModel):
-    """Body for ``POST /recommend-root-model``."""
+class RecommendPopulationRequest(BaseModel):
+    """Body for ``POST /recommend-population``."""
     items: list[str]
     data_source: str | None = None
     root_hint: str | None = None
@@ -262,7 +264,7 @@ class InspectRequest(BaseModel):
     # A list is a homogeneous-kind batch (one ``entity_type`` for
     # every id). A single str keeps single-id behaviour byte-for-byte.
     # ``None`` / omitted (or ``[]``) renders the whole collection at
-    # ``entity_type`` (model / datasource only).
+    # ``entity_type`` (dataset / datasource only).
     reference: str | list[str] | None = None
     entity_type: str
     compact: bool = True
@@ -304,8 +306,69 @@ class _UsageMiddleware:
     @staticmethod
     def _record(scope: Scope, *, error: BaseException | None, dry_run: bool) -> None:
         route = scope.get("route")
-        token = route.path if isinstance(route, APIRoute) else "other"
+        token = _REPLACEMENT_ROUTES.get(route.path, route.path) if isinstance(route, APIRoute) else "other"
         usage_reporting.record(surface="rest", token=token, error=error, dry_run=dry_run)
+
+
+#: Each pre-2.0 route template, by its replacement.
+_OLD_ROUTES = {
+    "/datasets": "/models",
+    "/datasets/{name}": "/models/{name}",
+    "/validate-datasets": "/validate-models",
+    "/recommend-population": "/recommend-root-model",
+}
+_REPLACEMENT_ROUTES = {old: new for new, old in _OLD_ROUTES.items()}
+
+
+class _DeprecationHeaderMiddleware:
+    """Marks every response of a pre-2.0 route with a ``Deprecation`` header."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def marked(message: Message) -> None:
+            route = scope.get("route")
+            if message["type"] == "http.response.start" and isinstance(route, APIRoute) and route.deprecated:
+                message = {**message, "headers": [*message.get("headers", []), (b"deprecation", b"true")]}
+            await send(message)
+
+        await self.app(scope, receive, marked)
+
+
+def _route_twin(endpoint: Callable[..., Awaitable[Any]], *, old: str, new: str) -> Callable[..., Awaitable[Any]]:
+    """``endpoint`` served at a pre-2.0 route: one deprecation, appended to a response's ``warnings``."""
+    @functools.wraps(endpoint)
+    async def twin(*args: Any, **kwargs: Any) -> Any:
+        renamed = deprecated_spelling(old, new)
+        result = await endpoint(*args, **kwargs)
+        if isinstance(result, dict) and "warnings" in result:
+            return {**result, "warnings": [*result["warnings"], renamed.model_dump(mode="json")]}
+        return result
+
+    return twin
+
+
+def _add_old_routes(app: FastAPI) -> None:
+    """Serve each route of ``_OLD_ROUTES`` at its pre-2.0 template too, marked deprecated."""
+    # Snapshot first: add_api_route appends to app.routes.
+    renamed = [r for r in app.routes if isinstance(r, APIRoute) and r.path in _OLD_ROUTES]
+    for route in renamed:
+        old = _OLD_ROUTES[route.path]
+        for method in sorted(route.methods):
+            app.add_api_route(
+                old,
+                _route_twin(route.endpoint, old=f"{method} {old}", new=f"{method} {route.path}"),
+                methods=[method],
+                response_model=route.response_model,
+                responses=route.responses,
+                deprecated=True,
+                name=f"{route.name}_pre_2_0",
+            )
 
 
 def _slayer_version() -> str:
@@ -324,7 +387,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 ) -> FastAPI:
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
     engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
-    # Every route reads models, and the live database, through the server's engine.
+    # Every route reads datasets, and the live database, through the server's engine.
     storage = engine.storage
     # Seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
@@ -339,7 +402,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         )
     @contextlib.asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         # Every step runs even if an earlier one raises; per engine, aclose before close.
         async with contextlib.AsyncExitStack() as stack:
             for owned in (engine, getattr(mcp, "_slayer_engine")):
@@ -349,6 +412,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     app = FastAPI(title="SLayer", version=_slayer_version(), lifespan=lifespan)
     app.add_middleware(_UsageMiddleware, mounted=_MCP_MOUNT)
+    app.add_middleware(_DeprecationHeaderMiddleware)
     app.add_middleware(otel.RequestMiddleware, mounted=_MCP_MOUNT)
 
     # Mount MCP server over SSE at /mcp. The embedded server intentionally
@@ -369,14 +433,14 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/query",
         response_model=QueryResponse,
         responses={
-            400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."},
+            400: {"description": "Invalid query payload (e.g. missing population/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "Schema drift detected on models the query read — it "
+                    "Schema drift detected on datasets the query read — it "
                     "could not run against the live schema. Body shape: "
-                    "``{\"error\": \"schema_drift\", \"models\": [...], "
+                    "``{\"error\": \"schema_drift\", \"datasets\": [...], "
                     "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
-                    "Run validate_models for the same datasource to inspect."
+                    "Run validate_datasets for the same datasource to inspect."
                 ),
             },
         },
@@ -402,8 +466,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 explain = bool(request.explain)
                 run_query: Any = list(request.queries)
                 variables = request.variables or {}
-            # Run-by-name: ``{"name": "<model>", "refine": {...}, "variables": {...}}``
-            # runs the model's stored backing query, ``refine`` merged into its
+            # Run-by-name: ``{"name": "<dataset>", "refine": {...}, "variables": {...}}``
+            # runs the dataset's stored backing query, ``refine`` merged into its
             # final stage. Any other query field (even ``null``) is rejected.
             elif request.name is not None:
                 if request.model_fields_set - _RUN_BY_NAME_FIELDS or request.model_extra or request.deprecated_inputs:
@@ -423,10 +487,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             elif "refine" in request.model_fields_set:
                 raise HTTPException(
                     status_code=400,
-                    detail="'refine' requires 'name' (a saved query-backed model).",
+                    detail="'refine' requires 'name' (a saved query-backed dataset).",
                 )
             else:
-                # A rootless query (no name, no source_model) is valid —
+                # A rootless query (no name, no population) is valid —
                 # the engine infers the population. The query must still project
                 # something, which SlayerQuery validation enforces downstream.
                 payload = request.model_dump(exclude_none=True)
@@ -453,10 +517,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
 
             attributes = None
-            if attrs and (attrs.dimensions or attrs.measures):
+            if attrs and (attrs.dimensions or attrs.metrics):
                 attributes = AttributesResponse(
                     dimensions=_convert_meta(attrs.dimensions),
-                    measures=_convert_meta(attrs.measures),
+                    metrics=_convert_meta(attrs.metrics),
                 )
             response = QueryResponse(
                 data=result.data,
@@ -478,7 +542,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 status_code=422,
                 detail={
                     "error": "schema_drift",
-                    "models": drift.models,
+                    "datasets": drift.datasets,
                     "to_delete": [
                         e.model_dump(mode="json") for e in drift.to_delete
                     ],
@@ -489,46 +553,46 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # SlayerError subclasses ValueError; both map to 400.
             raise HTTPException(status_code=400, detail=str(e))
 
-    @app.get("/models")
-    async def list_models(
+    @app.get("/datasets")
+    async def list_datasets(
         data_source: str | None = None,
     ) -> list[dict[str, Any]]:
         result = []
-        for model in DocumentLoadFailures().skip(await storage.load_models(data_source=data_source)):
-            if model.hidden:
+        for dataset in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
+            if dataset.hidden:
                 continue
-            entry: dict[str, Any] = {"name": model.name, "data_source": model.data_source}
-            if model.description:
-                entry["description"] = model.description
+            entry: dict[str, Any] = {"name": dataset.name, "data_source": dataset.data_source}
+            if dataset.description:
+                entry["description"] = dataset.description
             result.append(entry)
         datasources = [data_source] if data_source is not None else await storage.list_datasources()
         for ds_name in datasources:
             result.extend(
                 {"name": m.name, "data_source": ds_name, "description": m.description}
-                for m in await storage.builtin_models(ds_name)
+                for m in await storage.builtin_datasets(ds_name)
             )
         return result
 
     @app.get(
-        "/models/{name}",
+        "/datasets/{name}",
         responses={
-            404: {"description": "Model not found."},
+            404: {"description": "Dataset not found."},
             409: {
                 "description": (
-                    "Model name resolves to multiple datasources. Pass "
+                    "Dataset name resolves to multiple datasources. Pass "
                     "``data_source=...`` as a query parameter, or set a "
                     "datasource priority via PUT /datasources/priority."
                 )
             }
         },
     )
-    async def get_model(
+    async def get_dataset(
         name: str,
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            model = await storage.get_model_or_builtin(name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            dataset = await storage.get_dataset_or_builtin(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -536,64 +600,64 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     f"or PUT /datasources/priority to disambiguate."
                 ),
             )
-        if model is None:
-            raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
-        data = model.model_dump(exclude_none=True)
-        if "columns" in data:
-            data["columns"] = [c for c in data["columns"] if not c.get("hidden")]
+        if dataset is None:
+            raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
+        data = dataset.model_dump(exclude_none=True)
+        if "fields" in data:
+            data["fields"] = [c for c in data["fields"] if not c.get("hidden")]
         return data
 
     @app.post(
-        "/models",
-        responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
+        "/datasets",
+        responses={400: {"description": "Dataset failed validation (e.g. user-supplied cache fields on a query-backed dataset, save-time SQL generation failure)."}},
     )
-    async def create_model(model: SlayerModel) -> dict[str, Any]:
-        # Route through engine.save_model so query-backed models get cache
+    async def create_dataset(dataset: SlayerDataset) -> dict[str, Any]:
+        # Route through engine.save_dataset so query-backed datasets get cache
         # populated (and user-supplied cache fields are rejected).
         notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(dataset, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "created", "name": model.name, "warnings": _dumped(notes)}
+        return {"status": "created", "name": dataset.name, "warnings": _dumped(notes)}
 
     @app.put(
-        "/models/{name}",
-        responses={400: {"description": "Body name does not match path name, or model failed validation."}},
+        "/datasets/{name}",
+        responses={400: {"description": "Body name does not match path name, or dataset failed validation."}},
     )
-    async def update_model(name: str, model: SlayerModel) -> dict[str, Any]:
-        if model.name != name:
+    async def update_dataset(name: str, dataset: SlayerDataset) -> dict[str, Any]:
+        if dataset.name != name:
             raise HTTPException(
                 status_code=400,
-                detail=f"Path name '{name}' does not match body name '{model.name}'",
+                detail=f"Path name '{name}' does not match body name '{dataset.name}'",
             )
         notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(dataset, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "updated", "name": name, "warnings": _dumped(notes)}
 
     @app.delete(
-        "/models/{name}",
+        "/datasets/{name}",
         responses={
-            404: {"description": "Model not found."},
+            404: {"description": "Dataset not found."},
             409: {
                 "description": (
-                    "Model name resolves to multiple datasources. Pass "
+                    "Dataset name resolves to multiple datasources. Pass "
                     "``data_source=...`` as a query parameter, or set a "
                     "datasource priority via PUT /datasources/priority."
                 )
             }
         },
     )
-    async def delete_model(
+    async def delete_dataset(
         name: str,
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            deleted = await storage.delete_model(name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            deleted = await storage.delete_dataset(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -602,7 +666,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 ),
             )
         if not deleted:
-            raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
+            raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
         return {"status": "deleted", "name": name}
 
     @app.get("/datasources/priority")
@@ -680,7 +744,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return {"status": "deleted", "name": name}
 
     @app.post(
-        "/validate-models",
+        "/validate-datasets",
         responses={
             404: {"description": "Datasource not found."},
             422: {
@@ -692,10 +756,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             },
         },
     )
-    async def validate_models_endpoint(
-        request: ValidateModelsRequest,
+    async def validate_datasets_endpoint(
+        request: ValidateDatasetsRequest,
     ) -> list[dict[str, Any]]:
-        """Diff persisted SlayerModels against live DB schemas. Read-only."""
+        """Diff persisted SlayerDatasets against live DB schemas. Read-only."""
         if request.data_source is not None:
             ds_check = await storage.get_datasource(request.data_source)
             if ds_check is None:
@@ -704,30 +768,30 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     detail=f"Datasource '{request.data_source}' not found",
                 )
         try:
-            entries = await engine.validate_models(data_source=request.data_source)
+            entries = await engine.validate_datasets(data_source=request.data_source)
         except (SQLAlchemyError, SqlClientError) as exc:
             safe_ds = (request.data_source or "").replace("\r", "").replace("\n", "")
-            logger.exception("validate_models failed for datasource %r", safe_ds)
+            logger.exception("validate_datasets failed for datasource %r", safe_ds)
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"validate_models failed for datasource '{safe_ds}': {exc}"
+                    f"validate_datasets failed for datasource '{safe_ds}': {exc}"
                 ),
             )
         return [e.model_dump(mode="json") for e in entries]
 
     @app.post(
-        "/recommend-root-model",
+        "/recommend-population",
         responses={400: {"description": "Unresolvable / wrong-kind / cross-datasource items."}},
     )
-    async def recommend_root_model_endpoint(
-        request: RecommendRootModelRequest,
+    async def recommend_population_endpoint(
+        request: RecommendPopulationRequest,
     ) -> dict[str, Any]:
-        """Recommend the query ``source_model`` (root) for a set of
-        ``model.column`` / ``model.metric`` items, plus each item's
-        join-qualified path from that root. Read-only."""
+        """Recommend the query ``population`` (root) for a set of
+        ``dataset.field`` / ``dataset.metric`` items, plus each item's
+        relationship-qualified path from that root. Read-only."""
         try:
-            rec = await engine.recommend_root_model(
+            rec = await engine.recommend_population(
                 request.items, data_source=request.data_source,
                 root_hint=request.root_hint,
             )
@@ -807,7 +871,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 detail=f"Ingest failed for datasource '{safe_ds_name}': {exc}",
             )
         if result.errors:
-            # Partial failure — at least one model failed to persist.
+            # Partial failure — at least one dataset failed to persist.
             # Mirror the CLI's exit-1 behaviour by surfacing 422 with the
             # full IdempotentIngestResult body (additions/to_delete/errors).
             #
@@ -866,7 +930,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # ---------- Semantic search -----------------------------
 
     # Pass the engine so the search service's post-fusion
-    # column-hit hook can auto-refresh stale categorical columns.
+    # field-hit hook can auto-refresh stale categorical fields.
     search_service = SearchService(storage=storage, engine=engine)
 
     @app.post(
@@ -924,4 +988,5 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(exc))
         return {"result": result}
 
+    _add_old_routes(app)
     return app

@@ -1,0 +1,113 @@
+{
+ "source": "tests/test_dev1976_dimension_values.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "quantity * count(*)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "quantity * count(*)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "region",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "region",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "st",
+    "source_model": "sales",
+    "dimensions": [
+     "region",
+     "city"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "tot"
+     }
+    ]
+   },
+   "new": {
+    "name": "st",
+    "population": "sales",
+    "dimensions": [
+     "region",
+     "city"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "tot"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "st",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "iif(region == 'North', sum(tot), 0)",
+      "name": "m"
+     }
+    ]
+   },
+   "new": {
+    "population": "st",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "expression": "iif(region == 'North', sum(tot), 0)",
+      "name": "m"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  }
+ ]
+}

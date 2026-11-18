@@ -17,7 +17,7 @@ async def engine(request):
 
 
 async def _sql(filters: list[str], **kw) -> str:
-    return await emit(q(dimensions=["id"], filters=filters, **kw), dialect="postgres")
+    return await emit(q(dimensions=["id"], filter=filters, **kw), dialect="postgres")
 
 
 async def _same_sql(a: str, b: str) -> None:
@@ -49,11 +49,11 @@ class TestIntervalLiterals:
         await _same_sql(f"created_at + {literal} < now()", f"date_add(created_at, {n}, '{unit}') < now()")
 
     async def test_executes(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=["order_date + INTERVAL '7 days' > DATE '2024-03-01'"]))
+        resp = await engine.execute(q(dimensions=["id"], filter=["order_date + INTERVAL '7 days' > DATE '2024-03-01'"]))
         assert ids(resp) == {4, 5}
 
     async def test_multi_unit_literal_suggests_a_chain(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=["id"], filters=["order_date + INTERVAL '1 day 2 hours' > now()"])
+        query = q(dimensions=["id"], filter=["order_date + INTERVAL '1 day 2 hours' > now()"])
         with pytest.raises(ValueError) as info:
             await engine.execute(query)
         assert "+ INTERVAL '1 day' + INTERVAL '2 hours'" in str(info.value), str(info.value)
@@ -67,28 +67,28 @@ class TestIntervalLiterals:
         "order_date + (INTERVAL '1 day' + INTERVAL '1 day') > order_date",
     ])
     async def test_stray_interval_literal_points_to_date_add(self, engine: SlayerQueryEngine, filt: str) -> None:
-        query = q(dimensions=["id"], filters=[filt])
+        query = q(dimensions=["id"], filter=[filt])
         with pytest.raises(ValueError) as info:
             await engine.execute(query)
         assert "date_add" in str(info.value), str(info.value)
 
     @pytest.mark.parametrize("literal", ["INTERVAL 'x days'", "INTERVAL '1.5 days'", "INTERVAL '7 fortnights'"])
     async def test_bad_count_or_unit(self, engine: SlayerQueryEngine, literal: str) -> None:
-        query = q(dimensions=["id"], filters=[f"order_date + {literal} > order_date"])
+        query = q(dimensions=["id"], filter=[f"order_date + {literal} > order_date"])
         with pytest.raises(ValueError):
             await engine.execute(query)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_emits_everywhere(self, dialect: str) -> None:
         await emit(q(dimensions=["id", {"expression": "order_date + INTERVAL '1 month'", "name": "x"}],
-                     filters=["created_at - INTERVAL 2 HOUR < CURRENT_TIMESTAMP"]), dialect=dialect)
+                     filter=["created_at - INTERVAL 2 HOUR < CURRENT_TIMESTAMP"]), dialect=dialect)
 
 
 class TestTypedLiterals:
     async def test_typed_literals_bind_and_execute(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             dimensions=["id", {"expression": "date_diff('day', DATE '2024-01-01', created_at)", "name": "x"}],
-            filters=["created_at >= TIMESTAMP '2024-01-20 00:00'"],
+            filter=["created_at >= TIMESTAMP '2024-01-20 00:00'"],
         ))
         assert {int(k): int(v) for k, v in by_key(resp, "id", "x").items()} == {2: 19, 3: 40, 4: 55, 5: 74}
 
@@ -98,7 +98,7 @@ class TestTypedLiterals:
     @pytest.mark.parametrize("filt", ["created_at >= DATE '2024-02-30'", "created_at >= TIMESTAMP '2024-01-01 25:00'",
                                       "order_date >= DATE 'tomorrow'"])
     async def test_impossible_or_malformed_literal(self, engine: SlayerQueryEngine, filt: str) -> None:
-        query = q(dimensions=["id"], filters=[filt])
+        query = q(dimensions=["id"], filter=[filt])
         with pytest.raises(TimeLiteralError) as info:
             await engine.execute(query)
         literal = filt.split("'")[1]
@@ -106,12 +106,12 @@ class TestTypedLiterals:
 
     async def test_typed_literal_outside_a_date_position(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["id", {"expression": "DATE '2024-01-01'", "name": "d"}],
-                                      filters=["id = 1"]))
+                                      filter=["id = 1"]))
         assert str(resp.data[0]["orders.d"])[:10] == "2024-01-01"
 
 
 @pytest.fixture
-def data_calls(monkeypatch) -> list[str]:
+def data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     orig = SlayerSQLClient.execute
 
@@ -131,7 +131,7 @@ class TestClockKeywords:
     @pytest.mark.parametrize("keyword", ["CURRENT_DATE", "current_timestamp"])
     async def test_keyword_bypasses_the_result_cache(self, data_calls: list[str], keyword: str) -> None:
         async for eng in engine_for("sqlite"):
-            query = q(dimensions=["id"], filters=[f"created_at <= {keyword}"])
+            query = q(dimensions=["id"], filter=[f"created_at <= {keyword}"])
             await eng.execute(query, cache=True)
             await eng.execute(query, cache=True)
             assert len([s for s in data_calls if "slayer_rk_" not in s]) == 2

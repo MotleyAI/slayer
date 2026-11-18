@@ -1,0 +1,17 @@
+{
+ "source": "tests/test_law_grain_union.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=region) + sum(amount, partition_by=city)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=region) + sum(amount, partition_by=city)",
+    "name": "x"
+   }
+  }
+ ],
+ "skipped": []
+}

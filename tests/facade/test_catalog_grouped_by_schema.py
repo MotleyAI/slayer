@@ -8,18 +8,18 @@ BFS stays per-datasource; same-name collisions in one schema are resolved by
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.facade.catalog import build_catalog_grouped_by_schema
 
 
-def _model(name: str, ds: str, *, joins=None) -> SlayerModel:
-    return SlayerModel(
+def _dataset(name: str, ds: str, *, joins=None) -> SlayerDataset:
+    return SlayerDataset(
         name=name, data_source=ds, sql_table=name,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="val", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="val", datatype=DataType.DOUBLE),
         ],
-        joins=joins or [],
+        relationships=joins or [],
     )
 
 
@@ -33,9 +33,9 @@ def _table_names(schema) -> set[str]:
 
 def test_default_groups_all_into_public():
     catalog = build_catalog_grouped_by_schema(
-        models_by_datasource={
-            "sales": [_model("orders", "sales")],
-            "hr": [_model("people", "hr")],
+        datasets_by_datasource={
+            "sales": [_dataset("orders", "sales")],
+            "hr": [_dataset("people", "hr")],
         },
     )
     assert {s.name for s in catalog.schemas} == {"public"}
@@ -44,9 +44,9 @@ def test_default_groups_all_into_public():
 
 def test_explicit_schema_separates_datasources():
     catalog = build_catalog_grouped_by_schema(
-        models_by_datasource={
-            "sales": [_model("orders", "sales")],
-            "hr": [_model("people", "hr")],
+        datasets_by_datasource={
+            "sales": [_dataset("orders", "sales")],
+            "hr": [_dataset("people", "hr")],
         },
         schema_by_datasource={"hr": "hr_schema"},
     )
@@ -57,9 +57,9 @@ def test_explicit_schema_separates_datasources():
 
 def test_collision_resolved_by_priority():
     catalog = build_catalog_grouped_by_schema(
-        models_by_datasource={
-            "primary": [_model("orders", "primary")],
-            "secondary": [_model("orders", "secondary")],
+        datasets_by_datasource={
+            "primary": [_dataset("orders", "primary")],
+            "secondary": [_dataset("orders", "secondary")],
         },
         datasource_priority=["secondary", "primary"],
     )
@@ -67,24 +67,24 @@ def test_collision_resolved_by_priority():
     tables = [t for t in public.tables if t.name == "orders"]
     assert len(tables) == 1
     # secondary has higher priority (earlier) -> it wins.
-    assert tables[0].model_ref.data_source == "secondary"
+    assert tables[0].dataset_ref.data_source == "secondary"
 
 
 def test_join_scoping_does_not_cross_datasources():
     # Both datasources have a 'customers' model; 'orders' in sales joins to it.
     # The join must resolve to sales.customers, never hr.customers.
-    orders = _model(
+    orders = _dataset(
         "orders", "sales",
-        joins=[ModelJoin(target_model="customers", join_pairs=[["id", "id"]])],
+        joins=[DatasetRelationship(to="customers", join_pairs=[["id", "id"]])],
     )
     catalog = build_catalog_grouped_by_schema(
-        models_by_datasource={
-            "sales": [orders, _model("customers", "sales")],
-            "hr": [_model("customers", "hr")],
+        datasets_by_datasource={
+            "sales": [orders, _dataset("customers", "sales")],
+            "hr": [_dataset("customers", "hr")],
         },
         schema_by_datasource={"hr": "hr_schema"},
     )
     sales_orders = next(
         t for t in _schema(catalog, "public").tables if t.name == "orders"
     )
-    assert [j.target_model for j in sales_orders.joins] == ["customers"]
+    assert [j.to for j in sales_orders.relationships] == ["customers"]

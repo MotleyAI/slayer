@@ -1,0 +1,105 @@
+{
+ "source": "tests/test_dev2215_stored_upgrade.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "month(ordered_at)",
+      "name": "m"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "expression": "month(ordered_at)",
+      "name": "m"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly_rev",
+    "dimensions": [
+     "ordered_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)",
+      "name": "r"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly_rev",
+    "dimensions": [
+     "ordered_at"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)",
+      "name": "r"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "ok"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "ok"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "doubled",
+    "measures": [
+     {
+      "formula": "sum(d)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "doubled",
+    "metrics": [
+     {
+      "expression": "sum(d)",
+      "name": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "agg(amount)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "agg(amount)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

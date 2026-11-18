@@ -8,7 +8,7 @@ from slayer.dbt.sql_resolver import resolve_refs
 class TestRefResolution:
     def test_ref_to_source_returns_bare_name(self) -> None:
         sql = "select * from {{ ref('claim') }}"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert warnings == []
         assert resolved == "select * from claim"
 
@@ -17,7 +17,7 @@ class TestRefResolution:
         sql = "select count(*) from {{ ref('orders') }} o"
         resolved, warnings = resolve_refs(
             sql,
-            regular_models_sql={"orders": inner},
+            regular_datasets_sql={"orders": inner},
         )
         assert warnings == []
         # The caller's alias ``o`` sits directly after the inlined subquery.
@@ -30,7 +30,7 @@ class TestRefResolution:
         outer = "select * from {{ ref('A') }} a"
         resolved, warnings = resolve_refs(
             outer,
-            regular_models_sql={"A": a, "B": b},
+            regular_datasets_sql={"A": a, "B": b},
         )
         assert warnings == []
         # Transitive inlining: the outer wraps A, which wraps B, which
@@ -45,7 +45,7 @@ class TestRefResolution:
         outer = "select * from {{ ref('A') }}"
         resolved, warnings = resolve_refs(
             outer,
-            regular_models_sql={"A": a, "B": b},
+            regular_datasets_sql={"A": a, "B": b},
         )
         assert any("cycle detected" in w for w in warnings)
         # Final output should still be a string, not crash
@@ -53,13 +53,13 @@ class TestRefResolution:
 
     def test_package_qualified_ref(self) -> None:
         sql = "select * from {{ ref('my_pkg', 'orders') }}"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert warnings == []
         assert resolved == "select * from orders"
 
     def test_versioned_ref(self) -> None:
         sql = "select * from {{ ref('orders', v=2) }}"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert warnings == []
         assert resolved == "select * from orders"
 
@@ -70,7 +70,7 @@ class TestConfigStripping:
             {{ config(materialized='table') }}
             select * from claim
         """)
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert warnings == []
         assert "config" not in resolved
         assert "select * from claim" in resolved
@@ -78,13 +78,13 @@ class TestConfigStripping:
     def test_strips_multiline_config(self) -> None:
         # Single-arg "fits on a line" — config() with comma-separated kwargs
         sql = "{{ config(materialized='table', schema='staging') }}\nselect 1"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert warnings == []
         assert "config" not in resolved
 
     def test_strips_config_with_a_dict_argument(self) -> None:
         sql = "{{ config(quoting={'identifier': false}) }}\nselect 1"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert warnings == []
         assert resolved.strip() == "select 1"
 
@@ -92,7 +92,7 @@ class TestConfigStripping:
 class TestSourceResolution:
     def test_source_produces_schema_dot_table(self) -> None:
         sql = "select * from {{ source('raw', 'events') }}"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert warnings == []
         assert resolved == "select * from raw.events"
 
@@ -103,14 +103,14 @@ class TestSecurityAndDiagnostics:
         # block is left in place and a warning is emitted — never is the
         # hostile payload spliced into SQL.
         sql = "select * from {{ ref('a; DROP TABLE users; --') }}"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert "DROP TABLE" not in resolved or "{{" in resolved  # still wrapped in {{ }}
         assert "{{ ref(" in resolved
         assert any("unresolved Jinja" in w for w in warnings)
 
     def test_unknown_macro_emits_warning(self) -> None:
         sql = "select {{ my_custom_macro() }} from t"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         # Macro is preserved verbatim
         assert "{{ my_custom_macro() }}" in resolved
         assert any("my_custom_macro" in w and "unresolved" in w for w in warnings)
@@ -122,7 +122,7 @@ class TestSecurityAndDiagnostics:
         outer = "select * from {{ ref('m0') }}"
         resolved, warnings = resolve_refs(
             outer,
-            regular_models_sql=regular_models,
+            regular_datasets_sql=regular_models,
             max_depth=3,
         )
         assert any("max recursion depth" in w for w in warnings)
@@ -131,6 +131,6 @@ class TestSecurityAndDiagnostics:
     def test_no_jinja_pass_through(self) -> None:
         # Input has no Jinja at all — output is identical, no warnings.
         sql = "select a, b from t where a > 0"
-        resolved, warnings = resolve_refs(sql, regular_models_sql={})
+        resolved, warnings = resolve_refs(sql, regular_datasets_sql={})
         assert resolved == sql
         assert warnings == []

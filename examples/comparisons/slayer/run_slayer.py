@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from slayer.async_utils import run_sync
 from slayer.core.granularity import CustomGranularity
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.policy import SessionPolicy
 from slayer.core.time_points import SLAYER_NOW
 from slayer.embeddings.client import SLAYER_EMBEDDING_MODEL_ENV
@@ -71,7 +71,7 @@ class SlayerExpect(BaseModel):
     lacks: List[str] = Field(default_factory=list)
 
 
-class SetupModel(BaseModel):
+class SetupDataset(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
     query: Dict[str, Any] | List[Dict[str, Any]]
@@ -98,13 +98,13 @@ class SlayerBlock(BaseModel):
     run_by_name: Optional[str] = None
     # An MCP session on a private copy of the database; the last step must be a tool call.
     steps: List[Step] = Field(default_factory=list)
-    # What the session's storage starts with: the probe models, only the datasource, or nothing.
-    setup: Literal["models", "datasource", "empty"] = "models"
+    # What the session's storage starts with: the probe datasets, only the datasource, or nothing.
+    setup: Literal["datasets", "datasource", "empty"] = "datasets"
     refine: Optional[Dict[str, Any]] = None
     options: Dict[str, Any] = Field(default_factory=dict)
-    # Files in slayer/extra_models/ saved for this probe only (they would otherwise add join cycles).
-    extra_models: List[str] = Field(default_factory=list)
-    create_model_from_query: Optional[SetupModel] = None
+    # Files in slayer/extra_models/ saved for this probe only (they would otherwise add relationship cycles).
+    extra_datasets: List[str] = Field(default_factory=list)
+    create_dataset_from_query: Optional[SetupDataset] = None
     keys: Optional[List[str]] = None
     values: Optional[List[str]] = None
     expect: Literal["match"] | SlayerExpect = "match"
@@ -173,18 +173,18 @@ def compute_truth(db_path: Path, probes: List[Probe]) -> Dict[Tuple[str, str], L
 
 
 async def fill_store(storage: YAMLStorage, db_path: Path, setup: str) -> SlayerQueryEngine:
-    """Register the datasource and save the probe models, as far as ``setup`` asks."""
+    """Register the datasource and save the probe datasets, as far as ``setup`` asks."""
     engine = SlayerQueryEngine(storage=storage)
     try:
         if setup != "empty":
             await storage.save_datasource(
                 DatasourceConfig(name=DATASOURCE, type="duckdb", database=str(db_path), granularities=GRANULARITIES)
             )
-        if setup == "models":
+        if setup == "datasets":
             docs = [yaml.safe_load(f.read_text()) for f in sorted((HERE / "models").glob("*.yaml"))]
-            # Query-backed models validate by dry-run, so their sources must exist first.
+            # Query-backed datasets validate by dry-run, so their sources must exist first.
             for doc in sorted(docs, key=lambda d: bool(d.get("source_queries"))):
-                await engine.save_model(SlayerModel.model_validate(doc))
+                await engine.save_dataset(SlayerDataset.model_validate(doc))
     except BaseException:
         await engine.aclose()
         raise
@@ -195,7 +195,7 @@ async def build_engines(
     db_path: Path, store: Path, policies: Dict[str, Any]
 ) -> Tuple[SlayerQueryEngine, Dict[str, SlayerQueryEngine]]:
     storage = YAMLStorage(base_dir=str(store))
-    engine = await fill_store(storage=storage, db_path=db_path, setup="models")
+    engine = await fill_store(storage=storage, db_path=db_path, setup="datasets")
     by_policy = {
         name: SlayerQueryEngine(storage=storage, policy=SessionPolicy.model_validate(spec))
         for name, spec in policies.items()
@@ -269,16 +269,16 @@ def project(resp: SlayerResponse, keys: List[str], values: List[str]) -> List[Li
 
 def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[SlayerResponse], Optional[Exception]]:
     handling = block.options.get("to_many_handling")
-    extras = [SlayerModel.model_validate(yaml.safe_load((HERE / "extra_models" / f).read_text()))
-              for f in block.extra_models]
-    saved: List[SlayerModel] = []
+    extras = [SlayerDataset.model_validate(yaml.safe_load((HERE / "extra_models" / f).read_text()))
+              for f in block.extra_datasets]
+    saved: List[SlayerDataset] = []
     try:
-        for model in extras:
-            run_sync(engine.save_model(model))
-            saved.append(model)
-        if block.create_model_from_query:
-            engine.create_model_from_query_sync(
-                query=block.create_model_from_query.query, name=block.create_model_from_query.name
+        for dataset in extras:
+            run_sync(engine.save_dataset(dataset))
+            saved.append(dataset)
+        if block.create_dataset_from_query:
+            engine.create_dataset_from_query_sync(
+                query=block.create_dataset_from_query.query, name=block.create_dataset_from_query.name
             )
         if block.run_by_name is not None:
             refine = {**(block.refine or {}), **({"to_many_handling": handling} if handling else {})}
@@ -290,10 +290,10 @@ def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[S
     except Exception as e:  # noqa: BLE001 - a probe's error is data
         return None, e
     finally:
-        for model in saved:
+        for dataset in saved:
             # A failed cleanup must not mask the probe's own outcome.
             with contextlib.suppress(Exception):
-                run_sync(engine.delete_model_by_name(model_name=model.name, data_source=model.data_source))
+                run_sync(engine.delete_dataset_by_name(dataset_name=dataset.name, data_source=dataset.data_source))
 
 
 class SessionResult(BaseModel):

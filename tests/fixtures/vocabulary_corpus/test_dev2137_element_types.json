@@ -1,0 +1,48 @@
+{
+ "source": "tests/test_dev2137_element_types.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "dimensions": [
+     "team"
+    ],
+    "filters": [
+     "contains(rates, '10')"
+    ]
+   },
+   "new": {
+    "population": "s",
+    "dimensions": [
+     "team"
+    ],
+    "filter": [
+     "contains(rates, '10')"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "dimensions": [
+     "team"
+    ],
+    "filters": [
+     "rates.value > '45'"
+    ]
+   },
+   "new": {
+    "population": "s",
+    "dimensions": [
+     "team"
+    ],
+    "filter": [
+     "rates.value > '45'"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

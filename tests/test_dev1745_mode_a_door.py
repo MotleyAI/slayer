@@ -37,7 +37,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import AliasAllocator
@@ -48,44 +48,44 @@ from slayer.core.errors import SlayerError
 # --------------------------------------------------------------------------- #
 # Fixtures
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="population", type=DataType.DOUBLE),
-            Column(name="pop_x2", sql="population * 2", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="population", datatype=DataType.DOUBLE),
+            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="balance", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="balance", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="doubled", sql="amount * 2", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE),
             # a reserved-ish name that would shadow a statement keyword
-            Column(name="select", type=DataType.TEXT),
+            DatasetField(name="select", datatype=DataType.TEXT),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", join_pairs=[["customer_id", "id"]],
         )],
     )
 
@@ -95,11 +95,11 @@ def _scope(dialect: str = "postgres") -> ScopeFrame:
     alloc = AliasAllocator()
     bundle = ResolvedSourceBundle(
         dialect="postgres",
-        source_model=host, referenced_models=[host, _customers(), _regions()],
+        population=host, referenced_datasets=[host, _customers(), _regions()],
     )
     return ScopeFrame(
         scope_id=alloc.next_scope_id(host.name),
-        root_model=host, root_relation=host.name,
+        root_dataset=host, root_relation=host.name,
         bundle=bundle, dialect=get_dialect(dialect), allocator=alloc,
     )
 
@@ -163,22 +163,22 @@ class TestQualification:
         This is what separates "expansion qualified it, against the owning
         model" from "something re-qualified it against the scope root"."""
         customers = _customers()
-        customers.columns.append(
-            Column(name="balance_x2", sql="balance * 2", type=DataType.DOUBLE),
+        customers.fields.append(
+            DatasetField(name="balance_x2", sql="balance * 2", datatype=DataType.DOUBLE),
         )
         host = _orders()
         # a same-named column on the ROOT, so a root-anchored pass is visible
-        host.columns.append(
-            Column(name="balance", type=DataType.DOUBLE),
+        host.fields.append(
+            DatasetField(name="balance", datatype=DataType.DOUBLE),
         )
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, customers, _regions()],
+            population=host, referenced_datasets=[host, customers, _regions()],
         )
         scope = ScopeFrame(
             scope_id=alloc.next_scope_id(host.name),
-            root_model=host, root_relation=host.name,
+            root_dataset=host, root_relation=host.name,
             bundle=bundle, dialect=get_dialect("postgres"), allocator=alloc,
         )
         out = _sql_of(scope.enter_expression("customers.balance_x2"))
@@ -268,18 +268,18 @@ class TestJoinRegistration:
         while proving nothing.
         """
         customers = _customers()
-        customers.columns.append(
-            Column(name="flag_const", sql="1", type=DataType.INT),
+        customers.fields.append(
+            DatasetField(name="flag_const", sql="1", datatype=DataType.INT),
         )
         host = _orders()
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, customers, _regions()],
+            population=host, referenced_datasets=[host, customers, _regions()],
         )
         scope = ScopeFrame(
             scope_id=alloc.next_scope_id(host.name),
-            root_model=host, root_relation=host.name,
+            root_dataset=host, root_relation=host.name,
             bundle=bundle, dialect=get_dialect("postgres"), allocator=alloc,
         )
         node = scope.enter_predicate("customers.flag_const = 1")

@@ -264,7 +264,7 @@ def test_oracle_overrides_log10_and_log2_to_false() -> None:
 # Outer wrap over a transform chain (postgres): the chain's WITH sits on the
 # statement; the public projection reads the ``_outer`` derived table.
 
-_DESC_CREATED = [{"column": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
 
 
 async def test_chain_outer_wrap_basic_shape() -> None:
@@ -290,7 +290,7 @@ async def test_chain_outer_wrap_with_order() -> None:
 
 async def test_chain_outer_wrap_hidden_order_by_names_the_carried_alias() -> None:
     """A non-projected sort key resolves to the alias the chain carries."""
-    sql = await gen(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]),
+    sql = await gen(cumsum_chain(order=[{"field": "max(amount)", "direction": "desc"}]),
                     dialect="postgres")
     assert outer_order(sql, "postgres") == [("orders.amount_max", "", True)], sql
 
@@ -367,7 +367,7 @@ def test_backslash_escapes_strings_is_bool() -> None:
     assert isinstance(SqliteDialect().backslash_escapes_strings, bool)
 
 
-def test_backslash_escapes_derivation_guards_missing_string_escapes(monkeypatch) -> None:
+def test_backslash_escapes_derivation_guards_missing_string_escapes(monkeypatch: pytest.MonkeyPatch) -> None:
     """A reshaped tokenizer STRING_ESCAPES raises a clear RuntimeError."""
     base_mod._sqlglot_backslash_escapes.cache_clear()
     tokenizer_cls = Dialect.get_or_raise("postgres").tokenizer_class

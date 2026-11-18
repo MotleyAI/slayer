@@ -1,0 +1,48 @@
+{
+ "source": "tests/test_law_population_invariance.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "m1"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "m1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "m1"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "m1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(orders.amount)",
+    "name": "m2"
+   },
+   "new": {
+    "expression": "avg(orders.amount)",
+    "name": "m2"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  }
+ ]
+}

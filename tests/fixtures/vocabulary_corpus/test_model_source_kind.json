@@ -1,0 +1,46 @@
+{
+ "source": "tests/test_model_source_kind.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 300,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 305,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 307,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 312,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 325,
+   "reason": "not fully literal"
+  }
+ ]
+}

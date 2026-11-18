@@ -1,0 +1,1146 @@
+{
+ "source": "tests/test_query_backed_typed_expansion.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "kpi",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     {
+      "name": "id",
+      "label": "kpi_id"
+     }
+    ]
+   },
+   "new": {
+    "name": "kpi",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     {
+      "name": "id",
+      "label": "kpi_id"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "main"
+   },
+   "new": {
+    "population": "main"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "kpi",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     {
+      "name": "id",
+      "label": "kpi_id"
+     }
+    ]
+   },
+   "new": {
+    "name": "kpi",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     {
+      "name": "id",
+      "label": "kpi_id"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "main"
+   },
+   "new": {
+    "population": "main"
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "b",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "b",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "a",
+      "join_pairs": [
+       [
+        "id",
+        "id"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a"
+   },
+   "new": {
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "root_stage"
+   },
+   "new": {
+    "name": "a",
+    "population": "root_stage"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "root_stage",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "root_stage",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "a"
+   },
+   "new": {
+    "name": "a",
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a"
+   },
+   "new": {
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders"
+   },
+   "new": {
+    "name": "a",
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a"
+   },
+   "new": {
+    "population": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "rank(count(*), direction='desc')",
+      "name": "ranked"
+     },
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "rank(count(*), direction='desc')",
+      "name": "ranked"
+     },
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "adjusted_total"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "adjusted_total"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "rounded_total",
+      "name": "rounded_total"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "rounded_total",
+      "name": "rounded_total"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(amount), direction='desc')",
+    "name": "rank_by_amt"
+   },
+   "new": {
+    "expression": "rank(sum(amount), direction='desc')",
+    "name": "rank_by_amt"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b"
+   },
+   "new": {
+    "population": "b"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "filters": [
+     "amount > {threshold}"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "filter": [
+     "amount > {threshold}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "filtered",
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "filters": [
+     "amount > {threshold}"
+    ]
+   },
+   "new": {
+    "name": "filtered",
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ],
+    "filter": [
+     "amount > {threshold}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "filtered",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "filtered",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_a",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders_a",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders_b",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders_b",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ],
+    "dimensions": [
+     "region"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s",
+    "source_model": "qb_inner",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount_sum)"
+     }
+    ]
+   },
+   "new": {
+    "name": "s",
+    "population": "qb_inner",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s",
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "s",
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "extension",
+   "old": {
+    "source_name": "orders",
+    "joins": [
+     {
+      "target_model": "customers",
+      "join_pairs": [
+       [
+        "region",
+        "region"
+       ]
+      ]
+     }
+    ]
+   },
+   "new": {
+    "source_name": "orders",
+    "relationships": [
+     {
+      "to": "customers",
+      "join_pairs": [
+       [
+        "region",
+        "region"
+       ]
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(customers.revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "percentile(customers.revenue, p=0.5)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "percentile(customers.revenue, p=0.5)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name",
+     "customers.signup_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name",
+     "customers.signup_at"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(customers.revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb_already_aggregated",
+    "measures": [
+     {
+      "formula": "sum(customers__revenue_sum)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "qb_already_aggregated",
+    "metrics": [
+     {
+      "expression": "sum(customers__revenue_sum)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "qb_already_aggregated",
+    "measures": [
+     {
+      "formula": "sum(customers.revenue)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "qb_already_aggregated",
+    "metrics": [
+     {
+      "expression": "sum(customers.revenue)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 122,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 333,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 537,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 617,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 622,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 623,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 624,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 708,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 731,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 913,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 948,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1020,
+   "reason": "not fully literal"
+  }
+ ]
+}

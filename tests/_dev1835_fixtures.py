@@ -63,7 +63,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -79,9 +79,9 @@ from tests._dev1837_fixtures import (  # noqa: F401 — re-exported fixture surf
     BAND35_OF,
     CITY_TOTAL,
     COL_WM,
-    ColumnRef,
+    FieldRef,
     GRAND_TOTAL,
-    ModelMeasure,
+    DatasetMetric,
     REGION_LAST,
     REGION_TOTAL,
     SlayerQuery,
@@ -258,25 +258,25 @@ LAST_BY_SHIPPED = {"North": 10.0, "South": 25.0, None: 60.0}
 FIRST_BY_SHIPPED = {"North": 20.0, "South": 25.0, None: 60.0}
 
 
-def shipped_orders_model() -> SlayerModel:
-    return SlayerModel(
+def shipped_orders_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="city", datatype=DataType.TEXT),
+            DatasetField(name="channel", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
             # Derived column — the "every dimension kind" scenario (Codex F3).
-            Column(name="city_key", type=DataType.TEXT, sql="LOWER(city)"),
+            DatasetField(name="city_key", datatype=DataType.TEXT, sql="LOWER(city)"),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
 
@@ -311,7 +311,7 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
         pytest.importorskip("duckdb")
     seed = _seed_shipped_duckdb if dialect == "duckdb" else _seed_shipped_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=[shipped_orders_model()],
+        dialect=dialect, seed=seed, datasets=[shipped_orders_dataset()],
     ) as (engine, _db):
         yield engine
 
@@ -348,8 +348,8 @@ __all__ = [
     "_by_region", "_by_region_month", "_assert_map",
     "BAND35", "BAND35_OF", "CHANGE_OVER_LAST", "CHANGE_PCT_OVER_LAST",
     "CITY_LAST_RC", "CITY_MONTH_LAST", "CITY_TOTAL", "CITY_WM", "COL_WM",
-    "CUMSUM_OVER_W90", "ColumnRef", "FIRST_BY_SHIPPED", "GRAND_TOTAL",
-    "LAST_BY_ORDERED", "LAST_BY_SHIPPED", "ModelMeasure", "OK_LAST", "OK_W90",
+    "CUMSUM_OVER_W90", "FieldRef", "FIRST_BY_SHIPPED", "GRAND_TOTAL",
+    "LAST_BY_ORDERED", "LAST_BY_SHIPPED", "DatasetMetric", "OK_LAST", "OK_W90",
     "ORDER_BY_W90_DESC", "REGION_FIRST", "REGION_LAST", "REGION_MONTH_LAST",
     "REGION_MONTH_TOTAL", "REGION_TOTAL", "RK_X", "SlayerQuery",
     "TRAILING_45D_REGION", "TRAILING_90D_REGION", "TS_OVER_LAST", "TS_OVER_W90",
@@ -357,5 +357,5 @@ __all__ = [
     "UNION_WM_DIM", "UNION_WM_RANK", "W90_RATIO", "WM_X", "cte_aliases",
     "dev1835_models", "dim_key", "gen", "make_exec_engine",
     "make_shipped_exec_engine", "month_key", "month_td", "q", "rows_by",
-    "shipped_orders_model", "with_nulls",
+    "shipped_orders_dataset", "with_nulls",
 ]

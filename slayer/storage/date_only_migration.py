@@ -14,13 +14,14 @@ from typing import Any, Iterable
 from pydantic import BaseModel, Field
 
 from slayer.core.date_only import scan_date_only
-from slayer.core.enums import DataType, JoinCardinality, invert_cardinality
+from slayer.core.enums import DataType, RelationshipCardinality, invert_cardinality
 from slayer.core.errors import AmbiguousReferenceError
 from slayer.core.names import match_name
 from slayer.core.syntax import string_literal_spans
 from slayer.core.time_points import is_date_only
-from slayer.core.spine_names import TIME_SPINE_COLUMN, TIME_SPINE_COLUMN_TYPE, TIME_SPINE_MODEL
+from slayer.core.spine_names import TIME_SPINE_FIELD, TIME_SPINE_FIELD_TYPE, TIME_SPINE_DATASET
 from slayer.core.legacy_spellings import rewrite_spans
+from slayer.storage.document_keys import LEGACY_KEYS, DocumentKeys
 from slayer.storage.migrations import document_label, register_migration, stamp_stored
 from slayer.storage.rank_direction_migration import rewrite_query_fields, stamp_memory_query
 
@@ -44,33 +45,33 @@ def _same(a: Any, b: Any) -> bool:
     return isinstance(b, str) and _named(a, [b]) is not None
 
 
-def _reaches(*, target: Any, model: Any, universe: Iterable[str]) -> bool:
-    """Whether the model reference ``target`` resolves to ``model`` among ``universe``'s names."""
-    return isinstance(model, str) and _named(target, universe) == model
+def _reaches(*, target: Any, dataset: Any, universe: Iterable[str]) -> bool:
+    """Whether the model reference ``target`` resolves to ``dataset`` among ``universe``'s names."""
+    return isinstance(dataset, str) and _named(target, universe) == dataset
 
 
-def stored_type(*, key: Any, columns: Any) -> str | None:
-    """The stored ``type`` of the column named ``key`` when it is a valid ``DataType``."""
-    if not isinstance(columns, list):
+def stored_type(*, key: Any, fields: Any, keys: DocumentKeys) -> str | None:
+    """The stored datatype (spelled per ``keys``) of the field named ``key`` when it is a valid ``DataType``."""
+    if not isinstance(fields, list):
         return None
-    named = [c for c in columns if isinstance(c, dict)]
+    named = [c for c in fields if isinstance(c, dict)]
     found = _named(key, (c.get("name") for c in named))
     col = next((c for c in named if found is not None and c.get("name") == found), None)
     try:
-        return DataType(col["type"]).value if col is not None and "type" in col else None
+        return DataType(col[keys.datatype]).value if col is not None and keys.datatype in col else None
     except ValueError:
         return None
 
 
-def extended(*, key: str, model: dict, extensions: list[dict]) -> list:
-    """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``model``."""
-    own = model.get(key)
-    added = [x for e in extensions if _same(e.get("source_name"), model.get("name")) and isinstance(e.get(key), list)
+def extended(*, key: str, dataset: dict, extensions: list[dict]) -> list:
+    """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``dataset``."""
+    own = dataset.get(key)
+    added = [x for e in extensions if _same(e.get("source_name"), dataset.get("name")) and isinstance(e.get(key), list)
              for x in e[key]]
     return [*(own if isinstance(own, list) else []), *added]
 
 
-def is_exact_inverse_join(a: dict, b: dict) -> bool:
+def is_exact_inverse_relationship(a: dict, b: dict) -> bool:
     """True iff join dicts on opposite models mirror each other: swapped pair set, same join type, equal ``name``, and
     inversion-consistent cardinalities (unset counts as consistent)."""
     if (a.get("name") or None) != (b.get("name") or None):
@@ -88,43 +89,43 @@ def is_exact_inverse_join(a: dict, b: dict) -> bool:
     if ca is None or cb is None:
         return True
     try:
-        return invert_cardinality(JoinCardinality(ca)) == JoinCardinality(cb)
+        return invert_cardinality(RelationshipCardinality(ca)) == RelationshipCardinality(cb)
     except ValueError:
         return False
 
 
-_SPINE_COLUMNS = [{"name": TIME_SPINE_COLUMN, "type": TIME_SPINE_COLUMN_TYPE.value, "primary_key": True}]
+_SPINE_FIELDS = [{"name": TIME_SPINE_FIELD, "type": TIME_SPINE_FIELD_TYPE.value, "primary_key": True}]
 
 
-class StoredModels(BaseModel):
+class StoredDatasets(BaseModel):
     """A datasource's raw stored model dicts by name, the built-in spine beside them, and the stage names a document's
     queries read instead."""
 
     data_source: str | None = None
-    models: dict[str, dict] = Field(default_factory=dict)
+    datasets: dict[str, dict] = Field(default_factory=dict)
     stages: frozenset[str] = frozenset()
 
     def host(self, source: Any) -> dict | None:
         """The raw stored model (or the spine) named ``source``; ``None`` for a stage."""
-        return None if _named(source, self.stages) is not None else self._model(source)
+        return None if _named(source, self.stages) is not None else self._dataset(source)
 
     def _universe(self) -> dict[str, dict]:
         """The stored models plus the spine, unless a stored model is named exactly like it."""
-        if TIME_SPINE_MODEL in self.models:
-            return self.models
-        columns = [dict(c) for c in _SPINE_COLUMNS]
-        spine = {"name": TIME_SPINE_MODEL, "data_source": self.data_source, "columns": columns, "joins": []}
-        return {**self.models, TIME_SPINE_MODEL: spine}
+        if TIME_SPINE_DATASET in self.datasets:
+            return self.datasets
+        columns = [dict(c) for c in _SPINE_FIELDS]
+        spine = {"name": TIME_SPINE_DATASET, "data_source": self.data_source, "columns": columns, "joins": []}
+        return {**self.datasets, TIME_SPINE_DATASET: spine}
 
-    def _is_spine(self, model: dict) -> bool:
-        return model.get("name") == TIME_SPINE_MODEL and TIME_SPINE_MODEL not in self.models
+    def _is_spine(self, dataset: dict) -> bool:
+        return dataset.get("name") == TIME_SPINE_DATASET and TIME_SPINE_DATASET not in self.datasets
 
-    def _model(self, name: Any) -> dict | None:
+    def _dataset(self, name: Any) -> dict | None:
         universe = self._universe()
         found = _named(name, universe)
         return universe[found] if found is not None else None
 
-    def column_type(self, *, host: dict, parts: list[str] | tuple[str, ...], extensions: list[dict]) -> str | None:
+    def field_type(self, *, host: dict, parts: list[str] | tuple[str, ...], extensions: list[dict]) -> str | None:
         """The stored type of the column ``parts`` names from ``host``, walking stored joins plus ``extensions``; a path
         may end at the spine but not continue past it."""
         current = host
@@ -138,7 +139,8 @@ class StoredModels(BaseModel):
             if peer is None:
                 return None
             current = peer
-        return stored_type(key=leaf, columns=extended(key="columns", model=current, extensions=extensions))
+        return stored_type(key=leaf, fields=extended(key="columns", dataset=current, extensions=extensions),
+                           keys=LEGACY_KEYS)
 
     def _past_host(self, *, quals: list[str], host: dict) -> list[str] | None:
         """``quals`` read from their head as the engine reads it: a stage's (untypable); the spine's when spelt like it in
@@ -149,10 +151,10 @@ class StoredModels(BaseModel):
         head = quals[0]
         if any(_same(head, s) for s in self.stages):
             return None
-        if head != TIME_SPINE_MODEL and head not in self.models and _same(head, TIME_SPINE_MODEL):
-            if any(n != TIME_SPINE_MODEL and _same(n, TIME_SPINE_MODEL) for n in self.models):
+        if head != TIME_SPINE_DATASET and head not in self.datasets and _same(head, TIME_SPINE_DATASET):
+            if any(n != TIME_SPINE_DATASET and _same(n, TIME_SPINE_DATASET) for n in self.datasets):
                 return None
-            head = TIME_SPINE_MODEL
+            head = TIME_SPINE_DATASET
         return quals[1:] if _same(head, host.get("name")) else [head, *quals[1:]]
 
     def _hop(self, *, current: dict, token: str, extensions: list[dict]) -> dict | None:
@@ -175,8 +177,8 @@ class StoredModels(BaseModel):
         """The model at the one edge whose ``tier`` field is ``found``; a model-name hop reaches the spine only by
         naming it."""
         hits = [e for e in edges if e[tier] == found]
-        peer = self._model(hits[0][1]) if len(hits) == 1 else None
-        if peer is not None and tier == 1 and self._is_spine(peer) and not self._is_spine(self._model(token) or {}):
+        peer = self._dataset(hits[0][1]) if len(hits) == 1 else None
+        if peer is not None and tier == 1 and self._is_spine(peer) and not self._is_spine(self._dataset(token) or {}):
             return None
         return peer
 
@@ -185,31 +187,31 @@ class StoredModels(BaseModel):
         an unnamed virtual edge between the spine and every stored model; an exact-inverse twin counts once."""
         name = current.get("name")
         universe = self._universe()
-        own = [j for j in extended(key="joins", model=current, extensions=extensions) if isinstance(j, dict)]
+        own = [j for j in extended(key="joins", dataset=current, extensions=extensions) if isinstance(j, dict)]
         out = [(j.get("name"), j.get("target_model")) for j in own]
         for other in universe.values():
             if _same(other.get("name"), name):
                 continue
             out.extend((j.get("name"), other.get("name"))
-                       for j in extended(key="joins", model=other, extensions=extensions)
-                       if isinstance(j, dict) and _reaches(target=j.get("target_model"), model=name, universe=universe)
-                       and not any(_reaches(target=o.get("target_model"), model=other.get("name"), universe=universe)
-                                   and is_exact_inverse_join(o, j) for o in own))
+                       for j in extended(key="joins", dataset=other, extensions=extensions)
+                       if isinstance(j, dict) and _reaches(target=j.get("target_model"), dataset=name, universe=universe)
+                       and not any(_reaches(target=o.get("target_model"), dataset=other.get("name"), universe=universe)
+                                   and is_exact_inverse_relationship(o, j) for o in own))
         edges = [(n if isinstance(n, str) else None, t) for n, t in out if isinstance(t, str)]
-        if TIME_SPINE_MODEL in self.models:
+        if TIME_SPINE_DATASET in self.datasets:
             return edges
-        peers = list(self.models) if self._is_spine(current) else [TIME_SPINE_MODEL]
+        peers = list(self.datasets) if self._is_spine(current) else [TIME_SPINE_DATASET]
         return edges + [(None, p) for p in peers
-                        if not any(_reaches(target=t, model=p, universe=universe) for _, t in edges)]
+                        if not any(_reaches(target=t, dataset=p, universe=universe) for _, t in edges)]
 
 
-_typing: ContextVar[StoredModels | None] = ContextVar("slayer_date_only_typing", default=None)
+_typing: ContextVar[StoredDatasets | None] = ContextVar("slayer_date_only_typing", default=None)
 
 
 @contextmanager
-def typing_with(models: StoredModels | None) -> Generator[None]:
-    """Inside the block, stored operands are typed with ``models``; ``None`` types none."""
-    token = _typing.set(models)
+def typing_with(datasets: StoredDatasets | None) -> Generator[None]:
+    """Inside the block, stored operands are typed with ``datasets``; ``None`` types none."""
+    token = _typing.set(datasets)
     try:
         yield
     finally:
@@ -227,7 +229,7 @@ def needs_typing(entity: str, data: Any) -> bool:
         return False
     if entity == "Memory":
         return needs_typing("SlayerQuery", data.get("query"))
-    texts = _query_texts(data) if entity == "SlayerQuery" else _model_texts(data)
+    texts = _query_texts(data) if entity == "SlayerQuery" else _dataset_texts(data)
     if below_date_only_upgrade(entity, data) and any(map(_holds_date_literal, texts)):
         return True
     return entity == "SlayerModel" and any(needs_typing("SlayerQuery", q) for q in data.get("source_queries") or [])
@@ -237,7 +239,7 @@ def _holds_date_literal(text: str) -> bool:
     return any(is_date_only(s.value) for s in string_literal_spans(text))
 
 
-def _model_texts(data: dict) -> list[str]:
+def _dataset_texts(data: dict) -> list[str]:
     """``data``'s measure formulas and column filters."""
     out: list[str] = []
     for key, field in (("measures", "formula"), ("columns", "filter")):
@@ -259,7 +261,7 @@ def _query_texts(data: dict) -> list[str]:
     raw = data.get("extensions")
     for e in raw if isinstance(raw, list) else []:
         if isinstance(e, dict):
-            out.extend(_model_texts(e))
+            out.extend(_dataset_texts(e))
     return out
 
 
@@ -267,10 +269,10 @@ def _upgraded(text: str, *, label: str | None, host: dict | None, extensions: li
     scan = scan_date_only(text)
     if not scan.sites and not scan.unlocated:
         return text
-    models = _typing.get() or StoredModels()
+    models = _typing.get() or StoredDatasets()
     rewrite, untyped = [], scan.unlocated > 0
     for site in scan.sites:
-        t = models.column_type(host=host, parts=site.parts, extensions=extensions) if host else None
+        t = models.field_type(host=host, parts=site.parts, extensions=extensions) if host else None
         if t == DataType.TIMESTAMP.value:
             rewrite.append(site)
         untyped = untyped or t is None
@@ -282,9 +284,9 @@ def _upgraded(text: str, *, label: str | None, host: dict | None, extensions: li
     return rewrite_spans(text, rewrite)
 
 
-def upgraded_text(text: str, *, host: dict, models: StoredModels, extensions: list[dict], label: str | None) -> str:
-    """``text`` upgraded, typed from ``host`` with ``models``."""
-    with typing_with(models):
+def upgraded_text(text: str, *, host: dict, datasets: StoredDatasets, extensions: list[dict], label: str | None) -> str:
+    """``text`` upgraded, typed from ``host`` with ``datasets``."""
+    with typing_with(datasets):
         return _upgraded(text, label=label, host=host, extensions=extensions)
 
 
@@ -294,7 +296,7 @@ def _with_text(item: Any, key: str, fn) -> Any:
     return item
 
 
-def _upgraded_model_texts(data: dict, *, label: str | None, host: dict | None, extensions: list[dict]) -> dict:
+def _upgraded_dataset_texts(data: dict, *, label: str | None, host: dict | None, extensions: list[dict]) -> dict:
     """``data``'s measure formulas and column filters upgraded, typed from ``host``."""
 
     def fn(text: str) -> str:
@@ -306,9 +308,9 @@ def _upgraded_model_texts(data: dict, *, label: str | None, host: dict | None, e
     return data
 
 
-def upgrade_model(data: dict) -> dict:
+def upgrade_dataset(data: dict) -> dict:
     """Upgrade the measure formulas and column filters; mark nested stored queries as stored."""
-    data = _upgraded_model_texts(data, label=document_label(data), host=data, extensions=[])
+    data = _upgraded_dataset_texts(data, label=document_label(data), host=data, extensions=[])
     if isinstance(data.get("source_queries"), list):
         data["source_queries"] = [stamp_stored(q) for q in data["source_queries"]]
     return data
@@ -324,7 +326,7 @@ def upgrade_query(data: dict) -> dict:
     data = rewrite_query_fields(data, lambda text: _upgraded(text, label=label, host=host, extensions=extensions))
     if isinstance(data.get("extensions"), list):
         data["extensions"] = [
-            _upgraded_model_texts(dict(e), label=label, extensions=extensions,
+            _upgraded_dataset_texts(dict(e), label=label, extensions=extensions,
                                   host=models.host(e.get("source_name")) if models else None)
             if isinstance(e, dict) else e
             for e in data["extensions"]
@@ -332,6 +334,6 @@ def upgrade_query(data: dict) -> dict:
     return data
 
 
-register_migration(entity="SlayerModel", source_version=23, stored_only=True)(upgrade_model)
+register_migration(entity="SlayerModel", source_version=23, stored_only=True)(upgrade_dataset)
 register_migration(entity="SlayerQuery", source_version=14, stored_only=True)(upgrade_query)
 register_migration(entity="Memory", source_version=10, stored_only=True)(stamp_memory_query)

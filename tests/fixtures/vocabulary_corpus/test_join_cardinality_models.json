@@ -1,0 +1,131 @@
+{
+ "source": "tests/test_join_cardinality_models.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "cardinality": "one_to_one"
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ],
+    "cardinality": "one_to_one"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field",
+   "old": {
+    "name": "id",
+    "type": "INT"
+   },
+   "new": {
+    "name": "id",
+    "datatype": "INT"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 85,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 124,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 200,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  }
+ ]
+}

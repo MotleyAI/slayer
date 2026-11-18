@@ -1,0 +1,139 @@
+{
+ "source": "tests/test_dev2215_call_arguments.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "AGG(amount)",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "expression": "AGG(amount)",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "agg(amount) + 1",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "expression": "agg(amount) + 1",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "Agg(amount) > 1"
+    ]
+   },
+   "new": {
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filter": [
+     "Agg(amount) > 1"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     {
+      "expression": "agg(amount, partition_by=status)",
+      "name": "a"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     {
+      "expression": "agg(amount, partition_by=status)",
+      "name": "a"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "Agg",
+    "formula": "SUM({value})"
+   },
+   "new": {
+    "name": "Agg",
+    "expression": "SUM({value})"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "agg",
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "name": "agg",
+    "expression": "sum(amount)"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 17,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 113,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,162 @@
+{
+ "source": "tests/dialects/test_tsql.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "created_at",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "running"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "running"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(cumsum(sum(amount)))",
+    "name": "d"
+   },
+   "new": {
+    "expression": "change(cumsum(sum(amount)))",
+    "name": "d"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(total)"
+   },
+   "new": {
+    "expression": "sum(total)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change_pct(sum(total))",
+    "name": "pct"
+   },
+   "new": {
+    "expression": "change_pct(sum(total))",
+    "name": "pct"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 407,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 412,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 413,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 432,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 445,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 470,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 475,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 476,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 535,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 539,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 540,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 541,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 542,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 549,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 551,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 560,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 593,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 596,
+   "reason": "not fully literal"
+  }
+ ]
+}

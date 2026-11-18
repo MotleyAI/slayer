@@ -348,7 +348,7 @@ _AIOSQLITE_URLS = ["sqlite+aiosqlite:///{tmp}/x.db", "sqlite+aiosqlite://"]
 
 
 @pytest.mark.parametrize("url", _AIOSQLITE_URLS)
-async def test_an_async_sqlite_driver_is_refused(monkeypatch, tmp_path, url) -> None:
+async def test_an_async_sqlite_driver_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path, url) -> None:
     _NoEngine(monkeypatch)
     ds = DatasourceConfig(name="lite", type="sqlite", connection_string=url.format(tmp=tmp_path))
     client = SlayerSQLClient(datasource=ds)
@@ -361,7 +361,7 @@ async def test_an_async_sqlite_driver_is_refused(monkeypatch, tmp_path, url) -> 
 
 
 @pytest.mark.parametrize("url", _AIOSQLITE_URLS)
-def test_an_async_sqlite_driver_is_refused_synchronously(monkeypatch, tmp_path, url) -> None:
+def test_an_async_sqlite_driver_is_refused_synchronously(monkeypatch: pytest.MonkeyPatch, tmp_path, url) -> None:
     _NoEngine(monkeypatch)
     ds = DatasourceConfig(name="lite", type="sqlite", connection_string=url.format(tmp=tmp_path))
     client = SlayerSQLClient(datasource=ds)

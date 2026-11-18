@@ -1,0 +1,1056 @@
+{
+ "source": "tests/test_dev1929_column_granularity.py",
+ "pairs": [
+  {
+   "kind": "field",
+   "old": {
+    "name": "created_at",
+    "type": "time",
+    "granularity": "month"
+   },
+   "new": {
+    "name": "created_at",
+    "datatype": "time",
+    "granularity": "month"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "raw_ts",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "raw_ts",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "measures": [
+     {
+      "formula": "max(created_at)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "region"
+    ],
+    "metrics": [
+     {
+      "expression": "max(created_at)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly",
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "year"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly",
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "year"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "yearly",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev_sum)"
+     }
+    ]
+   },
+   "new": {
+    "population": "yearly",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev_sum)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "year"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "year"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "hour"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "hour"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "customers.signup_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "customers.signup_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "customers.signup_at",
+      "granularity": "year"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "customers.signup_at",
+      "granularity": "year"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "s1",
+    "join_pairs": [
+     [
+      "id",
+      "created_at"
+     ]
+    ]
+   },
+   "new": {
+    "to": "s1",
+    "join_pairs": [
+     [
+      "id",
+      "created_at"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "extensions": [
+     {
+      "source_name": "s1"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "extensions": [
+     {
+      "source_name": "s1"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "extensions": [
+     {
+      "source_name": "s1"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "year"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "extensions": [
+     {
+      "source_name": "s1"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "year"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "dimensions": [
+     "id"
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "dimensions": [
+     "id"
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "orders",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "orders",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "monthly",
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(rev)"
+     }
+    ]
+   },
+   "new": {
+    "population": "monthly",
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "day"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(rev)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "events",
+    "data_source": "ds",
+    "sql_table": "events",
+    "columns": [
+     {
+      "name": "created_at",
+      "type": "time",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "name": "events",
+    "data_source": "ds",
+    "sql_table": "events",
+    "fields": [
+     {
+      "name": "created_at",
+      "datatype": "time",
+      "granularity": "month"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 61,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 111,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 167,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 176,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 368,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 372,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 378,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 379,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 420,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 422,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 427,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 548,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 550,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 551,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 569,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 572,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 575,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 582,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 592,
+   "reason": "unclassifiable"
+  }
+ ]
+}

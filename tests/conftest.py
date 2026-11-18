@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer import async_utils
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.demo import jaffle_shop
 from slayer.embeddings import client as embedding_client
 from slayer.database import engine_factory
@@ -270,17 +270,17 @@ def _no_emitted_statement_reparse(
 
 
 @pytest.fixture
-def sample_model() -> SlayerModel:
-    return SlayerModel(
+def sample_dataset() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test_ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -313,14 +313,14 @@ async def mydb_orders_storage() -> AsyncIterator[YAMLStorage]:
                 name="mydb", type="sqlite", database=":memory:",
             )
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="mydb",
-                columns=[
-                    Column(name="id", sql="id", primary_key=True),
-                    Column(name="amount", sql="amount"),
+                fields=[
+                    DatasetField(name="id", sql="id", primary_key=True),
+                    DatasetField(name="amount", sql="amount"),
                 ],
             )
         )

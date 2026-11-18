@@ -10,7 +10,7 @@ import pyarrow.flight as fl
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.handlers import FlightHandlers
 from slayer.flight.server import build_server
@@ -24,26 +24,26 @@ def _seed(db_path: str) -> None:
         con.execute("CREATE TABLE orders (id INT, amount REAL, status TEXT, created_at TIMESTAMP)")
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
-        measures=[
-            ModelMeasure(name="bad_window", formula="sum(amount, window='90x')"),
-            ModelMeasure(name="no_axis", formula="sum(cumsum(sum(amount, partition_by=status)))"),
+        metrics=[
+            DatasetMetric(name="bad_window", expression="sum(amount, window='90x')"),
+            DatasetMetric(name="no_axis", expression="sum(cumsum(sum(amount, partition_by=status)))"),
         ],
     )
 
 
 @pytest.fixture
 async def flight_client() -> AsyncIterator[fl.FlightClient]:  # pyright: ignore[reportPrivateImportUsage]
-    async with seeded_exec_engine(dialect="sqlite", seed=_seed, models=[_orders()]) as (engine, _):
+    async with seeded_exec_engine(dialect="sqlite", seed=_seed, datasets=[_orders()]) as (engine, _):
         server = build_server(
             host="127.0.0.1", port=0,
             handlers=FlightHandlers(engine=engine),

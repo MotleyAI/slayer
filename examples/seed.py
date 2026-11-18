@@ -1,7 +1,7 @@
 """Shared seed data for SLayer examples.
 
-Creates a small e-commerce dataset suitable for demonstrating rollup joins,
-time dimensions, filters, and cross-model queries.
+Creates a small e-commerce dataset suitable for demonstrating rollup relationships,
+time dimensions, filters, and cross-dataset queries.
 
 Usage:
     python seed.py <connection_string>
@@ -94,7 +94,7 @@ CREATE TABLE orders (
 # NUMBER(p,s)/DECIMAL(p,s) for fixed-point. TIMESTAMP_NTZ avoids the
 # session-time-zone gotcha of bare TIMESTAMP. FK constraints are declarative
 # only (not enforced) — but the Inspector still surfaces them, so
-# auto-ingestion discovers joins.
+# auto-ingestion discovers relationships.
 CREATE_SQL_SNOWFLAKE = """
 CREATE TABLE regions (
     id NUMBER(38,0) PRIMARY KEY,

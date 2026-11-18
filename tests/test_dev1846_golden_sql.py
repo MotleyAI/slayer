@@ -11,7 +11,7 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1846_fixtures import dev1846_models
+from tests._dev1846_fixtures import dev1846_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -26,11 +26,11 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
+_MONTH = [{"field": "ordered_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     kw.setdefault("time_dimensions", _MONTH)
     return SlayerQuery(**kw)
 
@@ -41,91 +41,91 @@ def _cases() -> dict:
         # time_shift over composites — the lift's core.
         "ts/ratio_by_store": _q(
             dimensions=["store"],
-            measures=[{"formula": "time_shift(sum(revenue) / sum(qty), -1)",
+            metrics=[{"expression": "time_shift(sum(revenue) / sum(qty), -1)",
                        "name": "prev"}],
         ),
         "ts/change_pct_ratio": _q(
             dimensions=["store"],
-            measures=[{"formula": "change_pct(sum(revenue) / count(*))", "name": "pct"}],
+            metrics=[{"expression": "change_pct(sum(revenue) / count(*))", "name": "pct"}],
         ),
-        "ts/coalesce_missing": _q(measures=[
-            {"formula": "time_shift(coalesce(sum(revenue), 0), -1)", "name": "prev"},
+        "ts/coalesce_missing": _q(metrics=[
+            {"expression": "time_shift(coalesce(sum(revenue), 0), -1)", "name": "prev"},
         ]),
-        "ts/two_leaves": _q(measures=[
-            {"formula": "time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
+        "ts/two_leaves": _q(metrics=[
+            {"expression": "time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
              "name": "prev"},
         ]),
-        "ts/crossing_join": _q(measures=[
-            {"formula": "time_shift(wrevenue_sum(revenue) * 2, -1)", "name": "prev"},
+        "ts/crossing_join": _q(metrics=[
+            {"expression": "time_shift(wrevenue_sum(revenue) * 2, -1)", "name": "prev"},
         ]),
         # consecutive_periods over the newly lifted value/predicate shapes.
-        "cp/numeric_delta": _q(measures=[
-            {"formula": "consecutive_periods(sum(revenue) - sum(cost))", "name": "streak"},
+        "cp/numeric_delta": _q(metrics=[
+            {"expression": "consecutive_periods(sum(revenue) - sum(cost))", "name": "streak"},
         ]),
-        "cp/bare_cumsum": _q(measures=[
-            {"formula": "consecutive_periods(cumsum(sum(revenue)))", "name": "streak"},
+        "cp/bare_cumsum": _q(metrics=[
+            {"expression": "consecutive_periods(cumsum(sum(revenue)))", "name": "streak"},
         ]),
-        "cp/or": _q(measures=[
-            {"formula": "consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
+        "cp/or": _q(metrics=[
+            {"expression": "consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
              "name": "streak"},
         ]),
-        "cp/not": _q(measures=[
-            {"formula": "consecutive_periods(not (sum(revenue) > 90))", "name": "streak"},
+        "cp/not": _q(metrics=[
+            {"expression": "consecutive_periods(not (sum(revenue) > 90))", "name": "streak"},
         ]),
         "cp/in": _q(
             dimensions=["store"],
-            measures=[{"formula": "consecutive_periods(store in ('A', 'B'))",
+            metrics=[{"expression": "consecutive_periods(store in ('A', 'B'))",
                        "name": "streak"}],
         ),
         "cp/negated_in": _q(
             dimensions=["store"],
-            measures=[{"formula": "consecutive_periods(store not in ('B', 'C'))",
+            metrics=[{"expression": "consecutive_periods(store not in ('B', 'C'))",
                        "name": "streak"}],
         ),
-        "cp/and_simple": _q(measures=[
-            {"formula": "consecutive_periods(sum(revenue) > 40 and sum(cost) > 10)",
+        "cp/and_simple": _q(metrics=[
+            {"expression": "consecutive_periods(sum(revenue) > 40 and sum(cost) > 10)",
              "name": "streak"},
         ]),
         "cp/nested_in_and": _q(
             dimensions=["store"],
-            measures=[{
-                "formula": "consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
+            metrics=[{
+                "expression": "consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
                 "name": "streak"}],
         ),
-        "cp/iif": _q(measures=[
-            {"formula": "consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
+        "cp/iif": _q(metrics=[
+            {"expression": "consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
              "name": "streak"},
         ]),
         # null-test predicates: bare top level and under a connective.
-        "cp/is_null_top": _q(measures=[
-            {"formula": "consecutive_periods(sum(hi_rev) is None)", "name": "streak"},
+        "cp/is_null_top": _q(metrics=[
+            {"expression": "consecutive_periods(sum(hi_rev) is None)", "name": "streak"},
         ]),
-        "cp/is_not_null_and": _q(measures=[
-            {"formula": "consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
+        "cp/is_not_null_and": _q(metrics=[
+            {"expression": "consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
              "name": "streak"},
         ]),
         # comparison-predicate cp already renders — a regression anchor.
-        "cp/change_gt_anchor": _q(measures=[
-            {"formula": "consecutive_periods(change(sum(revenue)) > 0)", "name": "streak"},
+        "cp/change_gt_anchor": _q(metrics=[
+            {"expression": "consecutive_periods(change(sum(revenue)) > 0)", "name": "streak"},
         ]),
-        "cp/boolean_numeric": _q(measures=[
-            {"formula": "consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))",
+        "cp/boolean_numeric": _q(metrics=[
+            {"expression": "consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))",
              "name": "x"},
         ]),
         # Still fail-closed — records the raise. The DEV-1868 series-regime
         # lifts moved the ts_* shapes to tests/test_dev1868_golden_sql.py.
-        "reject/cp_string_family": _q(measures=[
-            {"formula": "consecutive_periods(lower(max(sku)))", "name": "x"},
+        "reject/cp_string_family": _q(metrics=[
+            {"expression": "consecutive_periods(lower(max(sku)))", "name": "x"},
         ]),
     }
 
 
 async def _generate_one(query: SlayerQuery, dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
-    models = dev1846_models()
+    models = dev1846_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

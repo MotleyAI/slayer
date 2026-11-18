@@ -16,7 +16,7 @@ import tempfile
 import duckdb
 
 from slayer.demo.jaffle_shop import (
-    CENTS_COLUMNS,
+    CENTS_FIELDS,
     LOAD_ORDER,
     TABLE_NAMES,
     create_schema,
@@ -26,7 +26,7 @@ from slayer.demo.jaffle_shop import (
 )
 
 __all__ = [
-    "CENTS_COLUMNS",
+    "CENTS_FIELDS",
     "LOAD_ORDER",
     "SCHEMA_FILE",
     "TABLE_NAMES",

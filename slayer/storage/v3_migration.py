@@ -51,7 +51,7 @@ def _query_v2_to_v3(data: dict) -> dict:
 
 
 @register_migration("SlayerModel", 2)
-def _model_v2_to_v3(data: dict) -> dict:
+def _dataset_v2_to_v3(data: dict) -> dict:
     """v3 SlayerModel: identical at the model level, but ``source_queries``
     entries (which are raw SlayerQuery dicts, not validated model fields) are
     walked through the SlayerQuery migration chain so any nested ``dry_run``

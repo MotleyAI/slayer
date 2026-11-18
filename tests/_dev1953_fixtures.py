@@ -8,11 +8,11 @@ from typing import Callable, Dict, Optional, Tuple
 
 import pytest
 
-from tests._dev1847_fixtures import SPEND_BAND_EXPR, ModelMeasure, _SALES_ROWS_WIDE
+from tests._dev1847_fixtures import SPEND_BAND_EXPR, DatasetMetric, _SALES_ROWS_WIDE
 
 UREG = {"expression": "upper(region)", "name": "ureg"}
 BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
-AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
+AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
 
 
 def cell_totals(key: Callable[[tuple], Tuple]) -> Dict[Tuple, Optional[float]]:

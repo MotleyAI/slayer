@@ -20,7 +20,7 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1835_fixtures import (
     BAND35,
-    ModelMeasure,
+    DatasetMetric,
     dev1835_models,
     month_td,
     q,
@@ -44,36 +44,36 @@ def _cases() -> dict:
     return {
         "mig/bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, window='90d')", name="w"),
             ],
         ),
         "mig/bare_rk": q(
             dimensions=["region"],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="last(amount)", name="l"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="last(amount)", name="l"),
             ],
         ),
         "lift/band_x_wm": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
-                ModelMeasure(formula="cumsum(sum(amount, window='90d'))", name="x"),
+            metrics=[
+                DatasetMetric(expression="cumsum(sum(amount, window='90d'))", name="x"),
             ],
         ),
         "dedup/dual_role": q(
             dimensions=["region", RBAND],
-            measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+            metrics=[
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
         ),
     }
@@ -83,7 +83,7 @@ async def _generate_one(query, dialect: str):
     models = dev1835_models()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

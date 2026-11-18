@@ -1,0 +1,204 @@
+{
+ "source": "tests/test_dev2021_queries_carry_no_mode_a.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "k": "(SELECT count(*) FROM secrets)"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(scaled)"
+     }
+    ],
+    "variables": {
+     "k": "(SELECT count(*) FROM secrets)"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "weighted_avg(amount, weight='length(sqlite_version())')"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "weighted_avg(amount, weight='length(sqlite_version())')"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     {
+      "expression": "upper(customers.tier)",
+      "name": "tier_label"
+     }
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "expression": "upper(customers.tier)",
+      "name": "tier_label"
+     }
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(scaled)",
+      "name": "s"
+     }
+    ],
+    "variables": {
+     "k": 2
+    }
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(scaled)",
+      "name": "s"
+     }
+    ],
+    "variables": {
+     "k": 2
+    }
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 150,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 210,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 237,
+   "reason": "not fully literal"
+  }
+ ]
+}

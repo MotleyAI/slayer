@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1840_fixtures import dev1840_models
-from tests._dev1841_fixtures import ModelMeasure, SlayerQuery, dev1841_models
+from tests._dev1840_fixtures import dev1840_datasets
+from tests._dev1841_fixtures import DatasetMetric, SlayerQuery, dev1841_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -28,39 +28,39 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
             "snowflake"]
 
 _MODEL_SETS = {
-    "default": dev1840_models,
-    "ext": dev1841_models,
+    "default": dev1840_datasets,
+    "ext": dev1841_datasets,
 }
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-NC = ModelMeasure(formula="count(customers.*)", name="nc")
-POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
-MED = ModelMeasure(formula="median(customers.spend)", name="med")
-RENT = ModelMeasure(formula="sum(stores.rent)", name="rent")
-GS = ModelMeasure(formula="sum(customers.gold_spend)", name="gs")
-PART = ModelMeasure(formula="sum(customers.spend, partition_by=status)", name="cm")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+NC = DatasetMetric(expression="count(customers.*)", name="nc")
+POP = DatasetMetric(expression="sum(customers.regions.pop)", name="pop")
+MED = DatasetMetric(expression="median(customers.spend)", name="med")
+RENT = DatasetMetric(expression="sum(stores.rent)", name="rent")
+GS = DatasetMetric(expression="sum(customers.gold_spend)", name="gs")
+PART = DatasetMetric(expression="sum(customers.spend, partition_by=status)", name="cm")
 
 
 def _cases() -> dict:
     return {
         "assoc/spend_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "measures": [CM]}},
+                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
         "assoc/count_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "measures": [NC]}},
+                                  "kw": {"dimensions": ["status"], "metrics": [NC]}},
         "assoc/pop_by_status": {"models": "default", "mode": "associate",
-                                "kw": {"dimensions": ["status"], "measures": [POP]}},
+                                "kw": {"dimensions": ["status"], "metrics": [POP]}},
         "assoc/median_by_status": {"models": "default", "mode": "associate",
-                                   "kw": {"dimensions": ["status"], "measures": [MED]}},
+                                   "kw": {"dimensions": ["status"], "metrics": [MED]}},
         "assoc/rent_composite_key": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "measures": [RENT]}},
+                                     "kw": {"dimensions": ["status"], "metrics": [RENT]}},
         "assoc/measure_local_filter": {"models": "ext", "mode": "associate",
-                                       "kw": {"dimensions": ["status"], "measures": [GS]}},
+                                       "kw": {"dimensions": ["status"], "metrics": [GS]}},
         "assoc/explicit_partition": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "measures": [PART]}},
+                                     "kw": {"dimensions": ["status"], "metrics": [PART]}},
         "bcast/spend_by_status": {"models": "default", "mode": "broadcast",
-                                  "kw": {"dimensions": ["status"], "measures": [CM]}},
+                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
         "bcast/attributable_tier": {"models": "default", "mode": None,
-                                    "kw": {"dimensions": ["customers.tier"], "measures": [CM]}},
+                                    "kw": {"dimensions": ["customers.tier"], "metrics": [CM]}},
     }
 
 
@@ -70,9 +70,9 @@ async def _generate_one(case, dialect: str):
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model="orders", **kw)
+        query = SlayerQuery(population="orders", **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

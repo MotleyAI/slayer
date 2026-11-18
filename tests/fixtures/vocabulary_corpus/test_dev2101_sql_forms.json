@@ -1,0 +1,71 @@
+{
+ "source": "tests/test_dev2101_sql_forms.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id"
+   },
+   "new": {
+    "field": "id"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id"
+   },
+   "new": {
+    "field": "id"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(iif(status <> 'paid', 1, 0))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(iif(status <> 'paid', 1, 0))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "status"
+   },
+   "new": {
+    "field": "status"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id"
+   },
+   "new": {
+    "field": "id"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id"
+   },
+   "new": {
+    "field": "id"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id"
+   },
+   "new": {
+    "field": "id"
+   }
+  }
+ ],
+ "skipped": []
+}

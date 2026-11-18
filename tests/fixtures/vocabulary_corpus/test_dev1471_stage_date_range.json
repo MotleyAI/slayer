@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_dev1471_stage_date_range.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  }
+ ]
+}

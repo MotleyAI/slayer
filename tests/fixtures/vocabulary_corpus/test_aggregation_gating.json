@@ -1,0 +1,667 @@
+{
+ "source": "tests/test_aggregation_gating.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.id)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "sum(customers.id)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(customers.id)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "count(customers.id)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.name)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "sum(customers.name)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "min(customers.name)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "min(customers.name)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.rating)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "sum(customers.rating)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(customers.rating)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "avg(customers.rating)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "bogus_agg(customers.name)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "bogus_agg(customers.name)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "name_concat",
+    "formula": "STRING_AGG({value}, ',')"
+   },
+   "new": {
+    "name": "name_concat",
+    "expression": "STRING_AGG({value}, ',')"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "name_concat(customers.name)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "name_concat(customers.name)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.completed_rev)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "sum(customers.completed_rev)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "bogus(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "bogus(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "bogus(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "bogus(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "stdev(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "stdev(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(status)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "sum(status)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(status)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "sum(status)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "bogus(*)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "bogus(*)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "myagg",
+    "formula": "SUM({value}) * 2"
+   },
+   "new": {
+    "name": "myagg",
+    "expression": "SUM({value}) * 2"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "myagg(rating)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "myagg(rating)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "myagg",
+    "formula": "SUM({value}) * 2"
+   },
+   "new": {
+    "name": "myagg",
+    "expression": "SUM({value}) * 2"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "myagg(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "myagg(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "countd(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "countd(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "round(sum(amount), 2)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "round(sum(amount), 2)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "round(sum(amount), 2)",
+    "name": "r"
+   },
+   "new": {
+    "expression": "round(sum(amount), 2)",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "round(sum(amount))",
+    "name": "r"
+   },
+   "new": {
+    "expression": "round(sum(amount))",
+    "name": "r"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "abs(sum(amount))",
+    "name": "a"
+   },
+   "new": {
+    "expression": "abs(sum(amount))",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "myagg",
+    "formula": "SUM({value}) * 2"
+   },
+   "new": {
+    "name": "myagg",
+    "expression": "SUM({value}) * 2"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "bogus(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "bogus(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "zzzzz(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "zzzzz(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "countd",
+    "formula": "COUNT(DISTINCT {value}) + 1"
+   },
+   "new": {
+    "name": "countd",
+    "expression": "COUNT(DISTINCT {value}) + 1"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "countd(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "countd(amount)",
+    "name": "result"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "countd(amount)",
+    "name": "result"
+   },
+   "new": {
+    "expression": "countd(amount)",
+    "name": "result"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 19,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 34,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 59,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 76,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 211,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 213,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 214,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 361,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 458,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 463,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 464,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 466,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 494,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 495,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 496,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 527,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 600,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 605,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 606,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 607,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 608,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 609,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 665,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 670,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 671,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 672,
+   "reason": "not fully literal"
+  }
+ ]
+}

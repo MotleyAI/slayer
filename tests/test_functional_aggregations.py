@@ -13,15 +13,15 @@ from slayer.core.enums import DataType
 from slayer.core.errors import EntityResolutionError, UnknownFunctionError
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -49,38 +49,38 @@ from tests._engine_helpers import _engine_generate
 # ===========================================================================
 
 
-def _orders(**overrides) -> SlayerModel:
+def _orders(**overrides) -> SlayerDataset:
     fields = dict(
         name="orders",
         data_source="test",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="price", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="price", datatype=DataType.DOUBLE),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
     fields.update(overrides)
-    return SlayerModel(**fields)
+    return SlayerDataset(**fields)
 
 
-def _customers(**overrides) -> SlayerModel:
+def _customers(**overrides) -> SlayerDataset:
     fields = dict(
         name="customers",
         data_source="test",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="score", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="score", datatype=DataType.DOUBLE),
         ],
     )
     fields.update(overrides)
-    return SlayerModel(**fields)
+    return SlayerDataset(**fields)
 
 
 # ===========================================================================
@@ -211,8 +211,8 @@ class TestFunctionalParseErrors:
     def test_kwargs_only_unknown_call_raises(self) -> None:
         orders = _orders()
         parsed = parse_expr("bogus(p=1)")
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders)
-        scope = ModelScope(source_model=orders)
+        bundle = ResolvedSourceBundle(dialect="postgres", population=orders)
+        scope = DatasetScope(population=orders)
         with pytest.raises(UnknownFunctionError):
             bind_expr(parsed, scope=scope, bundle=bundle)
 
@@ -227,71 +227,71 @@ class TestFunctionalParseErrors:
 
 
 async def _binding_error(
-    formula: str, *, model: SlayerModel, extra_models: list | None = None
+    expression: str, *, dataset: SlayerDataset, extra_datasets: list | None = None
 ) -> ValueError:
     query = SlayerQuery(
-        source_model="orders", measures=[formula], dimensions=["status"]
+        population="orders", metrics=[expression], dimensions=["status"]
     )
     with pytest.raises(ValueError) as ei:
-        await _engine_generate(query=query, model=model, extra_models=extra_models)
+        await _engine_generate(query=query, dataset=dataset, extra_datasets=extra_datasets)
     return ei.value
 
 
 class TestCustomAggregationBinding:
     async def test_host_model_custom_agg(self) -> None:
         model = _orders(
-            aggregations=[Aggregation(name="my_agg", formula="AVG({value})")]
+            aggregations=[Aggregation(name="my_agg", expression="AVG({value})")]
         )
         sql_f = await _engine_generate(
-            query=SlayerQuery(source_model="orders", measures=["my_agg(price)"]),
-            model=model,
+            query=SlayerQuery(population="orders", metrics=["my_agg(price)"]),
+            dataset=model,
         )
         assert "AVG(" in sql_f
 
     async def test_joined_model_custom_agg(self) -> None:
         customers = _customers(
-            aggregations=[Aggregation(name="rolling_avg", formula="AVG({value})")]
+            aggregations=[Aggregation(name="rolling_avg", expression="AVG({value})")]
         )
         sql_f = await _engine_generate(
             query=SlayerQuery(
-                source_model="orders", measures=["rolling_avg(customers.score)"]
+                population="orders", metrics=["rolling_avg(customers.score)"]
             ),
-            model=_orders(),
-            extra_models=[customers],
+            dataset=_orders(),
+            extra_datasets=[customers],
         )
         assert "AVG(" in sql_f
 
 
 class TestGlobalNameValidation:
     async def test_unknown_over_column_gets_standard_error(self) -> None:
-        err = await _binding_error("bogus(price)", model=_orders())
+        err = await _binding_error("bogus(price)", dataset=_orders())
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_star_bogus_functional_gets_standard_error(self) -> None:
-        err = await _binding_error("bogus(*)", model=_orders())
+        err = await _binding_error("bogus(*)", dataset=_orders())
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_dotted_star_bogus_gets_standard_error(self) -> None:
         err = await _binding_error(
-            "bogus(customers.*)", model=_orders(), extra_models=[_customers()]
+            "bogus(customers.*)", dataset=_orders(), extra_datasets=[_customers()]
         )
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_avg_star_rejected(self) -> None:
-        await _binding_error("avg(*)", model=_orders())
+        await _binding_error("avg(*)", dataset=_orders())
 
     async def test_unknown_agg_error_hints_scalar_near_miss(self) -> None:
-        err = await _binding_error("rond(price)", model=_orders())
+        err = await _binding_error("rond(price)", dataset=_orders())
         msg = str(err)
         assert "round" in msg
         assert "scalar" in msg.lower()
 
     async def test_missing_weight_parameter(self) -> None:
-        err = await _binding_error("weighted_avg(price)", model=_orders())
+        err = await _binding_error("weighted_avg(price)", dataset=_orders())
         assert "weight" in str(err)
 
     async def test_missing_other_parameter(self) -> None:
-        err = await _binding_error("corr(price)", model=_orders())
+        err = await _binding_error("corr(price)", dataset=_orders())
         assert "other" in str(err)
 
 
@@ -302,15 +302,15 @@ class TestModeAUnchanged:
         model = _orders()
         model = model.model_copy(
             update={
-                "columns": [
-                    *model.columns,
-                    Column(name="grand_total", sql="SUM(revenue)", type=DataType.DOUBLE),
+                "fields": [
+                    *model.fields,
+                    DatasetField(name="grand_total", sql="SUM(revenue)", datatype=DataType.DOUBLE),
                 ]
             }
         )
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"source_model": "orders", "measures": ["max(grand_total)"]}),
-            model=model,
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(grand_total)"]}),
+            dataset=model,
         )
         assert "SUM(orders.revenue)" in sql
 
@@ -318,14 +318,14 @@ class TestModeAUnchanged:
 class TestScalarCollidingCustomAggNames:
     @pytest.mark.parametrize("name", ["round", "iif", "coalesce"])
     def test_scalar_name_accepted(self, name: str) -> None:
-        assert Aggregation(name=name, formula="AVG({value})").name == name
+        assert Aggregation(name=name, expression="AVG({value})").name == name
 
     def test_transform_name_still_rejected(self) -> None:
         with pytest.raises(ValueError, match="cumsum"):
-            Aggregation(name="cumsum", formula="AVG({value})")
+            Aggregation(name="cumsum", expression="AVG({value})")
 
     def test_regular_custom_name_accepted(self) -> None:
-        Aggregation(name="my_agg", formula="AVG({value})")
+        Aggregation(name="my_agg", expression="AVG({value})")
 
 
 # ===========================================================================
@@ -340,13 +340,13 @@ class TestFunctionalIsFirstClass:
             await storage.save_datasource(
                 DatasourceConfig(name="test", type="postgres")
             )
-            await storage.save_model(_orders())
+            await storage.save_dataset(_orders())
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
-                source_model="orders",
-                measures=["sum(revenue)", "count(*)"],
+                population="orders",
+                metrics=["sum(revenue)", "count(*)"],
                 dimensions=["status"],
-                filters=["sum(revenue) > 0"],
+                filter=["sum(revenue) > 0"],
             )
             with warnings_mod.catch_warnings():
                 warnings_mod.simplefilter("error", SlayerNormalizationWarning)
@@ -366,14 +366,14 @@ class TestFunctionalIsFirstClass:
             )
             engine = SlayerQueryEngine(storage=storage)
             model = _orders(
-                measures=[ModelMeasure(name="rev", formula="sum(revenue)")]
+                metrics=[DatasetMetric(name="rev", expression="sum(revenue)")]
             )
             with warnings_mod.catch_warnings():
                 warnings_mod.simplefilter("error", SlayerNormalizationWarning)
-                await engine.save_model(model)
-            stored = await storage.get_model("orders", data_source="test")
+                await engine.save_dataset(model)
+            stored = await storage.get_dataset("orders", data_source="test")
         assert stored is not None
-        assert stored.measures[0].formula == "sum(revenue)"
+        assert stored.metrics[0].expression == "sum(revenue)"
 
 
 # ===========================================================================
@@ -387,16 +387,16 @@ async def refs_storage(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="x")
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             data_source="mydb",
             sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="cost", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="cost", datatype=DataType.DOUBLE),
             ],
         )
     )
@@ -420,7 +420,7 @@ class TestEntityRefsFunctional:
 
     async def test_extract_entities(self, refs_storage) -> None:
         q_func = SlayerQuery(
-            source_model="orders", measures=["sum(amount)"], dimensions=["status"]
+            population="orders", metrics=["sum(amount)"], dimensions=["status"]
         )
         e_func = await extract_entities_from_query(q_func, storage=refs_storage)
         assert e_func.canonical_forms == ["mydb.orders", "mydb.orders.status", "mydb.orders.amount"]
@@ -428,8 +428,8 @@ class TestEntityRefsFunctional:
     async def test_recommend_root_model(self, refs_storage) -> None:
         engine = SlayerQueryEngine(storage=refs_storage)
         try:
-            f = await engine.recommend_root_model(["sum(orders.amount)"])
-            assert f.root_model == "orders"
+            f = await engine.recommend_population(["sum(orders.amount)"])
+            assert f.population == "orders"
             assert [ip.path for ip in f.item_paths] == ["sum(amount)"]
         finally:
             await engine.aclose()
@@ -438,7 +438,7 @@ class TestEntityRefsFunctional:
         engine = SlayerQueryEngine(storage=refs_storage)
         try:
             with pytest.raises((ValueError, EntityResolutionError)):
-                await engine.recommend_root_model(
+                await engine.recommend_population(
                     ["sum(orders.amount - orders.cost)"]
                 )
         finally:
@@ -461,10 +461,10 @@ class TestCrossSpellingMatching:
         ("measure", "filter_"),
         [("sum(amount)", "SUM(amount) > 100"), ("SUM(amount)", "sum(amount) > 100")],
     )
-    async def test_filter_resolves_to_renamed_measure(self, exec_engine, measure, filter_) -> None:
+    async def test_filter_resolves_to_renamed_measure(self, exec_engine: SlayerQueryEngine, measure, filter_) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["channel"],
-            "measures": [{"formula": measure, "name": "rev"}], "filters": [filter_],
+            "population": "orders", "dimensions": ["channel"],
+            "metrics": [{"expression": measure, "name": "rev"}], "filter": [filter_],
         }))
         assert resp.columns == ["orders.channel", "orders.rev"]
         assert [(r["orders.channel"], float(r["orders.rev"])) for r in resp.data] == [("web", 165.0)]
