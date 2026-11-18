@@ -118,6 +118,12 @@ None is strained.
     - attributes `DatasetRelationship.join_pairs` (get and set), `DatasetExtension.source_name`, `QueryMetric.formula`.
 
     Main-only names get none. (default, per the carried-over curated-list ruling)
+29. **`DataType` holds the wire values; the engine's kinds move to an internal `TypeKind`.**
+    - `DataType` members: `STRING`, `INTEGER`, `DECIMAL`, `FLOAT`, `BOOLEAN`, `DATE`, `TIME`, `DATETIME`, `DATETIME_TZ`, `OPAQUE`, `ARRAY`, valued by Ossie's names. Pre-2.0 member names get no twins.
+    - `TypeKind` keeps today's eight kinds and is reached only through the wire→kind table (decision 3). It goes once DEV-2244 gives `Decimal`, `Time` and `DateTimeTz` their own semantics.
+    - Tests respell `TEXT→STRING`, `INT→INTEGER`, `DOUBLE→FLOAT`, `TIMESTAMP→DATETIME`, `UNKNOWN→OPAQUE`.
+    - Alternatives: a new public enum beside `DataType`, or a string `Literal`. Rejected: the enum named for the field would not hold its values.
+    - (user)
 
 ## Risks / Trade-offs
 
