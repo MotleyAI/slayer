@@ -1,4 +1,4 @@
-"""A store written by this release reads on the previous release (spec: models/stored-upgrade)."""
+"""A store written by this release omits unset fields (spec: models/stored-upgrade)."""
 
 from __future__ import annotations
 

@@ -83,10 +83,10 @@ For each query about to execute, a usage report SHALL count structural flags —
 - **THEN** the report counts one `custom` aggregation and no function
 
 ### Requirement: Environment and context fields
-A usage report SHALL include the SLayer version, Python `major.minor`, OS family, CPU architecture, whether the process runs in a container, and which optional extras are installed (determined from package metadata without importing them). It SHALL include queries per dialect, datasources per dialect bucketed (0 / 1 / 2–5 / 6+), and per-process histograms of storage backend type, model-count bucket (0 / 1–10 / 11–50 / 51–200 / 200+) and whether the bundled demo datasource is in use. These values SHALL be taken only from objects the process has already loaded; usage reporting SHALL NOT itself open a connection, call storage or import an optional package.
+A usage report SHALL include the SLayer version, Python `major.minor`, OS family, CPU architecture, whether the process runs in a container, and which optional extras are installed (determined from package metadata without importing them). It SHALL include queries per dialect, datasources per dialect bucketed (0 / 1 / 2–5 / 6+), and per-process histograms of storage backend type, dataset-count bucket (0 / 1–10 / 11–50 / 51–200 / 200+) and whether the bundled demo datasource is in use. These values SHALL be taken only from objects the process has already loaded; usage reporting SHALL NOT itself open a connection, call storage or import an optional package.
 
-#### Scenario: Model count is bucketed
-- **WHEN** the loaded storage holds 37 models
+#### Scenario: Dataset count is bucketed
+- **WHEN** the loaded storage holds 37 datasets
 - **THEN** the report records the bucket `11-50`, not the number
 
 #### Scenario: No extra storage access
