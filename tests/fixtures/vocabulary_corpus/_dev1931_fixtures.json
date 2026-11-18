@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "o",
-    "join_pairs": [
-     [
-      "o_id",
-      "id"
-     ]
+    "from_columns": [
+     "o_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "ag",
-    "join_pairs": [
-     [
-      "ag_id",
-      "id"
-     ]
+    "from_columns": [
+     "ag_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "ag",
-    "join_pairs": [
-     [
-      "a1",
-      "id"
-     ]
+    "from_columns": [
+     "a1"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "ag",
-    "join_pairs": [
-     [
-      "a2",
-      "id"
-     ]
+    "from_columns": [
+     "a2"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

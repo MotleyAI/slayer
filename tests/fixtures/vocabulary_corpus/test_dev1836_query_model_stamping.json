@@ -40,15 +40,13 @@
    },
    "new": {
     "to": "vm_kpis",
-    "join_pairs": [
-     [
-      "status",
-      "status"
-     ],
-     [
-      "channel",
-      "channel"
-     ]
+    "from_columns": [
+     "status",
+     "channel"
+    ],
+    "to_columns": [
+     "status",
+     "channel"
     ]
    }
   },
@@ -76,11 +74,11 @@
    },
    "new": {
     "to": "vm_kpis2",
-    "join_pairs": [
-     [
-      "status",
-      "status"
-     ]
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "status"
     ]
    }
   },
@@ -112,15 +110,13 @@
    },
    "new": {
     "to": "vm_grain",
-    "join_pairs": [
-     [
-      "status",
-      "status"
-     ],
-     [
-      "channel",
-      "channel"
-     ]
+    "from_columns": [
+     "status",
+     "channel"
+    ],
+    "to_columns": [
+     "status",
+     "channel"
     ]
    }
   },
@@ -148,11 +144,11 @@
    },
    "new": {
     "to": "vm_dup2",
-    "join_pairs": [
-     [
-      "status",
-      "status"
-     ]
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "status"
     ]
    }
   }

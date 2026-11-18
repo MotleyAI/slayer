@@ -44,7 +44,6 @@ from tests import _dev1840_fixtures as f40
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     INNER_CR,
-    DatasetMetric,
     associated_warnings,
     broadcast_warnings,
     chain_q,
@@ -111,7 +110,7 @@ CITY_LEN_WAVG = {"North": 390.0 / 9.0, "South": 70.0, "East": 57.5, "Gap": 8.0,
 
 
 def _dim(expr: str, name: str) -> Dict[str, str]:
-    return {"expression": expr, "name": name}
+    return {"field": expr, "alias": name}
 
 
 def _bool(v: Any) -> Optional[bool]:
@@ -357,7 +356,7 @@ class TestNegativeControls:
 
     async def test_adding_the_reaggregation_is_cardinality_neutral(self, exec_engine):
         dims = ["region", _dim("city == 'Alpha'", "is_alpha")]
-        tot = DatasetMetric(expression="sum(amount)", name="tot")
+        tot = QueryMetric(metric="sum(amount)", alias="tot")
         base = await exec_engine.execute(sales_q(dimensions=dims, metrics=[tot]))
         both = await exec_engine.execute(sales_q(
             dimensions=dims, metrics=[tot, reagg("avg", INNER_CR, name="acr")]))

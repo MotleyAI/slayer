@@ -14,7 +14,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, QueryDimension, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
@@ -155,8 +155,8 @@ class TestPostgresIdentifierLength:
     async def test_collapse_with_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """Two over-limit siblings + ORDER BY outer wrap; raised AmbiguousColumnError before the fix."""
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-                FieldRef(name=f"{DEEP}.name"),
-                FieldRef(name=f"{DEEP}.email"),
+                QueryDimension(field=f"{DEEP}.name"),
+                QueryDimension(field=f"{DEEP}.email"),
                 QueryDimension(field="status"),
             ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], "order": [OrderItem.model_validate({
                 "field": "avg(totalAmount)",
@@ -177,8 +177,8 @@ class TestPostgresIdentifierLength:
     async def test_collapse_without_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """No outer wrap: the two siblings would silently collapse into one result key."""
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-                FieldRef(name=f"{DEEP}.name"),
-                FieldRef(name=f"{DEEP}.email"),
+                QueryDimension(field=f"{DEEP}.name"),
+                QueryDimension(field=f"{DEEP}.email"),
             ], "metrics": [{"metric": "count(*)"}]})
         result = await chain_env.execute(query=query)
         assert result.data
@@ -191,7 +191,7 @@ class TestPostgresIdentifierLength:
         """One over-limit alias, no sibling: Postgres keys the row by the truncated name and it vanishes."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
             "metrics": [{"metric": "sum(totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
@@ -206,7 +206,7 @@ class TestPostgresIdentifierLength:
         """Pin the aggregate; a wrong-column fitted alias would still be present."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
             "metrics": [{"metric": "sum(totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
@@ -217,7 +217,7 @@ class TestPostgresIdentifierLength:
         """Response exposes canonical keys while the emitted SQL carries the fitted form."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.name"), FieldRef(name=f"{DEEP}.email")],
+            "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=f"{DEEP}.email")],
             "metrics": [{"metric": "count(*)"}],
         })
         result = await chain_env.execute(query=query)
@@ -228,7 +228,7 @@ class TestPostgresIdentifierLength:
         """A cache hit returns canonical keys too, proving decode runs before storage."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
             "metrics": [{"metric": "count(*)"}],
         })
         first = await chain_env.execute(query=query, cache=True)
@@ -257,7 +257,7 @@ class TestPostgresIdentifierLength:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
             "metrics": [{"metric": "sum(totalAmount)"}],
         })
         stage2 = SlayerQuery.model_validate({

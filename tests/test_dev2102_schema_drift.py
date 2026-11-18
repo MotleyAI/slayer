@@ -38,7 +38,7 @@ def _whole_dropped(*, qb: SlayerDataset, dataset: SlayerDataset, column: str) ->
 
 
 _NET = DatasetExtension(dataset="orders", metrics=[DatasetMetric(name="net", expression="sum(amount - tax)")])
-_NET_DIMENSION = {"expression": "amount - tax", "name": "net"}
+_NET_DIMENSION = {"field": "amount - tax", "alias": "net"}
 _BUYER = DatasetExtension(dataset="orders", relationships=[
     DatasetRelationship(to="customers", from_columns=["buyer_ref"], to_columns=["id"], name="buyer"),
 ])
@@ -90,7 +90,7 @@ class TestExtensionDefinitionDependencies:
         assert _whole_dropped(qb=qb, dataset=_orders(), column="amount") == {"qb"}
 
 
-_UPPER_BUYER = {"expression": "UPPER(buyer.name)", "name": "buyer_name"}
+_UPPER_BUYER = {"field": "UPPER(buyer.name)", "alias": "buyer_name"}
 
 
 def _orders_with_stored_buyer() -> SlayerDataset:

@@ -20,7 +20,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import DatasetFieldCycleError
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -988,7 +988,7 @@ async def test_generated_sql_parses(tmp_path, scenario) -> None:
         DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.FLOAT),
         DatasetField(name="ratio_using_derived", sql="A.bar / B.foo_normalized", datatype=DataType.FLOAT),
     ])
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name=scenario)])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field=scenario)])
     sql = await _gen_sql(engine, query, model_a)
     parsed = sqlglot.parse(sql, dialect="sqlite")
     assert parsed
@@ -1883,7 +1883,7 @@ async def test_dev1410_local_bare_ref_inside_case_coalesce_nullif_cast(tmp_path)
         ],
     )
     for col in ("case_use", "coalesce_use", "nullif_use", "cast_use"):
-        query = SlayerQuery(population="A", dimensions=[FieldRef(name=col)])
+        query = SlayerQuery(population="A", dimensions=[QueryDimension(field=col)])
         sql = await _gen_sql(engine, query, model_a)
         norm = _norm(sql)
         assert _no_bare_derived_ref(norm, "A", "score"), (

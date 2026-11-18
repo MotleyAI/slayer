@@ -28,8 +28,8 @@
     ],
     "metrics": [
      {
-      "expression": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
-      "name": "v"
+      "metric": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
+      "alias": "v"
      }
     ]
    }
@@ -55,8 +55,8 @@
     ],
     "metrics": [
      {
-      "expression": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')",
-      "name": "v"
+      "metric": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')",
+      "alias": "v"
      }
     ]
    }
@@ -76,8 +76,8 @@
     "population": "s",
     "metrics": [
      {
-      "expression": "sum(pr)",
-      "name": "v"
+      "metric": "sum(pr)",
+      "alias": "v"
      }
     ]
    }

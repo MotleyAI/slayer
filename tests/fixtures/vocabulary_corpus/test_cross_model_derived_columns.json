@@ -14,23 +14,22 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "foo_normalized",
     "model": "B"
    },
    "new": {
-    "name": "foo_normalized",
-    "dataset": "B"
+    "field": "B.foo_normalized"
    }
   },
   {
@@ -46,11 +45,11 @@
    },
    "new": {
     "to": "other",
-    "join_pairs": [
-     [
-      "other_id",
-      "id"
-     ]
+    "from_columns": [
+     "other_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -67,11 +66,11 @@
    },
    "new": {
     "to": "C",
-    "join_pairs": [
-     [
-      "c_id",
-      "id"
-     ]
+    "from_columns": [
+     "c_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -88,23 +87,22 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "b_display",
     "model": "B"
    },
    "new": {
-    "name": "b_display",
-    "dataset": "B"
+    "field": "B.b_display"
    }
   },
   {
@@ -120,11 +118,11 @@
    },
    "new": {
     "to": "C",
-    "join_pairs": [
-     [
-      "c_id",
-      "id"
-     ]
+    "from_columns": [
+     "c_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -141,11 +139,11 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -162,11 +160,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -183,11 +181,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -204,11 +202,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -225,41 +223,40 @@
    },
    "new": {
     "to": "warehouses",
-    "join_pairs": [
-     [
-      "warehouse_id",
-      "id"
-     ]
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(B.foo_normalized)"
    },
    "new": {
-    "expression": "sum(B.foo_normalized)"
+    "metric": "sum(B.foo_normalized)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(ratio_using_derived)"
    },
    "new": {
-    "expression": "sum(ratio_using_derived)"
+    "metric": "sum(ratio_using_derived)"
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "foo_normalized",
     "model": "B"
    },
    "new": {
-    "name": "foo_normalized",
-    "dataset": "B"
+    "field": "B.foo_normalized"
    }
   },
   {
@@ -275,11 +272,11 @@
    },
    "new": {
     "to": "C",
-    "join_pairs": [
-     [
-      "c_id",
-      "id"
-     ]
+    "from_columns": [
+     "c_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -296,32 +293,31 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "x_derived",
     "model": "B.C"
    },
    "new": {
-    "name": "x_derived",
-    "dataset": "B.C"
+    "field": "B.C.x_derived"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(B.C.x_derived)"
    },
    "new": {
-    "expression": "sum(B.C.x_derived)"
+    "metric": "sum(B.C.x_derived)"
    }
   },
   {
@@ -337,32 +333,31 @@
    },
    "new": {
     "to": "solar_panels",
-    "join_pairs": [
-     [
-      "primary_panel_id",
-      "id"
-     ]
+    "from_columns": [
+     "primary_panel_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "panel_efficiency",
     "model": "solar_panels"
    },
    "new": {
-    "name": "panel_efficiency",
-    "dataset": "solar_panels"
+    "field": "solar_panels.panel_efficiency"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "avg(solar_panels.panel_efficiency)"
    },
    "new": {
-    "expression": "avg(solar_panels.panel_efficiency)"
+    "metric": "avg(solar_panels.panel_efficiency)"
    }
   },
   {
@@ -378,11 +373,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -399,11 +394,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -420,11 +415,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -441,21 +436,21 @@
    },
    "new": {
     "to": "warehouses",
-    "join_pairs": [
-     [
-      "warehouse_id",
-      "id"
-     ]
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "max(customers.regions.name_upper)"
    },
    "new": {
-    "expression": "max(customers.regions.name_upper)"
+    "metric": "max(customers.regions.name_upper)"
    }
   },
   {
@@ -471,11 +466,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -514,11 +509,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -535,11 +530,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -589,11 +584,11 @@
    },
    "new": {
     "to": "loss_payment",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -611,13 +606,13 @@
    },
    "new": {
     "to": "loss_payment",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "join_type": "inner",
+    "from_columns": [
+     "id"
     ],
-    "join_type": "inner"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -644,11 +639,11 @@
    },
    "new": {
     "to": "claim",
-    "join_pairs": [
-     [
-      "claim_id",
-      "id"
-     ]
+    "from_columns": [
+     "claim_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -731,11 +726,11 @@
    },
    "new": {
     "to": "claim",
-    "join_pairs": [
-     [
-      "claim_id",
-      "id"
-     ]
+    "from_columns": [
+     "claim_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -774,11 +769,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -795,11 +790,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -827,11 +822,11 @@
    },
    "new": {
     "to": "warehouses",
-    "join_pairs": [
-     [
-      "warehouse_id",
-      "id"
-     ]
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

@@ -24,12 +24,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct(customer_id)"
    },
    "new": {
-    "expression": "count_distinct(customer_id)"
+    "metric": "count_distinct(customer_id)"
    }
   },
   {
@@ -44,12 +44,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct(customer_id)"
    },
    "new": {
-    "expression": "count_distinct(customer_id)"
+    "metric": "count_distinct(customer_id)"
    }
   },
   {
@@ -119,12 +119,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "avg(profit)"
    },
    "new": {
-    "expression": "avg(profit)"
+    "metric": "avg(profit)"
    }
   },
   {

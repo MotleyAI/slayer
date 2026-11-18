@@ -22,7 +22,7 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
 )
-from slayer.core.query import DatasetMetric, QueryMetric, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import (
     PlannedQuery,
@@ -46,13 +46,13 @@ async def exec_engine(request):
 
 def _band(key: str, threshold: int) -> dict:
     return {
-        "expression": f"case when sum(amount, partition_by={key}) > {threshold} "
+        "field": f"case when sum(amount, partition_by={key}) > {threshold} "
                       "then 'high' else 'other' end",
-        "name": "band",
+        "alias": "band",
     }
 
 
-REVENUE = DatasetMetric(expression="sum(amount)", name="revenue")
+REVENUE = QueryMetric(metric="sum(amount)", alias="revenue")
 
 
 def _q(**kw) -> SlayerQuery:

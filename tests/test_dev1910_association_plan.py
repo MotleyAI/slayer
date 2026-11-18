@@ -16,10 +16,10 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import bundle, dev1840_datasets
-from tests._dev1841_fixtures import DatasetMetric, assoc_q
+from tests._dev1841_fixtures import assoc_q
 from tests._dev1900_fixtures import dev1900_datasets, orders_q
 
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 HEADLINE = ("weighted_avg(customers.spend, "
             "weight=sum(amount, partition_by=customers.regions.name))")
 

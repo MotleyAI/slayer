@@ -123,21 +123,21 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "customers.aov"
    },
    "new": {
-    "expression": "customers.aov"
+    "metric": "customers.aov"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "customers.aov"
    },
    "new": {
-    "expression": "customers.aov"
+    "metric": "customers.aov"
    }
   },
   {

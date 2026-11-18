@@ -29,9 +29,9 @@ def _orders(*fields: dict[str, Any], **extra: Any) -> dict[str, Any]:
 # ─────────────────────────── field datatypes ───────────────────────────────
 
 @pytest.mark.parametrize(("datatype", "expected"), [
-    ("String", DataType.STRING), ("Integer", DataType.INTEGER), ("Decimal", DataType.FLOAT),
+    ("String", DataType.STRING), ("Integer", DataType.INTEGER), ("Decimal", DataType.DECIMAL),
     ("Float", DataType.FLOAT), ("Boolean", DataType.BOOLEAN), ("Date", DataType.DATE),
-    ("DateTime", DataType.DATETIME), ("DateTimeTz", DataType.DATETIME), ("Time", DataType.OPAQUE),
+    ("DateTime", DataType.DATETIME), ("DateTimeTz", DataType.DATETIME_TZ), ("Time", DataType.TIME),
     ("Opaque", DataType.OPAQUE),
 ])
 @pytest.mark.usefixtures("failing_probe")
@@ -39,7 +39,7 @@ def test_declared_type_used_when_the_database_cannot_report_one(db: Path, dataty
     result = convert(db=db, docs=documents(_orders(f("x", "UPPER(status)", datatype=datatype))))
     x = cols(by_name(result)["orders"])["x"]
     assert x.datatype == expected
-    assert (x.meta or {})["osi_datatype"] == datatype
+    assert "osi_datatype" not in (x.meta or {})
 
 
 @pytest.mark.usefixtures("failing_probe")
@@ -48,17 +48,17 @@ def test_double_when_neither_database_nor_declared_type(db: Path) -> None:
     assert cols(by_name(result)["orders"])["x"].datatype == DataType.FLOAT
 
 
-def test_database_type_wins_and_disagreement_is_reported(db: Path) -> None:
+def test_declared_type_wins_and_disagreement_is_reported(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("qty", "quantity", datatype="String"))))
     qty = cols(by_name(result)["orders"])["qty"]
-    assert qty.datatype == DataType.INTEGER
-    assert (qty.meta or {})["osi_datatype"] == "String"
+    assert qty.datatype == DataType.STRING
+    assert "osi_datatype" not in (qty.meta or {})
     assert mentions(result, "qty", severity="info")
 
 
-def test_probed_type_wins_over_declared_type(db: Path) -> None:
+def test_declared_type_wins_over_probed_type(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("up", "UPPER(status)", datatype="Integer"))))
-    assert cols(by_name(result)["orders"])["up"].datatype == DataType.STRING
+    assert cols(by_name(result)["orders"])["up"].datatype == DataType.INTEGER
     assert mentions(result, "up", severity="info")
 
 
@@ -75,7 +75,7 @@ def test_integer_expression_is_int(db: Path) -> None:
 
 
 @pytest.mark.parametrize(("select", "expected", "db_type"), [
-    pytest.param("CAST(o_totalprice AS DECIMAL(18,2))", DataType.FLOAT, "DECIMAL(18,2)", id="exact-decimal"),
+    pytest.param("CAST(o_totalprice AS DECIMAL(18,2))", DataType.DECIMAL, "DECIMAL(18,2)", id="exact-decimal"),
     pytest.param("CAST('{}' AS JSON)", DataType.STRING, None, id="duckdb-json-is-text"),
 ])
 def test_query_column_keeps_its_database_type(db: Path, select: str, expected: DataType, db_type: str | None) -> None:
@@ -124,7 +124,7 @@ def test_time_of_day_is_not_the_default_time_dimension(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("at_time", "UPPER(status)", datatype="Time"))))
     orders = by_name(result)["orders"]
     at_time = cols(orders)["at_time"]
-    assert at_time.datatype == DataType.OPAQUE
+    assert at_time.datatype == DataType.TIME
     assert (at_time.meta or {})["osi_is_time"] is True
     assert orders.default_time_dimension is None
 
@@ -135,8 +135,8 @@ async def test_metric_datatype_is_metadata_only(db: Path) -> None:
     metrics = [m("typed", "SUM(amount)", datatype="Decimal"), m("untyped", "SUM(amount)")]
     result = convert(db=db, docs=documents(_orders(f("amount", "o_totalprice"), metrics=metrics)))
     measures = {x.name: x for x in by_name(result)["orders"].metrics}
-    assert (measures["typed"].meta or {})["osi_datatype"] == "Decimal"
-    assert measures["typed"].datatype is None
+    assert "osi_datatype" not in (measures["typed"].meta or {})
+    assert measures["typed"].datatype == DataType.DECIMAL
     rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["typed", "untyped"]})
     # Exact only if the renamed field keeps the source column's db_type.
     assert rows[0]["orders.typed"] == Decimal("22.00")

@@ -473,7 +473,7 @@ LIST_CASES = [
              build=lambda: [
                  SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["id"],
                                              "filter": ["contains(skills, 'go')"]}),
-                 SlayerQuery.model_validate({"population": "s1", "metrics": [_count()]}),
+                 SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "count(*)", "alias": "n"}]}),
              ]),
     ListCase(case_id="collect", mentions="collect",
              build=lambda: _contractors(dimensions=["team"], metrics=[{"metric": "collect(city)", "alias": "c"}])),

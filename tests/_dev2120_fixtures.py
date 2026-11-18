@@ -675,7 +675,7 @@ def assert_case(data: list[dict[str, Any]], case: Case) -> None:
 
 def lib_query(*dims: Any, **kw: Any) -> SlayerQuery:
     """A row-level ``lib`` query: ``id`` plus ``dims`` (an expression string becomes the ``v`` dimension)."""
-    dimensions: list[Any] = ["id"] + [{"expression": d, "name": "v"} if isinstance(d, str) else d for d in dims]
+    dimensions: list[Any] = ["id"] + [{"field": d, "alias": "v"} if isinstance(d, str) else d for d in dims]
     return SlayerQuery.model_validate({"population": "lib", "distinct_dimension_values": False,
                                        "dimensions": dimensions, **kw})
 

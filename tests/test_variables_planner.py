@@ -9,9 +9,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import (
-    ComputedDimension,
     DatasetExtension,
-    FieldRef,
     QueryDimension,
     QueryMetric,
     QueryRefinement,
@@ -313,8 +311,8 @@ class TestApplyVariablesToQuery:
             query=q, variables={"s": "active", "x": 10}
         )
         assert out.metrics is not None
-        assert out.metrics[0].expression == "sum(amount) * 10"
-        assert out.metrics[0].name == "rev"
+        assert out.metrics[0].metric == "sum(amount) * 10"
+        assert out.metrics[0].alias == "rev"
 
     def test_applying_twice_with_same_vars_is_a_no_op_on_second_pass(self) -> None:
         """A second call has no placeholders left to substitute, so the
@@ -341,9 +339,9 @@ class TestApplyVariablesToQuery:
         assert out.population == "orders"
         assert out.metrics is not None
         assert len(out.metrics) == 1
-        assert out.metrics[0].name == "rev"
+        assert out.metrics[0].alias == "rev"
         assert out.dimensions is not None
-        assert [d.name for d in out.dimensions] == ["status"]
+        assert [d.field for d in out.dimensions] == ["status"]
         assert out.limit == 10
         assert out.offset == 5
         assert out.filter == ["status = 'active'"]
@@ -362,8 +360,8 @@ class TestFormulaSurfaces:
         out = apply_variables_to_query(query=_q(metrics=["sum(amount) * {k} / 100"]), variables={"k": 10})
         assert out.metrics is not None
         (m,) = out.metrics
-        assert m.expression == "sum(amount) * 10 / 100"
-        assert m.name is None
+        assert m.metric == "sum(amount) * 10 / 100"
+        assert m.alias is None
         assert _template(m) == "sum(amount) * {k} / 100"
 
     def test_unchanged_measure_has_no_template(self) -> None:
@@ -371,13 +369,13 @@ class TestFormulaSurfaces:
         assert out.metrics is not None
         assert _template(out.metrics[0]) is None
 
-    @pytest.mark.parametrize("dimension", ["amount * {k}", {"expression": "amount * {k}"}])
+    @pytest.mark.parametrize("dimension", ["amount * {k}", {"field": "amount * {k}"}])
     def test_computed_dimension_substituted_name_kept(self, dimension) -> None:
         out = apply_variables_to_query(query=_q(dimensions=[dimension]), variables={"k": 10})
         assert out.dimensions is not None
         (d,) = out.dimensions
-        assert isinstance(d, ComputedDimension)
-        assert d.expression == "amount * 10"
+        assert d.ref is None
+        assert d.field == "amount * 10"
         assert d.name == "amount_k"
         assert _template(d) == "amount * {k}"
 
@@ -388,7 +386,7 @@ class TestFormulaSurfaces:
 
     def test_column_dimension_untouched(self) -> None:
         out = apply_variables_to_query(query=_q(dimensions=["region"]), variables={"k": 1})
-        assert out.dimensions == [FieldRef(name="region")]
+        assert out.dimensions == [QueryDimension(field="region")]
 
     def test_order_expression_substituted(self) -> None:
         out = apply_variables_to_query(
@@ -424,16 +422,16 @@ class TestFormulaSurfaces:
         q = _q(metrics=["sum(CASE WHEN status == '{name}' THEN 1 ELSE 0 END)"])
         out = apply_variables_to_query(query=q, variables={"name": "O'Brien"})
         assert out.metrics is not None
-        assert out.metrics[0].expression == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
+        assert out.metrics[0].metric == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
 
     def test_list_value_renders_tuple_in_dimension(self) -> None:
         q = _q(dimensions=[{"field": "region in ({regions})", "alias": "ns"}])
         out = apply_variables_to_query(query=q, variables={"regions": ["North", "South"]})
         assert out.dimensions is not None
         (d,) = out.dimensions
-        assert isinstance(d, ComputedDimension)
-        assert d.expression == "region in ({regions})"
-        assert _bound_right(d.expression, out.bound_variables) == BoundVariable(
+        assert d.ref is None
+        assert d.field == "region in ({regions})"
+        assert _bound_right(d.field, out.bound_variables) == BoundVariable(
             name="regions", values=("North", "South"), listed=True)
 
     @pytest.mark.parametrize("kw", [
@@ -483,19 +481,19 @@ class TestRebuild:
         assert out.model_fields_set == refined.model_fields_set
         assert out.filter == ["status == 'ok'"]
         assert out.metrics is not None
-        assert out.metrics[0].expression == "sum(amount) * 3"
-        assert out.dimensions == [FieldRef(name="region")]
+        assert out.metrics[0].metric == "sum(amount) * 3"
+        assert out.dimensions == [QueryDimension(field="region")]
         assert out.limit == 5
 
     def test_input_not_mutated(self) -> None:
         q = _q(metrics=["sum(amount) * {k}"], dimensions=["amount * {k}"])
         apply_variables_to_query(query=q, variables={"k": 2})
         assert q.metrics is not None
-        assert q.metrics[0].expression == "sum(amount) * {k}"
+        assert q.metrics[0].metric == "sum(amount) * {k}"
         assert q.dimensions is not None
         d = q.dimensions[0]
-        assert isinstance(d, ComputedDimension)
-        assert d.expression == "amount * {k}"
+        assert d.ref is None
+        assert d.field == "amount * {k}"
 
 
 class TestPlaceholderNames:

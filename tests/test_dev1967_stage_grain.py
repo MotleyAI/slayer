@@ -13,8 +13,8 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1836_fixtures import dev1836_datasets
 
 MONTH = [{"field": "ordered_at", "granularity": "month"}]
-AMOUNT = {"expression": "sum(amount)", "name": "t"}
-CHANNEL_TOTAL = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
+AMOUNT = {"metric": "sum(amount)", "alias": "t"}
+CHANNEL_TOTAL = {"field": "sum(amount, partition_by=channel)", "alias": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:

@@ -6195,7 +6195,7 @@ class TestDev1501BroadTriggerAndGuards:
         """This contract was INVERTED."""
         for text in ("sum(revenue) - sum(cost)", "revenue - cost"):
             item = OrderItem.model_validate({"field": text, "direction": "desc"})
-            assert item.field.name == "_expr_pending"
+            assert item.ref is None
             assert item.raw_expression == text
 
 
@@ -8348,7 +8348,7 @@ class TestGetResultColumnTypesSql:
         )
         engine = SlayerQueryEngine(storage=storage)
         probe = engine._build_type_probe_query(model)
-        formulas = [m.expression for m in probe.metrics]
+        formulas = [m.metric for m in probe.metrics]
         assert any(f and f.endswith("(revenue)") for f in formulas), (
             f"Expected 'revenue' to be probed, got {formulas}"
         )

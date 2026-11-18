@@ -23,10 +23,9 @@ from slayer.core.models import (
     AggregationParam,
     DatasetField,
     DatasourceConfig,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -78,8 +77,8 @@ async def exec_qdouble(request):
         yield engine
 
 
-def _metric(expression: str, name: str = "m") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def _metric(metric: str, alias: str = "m") -> QueryMetric:
+    return QueryMetric(metric=metric, alias=alias)
 
 
 async def _save_validated(dataset: SlayerDataset) -> None:

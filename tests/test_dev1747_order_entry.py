@@ -33,7 +33,7 @@ from slayer.core.keys import AggregateKey
 from slayer.core.keys import FieldKey
 from slayer.core.keys import Phase
 
-_MEASURE = [{"expression": "sum(amount)", "name": "rev"}]
+_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
 
 
 def _plan(query: SlayerQuery):

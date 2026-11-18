@@ -22,7 +22,7 @@ from tests._deprecated_input_helpers import errors_in, recorded
 from tests._ossie_vocabulary_fixtures import shop_orders, vocab_engine
 
 ORDERS = shop_orders()
-REL = {"to": "customers", "join_pairs": [["customer_id", "id"]], "name": "buyer"}
+REL = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}
 QUERY: dict[str, Any] = {"population": "orders", "metrics": ["count(*)"]}
 
 
@@ -43,8 +43,8 @@ DATASET_CASES: dict[str, tuple[dict[str, Any], str, str]] = {
     "fields_columns": (plus(ORDERS, columns=ORDERS["fields"]), "fields", "columns"),
     "metrics_measures": (plus(ORDERS, measures=ORDERS["metrics"]), "metrics", "measures"),
     "relationships_joins": (plus(ORDERS, joins=ORDERS["relationships"]), "relationships", "joins"),
-    "field_datatype_type": (member(ORDERS, section="fields", type="INT"), "datatype", "type"),
-    "metric_datatype_type": (member(ORDERS, section="metrics", type="DOUBLE"), "datatype", "type"),
+    "field_datatype_type": (member(ORDERS, section="fields", type="Integer"), "datatype", "type"),
+    "metric_datatype_type": (member(ORDERS, section="metrics", type="Float"), "datatype", "type"),
     "metric_expression_formula": (member(ORDERS, section="metrics", formula="sum(amount)"), "expression", "formula"),
     "aggregation_expression_formula": (
         plus(ORDERS, aggregations=[{"name": "d", "expression": "SUM({value})", "formula": "SUM({value})"}]),
@@ -59,23 +59,23 @@ QUERY_CASES: dict[str, tuple[dict[str, Any], str, str]] = {
     "population_source_model": (plus(QUERY, source_model="orders"), "population", "source_model"),
     "metrics_measures": (plus(QUERY, measures=["count(*)"]), "metrics", "measures"),
     "filter_filters": (plus(QUERY, filter=["amount > 1"], filters=["amount > 1"]), "filter", "filters"),
-    "metric_entry_expression_formula": (
-        plus(QUERY, metrics=[{"expression": "count(*)", "formula": "count(*)", "name": "n"}]),
-        "expression", "formula"),
-    "field_ref_dataset_model": (plus(QUERY, dimensions=[{"name": "name", "dataset": "customers",
-                                                         "model": "customers"}]), "dataset", "model"),
+    "metric_entry_metric_formula": (
+        plus(QUERY, metrics=[{"metric": "count(*)", "formula": "count(*)", "alias": "n"}]),
+        "metric", "formula"),
+    "dimension_field_model": (plus(QUERY, dimensions=[{"field": "customers.name", "name": "name",
+                                                       "model": "customers"}]), "field", "model"),
     "time_dimension_field_dimension": (plus(QUERY, time_dimensions=[
         {"field": "created_at", "dimension": "created_at", "granularity": "month"}]), "field", "dimension"),
     "time_dimension_field_column": (plus(QUERY, time_dimensions=[
         {"field": "created_at", "column": "created_at", "granularity": "month"}]), "field", "column"),
     "order_field_column": (plus(QUERY, order=[{"field": "status", "column": "status"}]), "field", "column"),
     "extension_metrics_measures": (plus(QUERY, extensions=[{
-        "source_name": "orders", "metrics": [{"name": "a", "expression": "count(*)"}],
+        "dataset": "orders", "metrics": [{"name": "a", "expression": "count(*)"}],
         "measures": [{"name": "b", "expression": "count(*)"}]}]), "metrics", "measures"),
     "extension_relationships_joins": (plus(QUERY, extensions=[{
-        "source_name": "orders", "relationships": [REL], "joins": [REL]}]), "relationships", "joins"),
+        "dataset": "orders", "relationships": [REL], "joins": [REL]}]), "relationships", "joins"),
     "extension_to_target_model": (plus(QUERY, extensions=[{
-        "source_name": "orders", "relationships": [dict(REL, target_model="customers")]}]), "to", "target_model"),
+        "dataset": "orders", "relationships": [dict(REL, target_model="customers")]}]), "to", "target_model"),
 }
 REFINEMENT_CASES: dict[str, tuple[dict[str, Any], str, str]] = {
     "metrics_measures": ({"metrics": ["count(*)"], "measures": ["count(*)"]}, "metrics", "measures"),

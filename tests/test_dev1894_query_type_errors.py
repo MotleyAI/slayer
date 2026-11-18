@@ -52,8 +52,8 @@ _MONTH = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
 _NO_AXIS = "sum(cumsum(sum(amount, partition_by=region)))"
 
 
-def _m(expression: str, name: str) -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def _m(metric: str, alias: str) -> QueryMetric:
+    return QueryMetric(metric=metric, alias=alias)
 
 
 def _orders(*, extra_columns: Tuple[DatasetField, ...] = (), **kw) -> SlayerDataset:
@@ -159,7 +159,7 @@ FAMILY_CASES = [
      DimensionTypeError, "dimension 'loc'", True),
     ("model-filter",
      lambda: (SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")]),
-              [_orders(metrics=[_m("sum(amount)", "tot")], filters=["tot > 100"])]),
+              [_orders(metrics=[DatasetMetric(name="tot", expression="sum(amount)")], filters=["tot > 100"])]),
      DatasetFilterError, "dataset filter 'tot > 100'", True),
     ("position-typing",
      lambda: (SlayerQuery(
@@ -259,7 +259,7 @@ async def test_rest_answers_time_axis_violation_with_400(tmp_path) -> None:
     await storage.save_dataset(f1832.monthly_dataset(), _validate=False)
     body = {
         "population": "monthly",
-        "time_dimensions": [{"field": {"name": "ordered_at"}, "granularity": "month"}],
+        "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
         "metrics": [{"metric": _NO_AXIS, "alias": "m"}],
     }
     resp = TestClient(create_app(storage=storage)).post("/query", json=body)

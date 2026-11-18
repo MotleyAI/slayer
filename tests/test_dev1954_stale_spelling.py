@@ -14,7 +14,7 @@ import pytest
 
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageField
 from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -215,7 +215,7 @@ class TestDownstreamStageStaleReference:
 
     async def test_extension_over_the_sibling_stage(self, engine: SlayerQueryEngine) -> None:
         def ext(dim: str) -> SlayerQuery:
-            return slayer_query(population="s1", extensions=[{"source_name": "s1"}], dimensions=[dim],
+            return slayer_query(population="s1", extensions=[{"dataset": "s1"}], dimensions=[dim],
                                 metrics=["sum(amount_sum)"])
 
         stale = await engine.execute([_stage1(), ext(STALE)])
@@ -318,8 +318,8 @@ class TestQueryBackedConsumer:
         assert model.source_queries
         dimensions = model.source_queries[0].dimensions
         assert dimensions is not None
-        assert all(isinstance(d, FieldRef) for d in dimensions)
-        dims = [d.full_name for d in dimensions if isinstance(d, FieldRef)]
+        assert all(d.ref is not None for d in dimensions)
+        dims = [d.ref.full_name for d in dimensions if d.ref is not None]
         assert dims == ["customers.region_id", "customers.regions.rname"]
 
     async def test_authored_columns_stay_exact(self, engine: SlayerQueryEngine) -> None:

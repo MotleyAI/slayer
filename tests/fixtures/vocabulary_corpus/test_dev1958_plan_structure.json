@@ -44,8 +44,8 @@
     "main_time_dimension": "ordered_at",
     "metrics": [
      {
-      "expression": "time_shift(sum(amount) / 2, -1)",
-      "name": "t"
+      "metric": "time_shift(sum(amount) / 2, -1)",
+      "alias": "t"
      }
     ]
    }

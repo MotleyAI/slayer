@@ -30,7 +30,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
@@ -83,8 +83,8 @@ DATE_RANGE: List[Optional[str]] = ["2025-01-01", "2025-12-31"]
 DATE_FILTER = "order_date >= '2025-01-01'"
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def orders_q(**kw) -> SlayerQuery:
@@ -98,7 +98,7 @@ def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDi
     )]
 
 
-def monthly_q(*measures: DatasetMetric, **kw) -> SlayerQuery:
+def monthly_q(*measures: QueryMetric, **kw) -> SlayerQuery:
     kw.setdefault("time_dimensions", month_td())
     return orders_q(metrics=list(measures), **kw)
 

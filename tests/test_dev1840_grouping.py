@@ -10,18 +10,18 @@ from __future__ import annotations
 
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, SemiJoinHop, _walk_regroup_attaches
+from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import (
-    DatasetMetric,
     SPEND_BAND_170,
     bundle,
     dev1840_datasets,
     q,
 )
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
 
 
 def _plan(query, datasets=None):

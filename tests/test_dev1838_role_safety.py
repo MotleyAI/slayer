@@ -20,12 +20,10 @@ from slayer.core.errors import SlayerError
 from slayer.core.query import QueryMetric
 
 from tests._dev1838_fixtures import (
-    FieldRef,
     FACTOR_MAX_BY_STATUS,
     FACTOR_MIN_BY_STATUS,
     GOLD_BY_STATUS,
     LAST_BY_SIGNUP_BY_STATUS,
-    DatasetMetric,
     OrderItem,
     WSCALED_BY_STATUS,
     make_exec_engine,
@@ -35,7 +33,7 @@ from tests._dev1838_fixtures import (
 )
 
 RAISES = (SlayerError, ValueError, NotImplementedError)
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -200,7 +198,7 @@ class TestHostGrainWrapStaysLegal:
     @staticmethod
     def _order_query(*, dataset: str, name: str, direction: str):
         return q(dimensions=["status"], metrics=[M],
-                 order=[OrderItem(field=FieldRef(name=name, dataset=dataset),
+                 order=[OrderItem(field=f"{dataset}.{name}",
                                   direction=direction)])
 
     async def test_wrap_over_to_many_hop_asc(self, exec_backend):

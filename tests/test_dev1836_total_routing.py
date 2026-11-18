@@ -25,8 +25,8 @@ from tests._dev1836_fixtures import (
 from slayer.engine.compile import stages
 
 LOCAL_BAND = {
-    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
-    "name": "band",
+    "field": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "alias": "band",
 }
 
 

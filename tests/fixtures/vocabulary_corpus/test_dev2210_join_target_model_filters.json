@@ -180,8 +180,8 @@
     "population": "contractors",
     "metrics": [
      {
-      "expression": "count(skills.*)",
-      "name": "n"
+      "metric": "count(skills.*)",
+      "alias": "n"
      }
     ]
    }
@@ -207,8 +207,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(skills.*)",
-      "name": "n"
+      "metric": "count(skills.*)",
+      "alias": "n"
      }
     ]
    }

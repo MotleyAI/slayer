@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "Consumer",
-    "join_pairs": [
-     [
-      "consumerId",
-      "id"
-     ]
+    "from_columns": [
+     "consumerId"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "Customer",
-    "join_pairs": [
-     [
-      "customerId",
-      "id"
-     ]
+    "from_columns": [
+     "customerId"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "Subscription",
-    "join_pairs": [
-     [
-      "subscriptionId",
-      "id"
-     ]
+    "from_columns": [
+     "subscriptionId"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "Customer",
-    "join_pairs": [
-     [
-      "customerId",
-      "id"
-     ]
+    "from_columns": [
+     "customerId"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -117,8 +117,8 @@
     "population": "Invoice",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "amt"
+      "metric": "sum(amount)",
+      "alias": "amt"
      }
     ],
     "time_dimensions": [
@@ -150,8 +150,8 @@
     "population": "Invoice",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "amt"
+      "metric": "sum(amount)",
+      "alias": "amt"
      }
     ],
     "time_dimensions": [
@@ -176,13 +176,13 @@
    },
    "new": {
     "to": "A",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "name": "to_a",
+    "from_columns": [
+     "a_id"
     ],
-    "name": "to_a"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -199,13 +199,13 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "name": "to_b",
+    "from_columns": [
+     "b_id"
     ],
-    "name": "to_b"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -226,8 +226,8 @@
     "population": "A",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "amt"
+      "metric": "sum(amount)",
+      "alias": "amt"
      }
     ],
     "dimensions": [
@@ -256,8 +256,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(Subscription.Customer.Consumer.email)",
-      "name": "c"
+      "metric": "count(Subscription.Customer.Consumer.email)",
+      "alias": "c"
      }
     ]
    }
@@ -284,7 +284,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -309,7 +309,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }

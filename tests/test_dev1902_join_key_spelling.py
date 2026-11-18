@@ -12,7 +12,7 @@ from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import RelationshipKeyError
 from slayer.core.relationship_walker import edges_between, provably_to_one, unique_key_sets
 from slayer.core.keys import FieldKey, Grain
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.cardinality.relationship_safety import grain_determines
@@ -35,7 +35,7 @@ from tests._dev1902_fixtures import (
 from slayer.sql.naming import key_identifier
 from tests._engine_helpers import datasets_bundle
 
-AMT = DatasetMetric(expression="sum(amount)", name="amt")
+AMT = QueryMetric(metric="sum(amount)", alias="amt")
 
 
 def _query(**kw) -> SlayerQuery:

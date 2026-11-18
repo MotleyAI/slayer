@@ -427,7 +427,7 @@ class TestMySQLQueries:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "count(*)"}],
-            "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
         })
         result = await mysql_env.execute(query=query)
         assert result.row_count == 3
@@ -437,7 +437,7 @@ class TestMySQLQueries:
             "population": "orders",
             "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{
-                "field": {"name": "created_at"},
+                "field": "created_at",
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],

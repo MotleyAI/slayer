@@ -18,15 +18,13 @@
    },
    "new": {
     "to": "parts",
-    "join_pairs": [
-     [
-      "ka",
-      "pa"
-     ],
-     [
-      "kb",
-      "pb"
-     ]
+    "from_columns": [
+     "ka",
+     "kb"
+    ],
+    "to_columns": [
+     "pa",
+     "pb"
     ]
    }
   },
@@ -45,11 +43,11 @@
    "new": {
     "to": "addresses",
     "name": "origin",
-    "join_pairs": [
-     [
-      "address_id",
-      "id"
-     ]
+    "from_columns": [
+     "address_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -68,11 +66,11 @@
    "new": {
     "to": "addresses",
     "name": "dest",
-    "join_pairs": [
-     [
-      "address_id",
-      "id"
-     ]
+    "from_columns": [
+     "address_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

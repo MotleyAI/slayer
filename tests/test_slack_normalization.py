@@ -67,7 +67,7 @@ class TestFunctionalSpellingFirstClass:
 
         assert result.query is not None
         assert result.query.metrics
-        assert result.query.metrics[0].expression == "sum(revenue)"
+        assert result.query.metrics[0].metric == "sum(revenue)"
         assert result.warnings == []
         slack = [c for c in caught if isinstance(c.message, SlayerNormalizationWarning)]
         assert slack == []
@@ -77,7 +77,7 @@ class TestFunctionalSpellingFirstClass:
         result = normalize_query(q)
         assert result.query is not None
         assert result.query.metrics
-        assert result.query.metrics[0].expression == "count(*)"
+        assert result.query.metrics[0].metric == "count(*)"
         assert result.warnings == []
 
     def test_filter_not_rewritten(self):
@@ -125,7 +125,7 @@ class TestMisplacedMeasure:
         result = normalize_query(q, dataset=m)
         assert result.query is not None
         assert result.query.metrics
-        assert result.query.metrics[0].expression == "aov"
+        assert result.query.metrics[0].metric == "aov"
         assert result.warnings == []
 
     def test_unknown_bare_token_left_alone(self):
@@ -135,7 +135,7 @@ class TestMisplacedMeasure:
         result = normalize_query(q, dataset=_orders())
         assert result.query is not None
         assert result.query.metrics
-        assert result.query.metrics[0].expression == "noseucha"
+        assert result.query.metrics[0].metric == "noseucha"
 
     def test_no_model_means_no_move(self):
         # MISPLACED_METRIC needs model context to classify.
@@ -144,7 +144,7 @@ class TestMisplacedMeasure:
         # Without a model the rule no-ops.
         assert result.query is not None
         assert result.query.metrics
-        assert result.query.metrics[0].expression == "status"
+        assert result.query.metrics[0].metric == "status"
         assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     def test_formula_with_call_not_moved(self):
@@ -158,7 +158,7 @@ class TestMisplacedMeasure:
         result = normalize_query(q, dataset=_orders())
         assert result.query is not None
         assert result.query.metrics
-        assert result.query.metrics[0].expression == "sum(revenue)"
+        assert result.query.metrics[0].metric == "sum(revenue)"
         assert result.warnings == []
 
     def test_aggregation_measures_kept(self):
@@ -235,7 +235,7 @@ class TestMisplacedMeasure:
         assert len(result.query.metrics) == 1
         assert result.query is not None
         assert result.query.metrics
-        assert result.query.metrics[0].expression == "sum(revenue)"
+        assert result.query.metrics[0].metric == "sum(revenue)"
         dim_names = [getattr(d, "name", d) for d in result.query.dimensions]
         assert "status" in dim_names
         assert "customer_id" in dim_names

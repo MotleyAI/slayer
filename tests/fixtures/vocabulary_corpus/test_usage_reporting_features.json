@@ -39,7 +39,7 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders",
+      "dataset": "orders",
       "metrics": [
        {
         "name": "double_total",
@@ -84,15 +84,15 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders",
+      "dataset": "orders",
       "relationships": [
        {
         "to": "revenue_by_status",
-        "join_pairs": [
-         [
-          "region",
-          "region"
-         ]
+        "from_columns": [
+         "region"
+        ],
+        "to_columns": [
+         "region"
         ]
        }
       ]
@@ -129,8 +129,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -158,8 +158,8 @@
     ],
     "metrics": [
      {
-      "expression": "max(rev)",
-      "name": "top"
+      "metric": "max(rev)",
+      "alias": "top"
      }
     ]
    }

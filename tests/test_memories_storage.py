@@ -113,7 +113,7 @@ class TestMemoryCRUD:
         assert loaded.query.population == "orders"
         assert loaded.query.metrics is not None
         assert len(loaded.query.metrics) == 1
-        assert loaded.query.metrics[0].expression == "count(*)"
+        assert loaded.query.metrics[0].metric == "count(*)"
 
     async def test_get_missing_raises(self, storage: StorageBackend) -> None:
         with pytest.raises(MemoryNotFoundError):

@@ -132,7 +132,7 @@ class TestComputedDimAggregateMixing:
     async def test_mix_with_row_level_ref_types_as_field(self, exec_engine) -> None:
         # `band` is the attached (row-scope) value; OR-ing it with a base column
         # masks per base row before re-aggregation — a field-typed conjunct.
-        dims = ["region", "city", {"expression": BAND35, "name": "band"}]
+        dims = ["region", "city", {"field": BAND35, "alias": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
             dimensions=dims, metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
@@ -153,7 +153,7 @@ class TestComputedDimAggregateMixing:
     async def test_mix_with_plain_aggregate_types_as_measure(self, exec_engine) -> None:
         # OR-ing the computed-dim aggregate with a plain aggregate evaluates at
         # query grain — a measure-typed conjunct that prunes cells only.
-        dims = ["region", "city", {"expression": BAND35, "name": "band"}]
+        dims = ["region", "city", {"field": BAND35, "alias": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
             dimensions=dims, metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
@@ -176,7 +176,7 @@ class TestComputedDimOwnAggregateIsField:
     value and types as field (unchanged from before this change)."""
 
     async def test_filter_on_own_partition_aggregate_row_masks(self, exec_engine) -> None:
-        dims = ["region", "city", {"expression": BAND35, "name": "band"}]
+        dims = ["region", "city", {"field": BAND35, "alias": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
             dimensions=dims, metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")

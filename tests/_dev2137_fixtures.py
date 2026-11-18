@@ -73,7 +73,7 @@ def query(**body: Any) -> SlayerQuery:
 
 
 def metric(expression: str, name: str) -> dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 def num(value: Any) -> Optional[float]:

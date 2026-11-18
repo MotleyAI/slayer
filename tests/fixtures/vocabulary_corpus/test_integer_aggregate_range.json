@@ -39,36 +39,36 @@
     "fields": [
      {
       "name": "id",
-      "datatype": "INT",
+      "datatype": "Integer",
       "primary_key": true
      },
      {
       "name": "amount",
-      "datatype": "INT"
+      "datatype": "Integer"
      },
      {
       "name": "created_at",
-      "datatype": "TIMESTAMP"
+      "datatype": "DateTime"
      }
     ],
     "metrics": [
      {
       "name": "as_int",
       "expression": "sum(amount)",
-      "datatype": "INT"
+      "datatype": "Integer"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)",
     "type": "INT"
    },
    "new": {
-    "expression": "sum(amount)",
-    "datatype": "INT"
+    "metric": "sum(amount)",
+    "datatype": "Integer"
    }
   },
   {
@@ -84,11 +84,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -115,14 +115,14 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "as_int",
     "type": "DOUBLE"
    },
    "new": {
-    "expression": "as_int",
-    "datatype": "DOUBLE"
+    "metric": "as_int",
+    "datatype": "Float"
    }
   }
  ],

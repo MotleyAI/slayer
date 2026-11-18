@@ -27,8 +27,8 @@
    "new": {
     "metrics": [
      {
-      "name": "t",
-      "expression": "amount:sum"
+      "metric": "amount:sum",
+      "alias": "t"
      }
     ]
    }
@@ -142,8 +142,8 @@
     ],
     "dimensions": [
      {
-      "name": "d",
-      "expression": "amount:sum(partition_by=region)"
+      "field": "amount:sum(partition_by=region)",
+      "alias": "d"
      }
     ]
    }
@@ -173,12 +173,12 @@
     ],
     "metrics": [
      {
-      "name": "total",
-      "expression": "sum(amount::INT)"
+      "metric": "sum(amount::INT)",
+      "alias": "total"
      },
      {
-      "name": "tagged",
-      "expression": "sum(amount) FILTER (WHERE note = 'x:count')"
+      "metric": "sum(amount) FILTER (WHERE note = 'x:count')",
+      "alias": "tagged"
      }
     ]
    }

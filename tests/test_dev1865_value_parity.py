@@ -15,7 +15,7 @@ import pytest
 
 from slayer.core.query import QueryMetric
 
-from tests._dev1865_fixtures import DatasetMetric, month_td, q
+from tests._dev1865_fixtures import month_td, q
 
 
 def _rowkey(row, dim_cols):
@@ -27,12 +27,12 @@ async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None)
     base = {"dimensions": dims}
     if td is not None:
         base["time_dimensions"] = td
-    display = [DatasetMetric(expression="sum(amount)", name="s")]
+    display = [QueryMetric(metric="sum(amount)", alias="s")]
     filtered = (await engine.execute(q(
         **base, metrics=display, filter=[f"{value_expression} > {threshold}"],
     ))).data
     twin = (await engine.execute(q(
-        **base, metrics=display + [DatasetMetric(expression=value_expression, name="e")],
+        **base, metrics=display + [QueryMetric(metric=value_expression, alias="e")],
     ))).data
     assert filtered, "threshold kept no rows — the law would be vacuous"
     dim_cols = sorted(set(filtered[0]) - {"orders.s"})

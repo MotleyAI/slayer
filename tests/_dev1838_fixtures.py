@@ -222,7 +222,7 @@ def month_td(column: str = "ordered_at") -> List[TimeDimension]:
 
 #: Computed dimension banding the city totals at > 25 (row regroup attach).
 BAND25 = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 1 ELSE 0 END"
-BAND = {"expression": BAND25, "name": "band"}
+BAND = {"field": BAND25, "alias": "band"}
 
 #: Cross-model banded dimension (customers-rooted producer, per-tier spend).
 SPEND_BAND = (

@@ -42,7 +42,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.query import FieldRef, OrderItem, QueryDimension, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
@@ -63,7 +63,7 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_MEASURE = [{"expression": "sum(amount)", "name": "rev"}]
+_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
 
 
 def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list[str]:
@@ -87,7 +87,7 @@ def _grouped_order_query(*, dataset: str, name: str, direction: str) -> SlayerQu
         dimensions=[QueryDimension(field="status")],
         metrics=_MEASURE,
         order=[OrderItem(
-            field=FieldRef(name=name, dataset=dataset), direction=direction,
+            field=f"{dataset}.{name}", direction=direction,
         )],
     )
 

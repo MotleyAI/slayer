@@ -22,8 +22,8 @@ D = datetime
 NOTICE = "midnight"
 #: Orders 1 (2024-03-05 08:00) and 2 (2024-04-10 09:30) only.
 FIRST_TWO = "id <= 2"
-WINDOW = {"expression": "sum(amount, window='90d')", "name": "w"}
-PLAIN = {"expression": "sum(amount)", "name": "s"}
+WINDOW = {"metric": "sum(amount, window='90d')", "alias": "w"}
+PLAIN = {"metric": "sum(amount)", "alias": "s"}
 
 
 @pytest.fixture(params=BACKENDS)

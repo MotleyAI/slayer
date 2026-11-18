@@ -85,7 +85,7 @@ class TestSharedProducerRendersOnce:
         """Scenario: One producer consumed at two depths renders once — a
         computed dimension bands the city-region total AND a measure
         re-aggregates it; a single city-region producer serves both."""
-        band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+        band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         both = sales_q(
             dimensions=["region", band],
             metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
@@ -105,7 +105,7 @@ class TestSharedProducerRendersOnce:
         """The re-aggregating measure reuses the banded dimension's producer —
         the city-region producer CTE count does not grow with the second
         consumer (interning, DEV-1838)."""
-        band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+        band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         dialect = "postgres"
         single = sales_q(dimensions=["region", band],
                          metrics=[QueryMetric(metric="sum(amount)", alias="tot")])

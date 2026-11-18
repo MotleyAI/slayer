@@ -37,8 +37,8 @@
     "population": "daily",
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "r"
+      "metric": "sum(rev)",
+      "alias": "r"
      }
     ],
     "time_dimensions": [
@@ -82,8 +82,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -113,8 +113,8 @@
     "population": "m",
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "r"
+      "metric": "sum(rev)",
+      "alias": "r"
      }
     ],
     "time_dimensions": [
@@ -158,8 +158,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -186,8 +186,8 @@
     "population": "m",
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "r"
+      "metric": "sum(rev)",
+      "alias": "r"
      }
     ],
     "time_dimensions": [

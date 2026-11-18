@@ -14,7 +14,6 @@ import sqlalchemy as sa
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import TextContent
 from sqlalchemy.dialects import postgresql
-from sqlglot import exp
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
@@ -46,9 +45,6 @@ def _array(element: str) -> dict[str, Any]:
 
 
 class TestTheType:
-    def test_value_matches_sqlglot(self) -> None:
-        assert DataType.ARRAY.value == exp.DataType.Type.ARRAY.value
-
     def test_missing_element_type_rejected(self) -> None:
         with pytest.raises(ValueError, match="(?s)skills.*element_type|element_type.*skills"):
             SlayerDataset.model_validate({"name": "c", "sql_table": "c", "data_source": "test",

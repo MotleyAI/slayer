@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
-from slayer.core.query import ComputedDimension, FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._deprecated_input_helpers import recorded
@@ -83,15 +83,15 @@ def assert_new_dataset_keys(dumped: dict[str, Any]) -> None:
 def assert_migrated_query(query: SlayerQuery | None) -> None:
     assert query is not None
     assert query.population == "orders"
-    assert [(m.expression, m.name) for m in query.metrics or []] == [("sum(amount)", "rev")]
+    assert [(m.metric, m.alias) for m in query.metrics or []] == [("sum(amount)", "rev")]
     region, computed = query.dimensions or []
-    assert isinstance(region, FieldRef)
-    assert isinstance(computed, ComputedDimension)
-    assert (region.name, region.dataset) == ("region", "customers")
-    assert (computed.expression, computed.name) == ("upper(status)", "s")
+    assert isinstance(region, QueryDimension)
+    assert isinstance(computed, QueryDimension)
+    assert (region.field, region.alias) == ("customers.region", None)
+    assert (computed.field, computed.alias) == ("upper(status)", "s")
     assert [td.field for td in query.time_dimensions or []] == ["ordered_at"]
     assert query.filter == ["amount > 1"]
-    assert [o.field.name for o in query.order or []] == ["rev"]
+    assert [o.field for o in query.order or []] == ["rev"]
     assert_new_query_keys(query.model_dump(mode="json"))
 
 
@@ -106,11 +106,11 @@ def stored_orders() -> dict[str, Any]:
 def assert_migrated_orders(dataset: SlayerDataset | None) -> None:
     assert dataset is not None
     assert [f.name for f in dataset.fields] == ["order_id", "customer_id", "status", "ordered_at", "amount"]
-    assert next(f for f in dataset.fields if f.name == "ordered_at").datatype == DataType.TIMESTAMP
+    assert next(f for f in dataset.fields if f.name == "ordered_at").datatype == DataType.DATETIME
     [metric] = dataset.metrics
-    assert (metric.name, metric.expression, metric.datatype) == ("revenue", "sum(amount)", DataType.DOUBLE)
+    assert (metric.name, metric.expression, metric.datatype) == ("revenue", "sum(amount)", DataType.FLOAT)
     [relationship] = dataset.relationships
-    assert (relationship.to, relationship.join_pairs) == ("customers", [["customer_id", "id"]])
+    assert (relationship.to, relationship.from_columns, relationship.to_columns) == ("customers", ["customer_id"], ["id"])
     [aggregation] = dataset.aggregations
     assert aggregation.expression == "SUM({value}) * 2"
     dumped = dataset.model_dump(mode="json")
@@ -225,7 +225,7 @@ class TestStores:
         assert memory is not None
         assert memory.query is not None
         assert memory.query.filter == ["amount > 1"]
-        assert [(m.expression, m.name) for m in memory.query.metrics or []] == [("sum(amount)", "rev")]
+        assert [(m.metric, m.alias) for m in memory.query.metrics or []] == [("sum(amount)", "rev")]
         assert_new_query_keys(memory.query.model_dump(mode="json"))
 
 

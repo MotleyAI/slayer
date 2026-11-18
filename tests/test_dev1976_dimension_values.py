@@ -31,7 +31,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.compile.stages import _prune_functionally_determined_grain
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -41,7 +41,6 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1847_fixtures import (
     _SALES_ROWS_WIDE,
-    DatasetMetric,
     chain_q,
     dev1847_datasets,
     gen,
@@ -56,15 +55,15 @@ from tests._engine_helpers import _extract_cte_body
 P = "sum(amount, partition_by=region)"
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 C = "sum(amount, partition_by=[city, region])"
-TOT = DatasetMetric(expression="sum(amount)", name="tot")
-N = DatasetMetric(expression="count(*)", name="n")
+TOT = QueryMetric(metric="sum(amount)", alias="tot")
+N = QueryMetric(metric="count(*)", alias="n")
 
-RD_P = {"expression": P, "name": "rd"}
-RD_R = {"expression": R, "name": "rd"}
-X_C = {"expression": C, "name": "x"}
-RK_P = {"expression": f"rank({P}, direction='desc')", "name": "rk"}
-Q2 = {"expression": "quantity * 2", "name": "q2"}
-CITY_BAND = {"expression": f"CASE WHEN {C} > 45 THEN 'hi' ELSE 'lo' END", "name": "band"}
+RD_P = {"field": P, "alias": "rd"}
+RD_R = {"field": R, "alias": "rd"}
+X_C = {"field": C, "alias": "x"}
+RK_P = {"field": f"rank({P}, direction='desc')", "alias": "rk"}
+Q2 = {"field": "quantity * 2", "alias": "q2"}
+CITY_BAND = {"field": f"CASE WHEN {C} > 45 THEN 'hi' ELSE 'lo' END", "alias": "band"}
 
 P_BY_REGION = {"North": 90.0, "South": 140.0, "East": 180.0, "Gap": 20.0, "Void": None}
 R_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0, "Void": None}
@@ -78,8 +77,8 @@ async def exec_engine(request):
         yield engine
 
 
-def _m(expression: str, name: str = "m") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def _m(expression: str, name: str = "m") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def _bundle(source: str = "sales") -> ResolvedSourceBundle:

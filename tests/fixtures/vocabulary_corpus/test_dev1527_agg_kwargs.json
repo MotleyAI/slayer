@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,84 +35,84 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(amount, weight=dbl_qty)"
    },
    "new": {
-    "expression": "weighted_avg(amount, weight=dbl_qty)"
+    "metric": "weighted_avg(amount, weight=dbl_qty)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "percentile(amount, p=0.95)"
    },
    "new": {
-    "expression": "percentile(amount, p=0.95)"
+    "metric": "percentile(amount, p=0.95)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(amount, weight=quantity)"
    },
    "new": {
-    "expression": "weighted_avg(amount, weight=quantity)"
+    "metric": "weighted_avg(amount, weight=quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "corr(amount, other=quantity)"
    },
    "new": {
-    "expression": "corr(amount, other=quantity)"
+    "metric": "corr(amount, other=quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "corr(amount, other=region_weight)"
    },
    "new": {
-    "expression": "corr(amount, other=region_weight)"
+    "metric": "corr(amount, other=region_weight)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(amount, weight=region_weight) + sum(quantity)"
    },
    "new": {
-    "expression": "weighted_avg(amount, weight=region_weight) + sum(quantity)"
+    "metric": "weighted_avg(amount, weight=region_weight) + sum(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(amount, weight=region_weight)"
    },
    "new": {
-    "expression": "weighted_avg(amount, weight=region_weight)"
+    "metric": "weighted_avg(amount, weight=region_weight)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "scaled_sum(amount, scale=100)"
    },
    "new": {
-    "expression": "scaled_sum(amount, scale=100)"
+    "metric": "scaled_sum(amount, scale=100)"
    }
   },
   {
@@ -128,30 +128,30 @@
    },
    "new": {
     "to": "line_items",
-    "join_pairs": [
-     [
-      "id",
-      "order_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "order_id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(amount, weight=li_weight)"
    },
    "new": {
-    "expression": "weighted_avg(amount, weight=li_weight)"
+    "metric": "weighted_avg(amount, weight=li_weight)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(amount, weight=region_weight)"
    },
    "new": {
-    "expression": "weighted_avg(amount, weight=region_weight)"
+    "metric": "weighted_avg(amount, weight=region_weight)"
    }
   }
  ],

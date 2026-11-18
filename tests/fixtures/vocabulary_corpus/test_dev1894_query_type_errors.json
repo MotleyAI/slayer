@@ -23,15 +23,15 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "t"
+      "metric": "sum(amount)",
+      "alias": "t"
      }
     ],
     "dimensions": [
      "region",
      {
-      "expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
-      "name": "band"
+      "field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
+      "alias": "band"
      }
     ]
    }
@@ -58,44 +58,44 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "dimensions": [
      "region",
      {
-      "expression": "lower(city)",
-      "name": "rev"
+      "field": "lower(city)",
+      "alias": "rev"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "avg(profit)"
    },
    "new": {
-    "expression": "avg(profit)"
+    "metric": "avg(profit)"
    }
   }
  ],

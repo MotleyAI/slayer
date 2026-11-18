@@ -18,10 +18,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "total_revenue"
+      "metric": "total_revenue"
      },
      {
-      "expression": "completed_revenue"
+      "metric": "completed_revenue"
      }
     ]
    }

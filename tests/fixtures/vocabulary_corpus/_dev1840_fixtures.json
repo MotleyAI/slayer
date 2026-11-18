@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "plans",
-    "join_pairs": [
-     [
-      "plan_code",
-      "code"
-     ]
+    "from_columns": [
+     "plan_code"
+    ],
+    "to_columns": [
+     "code"
     ]
    }
   },
@@ -60,15 +60,13 @@
    },
    "new": {
     "to": "stores",
-    "join_pairs": [
-     [
-      "store_co",
-      "co"
-     ],
-     [
-      "store_no",
-      "no"
-     ]
+    "from_columns": [
+     "store_co",
+     "store_no"
+    ],
+    "to_columns": [
+     "co",
+     "no"
     ]
    }
   },
@@ -85,11 +83,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -106,11 +104,11 @@
    },
    "new": {
     "to": "agents",
-    "join_pairs": [
-     [
-      "opened_by",
-      "id"
-     ]
+    "from_columns": [
+     "opened_by"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -127,11 +125,11 @@
    },
    "new": {
     "to": "agents",
-    "join_pairs": [
-     [
-      "closed_by",
-      "id"
-     ]
+    "from_columns": [
+     "closed_by"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -148,11 +146,11 @@
    },
    "new": {
     "to": "reviews",
-    "join_pairs": [
-     [
-      "review_id",
-      "id"
-     ]
+    "from_columns": [
+     "review_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

@@ -17,7 +17,6 @@ from tests._dev1865_fixtures import (
     CITY_TOTAL,
     GRAND_TOTAL,
     REGION_TOTAL,
-    DatasetMetric,
     month_td,
     q,
     rows_by,
@@ -59,8 +58,8 @@ class TestFieldMaskRestrictsPopulation:
     async def test_stratum0_reaches_the_windowed_producer(self, exec_engine) -> None:
         # Same stratum-0 filter reaches a windowed producer: the (South, Mar)
         # bucket is the lone 'hold' order, so it drops when status='ok' applies.
-        win = DatasetMetric(
-            expression="sum(amount, window='90d', partition_by=region)", name="w",
+        win = QueryMetric(
+            metric="sum(amount, window='90d', partition_by=region)", alias="w",
         )
         unfiltered = {_bucket_key(r): r for r in (await exec_engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(), metrics=[win],
@@ -82,7 +81,7 @@ class TestFieldMaskRestrictsPopulation:
         # A host-local stratum-0 filter reaches a cross-model producer via the
         # established cross-root propagation (axiom D): the grand total counts
         # only customers with >=1 app order (c1+c3 = 150), not the full 350.
-        total = DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total")
+        total = QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total")
         unfiltered = (await exec_engine.execute(q(
             dimensions=["customers.tier"], metrics=[total],
         ))).data

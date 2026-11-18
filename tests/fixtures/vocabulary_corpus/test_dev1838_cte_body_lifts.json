@@ -24,14 +24,13 @@
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "tier",
     "model": "customers"
    },
    "new": {
-    "name": "tier",
-    "dataset": "customers"
+    "field": "customers.tier"
    }
   },
   {

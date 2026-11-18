@@ -37,8 +37,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "s"
+      "metric": "sum(amount)",
+      "alias": "s"
      }
     ]
    }

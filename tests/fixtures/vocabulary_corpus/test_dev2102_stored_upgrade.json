@@ -22,8 +22,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev2)",
-      "name": "t"
+      "metric": "sum(rev2)",
+      "alias": "t"
      }
     ]
    }

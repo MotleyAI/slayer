@@ -444,12 +444,12 @@ class TestSiblingStandIns:
             s1 = {"name": "s1", "population": "orders",
                   "time_dimensions": [{"field": "created_at", "granularity": "month"}],
                   "metrics": [{"metric": "sum(amount)", "alias": "rev"}]}
-            finer = {"population": "s1", "extensions": [{"source_name": "s1"}],
+            finer = {"population": "s1", "extensions": [{"dataset": "s1"}],
                      "time_dimensions": [{"field": "created_at", "granularity": "day"}],
                      "metrics": [{"metric": "sum(rev)"}]}
             with pytest.raises(TimeDimensionFieldError):
                 await engine.execute(query=[s1, finer], dry_run=True)
-            coarser = {"population": "s1", "extensions": [{"source_name": "s1"}],
+            coarser = {"population": "s1", "extensions": [{"dataset": "s1"}],
                        "time_dimensions": [{"field": "created_at", "granularity": "year"}],
                        "metrics": [{"metric": "sum(rev)"}]}
             resp = await engine.execute(query=[s1, coarser])

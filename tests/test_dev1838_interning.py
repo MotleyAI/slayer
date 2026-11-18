@@ -23,7 +23,6 @@ from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1838_fixtures import (
     BAND,
     BAND_WM,
-    DatasetMetric,
     SPEND_BAND,
     cte_aliases,
     dev1838_datasets,
@@ -35,7 +34,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -53,7 +52,7 @@ def _cm_count(sql: str, dialect: str) -> int:
 
 def _band_wm_query(*windows: str, filters=None):
     measures = [M] + [
-        DatasetMetric(expression=f"sum(amount, window='{w}')", name=f"w{w[:-1]}")
+        QueryMetric(metric=f"sum(amount, window='{w}')", alias=f"w{w[:-1]}")
         for w in windows
     ]
     kw = {"filter": filters} if filters else {}

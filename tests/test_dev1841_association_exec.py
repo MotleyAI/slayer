@@ -21,7 +21,6 @@ from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
     BCAST_SPEND_CROSS,
     SPEND_BY_TIER,
-    DatasetMetric,
     SlayerQuery,
     assoc_q,
     associated_warnings,
@@ -33,7 +32,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 

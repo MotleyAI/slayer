@@ -15,7 +15,6 @@ from tests._dev1835_fixtures import (
     FIRST_BY_SHIPPED,
     LAST_BY_ORDERED,
     LAST_BY_SHIPPED,
-    DatasetMetric,
     OK_W90,
     REGION_LAST,
     TimeDimension,
@@ -55,7 +54,7 @@ class TestFrameBoundExecuted:
         self, exec_backend,
     ) -> None:
         _, engine = exec_backend
-        w = DatasetMetric(expression="sum(amount, window='90d')", name="w")
+        w = QueryMetric(metric="sum(amount, window='90d')", alias="w")
         bounded = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             filter=["ordered_at >= '2024-02-01'"], metrics=[w],
@@ -77,7 +76,7 @@ class TestFrameBoundExecuted:
     ) -> None:
         """The first visible bucket's ``prev`` reaches the invisible January."""
         _, engine = exec_backend
-        prev = DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev")
+        prev = QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev")
         expected = {
             ("North", "2024-02"): 30.0, ("South", "2024-03"): None,
             (None, "2024-03"): None,

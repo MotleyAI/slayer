@@ -58,7 +58,7 @@ async def engine():
 
 async def _dry(engine, **kw):
     kw.setdefault("population", "orders")
-    kw.setdefault("metrics", [{"expression": "count(*)", "name": "n"}])
+    kw.setdefault("metrics", [{"metric": "count(*)", "alias": "n"}])
     return await engine.execute(SlayerQuery.model_validate(kw), dry_run=True)
 
 

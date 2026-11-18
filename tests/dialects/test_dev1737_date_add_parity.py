@@ -41,11 +41,11 @@ def _query(granularity: str, *measures) -> dict:
 
 def _shift(granularity: TimeGranularity, offset: int, *, bucket: TimeGranularity | None = None) -> dict:
     return _query((bucket or granularity).value, "sum(v)", {
-        "expression": f"time_shift(sum(v), {offset}, '{granularity.value}')", "name": "x"})
+        "metric": f"time_shift(sum(v), {offset}, '{granularity.value}')", "alias": "x"})
 
 
 def _window(duration: str, bucket: str) -> dict:
-    return _query(bucket, {"expression": f"sum(v, window='{duration}')", "name": "x"})
+    return _query(bucket, {"metric": f"sum(v, window='{duration}')", "alias": "x"})
 
 
 def _cases() -> dict:

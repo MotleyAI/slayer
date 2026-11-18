@@ -34,10 +34,10 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 SMOKE_DIALECTS = ["tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 RBAND = {
-    "expression": "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END",
-    "name": "rband",
+    "field": "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END",
+    "alias": "rband",
 }
 
 

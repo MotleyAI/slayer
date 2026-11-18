@@ -22,7 +22,7 @@
     "fields": [
      {
       "name": "id",
-      "datatype": "INT",
+      "datatype": "Integer",
       "primary_key": true
      }
     ]

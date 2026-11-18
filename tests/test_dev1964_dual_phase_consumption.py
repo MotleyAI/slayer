@@ -46,8 +46,8 @@ from slayer.engine.query_engine import SlayerQueryEngine
 
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 RLEVEL = {"field": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "alias": "rlevel"}
-TLEVEL = {"expression": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
-          "name": "tlevel"}
+TLEVEL = {"field": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
+          "alias": "tlevel"}
 TOT = QueryMetric(metric="sum(amount)", alias="tot")
 
 R_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0, "Void": None}
@@ -58,20 +58,20 @@ TLEVEL_BY_REGION = {"South": "rest", "East": "top", "North": "top", "Gap": "top"
                     "Void": "rest"}
 
 PLAIN_RANK = "rank(sum(amount, partition_by=region), direction='desc')"
-PBAND = {"expression": f"CASE WHEN {PLAIN_RANK} > 1 THEN 'top' ELSE 'rest' END",
-         "name": "pband"}
+PBAND = {"field": f"CASE WHEN {PLAIN_RANK} > 1 THEN 'top' ELSE 'rest' END",
+         "alias": "pband"}
 
 # Finer-grained re-aggregation: outer grain [city, region] under dimensions [region].
 FINE = "avg(sum(amount, partition_by=[city, region, product]), partition_by=[city, region])"
-FINE_DIM = {"expression": f"CASE WHEN {FINE} > 30 THEN 'hi' ELSE 'lo' END", "name": "x"}
+FINE_DIM = {"field": f"CASE WHEN {FINE} > 30 THEN 'hi' ELSE 'lo' END", "alias": "x"}
 FINE_TOT = {("North", "lo"): 30.0, ("North", "hi"): 60.0, ("South", "hi"): 140.0,
             ("East", "hi"): 180.0, ("Gap", "lo"): 20.0, ("Void", "lo"): None}
 
-CITY_BAND = {"expression": "CASE WHEN sum(amount, partition_by=[city, region]) > 45 "
-                           "THEN 'hi' ELSE 'lo' END", "name": "band"}
+CITY_BAND = {"field": "CASE WHEN sum(amount, partition_by=[city, region]) > 45 "
+                           "THEN 'hi' ELSE 'lo' END", "alias": "band"}
 
 CHAIN_R = "avg(sum(amount, partition_by=customer_id), partition_by=customers.regions.name)"
-CL = {"expression": f"CASE WHEN {CHAIN_R} > 40 THEN 'hi' ELSE 'lo' END", "name": "cl"}
+CL = {"field": f"CASE WHEN {CHAIN_R} > 40 THEN 'hi' ELSE 'lo' END", "alias": "cl"}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -203,8 +203,8 @@ class TestFilterOnAggregateOwnedByDimensionTransform:
         assert _col(resp, "tot") == _approx({"South": 140.0, "East": 180.0})
 
     def test_finer_partition_key_is_a_typed_error(self):
-        band = {"expression": "CASE WHEN rank(sum(amount, partition_by=[city, region]), direction='desc') > 1 "
-                              "THEN 'top' ELSE 'rest' END", "name": "cband"}
+        band = {"field": "CASE WHEN rank(sum(amount, partition_by=[city, region]), direction='desc') > 1 "
+                              "THEN 'top' ELSE 'rest' END", "alias": "cband"}
         query = sales_q(dimensions=["region", band], metrics=[TOT],
                         filter=["sum(amount, partition_by=[city, region]) > 50"])
         bundle = _bundle()

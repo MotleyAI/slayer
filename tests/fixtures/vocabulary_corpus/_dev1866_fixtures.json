@@ -37,13 +37,13 @@
    },
    "new": {
     "to": "sess",
-    "join_pairs": [
-     [
-      "sess_ref",
-      "sess_key"
-     ]
+    "cardinality": null,
+    "from_columns": [
+     "sess_ref"
     ],
-    "cardinality": null
+    "to_columns": [
+     "sess_key"
+    ]
    }
   },
   {
@@ -60,13 +60,13 @@
    },
    "new": {
     "to": "days",
-    "join_pairs": [
-     [
-      "day_id",
-      "id"
-     ]
+    "cardinality": null,
+    "from_columns": [
+     "day_id"
     ],
-    "cardinality": null
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {

@@ -84,23 +84,23 @@ DATASET_FORMS: dict[str, tuple[dict[str, Any], str, str, Check]] = {
                  lambda d: [m.name for m in d.metrics] == ["revenue"]),
     "joins": (renamed(ORDERS, old="joins", new="relationships"), "joins", "relationships",
               lambda d: [r.to for r in d.relationships] == ["customers"]),
-    "field_type": (with_member(ORDERS, section="fields", index=4, name="amount", type="DOUBLE"), "type", "datatype",
-                   lambda d: d.fields[4].datatype == DataType.DOUBLE),
+    "field_type": (with_member(ORDERS, section="fields", index=4, name="amount", type="Float"), "type", "datatype",
+                   lambda d: d.fields[4].datatype == DataType.FLOAT),
     "metric_type": (with_member(ORDERS, section="metrics", index=0, name="revenue", expression="sum(amount)",
-                                type="DOUBLE"),
-                    "type", "datatype", lambda d: d.metrics[0].datatype == DataType.DOUBLE),
+                                type="Float"),
+                    "type", "datatype", lambda d: d.metrics[0].datatype == DataType.FLOAT),
     "metric_formula": (with_member(ORDERS, section="metrics", index=0, name="revenue", formula="sum(amount)"),
                        "formula", "expression", lambda d: d.metrics[0].expression == "sum(amount)"),
     "aggregation_formula": ({**ORDERS, "aggregations": [{"name": "doubled", "formula": "SUM({value}) * 2"}]},
                             "formula", "expression",
                             lambda d: d.aggregations[0].expression == "SUM({value}) * 2"),
     "target_model": (with_member(ORDERS, section="relationships", index=0, target_model="customers",
-                                 join_pairs=[["customer_id", "id"]]), "target_model", "to",
+                                 from_columns=["customer_id"], to_columns=["id"]), "target_model", "to",
                      lambda d: d.relationships[0].to == "customers"),
 }
 
 QUERY: dict[str, Any] = {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]}
-REL = {"to": "customers", "join_pairs": [["customer_id", "id"]], "name": "buyer"}
+REL = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}
 
 #: id -> (pre-2.0 query input, old token, new token, check on the converted query)
 QUERY_FORMS: dict[str, tuple[dict[str, Any], str, str, Check]] = {
@@ -111,30 +111,30 @@ QUERY_FORMS: dict[str, tuple[dict[str, Any], str, str, Check]] = {
     "filters": ({**QUERY, "filters": ["amount > 1"]}, "filters", "filter",
                 lambda q: q.filter == ["amount > 1"]),
     "metric_entry_formula": ({**QUERY, "metrics": [{"formula": "sum(amount)", "name": "rev"}]}, "formula",
-                             "expression",
+                             "metric",
                              lambda q: (q.metrics[0].expression, q.metrics[0].name) == ("sum(amount)", "rev")),
-    "field_ref_model": ({**QUERY, "dimensions": [{"name": "name", "model": "customers"}]}, "model", "dataset",
-                        lambda q: (q.dimensions[0].name, q.dimensions[0].dataset) == ("name", "customers")),
+    "field_ref_model": ({**QUERY, "dimensions": [{"name": "name", "model": "customers"}]}, "model", "field",
+                        lambda q: q.dimensions[0].field == "customers.name"),
     "time_dimension_dimension": ({**QUERY, "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}]},
                                  "dimension", "field", lambda q: q.time_dimensions[0].field == "ordered_at"),
     "time_dimension_column": ({**QUERY, "time_dimensions": [{"column": "ordered_at", "granularity": "month"}]},
                               "column", "field", lambda q: q.time_dimensions[0].field == "ordered_at"),
     "order_column": ({**QUERY, "order": [{"column": "status"}]}, "column", "field",
-                     lambda q: q.order[0].field.name == "status"),
-    "extension_measures": ({**QUERY, "extensions": [{"source_name": "orders", "measures": [
+                     lambda q: q.order[0].field == "status"),
+    "extension_measures": ({**QUERY, "extensions": [{"dataset": "orders", "measures": [
         {"name": "aov", "expression": "sum(amount) / count(*)"}]}]}, "measures", "metrics",
         lambda q: q.extensions[0].metrics[0].name == "aov"),
-    "extension_joins": ({**QUERY, "extensions": [{"source_name": "orders", "joins": [REL]}]},
+    "extension_joins": ({**QUERY, "extensions": [{"dataset": "orders", "joins": [REL]}]},
                         "joins", "relationships", lambda q: q.extensions[0].relationships[0].name == "buyer"),
-    "extension_target_model": ({**QUERY, "extensions": [{"source_name": "orders", "relationships": [
-        {"target_model": "customers", "join_pairs": [["customer_id", "id"]], "name": "buyer"}]}]},
+    "extension_target_model": ({**QUERY, "extensions": [{"dataset": "orders", "relationships": [
+        {"target_model": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}]}]},
         "target_model", "to", lambda q: q.extensions[0].relationships[0].to == "customers"),
 }
 
 REFINEMENT_FORMS: dict[str, tuple[dict[str, Any], str, str]] = {
     "measures": ({"measures": ["count(*)"]}, "measures", "metrics"),
     "filters": ({"filters": ["amount > 1"]}, "filters", "filter"),
-    "metric_entry_formula": ({"metrics": [{"formula": "count(*)", "name": "n"}]}, "formula", "expression"),
+    "metric_entry_formula": ({"metrics": [{"formula": "count(*)", "name": "n"}]}, "formula", "metric"),
 }
 
 
@@ -215,8 +215,8 @@ class TestQueryForms:
 
     def test_two_extension_entries_with_one_old_key_warn_once(self) -> None:
         raw = {**QUERY, "extensions": [
-            {"source_name": "orders", "measures": [{"name": "a", "expression": "count(*)"}]},
-            {"source_name": "customers", "measures": [{"name": "b", "expression": "count(*)"}]},
+            {"dataset": "orders", "measures": [{"name": "a", "expression": "count(*)"}]},
+            {"dataset": "customers", "measures": [{"name": "b", "expression": "count(*)"}]},
         ]}
         with recorded() as caught:
             query = SlayerQuery.model_validate(raw)
@@ -245,19 +245,19 @@ class TestExecution:
                 old = await engine.execute({"population": "orders", "metrics": ["count(*)"],
                                             "dimensions": [{"name": "name", "model": "customers"}]})
             new = await engine.execute({"population": "orders", "metrics": ["count(*)"],
-                                        "dimensions": [{"name": "name", "dataset": "customers"}]})
+                                        "dimensions": ["customers.name"]})
         assert normal(old) == normal(new)
         [w] = deprecated_in(old.warnings)
         assert "model" in w.old
-        assert "dataset" in w.new
+        assert "field" in w.new
 
     async def test_an_old_key_across_stages_and_an_extension_warns_once(self, backend: str) -> None:
         stages = [
             {"name": "per_customer", "population": "orders", "dimensions": ["customer_id"],
-             "measures": [{"expression": "sum(amount)", "name": "total"}, "aov"],
-             "extensions": [{"source_name": "orders",
+             "measures": [{"metric": "sum(amount)", "alias": "total"}, "aov"],
+             "extensions": [{"dataset": "orders",
                              "measures": [{"name": "aov", "expression": "sum(amount) / count(*)"}]}]},
-            {"population": "per_customer", "measures": [{"expression": "avg(total)", "name": "avg_total"}]},
+            {"population": "per_customer", "measures": [{"metric": "avg(total)", "alias": "avg_total"}]},
         ]
         async with vocab_engine(backend) as engine:
             with recorded() as caught:
@@ -277,7 +277,7 @@ class TestExecution:
 def old_orders() -> dict[str, Any]:
     """``shop_orders`` with ``columns`` and a relationship spelling ``target_model``."""
     raw = renamed(shop_orders(), old="columns", new="fields")
-    raw["relationships"] = [{"target_model": "customers", "join_pairs": [["customer_id", "id"]],
+    raw["relationships"] = [{"target_model": "customers", "from_columns": ["customer_id"], "to_columns": ["id"],
                              "cardinality": "many_to_one"}]
     return raw
 

@@ -57,7 +57,7 @@ class TestFreshInputConverts:
         assert q.population == "orders"
         (extension,) = q.extensions or []
         assert isinstance(extension, DatasetExtension)
-        assert extension.source_name == "orders"
+        assert extension.dataset == "orders"
         assert [m.name for m in extension.metrics or []] == ["double_amount"]
         assert [j.to for j in extension.relationships or []] == ["customers"]
 
@@ -94,7 +94,7 @@ class TestFreshInputConverts:
     def test_legacy_form_next_to_an_extension_of_another_model(self) -> None:
         with pytest.warns(FutureWarning):
             q = SlayerQuery.model_validate({"population": LEGACY, "extensions": [{"source_name": "customers"}]})
-        assert sorted(e.source_name for e in q.extensions or []) == ["customers", "orders"]
+        assert sorted(e.dataset for e in q.extensions or []) == ["customers", "orders"]
 
     def test_legacy_form_conflicting_with_an_extensions_entry(self) -> None:
         with pytest.raises(ValidationError) as info:
@@ -214,6 +214,6 @@ class TestInternalProducers:
         assert isinstance(result, QueryResult)
         assert result.query.population == "orders"
         (extension,) = result.query.extensions or []
-        assert extension.source_name == "orders"
+        assert extension.dataset == "orders"
         assert [j.to for j in extension.relationships or []] == ["stores"]
         assert _future_warnings(recorded) == []

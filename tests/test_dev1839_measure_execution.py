@@ -27,7 +27,6 @@ from tests._dev1839_fixtures import (
     MIXED_DIFF_OF,
     MIXED_RANK,
     MIXED_RANK_OF,
-    DatasetMetric,
     REGION_TOTAL,
     SAMEGRAIN_DIFF,
     SAMEGRAIN_DIFF_OF,
@@ -213,8 +212,8 @@ class TestConformingSurfaces:
         # the unfiltered run. Needs D10, so this variant is TDD, not locking.
         _, engine = exec_backend
         measures = [
-            DatasetMetric(expression="sum(amount)", name="s"),
-            DatasetMetric(expression=MEASURE_DIFF, name="d"),
+            QueryMetric(metric="sum(amount)", alias="s"),
+            QueryMetric(metric=MEASURE_DIFF, alias="d"),
         ]
         unfiltered = rows_by(await engine.execute(q(
             dimensions=["region", "city"], metrics=measures,

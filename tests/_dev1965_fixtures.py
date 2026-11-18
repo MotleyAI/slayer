@@ -72,7 +72,7 @@ def month_td() -> list[dict]:
 def cumsum_chain(**kw) -> SlayerQuery:
     """``cumsum(sum(amount))`` by month (a one-step transform chain)."""
     kw.setdefault("time_dimensions", month_td())
-    kw.setdefault("metrics", [{"expression": "cumsum(sum(amount))", "name": "running"}])
+    kw.setdefault("metrics", [{"metric": "cumsum(sum(amount))", "alias": "running"}])
     return q(**kw)
 
 

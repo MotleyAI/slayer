@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import ComputedDimension, DatasetExtension
+from slayer.core.query import DatasetExtension
 from slayer.core.syntax import Cmp, Ref, parse_expr
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
@@ -608,7 +608,7 @@ def test_simple_metric_and_dimension(dialect) -> None:
     assert result.query.population == "orders"
     assert result.query.metrics is not None
     assert len(result.query.metrics) == 1
-    assert result.query.metrics[0].expression == "sum(revenue)"
+    assert result.query.metrics[0].metric == "sum(revenue)"
     assert result.query.dimensions is not None
     assert [d.full_name for d in result.query.dimensions] == ["status"]
     mapping = dict(result.field_name_mapping)
@@ -622,14 +622,14 @@ def test_row_count_metric_maps_to_star_count(dialect) -> None:
     result = translate(sql="SELECT row_count FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].expression == "count(*)"
+    assert result.query.metrics[0].metric == "count(*)"
 
 
 def test_saved_measure_aov_maps_to_bare_name(dialect) -> None:
     result = translate(sql="SELECT aov, status FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    formulas = [m.expression for m in result.query.metrics]
+    formulas = [m.metric for m in result.query.metrics]
     assert "aov" in formulas
 
 
@@ -657,7 +657,7 @@ def test_as_alias_renames_projected_column(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert dict(result.field_name_mapping) == {"orders.rs": "rs"}
     assert result.query.metrics is not None
-    assert result.query.metrics[0].name == "rs"
+    assert result.query.metrics[0].alias == "rs"
 
 
 # --- aggregate-SQL → metric mapping -------------------
@@ -667,7 +667,7 @@ def test_sum_of_column_maps_to_measure(dialect) -> None:
     result = translate(sql="SELECT SUM(revenue) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].expression == "sum(revenue)"
+    assert result.query.metrics[0].metric == "sum(revenue)"
     # Default (unaliased) projected name mirrors the catalog metric name.
     assert dict(result.field_name_mapping) == {"orders.revenue_sum": "revenue_sum"}
 
@@ -676,14 +676,14 @@ def test_count_star_maps_to_star_count(dialect) -> None:
     result = translate(sql="SELECT COUNT(*) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].expression == "count(*)"
+    assert result.query.metrics[0].metric == "count(*)"
 
 
 def test_count_of_column_maps_to_count(dialect) -> None:
     result = translate(sql="SELECT COUNT(status) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].expression == "count(status)"
+    assert result.query.metrics[0].metric == "count(status)"
 
 
 def test_count_distinct_maps_to_count_distinct(dialect) -> None:
@@ -693,7 +693,7 @@ def test_count_distinct_maps_to_count_distinct(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].expression == "count_distinct(status)"
+    assert result.query.metrics[0].metric == "count_distinct(status)"
 
 
 def test_aggregate_over_joined_column_resolves_same_as_named_metric(dialect) -> None:
@@ -717,7 +717,7 @@ def test_avg_min_max_of_column_map(fn: str, agg: str, dialect) -> None:
     result = translate(sql=f"SELECT {fn}(revenue) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].expression == f"{agg}(revenue)"
+    assert result.query.metrics[0].metric == f"{agg}(revenue)"
 
 
 def test_aggregate_alias_renames_projection(dialect) -> None:
@@ -725,8 +725,8 @@ def test_aggregate_alias_renames_projection(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert dict(result.field_name_mapping) == {"orders.rev": "rev"}
     assert result.query.metrics is not None
-    assert result.query.metrics[0].name == "rev"
-    assert result.query.metrics[0].expression == "sum(revenue)"
+    assert result.query.metrics[0].alias == "rev"
+    assert result.query.metrics[0].metric == "sum(revenue)"
 
 
 def test_aggregate_ineligible_for_column_errors(dialect) -> None:
@@ -997,7 +997,7 @@ def test_month_wrapper_creates_extraction_dimension(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert not result.query.time_dimensions
     dims = result.query.dimensions or []
-    assert [d.expression for d in dims if isinstance(d, ComputedDimension)] == ["date_part('month', ordered_at)"]
+    assert [d.field for d in dims if d.ref is None] == ["date_part('month', ordered_at)"]
 
 
 def test_date_trunc_creates_time_dimension(dialect) -> None:
@@ -2041,7 +2041,7 @@ def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].expression == "sum(revenue)"
+    assert result.query.metrics[0].metric == "sum(revenue)"
     # Declared metric type is DOUBLE; CAST(<metric> AS TEXT) overrides.
     assert result.projection_types == [DataType.STRING]
 
@@ -2452,7 +2452,7 @@ def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) ->
     assert result.query.population == "orders"
     (ext,) = result.query.extensions or []
     assert isinstance(ext, DatasetExtension)
-    assert ext.source_name == "orders"
+    assert ext.dataset == "orders"
     assert ext.relationships is not None
     assert len(ext.relationships) == 1
     j = ext.relationships[0]
@@ -2489,7 +2489,7 @@ def test_left_join_dynamic_supports_filter_on_joined_col(dialect, caplog) -> Non
         result = translate(sql=sql, catalog=cat, dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert [e.source_name for e in result.query.extensions or []] == ["orders"]
+    assert [e.dataset for e in result.query.extensions or []] == ["orders"]
     assert result.query.filter == ["stores.name = 'Acme'"]
 
 

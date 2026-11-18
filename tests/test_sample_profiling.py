@@ -110,7 +110,7 @@ def _record(*, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> li
 
 
 def _is_numeric_batch(q: SlayerQuery) -> bool:
-    return any((m.name or "").startswith("_slayer_range_") for m in q.metrics or [])
+    return any((m.alias or "").startswith("_slayer_range_") for m in q.metrics or [])
 
 
 def _numeric_batches(log: list[SlayerQuery]) -> list[SlayerQuery]:
@@ -737,7 +737,7 @@ async def test_refresh_all_bounds_a_failing_model(env, monkeypatch: pytest.Monke
     errors = await refresh_all_table_backed_sampled(engine=engine, storage=storage, data_source=DS)
     assert len(errors) == 1
     assert "ghost" in errors[0]
-    ghost_queries = [q for q in log if q.population == "ghost" or getattr(q.population, "source_name", None) == "ghost"]
+    ghost_queries = [q for q in log if q.population == "ghost" or getattr(q.population, "dataset", None) == "ghost"]
     assert len(ghost_queries) == 2
     assert (await _stored(storage, column="status")).sampled_values is not None
 

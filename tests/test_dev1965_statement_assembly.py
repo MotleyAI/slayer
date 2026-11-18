@@ -355,7 +355,7 @@ class TestQueryBackedWrap:
 
 def _stat_seams(expression: str) -> dict:
     month = [{"field": "created_at", "granularity": "month"}]
-    measure = [{"expression": expression, "name": "w"}]
+    measure = [{"metric": expression, "alias": "w"}]
     return {
         "producer_hoist": SlayerQuery.model_validate({
             "population": "orders", "time_dimensions": F15.month_td(), "metrics": measure,

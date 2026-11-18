@@ -2,39 +2,39 @@
  "source": "tests/test_transforms_planner.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "cumsum(sum(amount), partition_by=region)"
    },
    "new": {
-    "expression": "cumsum(sum(amount), partition_by=region)"
+    "metric": "cumsum(sum(amount), partition_by=region)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "rank(sum(amount), direction='desc')"
    },
    "new": {
-    "expression": "rank(sum(amount), direction='desc')"
+    "metric": "rank(sum(amount), direction='desc')"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "rank(sum(amount), direction='desc')"
    },
    "new": {
-    "expression": "rank(sum(amount), direction='desc')"
+    "metric": "rank(sum(amount), direction='desc')"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "cumsum(sum(amount))"
    },
    "new": {
-    "expression": "cumsum(sum(amount))"
+    "metric": "cumsum(sum(amount))"
    }
   },
   {
@@ -51,27 +51,27 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "change(sum(amount))"
    },
    "new": {
-    "expression": "change(sum(amount))"
+    "metric": "change(sum(amount))"
    }
   }
  ],

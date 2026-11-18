@@ -28,7 +28,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 
@@ -296,8 +296,8 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:

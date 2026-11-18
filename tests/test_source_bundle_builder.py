@@ -163,7 +163,7 @@ class TestSourceModelShapes:
             "population": "orders",
             "extensions": [{
                 "dataset": "orders",
-                "metrics": [{"name": "discount", "expression": "sum(amount)"}],
+                "metrics": [{"alias": "discount", "metric": "sum(amount)"}],
             }],
         })
         built = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)

@@ -29,8 +29,8 @@
       "population": "orders",
       "metrics": [
        {
-        "expression": "count(*)",
-        "name": "n"
+        "metric": "count(*)",
+        "alias": "n"
        }
       ],
       "filter": [
@@ -66,8 +66,8 @@
       "population": "orders",
       "metrics": [
        {
-        "expression": "count(*)",
-        "name": "n"
+        "metric": "count(*)",
+        "alias": "n"
        }
       ],
       "filter": [
@@ -85,7 +85,7 @@
    },
    "new": {
     "name": "status",
-    "datatype": "TEXT"
+    "datatype": "String"
    }
   },
   {
@@ -96,7 +96,7 @@
    },
    "new": {
     "name": "amount",
-    "datatype": "DOUBLE"
+    "datatype": "Float"
    }
   },
   {

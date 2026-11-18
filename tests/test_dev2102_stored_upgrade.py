@@ -50,7 +50,7 @@ def _assert_upgraded(query: SlayerQuery | None) -> None:
     assert query.population == "orders"
     (extension,) = query.extensions or []
     assert isinstance(extension, DatasetExtension)
-    assert extension.source_name == "orders"
+    assert extension.dataset == "orders"
     assert [(j.to, j.column_pairs) for j in extension.relationships or []] == [("customers", [("customer_id", "id")])]
 
 
@@ -131,7 +131,7 @@ class TestStoredModels:
         [stage] = (await raw_doc(storage, "rev2_q"))["source_queries"]
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert stage["population"] == "orders"
-        assert [e["source_name"] for e in stage["extensions"]] == ["orders"]
+        assert [e["dataset"] for e in stage["extensions"]] == ["orders"]
         assert await storage.get_dataset("rev2_q", data_source=DS) == model
 
     def test_a_current_version_model_holding_a_stored_stage(self) -> None:

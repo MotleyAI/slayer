@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -85,14 +85,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "status",
-      "name": "status"
+      "field": "status",
+      "alias": "status"
      }
     ],
     "metrics": [
      {
-      "expression": "wscaled_sum(customers.spend)",
-      "name": "m0"
+      "metric": "wscaled_sum(customers.spend)",
+      "alias": "m0"
      }
     ]
    }

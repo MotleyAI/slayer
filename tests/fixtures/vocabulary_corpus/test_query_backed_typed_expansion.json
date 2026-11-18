@@ -23,12 +23,12 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
      {
-      "name": "id",
+      "field": "id",
       "label": "kpi_id"
      }
     ]
@@ -65,12 +65,12 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
      {
-      "name": "id",
+      "field": "id",
       "label": "kpi_id"
      }
     ]
@@ -102,15 +102,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "b",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      }
     ]
@@ -133,15 +133,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "a",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      }
     ]
@@ -246,7 +246,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
@@ -271,7 +271,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -303,11 +303,11 @@
     ],
     "metrics": [
      {
-      "expression": "rank(count(*), direction='desc')",
-      "name": "ranked"
+      "metric": "rank(count(*), direction='desc')",
+      "alias": "ranked"
      },
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -329,7 +329,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "adjusted_total"
+      "metric": "adjusted_total"
      }
     ],
     "dimensions": [
@@ -355,8 +355,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "rounded_total",
-      "name": "rounded_total"
+      "metric": "rounded_total",
+      "alias": "rounded_total"
      }
     ],
     "dimensions": [
@@ -381,7 +381,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -406,7 +406,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -457,7 +457,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -482,7 +482,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -507,7 +507,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -541,7 +541,7 @@
     "population": "customers",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
@@ -569,7 +569,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -602,7 +602,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -645,7 +645,7 @@
     "population": "orders_a",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -670,7 +670,7 @@
     "population": "orders_b",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -695,7 +695,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -720,7 +720,7 @@
     "population": "customers",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
@@ -748,7 +748,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -773,7 +773,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -800,7 +800,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount_sum)"
+      "metric": "sum(amount_sum)"
      }
     ]
    }
@@ -837,15 +837,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "customers",
-      "join_pairs": [
-       [
-        "region",
-        "region"
-       ]
+      "from_columns": [
+       "region"
+      ],
+      "to_columns": [
+       "region"
       ]
      }
     ]
@@ -871,7 +871,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -896,7 +896,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }
@@ -921,7 +921,7 @@
     ],
     "metrics": [
      {
-      "expression": "percentile(customers.revenue, p=0.5)"
+      "metric": "percentile(customers.revenue, p=0.5)"
      }
     ]
    }
@@ -948,7 +948,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -973,7 +973,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }
@@ -995,7 +995,7 @@
     "population": "qb_already_aggregated",
     "metrics": [
      {
-      "expression": "sum(customers__revenue_sum)"
+      "metric": "sum(customers__revenue_sum)"
      }
     ],
     "dimensions": [
@@ -1020,7 +1020,7 @@
     "population": "qb_already_aggregated",
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ],
     "dimensions": [

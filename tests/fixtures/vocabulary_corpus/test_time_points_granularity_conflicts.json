@@ -27,8 +27,8 @@
     "population": "ev_buyer",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "time_dimensions": [

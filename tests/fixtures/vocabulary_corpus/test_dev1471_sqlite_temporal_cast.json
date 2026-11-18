@@ -21,7 +21,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(created_at)"
+      "metric": "max(created_at)"
      }
     ]
    }
@@ -46,7 +46,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(created_at, partition_by=customer_id)"
+      "metric": "max(created_at, partition_by=customer_id)"
      }
     ]
    }
@@ -71,7 +71,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(last_touch)"
+      "metric": "max(last_touch)"
      }
     ]
    }
@@ -96,7 +96,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(created_at)"
+      "metric": "max(created_at)"
      }
     ]
    }
@@ -121,7 +121,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(last_touch)"
+      "metric": "max(last_touch)"
      }
     ]
    }
@@ -146,7 +146,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(created_at)"
+      "metric": "max(created_at)"
      }
     ]
    }

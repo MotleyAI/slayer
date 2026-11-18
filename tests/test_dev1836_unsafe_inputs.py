@@ -20,7 +20,6 @@ from slayer.core.query import QueryMetric
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     AMOUNT_BY_TIER_STATUS,
-    DatasetMetric,
     make_exec_engine,
     q,
     rows_by,
@@ -35,7 +34,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 def _assert_clear(ei, *needles: str, remedy: bool = False) -> None:

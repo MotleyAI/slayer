@@ -18,7 +18,6 @@ import pytest
 from tests._dev1892_fixtures import assert_ref_free
 from tests._dev1900_fixtures import (
     AMOUNT_SUM,
-    DatasetMetric,
     POP_FILTER_DERIVED_ASSOC,
     POP_FILTER_STRUCTURAL_ASSOC,
     TO_ONE_FILTER_AMOUNT,
@@ -27,10 +26,11 @@ from tests._dev1900_fixtures import (
     orders_q,
     unparseable_derived_datasets,
 )
+from slayer.core.query import QueryMetric
 
 MODES = ["broadcast", "associate", "error"]
-SPEND_SUM_LOCAL = DatasetMetric(expression="sum(spend)", name="w")   # local on customers
-ORDERS_AMOUNT_PRODUCER = DatasetMetric(expression="sum(orders.amount)", name="oa")  # cross-model producer
+SPEND_SUM_LOCAL = QueryMetric(metric="sum(spend)", alias="w")   # local on customers
+ORDERS_AMOUNT_PRODUCER = QueryMetric(metric="sum(orders.amount)", alias="oa")  # cross-model producer
 
 #: producer-only orders.amount:sum over ok orders = 82 (EXISTS pushdown, no guard).
 PRODUCER_ONLY_AMOUNT = 82.0

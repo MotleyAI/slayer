@@ -29,7 +29,7 @@ RK_REGION = "orders.customers.regions.name"
 
 class TestKeylessFilterRowRoutes:
     async def test_filter_on_own_keyless_aggregate_executes(self, exec_engine) -> None:
-        dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
+        dims = [{"field": CM_BAND, "alias": "band"}, "customers.regions.name"]
         unfiltered = (await exec_engine.execute(q(
             dimensions=dims,
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
@@ -55,7 +55,7 @@ class TestKeylessFilterRowRoutes:
 
 class TestKeylessOrderByDimensionName:
     async def test_order_by_computed_dim_name_executes(self, exec_engine) -> None:
-        dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
+        dims = [{"field": CM_BAND, "alias": "band"}, "customers.regions.name"]
         resp = await exec_engine.execute(q(
             dimensions=dims,
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],

@@ -147,7 +147,7 @@ async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
 def _q(source_dataset: str = "Invoice", **kw) -> SlayerQuery:
     base: dict = dict(
         population=source_dataset,
-        metrics=[{"expression": "sum(amount)", "name": "amt"}],
+        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -202,7 +202,7 @@ async def _multi_engine(tmp_path, *, branches: int, safe: int) -> SlayerQueryEng
 
 def _root_q(**kw) -> SlayerQuery:
     base: dict = dict(
-        population="Root", metrics=[{"expression": "sum(amount)", "name": "amt"}]
+        population="Root", metrics=[{"metric": "sum(amount)", "alias": "amt"}]
     )
     base.update(kw)
     return SlayerQuery(**base)

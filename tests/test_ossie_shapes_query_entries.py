@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from slayer.core.errors import UnknownKeyError
 from slayer.core.models import DatasetMetric
-from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, computed_dimension_name
 from tests._deprecated_input_helpers import deprecated_in, deprecations, errors_in, payload_of, recorded
 from tests._ossie_shapes_fixtures import execute, shop_engine_store, sorted_rows
 from tests._ossie_vocabulary_fixtures import fresh
@@ -90,6 +90,12 @@ class TestEntryClasses:
     def test_an_expression_dimension_has_no_reference(self) -> None:
         [dim] = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(status)"]}).dimensions or []
         assert dim.ref is None
+
+    def test_a_dimension_name_is_derived_and_not_serialized(self) -> None:
+        dims = SlayerQuery.model_validate({"population": "orders", "dimensions": [
+            {"field": "status", "alias": "s"}, "customers.region", "upper(status)"]}).dimensions or []
+        assert [d.name for d in dims] == ["s", "region", computed_dimension_name("upper(status)")]
+        assert all("name" not in d.model_dump() for d in dims)
 
     def test_a_bare_reference_dumps_as_text(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [

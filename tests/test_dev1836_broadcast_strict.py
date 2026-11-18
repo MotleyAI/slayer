@@ -18,7 +18,6 @@ from slayer.core.errors import BroadcastGrainWarning, SlayerError
 from slayer.core.query import OrderItem, QueryMetric
 
 from tests._dev1836_fixtures import (
-    DatasetMetric,
     SPEND_BY_TIER,
     SPEND_TOTAL,
     broadcast_warnings,
@@ -34,8 +33,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
 class TestBroadcastMetadata:

@@ -24,9 +24,9 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from tests._dev1739_fixtures import customers_dataset, make_exec_engine
 
-REVENUE = {"expression": "sum(amount)", "name": "revenue"}
+REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
 REGION_ID = {"alias": "region_id", "field": "customers.region_id"}
-REGION_NAME = {"name": "region_name", "expression": "customers.regions.name"}
+REGION_NAME = {"alias": "region_name", "field": "customers.regions.name"}
 RID = {"alias": "rid", "field": "customers.region_id"}
 UNNAMED_PATH = {"field": "customers.region_id"}
 

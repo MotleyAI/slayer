@@ -137,10 +137,10 @@ INNER_CITY = "sum(amount, partition_by=city)"          # [city] grain (spans reg
 INNER_CRP = "sum(amount, partition_by=[city, region, product])"
 
 
-def reagg(outer: str, inner: str, *, name: str, **kw) -> DatasetMetric:
+def reagg(outer: str, inner: str, *, name: str, **kw) -> QueryMetric:
     """An ``<outer>(<inner>)`` re-aggregation measure, e.g. reagg('avg', INNER_CR)."""
     extra = "".join(f", {k}={v}" for k, v in kw.items())
-    return DatasetMetric(expression=f"{outer}({inner}{extra})", name=name)
+    return QueryMetric(metric=f"{outer}({inner}{extra})", alias=name)
 
 
 #: The warning kind DEV-1847 adds for an operand grain == outer grain.

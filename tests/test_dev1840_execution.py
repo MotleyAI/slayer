@@ -17,7 +17,6 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import (
-    DatasetMetric,
     RENT_APP,
     RENT_APP_GOLD_SAMEROW,
     RENT_APP_GOLD_SPLIT_DEFECT,
@@ -70,9 +69,9 @@ async def exec_backend_rev(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
 
 
 async def _dry_has_exists_and_closes(engine, query, dialect) -> None:

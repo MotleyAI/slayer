@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 
 from tests._dev1841_fixtures import (
     ASSOC_LOCAL_SPEND_BY_STATUS,
     LOCAL_OK_FAN_DEFECT,
     LOCAL_SPEND_TOTAL,
-    DatasetMetric,
     associated_warnings,
     broadcast_warnings,
     cust_q,
@@ -26,7 +25,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-SP = DatasetMetric(expression="sum(spend)", name="sp")
+SP = QueryMetric(metric="sum(spend)", alias="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -84,7 +83,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
 
     async def test_arithmetic_composite_leaf(self, exec_backend):
         _, engine = exec_backend
-        composite = DatasetMetric(expression="sum(spend) + 1", name="sp1")
+        composite = QueryMetric(metric="sum(spend) + 1", alias="sp1")
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[composite],
                    to_many_handling="associate"))
@@ -99,7 +98,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         threshold sees 420, not the fanned 520 that would keep ok anyway — a
         threshold BELOW the fan but ABOVE the true value discriminates."""
         _, engine = exec_backend
-        star = DatasetMetric(expression="count(*)", name="n")
+        star = QueryMetric(metric="count(*)", alias="n")
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[star],
                    filter=["sum(spend) > 450"],

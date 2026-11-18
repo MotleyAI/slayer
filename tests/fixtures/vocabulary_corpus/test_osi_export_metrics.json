@@ -31,14 +31,14 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "region_code",
-      "id"
-     ]
-    ],
     "name": "referrer",
-    "cardinality": null
+    "cardinality": null,
+    "from_columns": [
+     "region_code"
+    ],
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {

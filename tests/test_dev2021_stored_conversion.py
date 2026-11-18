@@ -16,7 +16,7 @@ import yaml
 from slayer.core.enums import DataType
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
-from slayer.core.query import ComputedDimension, DatasetMetric, QueryDimension, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -155,7 +155,7 @@ class TestMeasure:
         storage = await _store(tmp_path, shop_ds, backend, _qb("dbl", stage))
         model, caught = await _load(storage, "dbl")
         loaded = _stage_of(model)
-        assert DatasetMetric(expression="sum(CAST(amount * 2 AS DOUBLE))", name="double_amount_sum") in (loaded.metrics or [])
+        assert QueryMetric(metric="sum(CAST(amount * 2 AS DOUBLE))", alias="double_amount_sum") in (loaded.metrics or [])
         assert len(_conversion_warnings(caught, document="dbl", column="double_amount")) == 1
         resp = await run(storage, {"population": "dbl", "metrics": [{"metric": "sum(double_amount_sum)", "alias": "t"}]})
         assert resp.data[0]["dbl.t"] == pytest.approx(420.0)
@@ -165,7 +165,7 @@ class TestMeasure:
                        dimensions=["status"], measures=["sum(customers.cid)"])
         storage = await _store(tmp_path, shop_ds, "yaml", _qb("cids", stage))
         model, _ = await _load(storage, "cids")
-        assert DatasetMetric(expression="sum(CAST(customers.id * 10 AS INT))", name="customers__cid_sum") in (
+        assert QueryMetric(metric="sum(CAST(customers.id * 10 AS INT))", alias="customers__cid_sum") in (
             _stage_of(model).metrics or [])
         resp = await run(storage, {"population": "cids", "dimensions": ["status"],
                                    "metrics": [{"metric": "sum(customers__cid_sum)", "alias": "t"}]})
@@ -227,7 +227,7 @@ class TestQualification:
         model, _ = await _load(storage, "cased")
         loaded = _stage_of(model)
         # A hop keeps its written spelling, which resolves the same.
-        assert [d.expression.casefold() for d in loaded.dimensions or [] if isinstance(d, ComputedDimension)] == [
+        assert [d.field.casefold() for d in loaded.dimensions or [] if d.ref is None] == [
             "upper(customers.region)"]
         assert [f.casefold() for f in loaded.filter or []] == ["upper(customers.region) = 'north'"]
         resp = await run(storage, loaded)
@@ -256,7 +256,7 @@ class TestColumnShapes:
         model, caught = await _load(storage, "shapes")
         stage = _stage_of(model)
         _no_extension_columns(stage)
-        formulas = {m.name: m.expression for m in stage.metrics or []}
+        formulas = {m.alias: m.metric for m in stage.metrics or []}
         assert formulas == {"q_amount_sum": f"sum({_Q_AMOUNT})", "q_double_sum": f"sum({_Q_AMOUNT} * 2)",
                             "status_count": "count(status)"}
         assert f"{_Q_AMOUNT} * 2" in (stage.filter or [])[0]
@@ -324,7 +324,7 @@ class TestEveryPosition:
         model, _ = await _load(storage, "keys")
         loaded = _stage_of(model)
         _no_extension_columns(loaded)
-        formulas = {m.name: m.expression for m in loaded.metrics or []}
+        formulas = {m.alias: m.metric for m in loaded.metrics or []}
         assert "iif(amount > 25, 'big', 'small')" in formulas["per_bucket"]
         assert "CAST(ordered_at AS TIMESTAMP)" in formulas["latest"]
         [big_total] = [m.expression for e in loaded.extensions or [] for m in e.metrics or [] if m.name == "big_total"]

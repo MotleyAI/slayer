@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 from slayer.engine.query_engine import (
     _collect_broadcast_warnings,
 )
@@ -17,7 +17,6 @@ from slayer.engine.query_engine import (
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
-    DatasetMetric,
     SPEND_BAND,
     SPEND_BY_BAND,
     broadcast_warnings,
@@ -33,9 +32,9 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-POP = DatasetMetric(expression="sum(customers.regions.pop)", name="pop")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 
 
 #: Outside the conjunct pushdown scope for EVERY producer root here (the OR mixes

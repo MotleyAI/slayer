@@ -23,8 +23,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.spend)",
-      "name": "cm"
+      "metric": "sum(customers.spend)",
+      "alias": "cm"
      }
     ],
     "to_many_handling": "associate"
@@ -51,7 +51,7 @@
     ],
     "metrics": [
      {
-      "expression": "weighted_avg(customers.spend, weight=sum(amount, partition_by=status))"
+      "metric": "weighted_avg(customers.spend, weight=sum(amount, partition_by=status))"
      }
     ],
     "to_many_handling": "associate"

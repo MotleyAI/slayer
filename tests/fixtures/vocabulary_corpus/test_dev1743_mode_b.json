@@ -30,7 +30,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(customer__region.*)"
+      "metric": "count(customer__region.*)"
      }
     ]
    }
@@ -48,11 +48,11 @@
    },
    "new": {
     "to": "customer__region",
-    "join_pairs": [
-     [
-      "cr_id",
-      "id"
-     ]
+    "from_columns": [
+     "cr_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

@@ -21,8 +21,8 @@ from slayer.mcp.server import create_mcp_server
 from tests._deprecated_input_helpers import recorded
 from tests._ossie_vocabulary_fixtures import BACKENDS, shop_customers, shop_orders, shop_store, vocab_engine
 
-QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"name": "status", "label": "Status"}],
-                         "metrics": [{"expression": "sum(amount)", "name": "total", "label": "Total"}]}
+QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"field": "status", "label": "Status"}],
+                         "metrics": [{"metric": "sum(amount)", "alias": "total", "label": "Total"}]}
 METRIC_COLUMN = "orders.total"
 #: The old Python attribute, read by name: it is deprecated on purpose.
 OLD_ATTRIBUTE = "measures"
@@ -94,8 +94,8 @@ async def shop_app(tmp_path: Path) -> TestClient:
     return TestClient(create_app(storage=storage))
 
 
-SHOP_QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"name": "customers.region", "label": "Region"}],
-                              "metrics": [{"expression": "sum(amount)", "name": "total", "label": "Total"}]}
+SHOP_QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"field": "customers.region", "label": "Region"}],
+                              "metrics": [{"metric": "sum(amount)", "alias": "total", "label": "Total"}]}
 
 
 async def test_the_http_client_reads_metrics(tmp_path: Path) -> None:

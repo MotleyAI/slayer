@@ -752,7 +752,7 @@ async def test_search_numeric_column_hit_is_refreshed(
     async def counting_execute(*args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
         if isinstance(q, SlayerQuery) and any(
-                (m.expression or "").startswith(("min(", "max(")) for m in q.metrics or []):
+                (m.metric or "").startswith(("min(", "max(")) for m in q.metrics or []):
             numeric_queries.append(q)
         return await real_execute(*args, **kwargs)
 

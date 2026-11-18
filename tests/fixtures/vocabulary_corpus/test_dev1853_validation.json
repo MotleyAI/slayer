@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "name": "billing_customer",
+    "from_columns": [
+     "customer_id"
     ],
-    "name": "billing_customer"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -37,11 +37,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -59,13 +59,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "name": "regions",
+    "from_columns": [
+     "customer_id"
     ],
-    "name": "regions"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -82,13 +82,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "name": "bill",
+    "from_columns": [
+     "a_id"
     ],
-    "name": "bill"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -105,13 +105,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "name": "bill",
+    "from_columns": [
+     "b_id"
     ],
-    "name": "bill"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -128,13 +128,13 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "name": "hop",
+    "from_columns": [
+     "region_id"
     ],
-    "name": "hop"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -151,13 +151,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "name": "hop",
+    "from_columns": [
+     "customer_id"
     ],
-    "name": "hop"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -173,11 +173,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -194,11 +194,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -216,13 +216,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "name": "bill",
+    "from_columns": [
+     "a_id"
     ],
-    "name": "bill"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -238,11 +238,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -260,13 +260,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "name": "bill",
+    "from_columns": [
+     "a_id"
     ],
-    "name": "bill"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -283,13 +283,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "name": "ship",
+    "from_columns": [
+     "b_id"
     ],
-    "name": "ship"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -306,13 +306,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "name": "billing",
+    "from_columns": [
+     "customer_id"
     ],
-    "name": "billing"
+    "to_columns": [
+     "id"
+    ]
    }
   }
  ],

@@ -1,7 +1,7 @@
 ## 1. Failing tests (pr-tests)
 
 - [x] 1.1 Capture the no-result-change goldens at DEV-2318's head, before any class changes: rows, values, result keys and column order for single- and multi-stage queries, named and unnamed metric entries, reference and expression dimensions (aliased and not), time dimensions, order items by reference and expression, refinements, and string, list and empty filters. Write them to `tests/fixtures/ossie_shapes/golden.json`. The golden test passes on the current code.
-- [ ] 1.2 Write one test per scenario of `specs/compatibility/ossie-vocabulary/spec.md` in `tests/test_ossie_shapes_*.py`, porting the shape-change cases of `egor/dev-1607-attempt-2`'s `tests/test_ossie_vocabulary_*.py` where they fit. Include the named boundary cases (design decision 26):
+- [x] 1.2 Write one test per scenario of `specs/compatibility/ossie-vocabulary/spec.md` in `tests/test_ossie_shapes_*.py`, porting the shape-change cases of `egor/dev-1607-attempt-2`'s `tests/test_ossie_vocabulary_*.py` where they fit. Include the named boundary cases (design decision 26):
   - `filter` single/list/empty dumps, including after a refinement;
   - deprecation dedup across several MCP upserts;
   - unknown keys on prebuilt nested Python objects;
@@ -10,15 +10,15 @@
   - a reordered composite relationship (same edge, author's order kept).
 
   Every new test fails on the current code for the stated reason.
-- [ ] 1.3 Add a test that walks every dataset-side model class (dataset, field, metric, relationship, aggregation, aggregation parameter) with a stray key. Fresh input is refused naming the path; stored input is dropped with one `unknown_stored_key` payload. It fails now.
-- [ ] 1.4 Extend the curated twin tests and the type-checker probe with:
+- [x] 1.3 Add a test that walks every dataset-side model class (dataset, field, metric, relationship, aggregation, aggregation parameter) with a stray key. Fresh input is refused naming the path; stored input is dropped with one `unknown_stored_key` payload. It fails now.
+- [x] 1.4 Extend the curated twin tests and the type-checker probe with:
   - `ColumnRef` and `ComputedDimension` → `QueryDimension`, with their 1.x keywords;
   - `DatasetRelationship.join_pairs`, read and write;
   - `DatasetExtension.source_name`;
   - `QueryMetric.formula`.
 
   Remove the twins DEV-2318 aimed at main-only names (`ColumnRef` → `FieldRef`). Both fail now.
-- [ ] 1.5 Respell existing tests mechanically to the final shapes with a throwaway script that is not committed. The substitution table:
+- [x] 1.5 Respell existing tests mechanically to the final shapes with a throwaway script that is not committed. The substitution table:
   - metric `{expression, name}` → `{metric, alias}`;
   - `FieldRef {name, dataset}` → dotted `field` text;
   - `ComputedDimension` → `{field, alias}`;

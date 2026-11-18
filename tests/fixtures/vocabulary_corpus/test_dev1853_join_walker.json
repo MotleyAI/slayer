@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "b",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "name": "c",
+    "from_columns": [
+     "b_id"
     ],
-    "name": "c"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -37,11 +37,11 @@
    },
    "new": {
     "to": "c",
-    "join_pairs": [
-     [
-      "c_id",
-      "id"
-     ]
+    "from_columns": [
+     "c_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

@@ -45,8 +45,3 @@ def test_old_entry_classes_still_build_entries() -> None:
     assert len([m for m in named if "ColumnRef" in m]) == 1
     assert len([m for m in named if "ComputedDimension" in m]) == 1
 
-
-def test_a_column_ref_with_a_dataset_keyword_builds_an_entry() -> None:
-    with recorded():
-        entry = old_class("ColumnRef")(name="region", dataset="customers")
-    assert (entry.field, entry.alias) == ("customers.region", None)

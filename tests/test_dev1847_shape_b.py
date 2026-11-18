@@ -22,11 +22,11 @@ from tests._dev1847_fixtures import (
     sales_q,
 )
 
-BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+BAND = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
 # A second computed dimension whose expression nests an aggregate partitioned by
 # the attach-carrying spend_band (the doubly-nested attach).
-BAND2 = {"expression": "CASE WHEN sum(amount, partition_by=spend_band) > 100 "
-                       "THEN 'big' ELSE 'small' END", "name": "size"}
+BAND2 = {"field": "CASE WHEN sum(amount, partition_by=spend_band) > 100 "
+                       "THEN 'big' ELSE 'small' END", "alias": "size"}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

@@ -37,13 +37,22 @@ _ORDER_FIELDS: list[tuple[str, str]] = [
 _CUSTOMER_FIELDS: list[tuple[str, str]] = [("id", "INT"), ("name", "TEXT"), ("signup_date", "DATE")]
 
 
+#: Pre-2.0 datatype -> Ossie datatype, for fields without a ``db_type``.
+_OSSIE_TYPES = {"INT": "Integer", "TEXT": "String", "DATE": "Date", "TIMESTAMP": "DateTime", "DOUBLE": "Float",
+                "BOOLEAN": "Boolean"}
+
+
 def _type_key(spelling: Spelling) -> str:
     return "type" if spelling == "old" else "datatype"
 
 
+def _type_value(value: str, spelling: Spelling) -> str:
+    return value if spelling == "old" else _OSSIE_TYPES[value]
+
+
 def _fields(spec: list[tuple[str, str]], *, spelling: Spelling, pk: str = "id") -> list[dict[str, Any]]:
     key = _type_key(spelling)
-    return [{"name": n, key: t, **({"primary_key": True} if n == pk else {})} for n, t in spec]
+    return [{"name": n, key: _type_value(t, spelling), **({"primary_key": True} if n == pk else {})} for n, t in spec]
 
 
 def orders_doc(spelling: Spelling) -> dict[str, Any]:
@@ -59,9 +68,9 @@ def orders_doc(spelling: Spelling) -> dict[str, Any]:
     return {
         "name": "orders", "sql_table": "orders", "data_source": "test", "default_time_dimension": "created_at",
         "fields": _fields(_ORDER_FIELDS, spelling="new"),
-        "metrics": [{"name": "revenue", "expression": "sum(amount)", "datatype": "DOUBLE"}],
+        "metrics": [{"name": "revenue", "expression": "sum(amount)", "datatype": "Float"}],
         "aggregations": [{"name": "doubled", "expression": "SUM({value}) * 2"}],
-        "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
+        "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
     }
 
 
@@ -84,9 +93,9 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
         },
         {
             "population": "orders",
-            "dimensions": ["customers.name", {"expression": "upper(status)", "name": "status_uc"}],
+            "dimensions": ["customers.name", {"field": "upper(status)", "alias": "status_uc"}],
             "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-            "metrics": ["sum(amount)", {"expression": "avg(amount)", "name": "avg_amount"}, "count(*)"],
+            "metrics": ["sum(amount)", {"metric": "avg(amount)", "alias": "avg_amount"}, "count(*)"],
             "filter": ["amount > 5"],
             "order": [{"field": "customers.name"}],
         },
@@ -94,8 +103,7 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
     "dataset_qualified_dimension": (
         {"source_model": "orders", "dimensions": [{"name": "name", "model": "customers"}],
          "measures": ["sum(amount)"]},
-        {"population": "orders", "dimensions": [{"name": "name", "dataset": "customers"}],
-         "metrics": ["sum(amount)"]},
+        {"population": "orders", "dimensions": ["customers.name"], "metrics": ["sum(amount)"]},
     ),
     "saved_metric_and_aggregation": (
         {"source_model": "orders", "dimensions": ["status"], "measures": ["revenue", "doubled(amount)"]},
@@ -116,10 +124,10 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
                          "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]],
                                     "name": "buyer"}]}]},
         {"population": "orders", "dimensions": ["buyer.name"], "metrics": ["aov"],
-         "extensions": [{"source_name": "orders",
+         "extensions": [{"dataset": "orders",
                          "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
-                         "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]],
-                                            "name": "buyer"}]}]},
+                         "relationships": [{"to": "customers", "from_columns": ["customer_id"],
+                                            "to_columns": ["id"], "name": "buyer"}]}]},
     ),
     "multi_stage": (
         [
@@ -131,9 +139,9 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
         ],
         [
             {"name": "per_customer", "population": "orders", "dimensions": ["customer_id"],
-             "metrics": [{"expression": "sum(amount)", "name": "revenue_total"}], "filter": ["amount > 5"]},
+             "metrics": [{"metric": "sum(amount)", "alias": "revenue_total"}], "filter": ["amount > 5"]},
             {"population": "per_customer",
-             "metrics": [{"expression": "avg(revenue_total)", "name": "avg_revenue"}, "count(*)"],
+             "metrics": [{"metric": "avg(revenue_total)", "alias": "avg_revenue"}, "count(*)"],
              "order": [{"field": "avg_revenue", "direction": "desc"}]},
         ],
     ),
@@ -151,7 +159,7 @@ MONTHLY_REVENUE: dict[Spelling, dict[str, Any]] = {
     "new": {
         "population": "orders",
         "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
-        "metrics": [{"expression": "sum(amount)", "name": "revenue"}],
+        "metrics": [{"metric": "sum(amount)", "alias": "revenue"}],
         "filter": ["status = 'paid'"],
     },
 }
@@ -159,7 +167,7 @@ MONTHLY_REVENUE: dict[Spelling, dict[str, Any]] = {
 REFINEMENTS: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
     "repeated_metric": (
         {"measures": [{"formula": "sum(amount)", "name": "revenue"}]},
-        {"metrics": [{"expression": "sum(amount)", "name": "revenue"}]},
+        {"metrics": [{"metric": "sum(amount)", "alias": "revenue"}]},
     ),
     "added_filter": ({"filters": ["region = 'US'"]}, {"filter": ["region = 'US'"]}),
 }
@@ -171,7 +179,8 @@ def refine_orders_doc(spelling: Spelling) -> dict[str, Any]:
     spec = [("id", "INT"), ("customer_id", "TEXT"), ("region", "TEXT"), ("status", "TEXT"),
             ("amount", "DOUBLE"), ("ordered_at", "DATE")]
     return {"name": "orders", "data_source": "test", "sql_table": "orders", "default_time_dimension": "ordered_at",
-            key: [{"name": n, tkey: t, **({"primary_key": True} if n == "id" else {})} for n, t in spec]}
+            key: [{"name": n, tkey: _type_value(t, spelling), **({"primary_key": True} if n == "id" else {})}
+                  for n, t in spec]}
 
 
 def fresh(value: Any) -> Any:
@@ -236,8 +245,8 @@ def shop_orders(spelling: Spelling = "new", **extra: Any) -> dict[str, Any]:
                            "cardinality": "many_to_one"}],
                 **extra}
     return {"name": "orders", "sql_table": "orders", "data_source": DS, "fields": fields,
-            "metrics": [{"name": "revenue", "expression": "sum(amount)", "datatype": "DOUBLE"}],
-            "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]],
+            "metrics": [{"name": "revenue", "expression": "sum(amount)", "datatype": "Float"}],
+            "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"],
                                "cardinality": "many_to_one"}],
             **extra}
 

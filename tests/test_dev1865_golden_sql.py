@@ -30,7 +30,7 @@ def _q(**kw) -> SlayerQuery:
 
 
 def _cases() -> dict:
-    band = {"expression": BAND35, "name": "band"}
+    band = {"field": BAND35, "alias": "band"}
     cm_part = "sum(customers.spend, partition_by=customers.regions.name)"
     return {
         "filter/cross_model_partitioned": _q(

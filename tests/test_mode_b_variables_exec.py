@@ -47,7 +47,7 @@ class TestQuerySurfaces:
         resp = await exec_engine.execute(q(metrics=["sum(amount) * {k} / 100"], variables={"k": 10}))
         assert only_value(resp) == pytest.approx(21.0)
 
-    @pytest.mark.parametrize("dimension", ["amount * {k}", {"expression": "amount * {k}"}])
+    @pytest.mark.parametrize("dimension", ["amount * {k}", {"field": "amount * {k}"}])
     async def test_computed_dimension(self, exec_engine, dimension) -> None:
         resp = await exec_engine.execute(q(dimensions=[dimension], metrics=["count(*)"], variables={"k": 10}))
         got = {float(r["orders.amount_k"]): r["orders._count"] for r in resp.data}

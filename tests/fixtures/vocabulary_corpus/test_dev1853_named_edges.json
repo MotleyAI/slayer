@@ -52,8 +52,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(billing_customer.amount)",
-      "name": "b"
+      "metric": "sum(billing_customer.amount)",
+      "alias": "b"
      }
     ]
    }
@@ -79,8 +79,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(billing_customer.spend)",
-      "name": "cs"
+      "metric": "sum(billing_customer.spend)",
+      "alias": "cs"
      }
     ]
    }
@@ -100,8 +100,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "last(billing_customer.spend, billing_customer.signup_at)",
-      "name": "l"
+      "metric": "last(billing_customer.spend, billing_customer.signup_at)",
+      "alias": "l"
      }
     ]
    }
@@ -168,8 +168,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(billing_customer.gold_spend)",
-      "name": "g"
+      "metric": "sum(billing_customer.gold_spend)",
+      "alias": "g"
      }
     ]
    }
@@ -189,8 +189,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "avg(billing_customer.spend)",
-      "name": "a"
+      "metric": "avg(billing_customer.spend)",
+      "alias": "a"
      }
     ]
    }
@@ -210,8 +210,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "billing_customer.total_b",
-      "name": "r"
+      "metric": "billing_customer.total_b",
+      "alias": "r"
      }
     ]
    }
@@ -258,8 +258,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "t"
+      "metric": "sum(amount)",
+      "alias": "t"
      }
     ],
     "order": [

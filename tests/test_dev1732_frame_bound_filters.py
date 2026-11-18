@@ -45,7 +45,7 @@ from slayer.core.keys import (
 )
 from slayer.core.keys import TimeTruncKey
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import DatasetMetric, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.core.time_bounds import is_frame_bound, is_temporal_literal, strip_frame_bounds
 from slayer.engine.plan import plan_query
 from slayer.sql.scope_check import assert_scope_closed
@@ -380,7 +380,7 @@ def _windowed_query(**kw) -> SlayerQuery:
     base = dict(
         population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        metrics=[DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d")],
+        metrics=[QueryMetric(metric="sum(revenue, window='90d')", alias="rev_90d")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -865,7 +865,7 @@ def _shift_query(**kw) -> SlayerQuery:
     base = dict(
         population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        metrics=[DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="prev")],
+        metrics=[QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="prev")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)

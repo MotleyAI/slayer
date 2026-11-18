@@ -37,8 +37,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "filter": [
@@ -86,8 +86,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "r"
+      "metric": "sum(rev)",
+      "alias": "r"
      }
     ],
     "filter": [
@@ -113,8 +113,8 @@
     "population": "inner",
     "metrics": [
      {
-      "expression": "sum(r)",
-      "name": "total"
+      "metric": "sum(r)",
+      "alias": "total"
      }
     ],
     "filter": [
@@ -140,8 +140,8 @@
     "population": "ev",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "filter": [
@@ -188,8 +188,8 @@
     "population": "ev",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "filter": [
@@ -215,8 +215,8 @@
     "population": "ev",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "filter": [

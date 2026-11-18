@@ -36,8 +36,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -69,8 +69,8 @@
     ],
     "metrics": [
      {
-      "expression": "consecutive_periods(sum(total) > 100)",
-      "name": "v"
+      "metric": "consecutive_periods(sum(total) > 100)",
+      "alias": "v"
      }
     ]
    }

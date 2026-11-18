@@ -48,12 +48,12 @@
     ],
     "metrics": [
      {
-      "expression": "wpop(amount)",
-      "name": "a"
+      "metric": "wpop(amount)",
+      "alias": "a"
      },
      {
-      "expression": "wpop(amount, weight=customers.hr.pop)",
-      "name": "b"
+      "metric": "wpop(amount, weight=customers.hr.pop)",
+      "alias": "b"
      }
     ]
    }

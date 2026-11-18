@@ -10,7 +10,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.errors import DistinctDimensionValuesError
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -328,7 +328,7 @@ class TestJoinedRowColumnResolved:
         self, engine,
     ) -> None:
         """A hidden order-only derived column whose ``sql`` crosses a join gets its join pulled (Law 1) and emits the same split ref as the bare joined sort key."""
-        def _q(column: FieldRef) -> SlayerQuery:
+        def _q(column: str) -> SlayerQuery:
             return SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="status")],
@@ -336,8 +336,8 @@ class TestJoinedRowColumnResolved:
                 order=[OrderItem(field=column, direction="desc")],
             )
 
-        derived_sql = await _sql(engine, _q(FieldRef(name="cust_region")))
-        bare_sql = await _sql(engine, _q(FieldRef(name="customers.region")))
+        derived_sql = await _sql(engine, _q("cust_region"))
+        bare_sql = await _sql(engine, _q("customers.region"))
 
         assert ("customers", "region") in _outer_order_by_columns(derived_sql), (
             derived_sql
@@ -832,7 +832,7 @@ class TestTransformOrderSupported:
         """Composites with or without colon aggregations are expressions, judged at binding."""
         for text in ("sum(amount) / count(id)", "rev / cnt"):
             item = OrderItem.model_validate({"field": text, "direction": "desc"})
-            assert item.field.name == "_expr_pending"
+            assert item.ref is None
             assert item.raw_expression == text
 
 

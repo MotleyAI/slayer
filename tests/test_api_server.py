@@ -319,7 +319,7 @@ class TestQuery:
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None
         assert len(slayer_query.metrics) == 1
-        assert slayer_query.metrics[0].expression == "count(*)"
+        assert slayer_query.metrics[0].metric == "count(*)"
 
     def test_request_accepts_bare_string_measures_and_dimensions(self) -> None:
         """Bare strings in ``measures`` / ``dimensions`` (matching ``SlayerQuery``'s
@@ -330,9 +330,9 @@ class TestQuery:
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None
-        assert slayer_query.metrics[0].expression == "count(*)"
+        assert slayer_query.metrics[0].metric == "count(*)"
         assert slayer_query.dimensions is not None
-        assert slayer_query.dimensions[0].name == "status"
+        assert slayer_query.dimensions[0].field == "status"
 
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
@@ -342,7 +342,7 @@ class TestQuery:
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None
         assert len(slayer_query.metrics) == 1
-        assert slayer_query.metrics[0].expression == "count(*)"
+        assert slayer_query.metrics[0].metric == "count(*)"
 
 
 class TestQueryBackedModelsAPI:

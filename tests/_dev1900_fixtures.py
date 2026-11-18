@@ -38,7 +38,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import FieldRef, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -247,14 +247,14 @@ def cust_q(**kw) -> SlayerQuery:
 # The fanning derived dimension, its cross-model / local metrics, and the two
 # re-aggregation shapes, spelled once.
 BAD_POP = "customers.regions.bad_pop"
-AMOUNT_SUM = DatasetMetric(expression="sum(amount)", name="amt")
-SPEND_SUM = DatasetMetric(expression="sum(customers.spend)", name="csp")
-REAGG_GOOD = DatasetMetric(
-    expression="weighted_avg(sum(amount, partition_by=customers.regions.id), "
-            "weight=customers.regions.derived_pop)", name="ra")
-REAGG_BAD = DatasetMetric(
-    expression="weighted_avg(sum(amount, partition_by=customers.regions.id), "
-            "weight=customers.regions.bad_pop)", name="ra")
+AMOUNT_SUM = QueryMetric(metric="sum(amount)", alias="amt")
+SPEND_SUM = QueryMetric(metric="sum(customers.spend)", alias="csp")
+REAGG_GOOD = QueryMetric(
+    metric="weighted_avg(sum(amount, partition_by=customers.regions.id), "
+            "weight=customers.regions.derived_pop)", alias="ra")
+REAGG_BAD = QueryMetric(
+    metric="weighted_avg(sum(amount, partition_by=customers.regions.id), "
+            "weight=customers.regions.bad_pop)", alias="ra")
 
 
 def bad_pop_vals(resp, metric: str) -> dict:

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "clusters",
-    "join_pairs": [
-     [
-      "clu_ref",
-      "id"
-     ]
+    "from_columns": [
+     "clu_ref"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -82,8 +82,8 @@
     "population": "accounts",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "cnt"
+      "metric": "count(*)",
+      "alias": "cnt"
      }
     ],
     "filter": [
@@ -105,7 +105,7 @@
     "population": "accounts",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -124,7 +124,7 @@
     "population": "accounts",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -142,23 +142,22 @@
    },
    "new": {
     "to": "cluster_analysis",
-    "join_pairs": [
-     [
-      "clu_ref",
-      "CLSTR_PIN"
-     ]
+    "from_columns": [
+     "clu_ref"
+    ],
+    "to_columns": [
+     "CLSTR_PIN"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "score",
     "model": "cluster_analysis"
    },
    "new": {
-    "name": "score",
-    "dataset": "cluster_analysis"
+    "field": "cluster_analysis.score"
    }
   },
   {
@@ -176,8 +175,8 @@
     "population": "accounts",
     "metrics": [
      {
-      "expression": "sum(MixedAmt)",
-      "name": "s"
+      "metric": "sum(MixedAmt)",
+      "alias": "s"
      }
     ]
    }
@@ -195,23 +194,22 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "name",
     "model": "regions"
    },
    "new": {
-    "name": "name",
-    "dataset": "regions"
+    "field": "regions.name"
    }
   },
   {
@@ -228,7 +226,7 @@
     "population": "accounts",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -247,7 +245,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -266,7 +264,7 @@
     "population": "accounts",
     "metrics": [
      {
-      "expression": "sum(j)"
+      "metric": "sum(j)"
      }
     ]
    }
@@ -284,23 +282,22 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "RegionRef",
-      "RegionId"
-     ]
+    "from_columns": [
+     "RegionRef"
+    ],
+    "to_columns": [
+     "RegionId"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "name",
     "model": "regions"
    },
    "new": {
-    "name": "name",
-    "dataset": "regions"
+    "field": "regions.name"
    }
   }
  ],

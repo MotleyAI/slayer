@@ -15,7 +15,7 @@
     "population": "hr",
     "metrics": [
      {
-      "expression": "sum(salary)"
+      "metric": "sum(salary)"
      }
     ]
    }

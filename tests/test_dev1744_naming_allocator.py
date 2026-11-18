@@ -33,10 +33,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.compile.projection import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine import bind_inputs
@@ -161,7 +160,7 @@ def _cte_names(sql: str, *, dialect: str = "sqlite") -> List[str]:
 async def _isolated_then_combined(
     engine: SlayerQueryEngine,
     *,
-    metrics: List[DatasetMetric],
+    metrics: List[QueryMetric],
     dimension: str = "status",
 ) -> None:
     """Self-calibrating: each measure alone, then together must reproduce every isolated value."""
@@ -170,7 +169,7 @@ async def _isolated_then_combined(
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name=dimension)],
+                dimensions=[QueryDimension(field=dimension)],
                 metrics=[m],
             )
         )
@@ -178,13 +177,13 @@ async def _isolated_then_combined(
         # The single non-dimension key is this measure's value.
         row = resp.data[0]
         keys = [k for k in row if not k.endswith(f".{dimension}")]
-        assert len(keys) == 1, (m.expression, list(row))
+        assert len(keys) == 1, (m.metric, list(row))
         isolated[keys[0]] = row[keys[0]]
 
     resp = await engine.execute(
         SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name=dimension)],
+            dimensions=[QueryDimension(field=dimension)],
             metrics=metrics,
         )
     )
@@ -566,7 +565,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name=column)],
+                dimensions=[QueryDimension(field=column)],
                 metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
             )
         )

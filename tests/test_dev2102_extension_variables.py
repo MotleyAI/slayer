@@ -81,7 +81,7 @@ _TO_CUSTOMERS = join("customers", [["customer_id", "id"]])
 
 @pytest.mark.parametrize(("dimensions", "extension"), [
     (["customer_id"], ext("s", relationships=[_TO_CUSTOMERS], metrics=[{"name": "n", "expression": "count(customers.regions.id)"}])),
-    (["customer_id", {"expression": "upper(customers.regions.name)", "name": "region"}],
+    (["customer_id", {"field": "upper(customers.regions.name)", "alias": "region"}],
      ext("s", relationships=[_TO_CUSTOMERS])),
     (["customer_id", "customers.regions.name"], ext("s", relationships=[_TO_CUSTOMERS])),
 ], ids=["measure", "computed-dimension", "query-reference"])

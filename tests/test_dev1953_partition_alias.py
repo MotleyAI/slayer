@@ -42,8 +42,8 @@ RANK_BAND = "rank(sum(amount), partition_by=spend_band, direction='desc')"
 PARAM_BAND = "rank(sum(amount, partition_by=[spend_band, city]), partition_by=spend_band, direction='desc')"
 PARAM_UREG = ("weighted_avg(amount, weight=rank(sum(amount, partition_by=[ureg, city]), "
               "partition_by=ureg, direction='desc'))")
-DIM_R = {"expression": "rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg, direction='desc')",
-         "name": "r"}
+DIM_R = {"field": "rank(sum(amount, partition_by=[city, ureg]), partition_by=ureg, direction='desc')",
+         "alias": "r"}
 
 # Spec constants.
 MEASURE_RANKS = {

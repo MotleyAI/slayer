@@ -198,7 +198,7 @@ def q(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str = "v") -> dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 FIRST_LAST = [m("first(status, updated_at)", "f"), m("last(status, updated_at)", "l")]

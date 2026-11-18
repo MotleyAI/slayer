@@ -15,7 +15,7 @@ from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, FieldKey
 from slayer.core.keys import Grain
 from slayer.core.models import DatasetField
-from slayer.core.query import DatasetMetric, QueryMetric, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
@@ -139,8 +139,8 @@ class TestFilterClassifier:
         """Top-level AND conjuncts route independently: the
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
-            dimensions=["region", {"expression": BAND, "name": "band"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            dimensions=["region", {"field": BAND, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         anded = await gen(_q(
             filter=["band == 1 and status == 'ok'"], **base_kwargs,

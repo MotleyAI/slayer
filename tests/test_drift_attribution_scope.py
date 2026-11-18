@@ -300,7 +300,7 @@ class TestReadSetScope:
         assert stored is not None
         # Swap s1's measure for one that fails at execution (not drift).
         stages = [
-            s.model_copy(update={"metrics": [{"expression": "sum(bad)", "name": "total"}]})
+            s.model_copy(update={"metrics": [{"metric": "sum(bad)", "alias": "total"}]})
             if s.name == "s1" else s
             for s in stored.source_queries or []
         ]

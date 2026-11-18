@@ -16,11 +16,11 @@
    "new": {
     "to": "addresses",
     "name": "billing_address",
-    "join_pairs": [
-     [
-      "billing_address_id",
-      "id"
-     ]
+    "from_columns": [
+     "billing_address_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

@@ -10,7 +10,7 @@ import pytest_asyncio
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import DatasetExtension, FieldRef, QueryDimension, QueryMetric, SlayerQuery
+from slayer.core.query import DatasetExtension, QueryDimension, QueryMetric, SlayerQuery
 from slayer.memories.resolver import extract_entities_from_query
 from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
@@ -99,7 +99,7 @@ class TestJoinedExtensionFields:
 def _projecting(path: str, *, extension: DatasetExtension) -> SlayerQuery:
     return SlayerQuery(
         population="orders", extensions=[extension],
-        dimensions=[FieldRef(name=path)], metrics=[QueryMetric(metric="count(*)")],
+        dimensions=[QueryDimension(field=path)], metrics=[QueryMetric(metric="count(*)")],
     )
 
 
@@ -215,7 +215,7 @@ class TestStoredNamedJoinsWithoutExtensions:
     @pytest.mark.parametrize("path", ["buyer.name", "orders.buyer.name"])
     async def test_named_join_records_stored_target(self, named_storage: StorageBackend, path: str) -> None:
         q = SlayerQuery(
-            population="orders", dimensions=[FieldRef(name=path)], metrics=[QueryMetric(metric="count(*)")],
+            population="orders", dimensions=[QueryDimension(field=path)], metrics=[QueryMetric(metric="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=named_storage)
         assert "mydb.customers.name" in result.canonical_forms

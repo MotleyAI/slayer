@@ -61,11 +61,11 @@ async def app_null_engine(request):
 
 
 def _cross(prefix: str = "") -> list:
-    return [{"expression": f"sum({prefix}orders.amount)", "name": "s"},
-            {"expression": f"count({prefix}orders.id)", "name": "n"}]
+    return [{"metric": f"sum({prefix}orders.amount)", "alias": "s"},
+            {"metric": f"count({prefix}orders.id)", "alias": "n"}]
 
 
-LOCAL = [{"expression": "sum(amount)", "name": "s"}, {"expression": "count(id)", "name": "n"}]
+LOCAL = [{"metric": "sum(amount)", "alias": "s"}, {"metric": "count(id)", "alias": "n"}]
 
 
 def _assert_cells(actual: dict, expected: dict) -> None:

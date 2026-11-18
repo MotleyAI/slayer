@@ -8,18 +8,17 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.errors import RefinementConflictError
-from slayer.core.models import DatasetMetric
 from slayer.core.query import (
-    FieldRef,
     OrderItem,
     QueryDimension,
+    QueryMetric,
     QueryRefinement,
     SlayerQuery,
     TimeDimension,
     refine_query,
 )
 
-REVENUE = {"expression": "sum(amount)", "name": "revenue"}
+REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
 MONTH_TD = {"field": "ordered_at", "granularity": "month"}
 
 
@@ -38,7 +37,7 @@ def conflict(base: SlayerQuery, **refinement: Any) -> str:
 
 
 def dim_names(q: SlayerQuery) -> list[str | None]:
-    return [d.name for d in q.dimensions or []]
+    return [d.field for d in q.dimensions or []]
 
 
 def td_keys(q: SlayerQuery) -> list[tuple[str, str]]:
@@ -68,13 +67,13 @@ class TestQueryRefinementModel:
             "dimensions": ["region", {"field": "amount * 2", "alias": "dbl"}],
             "order": [{"revenue": "desc"}],
         })
-        assert r.metrics == [DatasetMetric(expression="count(*)")]
-        assert r.dimensions == [FieldRef(name="region"), QueryDimension(field="amount * 2", alias="dbl")]
+        assert r.metrics == [QueryMetric(metric="count(*)")]
+        assert r.dimensions == [QueryDimension(field="region"), QueryDimension(field="amount * 2", alias="dbl")]
         assert r.order == [OrderItem(field="revenue", direction="desc")]
 
     def test_functional_granularity_in_dimensions_becomes_time_dimension(self) -> None:
         r = QueryRefinement.model_validate({"dimensions": ["region", "date_trunc('year', ordered_at)"]})
-        assert [d.name for d in r.dimensions or []] == ["region"]
+        assert [d.field for d in r.dimensions or []] == ["region"]
         assert [(td.field, str(td.granularity)) for td in r.time_dimensions or []] == [
             ("ordered_at", "year"),
         ]
@@ -138,7 +137,7 @@ class TestDimensions:
 class TestMeasures:
     def test_union_appends_new_entries(self) -> None:
         merged = merge(saved(metrics=[REVENUE]), metrics=["count(*)"])
-        assert [m.expression for m in merged.metrics or []] == ["sum(amount)", "count(*)"]
+        assert [m.metric for m in merged.metrics or []] == ["sum(amount)", "count(*)"]
 
     def test_identical_named_measure_collapses(self) -> None:
         base = saved(metrics=[REVENUE])
@@ -150,7 +149,7 @@ class TestMeasures:
 
     def test_same_formula_other_name_is_a_new_measure(self) -> None:
         merged = merge(saved(metrics=[REVENUE]), metrics=[{"metric": "sum(amount)", "alias": "rev2"}])
-        assert [m.name for m in merged.metrics or []] == ["revenue", "rev2"]
+        assert [m.alias for m in merged.metrics or []] == ["revenue", "rev2"]
 
     def test_same_name_different_formula_conflicts(self) -> None:
         message = conflict(saved(metrics=[REVENUE]), metrics=[{"metric": "count(*)", "alias": "revenue"}])

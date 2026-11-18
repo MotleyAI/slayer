@@ -15,7 +15,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._query_heal_fixtures import BACKENDS, assert_equivalent, heal_engine, table
 from tests._saved_query_refinement_fixtures import refine_engine
 
-SUM_DESC_OBJECT = {"field": {"name": "sum(amount)"}, "direction": "desc"}
+SUM_DESC_OBJECT = {"column": {"name": "sum(amount)"}, "direction": "desc"}
 SUM_DESC_STRING = {"field": "sum(amount)", "direction": "desc"}
 
 
@@ -32,7 +32,7 @@ def by_region(order: list[dict[str, Any]]) -> dict[str, Any]:
 class TestOrderItemCoercion:
     @pytest.mark.parametrize("expr", ["sum(amount)", "sum(amount) / count(*)", "rank(sum(amount), direction='desc')"])
     def test_object_equals_string_form(self, expr: str) -> None:
-        healed = SlayerQuery.model_validate(by_region([{"field": {"name": expr}}]))
+        healed = SlayerQuery.model_validate(by_region([{"column": {"name": expr}}]))
         canonical = SlayerQuery.model_validate(by_region([{"field": expr}]))
         assert healed.model_dump() == canonical.model_dump()
 
@@ -45,7 +45,7 @@ class TestOrderItemCoercion:
         {"name": "sum(amount)", "dataset": "orders"}, {"name": "sum(amount)", "label": "Total"}, {"name": "bad name"},
     ])
     def test_object_with_other_keys_or_no_expression_keeps_error(self, column: dict[str, Any]) -> None:
-        query = by_region([{"field": column}])
+        query = by_region([{"column": column}])
         with pytest.raises(ValidationError, match="Invalid name"):
             SlayerQuery.model_validate(query)
 
@@ -80,11 +80,10 @@ class TestAdvertisedSchema:
         tools = {t.name: t for t in await server.list_tools()}
         return tools["query"].inputSchema["$defs"]["OrderItem"]
 
-    def test_column_accepts_string_or_object(self, order_item_schema: dict[str, Any]) -> None:
-        column = order_item_schema["properties"]["field"]
-        branches = column.get("anyOf") or column.get("oneOf") or [column]
-        assert any(b.get("type") == "string" for b in branches), column
-        assert any(b.get("$ref", "").endswith("/FieldRef") for b in branches), column
+    def test_field_is_advertised_as_text(self, order_item_schema: dict[str, Any]) -> None:
+        field = order_item_schema["properties"]["field"]
+        assert field.get("type") == "string", field
+        assert "FieldRef" not in str(field), field
 
     def test_raw_formula_not_published(self, order_item_schema: dict[str, Any]) -> None:
         assert "raw_expression" not in order_item_schema["properties"]

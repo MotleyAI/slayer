@@ -19,7 +19,7 @@ from tests._dev2102_fixtures import (
 )
 
 _HARNESS_QB = "harness_qb"
-_AMOUNT = {"expression": "sum(amount)", "name": "a"}
+_AMOUNT = {"metric": "sum(amount)", "alias": "a"}
 _REGION_PAIRS = [["region_id", "id"]]
 _SPENT_BY_CUSTOMER = {"population": "orders", "dimensions": ["customer_id"],
                       "metrics": [{"metric": "sum(amount)", "alias": "spent"}]}

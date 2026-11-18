@@ -51,7 +51,7 @@ class TestTextCoercion:
         assert _dumped_tds(legacy) == [{"field": "customers.created_at", "granularity": "month"}]
 
     def test_legacy_object_without_model_reads_as_its_name(self) -> None:
-        query = _q(time_dimensions=[{"field": {"name": "created_at"}, "granularity": "month"}])
+        query = _q(time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}])
         assert _tds(query)[0].field == "created_at"
 
     @pytest.mark.parametrize("text", [EFF, CAST_TXT, "coalesce(customers.signup_ts, created_at)"])
@@ -94,7 +94,7 @@ class TestFunctionalForms:
             ("created_at", "year"), (EFF, "month"), (CAST_TXT, "week"),
         ]
         assert query.dimensions is not None
-        assert [d.name for d in query.dimensions] == ["region"]
+        assert [d.field for d in query.dimensions] == ["region"]
 
     def test_non_temporal_argument_is_not_a_shape_error(self) -> None:
         query = _q(dimensions=["date_trunc('month', upper(status))"])
@@ -115,11 +115,11 @@ class TestFunctionalForms:
 class TestNames:
     def test_name_field_dumps(self) -> None:
         query = _q(time_dimensions=[{"field": EFF, "granularity": "month", "alias": "effective_at"}])
-        assert _tds(query)[0].name == "effective_at"
+        assert _tds(query)[0].alias == "effective_at"
         assert _dumped_tds(query) == [{"field": EFF, "granularity": "month", "alias": "effective_at"}]
 
     def test_unnamed_has_no_name(self) -> None:
-        assert _tds(_q(time_dimensions=[{"field": EFF, "granularity": "month"}]))[0].name is None
+        assert _tds(_q(time_dimensions=[{"field": EFF, "granularity": "month"}]))[0].alias is None
 
     def test_collision_with_a_computed_dimension(self) -> None:
         with pytest.raises(ValueError, match="'m'|\\bm\\b"):

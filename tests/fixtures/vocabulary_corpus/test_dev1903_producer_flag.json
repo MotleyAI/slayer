@@ -132,8 +132,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(sp)",
-      "name": "t"
+      "metric": "sum(sp)",
+      "alias": "t"
      }
     ]
    }

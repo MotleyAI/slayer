@@ -33,7 +33,6 @@ from slayer.core.query import QueryMetric
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
     AMOUNT_BY_CHANNEL,
-    DatasetMetric,
     POP_TOTAL,
     SPEND_BAND,
     SPEND_BY_BAND,
@@ -52,16 +51,16 @@ async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[st
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
-    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
-    "name": "band",
+    "field": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "alias": "band",
 }
 #: A bare partitioned aggregate as a dimension.
-LOCAL_BARE = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
+LOCAL_BARE = {"field": "sum(amount, partition_by=channel)", "alias": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:

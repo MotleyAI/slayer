@@ -10,9 +10,7 @@
     "direction": "desc"
    },
    "new": {
-    "field": {
-     "name": "sum(amount)"
-    },
+    "field": "sum(amount)",
     "direction": "desc"
    }
   },

@@ -38,16 +38,16 @@ def assert_ossie_document(doc: dict[str, Any]) -> None:
         assert not PRE_2_0_MEMBER_KEYS & member.keys(), member
     assert all("datatype" in f for f in doc["fields"])
     [metric] = doc["metrics"]
-    assert (metric["expression"], metric["datatype"]) == ("sum(amount)", "DOUBLE")
+    assert (metric["expression"], metric["datatype"]) == ("sum(amount)", "Float")
     [rel] = doc["relationships"]
-    assert (rel["to"], rel["join_pairs"]) == ("customers", [["customer_id", "id"]])
+    assert (rel["to"], rel["from_columns"], rel["to_columns"]) == ("customers", ["customer_id"], ["id"])
 
 
 def assert_kept_keys(doc: dict[str, Any]) -> None:
     assert (doc["sql_table"], doc["data_source"], doc["filters"]) == ("orders", DS, [KEPT_FILTER])
     [aggregation] = doc["aggregations"]
     assert aggregation["expression"] == "SUM({value}) * 2"
-    assert "join_pairs" in doc["relationships"][0]
+    assert {"from_columns", "to_columns"} <= doc["relationships"][0].keys()
 
 
 class TestDump:

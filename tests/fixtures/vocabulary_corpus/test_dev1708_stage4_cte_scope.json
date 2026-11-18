@@ -2,237 +2,237 @@
  "source": "tests/test_dev1708_stage4_cte_scope.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.deep_weight)"
    },
    "new": {
-    "expression": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.deep_weight)"
+    "metric": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.deep_weight)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.id)"
    },
    "new": {
-    "expression": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.id)"
+    "metric": "weighted_avg(customers_v2.lifetime_value, weight=customers_v2.id)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(customers_v2.lifetime_value, weight=deep_weight)"
    },
    "new": {
-    "expression": "weighted_avg(customers_v2.lifetime_value, weight=deep_weight)"
+    "metric": "weighted_avg(customers_v2.lifetime_value, weight=deep_weight)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    },
    "new": {
-    "expression": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.lifetime_value, customers_v2.region_opened_eff)"
    },
    "new": {
-    "expression": "last(customers_v2.lifetime_value, customers_v2.region_opened_eff)"
+    "metric": "last(customers_v2.lifetime_value, customers_v2.region_opened_eff)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.deep_pop_flt, customers_v2.signup_at)"
    },
    "new": {
-    "expression": "last(customers_v2.deep_pop_flt, customers_v2.signup_at)"
+    "metric": "last(customers_v2.deep_pop_flt, customers_v2.signup_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    },
    "new": {
-    "expression": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.deep_pop)"
    },
    "new": {
-    "expression": "sum(customers_v2.deep_pop)"
+    "metric": "sum(customers_v2.deep_pop)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.lifetime_value, customers_v2.signup_at)"
    },
    "new": {
-    "expression": "last(customers_v2.lifetime_value, customers_v2.signup_at)"
+    "metric": "last(customers_v2.lifetime_value, customers_v2.signup_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.deep_pop)"
    },
    "new": {
-    "expression": "sum(customers_v2.deep_pop)"
+    "metric": "sum(customers_v2.deep_pop)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    },
    "new": {
-    "expression": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    },
    "new": {
-    "expression": "last(customers_v2.deep_pop, customers_v2.signup_at)"
+    "metric": "last(customers_v2.deep_pop, customers_v2.signup_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers_v2.deep_weight, customers_v2.signup_at)"
    },
    "new": {
-    "expression": "last(customers_v2.deep_weight, customers_v2.signup_at)"
+    "metric": "last(customers_v2.deep_weight, customers_v2.signup_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
@@ -248,11 +248,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -269,21 +269,21 @@
    },
    "new": {
     "to": "customers_v2",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {
@@ -299,30 +299,30 @@
    },
    "new": {
     "to": "customers_v2",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amt_hi)"
    },
    "new": {
-    "expression": "sum(amt_hi)"
+    "metric": "sum(amt_hi)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   }
  ],

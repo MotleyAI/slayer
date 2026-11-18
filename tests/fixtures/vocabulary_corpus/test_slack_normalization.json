@@ -15,7 +15,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -34,7 +34,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -68,7 +68,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "status"
+      "metric": "status"
      }
     ]
    }
@@ -87,7 +87,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "aov"
+      "metric": "aov"
      }
     ]
    }
@@ -106,7 +106,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "noseucha"
+      "metric": "noseucha"
      }
     ]
    }
@@ -125,7 +125,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "status"
+      "metric": "status"
      }
     ]
    }
@@ -144,7 +144,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -166,10 +166,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      },
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -188,7 +188,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue) / count(*)"
+      "metric": "sum(revenue) / count(*)"
      }
     ]
    }
@@ -210,10 +210,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "customers.nonexistent"
+      "metric": "customers.nonexistent"
      },
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -235,10 +235,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "customers.name_count"
+      "metric": "customers.name_count"
      },
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -278,10 +278,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "customer_id"
+      "metric": "customer_id"
      },
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ],
     "dimensions": [
@@ -290,12 +290,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "status"
    },
    "new": {
-    "expression": "status"
+    "metric": "status"
    }
   },
   {
@@ -315,32 +315,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
-     }
-    ],
-    "dimensions": [
-     "status"
-    ]
-   }
-  },
-  {
-   "kind": "query",
-   "old": {
-    "source_model": "orders",
-    "measures": [
-     {
-      "formula": "sum(revenue)"
-     }
-    ],
-    "dimensions": [
-     "status"
-    ]
-   },
-   "new": {
-    "population": "orders",
-    "metrics": [
-     {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ],
     "dimensions": [
@@ -365,7 +340,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ],
     "dimensions": [
@@ -374,21 +349,46 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(revenue)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "metric": "sum(revenue)"
+     }
+    ],
+    "dimensions": [
+     "status"
+    ]
+   }
+  },
+  {
+   "kind": "query_metric",
    "old": {
     "formula": "status"
    },
    "new": {
-    "expression": "status"
+    "metric": "status"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(revenue)"
    },
    "new": {
-    "expression": "sum(revenue)"
+    "metric": "sum(revenue)"
    }
   },
   {
@@ -405,7 +405,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "custom_sum(revenue)"
+      "metric": "custom_sum(revenue)"
      }
     ]
    }
@@ -423,11 +423,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -448,10 +448,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "customers.name"
+      "metric": "customers.name"
      },
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -484,7 +484,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "rolling_avg(customers.score)"
+      "metric": "rolling_avg(customers.score)"
      }
     ],
     "dimensions": [
@@ -509,7 +509,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "ravg"
+      "metric": "ravg"
      }
     ],
     "dimensions": [
@@ -540,8 +540,8 @@
     ],
     "metrics": [
      {
-      "expression": "rolling_avg(customers.score)",
-      "name": "ravg"
+      "metric": "rolling_avg(customers.score)",
+      "alias": "ravg"
      }
     ]
    }
@@ -566,7 +566,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(ravg)"
+      "metric": "max(ravg)"
      }
     ]
    }
@@ -591,7 +591,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ],
     "dimensions": [
@@ -616,7 +616,7 @@
     "population": "a",
     "metrics": [
      {
-      "expression": "rolling_avg(b.c.d.e.score)"
+      "metric": "rolling_avg(b.c.d.e.score)"
      }
     ]
    }
@@ -651,7 +651,7 @@
     "population": "widgets",
     "metrics": [
      {
-      "expression": "rolling_avg(value)"
+      "metric": "rolling_avg(value)"
      }
     ],
     "dimensions": [
@@ -676,7 +676,7 @@
     "population": "gadgets",
     "metrics": [
      {
-      "expression": "rolling_avg(qty)"
+      "metric": "rolling_avg(qty)"
      }
     ],
     "dimensions": [

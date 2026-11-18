@@ -37,13 +37,13 @@
    },
    "new": {
     "to": "orgs",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "name": "per_city",
+    "from_columns": [
+     "id"
     ],
-    "name": "per_city"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {

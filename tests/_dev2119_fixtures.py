@@ -33,8 +33,8 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 from slayer.core.enums import DataType, RelationshipCardinality
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -252,8 +252,8 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def td(dimension: str, granularity: str = "month", **extra: Any) -> dict[str, Any]:

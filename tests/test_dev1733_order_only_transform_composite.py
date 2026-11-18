@@ -226,22 +226,22 @@ async def _sql(engine: SlayerQueryEngine, query: SlayerQuery) -> str:
 class TestOrderItemEntryPoint:
     def test_composite_string_yields_placeholder_and_raw_formula(self) -> None:
         item = OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})
-        assert item.field.name == "_expr_pending", item.field
+        assert item.ref is None, item.ref
         assert item.raw_expression == "sum(amount) / count(id)", item.raw_expression
 
     def test_transform_call_string_keeps_funcstyle_placeholder(self) -> None:
         item = OrderItem.model_validate({"field": "change(sum(amount))", "direction": "desc"})
-        assert item.field.name == "_funcstyle_pending", item.field
+        assert item.ref is None, item.ref
         assert item.raw_expression == "change(sum(amount))"
 
     def test_arithmetic_over_transform_yields_placeholder(self) -> None:
         item = OrderItem.model_validate({"field": "change(sum(amount)) / 2", "direction": "desc"})
-        assert item.field.name == "_expr_pending", item.field
+        assert item.ref is None, item.ref
         assert item.raw_expression == "change(sum(amount)) / 2"
 
     def test_composite_over_declared_aliases_is_an_expression(self) -> None:
         item = OrderItem.model_validate({"field": "rev / cnt", "direction": "desc"})
-        assert item.field.name == "_expr_pending", item.field
+        assert item.ref is None, item.ref
         assert item.raw_expression == "rev / cnt"
 
     @pytest.mark.parametrize(("direction", "expected"), [("desc", ["paid", "open"]), ("asc", ["open", "paid"])])
@@ -255,10 +255,10 @@ class TestOrderItemEntryPoint:
 
     def test_plain_column_and_dotted_ref_unaffected(self) -> None:
         assert OrderItem(field="status").ref.name == "status"
-        dotted = OrderItem(field="customers.region").field
+        dotted = OrderItem(field="customers.region").ref
         assert (dotted.dataset, dotted.name) == ("customers", "region")
         agg = OrderItem.model_validate({"field": "sum(amount)"})
-        assert (agg.ref.name, agg.raw_expression) == ("_funcstyle_pending", "sum(amount)")
+        assert (agg.ref, agg.raw_expression) == (None, "sum(amount)")
 
     async def test_root_qualified_composite_order_equals_bare(self, exec_engine) -> None:
         def query(order: str) -> SlayerQuery:

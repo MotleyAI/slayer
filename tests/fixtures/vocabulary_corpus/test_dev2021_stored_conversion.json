@@ -22,8 +22,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "t"
+      "metric": "sum(rev)",
+      "alias": "t"
      }
     ]
    }
@@ -49,8 +49,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "t"
+      "metric": "sum(rev)",
+      "alias": "t"
      }
     ]
    }
@@ -81,8 +81,8 @@
     "population": "dbl",
     "metrics": [
      {
-      "expression": "sum(double_amount_sum)",
-      "name": "t"
+      "metric": "sum(double_amount_sum)",
+      "alias": "t"
      }
     ]
    }
@@ -119,8 +119,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers__cid_sum)",
-      "name": "t"
+      "metric": "sum(customers__cid_sum)",
+      "alias": "t"
      }
     ]
    }
@@ -146,8 +146,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "t"
+      "metric": "sum(rev)",
+      "alias": "t"
      }
     ]
    }
@@ -173,8 +173,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "t"
+      "metric": "sum(rev)",
+      "alias": "t"
      }
     ]
    }

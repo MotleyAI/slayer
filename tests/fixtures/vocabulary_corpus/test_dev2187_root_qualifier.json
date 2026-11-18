@@ -33,7 +33,7 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders"
+      "dataset": "orders"
      }
     ]
    }
@@ -124,8 +124,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "tot"
+      "metric": "sum(amount)",
+      "alias": "tot"
      }
     ]
    }
@@ -264,8 +264,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "revenue"
+      "metric": "sum(orders.amount)",
+      "alias": "revenue"
      }
     ]
    }
@@ -295,12 +295,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "revenue"
    },
    "new": {
-    "expression": "revenue"
+    "metric": "revenue"
    }
   },
   {
@@ -327,7 +327,7 @@
    "new": {
     "metrics": [
      {
-      "expression": "orders.revenue",
+      "metric": "orders.revenue",
       "label": "Rev"
      }
     ]

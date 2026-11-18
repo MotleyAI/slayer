@@ -49,7 +49,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    last = [{"expression": "last(amount)", "name": "l"}]
+    last = [{"metric": "last(amount)", "alias": "l"}]
     return {
         # --- the base shapes: what the host SELECT looks like at all ---
         "shape/grouped": _q(dimensions=["status"], metrics=last),

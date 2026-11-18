@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "policy_amount",
-    "join_pairs": [
-     [
-      "policy_identifier",
-      "policy_identifier"
-     ]
+    "join_type": "inner",
+    "from_columns": [
+     "policy_identifier"
     ],
-    "join_type": "inner"
+    "to_columns": [
+     "policy_identifier"
+    ]
    }
   },
   {
@@ -37,11 +37,11 @@
    },
    "new": {
     "to": "party",
-    "join_pairs": [
-     [
-      "party_a",
-      "id"
-     ]
+    "from_columns": [
+     "party_a"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -58,11 +58,11 @@
    },
    "new": {
     "to": "party",
-    "join_pairs": [
-     [
-      "party_b",
-      "id"
-     ]
+    "from_columns": [
+     "party_b"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

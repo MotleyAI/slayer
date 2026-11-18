@@ -17,7 +17,7 @@ from tests._time_points_fixtures import month_key, monthly
 D = datetime
 EXPLICIT_NOW = D(2026, 9, 29, 12)
 EXPLICIT_WINDOW = ids_in(D(2026, 6, 1), D(2026, 9, 1))
-COUNT = [{"expression": "count(*)", "name": "n"}]
+COUNT = [{"metric": "count(*)", "alias": "n"}]
 
 
 class _FalseyClock:

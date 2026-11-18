@@ -102,11 +102,11 @@
    },
    "new": {
     "to": "sub",
-    "join_pairs": [
-     [
-      "sub_id",
-      "id"
-     ]
+    "from_columns": [
+     "sub_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

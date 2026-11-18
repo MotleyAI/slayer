@@ -69,11 +69,11 @@ class TestQueryMeasureNamedAfterTransform:
                                       "consecutive_periods", "rank", "percent_rank", "dense_rank", "ntile"])
     def test_every_transform_name_accepted(self, name: str) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": name}]})
-        assert [m.name for m in query.metrics or []] == [name]
+        assert [m.alias for m in query.metrics or []] == [name]
 
     def test_refinement_measure_accepted(self) -> None:
         refinement = QueryRefinement.model_validate({"metrics": [{"metric": "count(*)", "alias": "rank"}]})
-        assert [m.name for m in refinement.metrics or []] == ["rank"]
+        assert [m.alias for m in refinement.metrics or []] == ["rank"]
 
 
 class TestModelExtensionMeasure:

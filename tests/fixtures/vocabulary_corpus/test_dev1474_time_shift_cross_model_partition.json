@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,30 +35,30 @@
    },
    "new": {
     "to": "stores",
-    "join_pairs": [
-     [
-      "store_id",
-      "id"
-     ]
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -73,12 +73,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -93,12 +93,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -113,12 +113,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -133,12 +133,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -153,12 +153,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -173,12 +173,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -193,12 +193,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -213,12 +213,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -233,12 +233,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -253,12 +253,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {
@@ -273,12 +273,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(order_total)"
    },
    "new": {
-    "expression": "sum(order_total)"
+    "metric": "sum(order_total)"
    }
   },
   {

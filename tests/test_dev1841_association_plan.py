@@ -11,9 +11,9 @@ from slayer.engine.plan import plan_query
 from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import bundle, dev1840_datasets
-from tests._dev1841_fixtures import DatasetMetric, assoc_q
+from tests._dev1841_fixtures import assoc_q
 
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
 def _association_attaches(planned) -> list:
@@ -56,10 +56,10 @@ class TestModeThreadsIntoNestedProducer:
         """Task 1.4 — the mode reaches a recursively-planned nested producer:
         an unattributable computed-dimension aggregate resolves via the kernel."""
         band = {
-            "expression": (
+            "field": (
                 "CASE WHEN sum(customers.spend, partition_by=status) > 400 "
                 "THEN 'hi' ELSE 'lo' END"),
-            "name": "band",
+            "alias": "band",
         }
         planned = plan_query(
             query=assoc_q(dimensions=[band]), bundle=bundle())

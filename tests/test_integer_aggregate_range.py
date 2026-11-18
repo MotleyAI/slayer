@@ -74,7 +74,7 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders: Slaye
 
 @pytest.mark.parametrize(
     "measure",
-    [{"expression": "sum(amount)", "datatype": "Integer"}, "as_int"],
+    [{"metric": "sum(amount)", "datatype": "Integer"}, "as_int"],
 )
 def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset, measure):
     sql, _ = _sql(dataset=integer_orders, metrics=[measure])
@@ -120,7 +120,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
             "relationships": [],
         }
     )
-    measure = {"expression": "sum(customers.amount)", "name": "total"}
+    measure = {"metric": "sum(customers.amount)", "alias": "total"}
     if explicit:
         measure["datatype"] = "Integer"
     sql, _ = _sql(
@@ -139,7 +139,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
 
 @pytest.mark.parametrize("explicit", [False, True])
 def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDataset, explicit):
-    measure = {"expression": "sum(amount, partition_by=created_at)", "name": "total"}
+    measure = {"metric": "sum(amount, partition_by=created_at)", "alias": "total"}
     if explicit:
         measure["datatype"] = "Integer"
     sql, _ = _sql(dataset=integer_orders, metrics=[measure], dimensions=["id", "created_at"])

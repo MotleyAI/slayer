@@ -42,32 +42,32 @@
     "dimensions": [
      "id",
      {
-      "expression": "date_add(d1, 1, 'month')",
-      "name": "a"
+      "field": "date_add(d1, 1, 'month')",
+      "alias": "a"
      },
      {
-      "expression": "date_add(d1, 2, 'hour')",
-      "name": "b"
+      "field": "date_add(d1, 2, 'hour')",
+      "alias": "b"
      },
      {
-      "expression": "date_add(t1, n, 'day')",
-      "name": "c"
+      "field": "date_add(t1, n, 'day')",
+      "alias": "c"
      },
      {
-      "expression": "date_diff('day', d1, d2)",
-      "name": "e"
+      "field": "date_diff('day', d1, d2)",
+      "alias": "e"
      },
      {
-      "expression": "date_diff('second', t1, t2)",
-      "name": "f"
+      "field": "date_diff('second', t1, t2)",
+      "alias": "f"
      },
      {
-      "expression": "date_part('iso_year', d1)",
-      "name": "g"
+      "field": "date_part('iso_year', d1)",
+      "alias": "g"
      },
      {
-      "expression": "date_part('day_of_week', t1)",
-      "name": "h"
+      "field": "date_part('day_of_week', t1)",
+      "alias": "h"
      }
     ]
    }

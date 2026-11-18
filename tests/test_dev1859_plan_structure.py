@@ -198,7 +198,7 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
     9). The combined-phase escape the root's inner produces today goes with §5.2."""
 
     def _plan_banded_partition(self):
-        band = {"expression": MIXED_BAND_EXPR, "name": "mixed_band"}
+        band = {"field": MIXED_BAND_EXPR, "alias": "mixed_band"}
         return plan_query(
             query=sales_q(dimensions=[band], metrics=[QueryMetric(
                 metric=f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",

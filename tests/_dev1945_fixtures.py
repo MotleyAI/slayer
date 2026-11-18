@@ -179,7 +179,7 @@ def month_td(column: str = "created_at") -> List[TimeDimension]:
 
 
 def metric(expression: str, name: str = "l") -> dict:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 #: ``last(amount)`` by ``created_at`` and by ``cust_signup`` both pick order 2.

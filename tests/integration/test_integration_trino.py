@@ -401,7 +401,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery.model_validate({
             "population": "orders", "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{
-                "field": {"name": "created_at"}, "granularity": "month",
+                "field": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
         }))
@@ -411,7 +411,7 @@ class TestTrinoQueries:
         result = await trino_env.execute(query=SlayerQuery.model_validate({
             "population": "orders", "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{
-                "field": {"name": "created_on"}, "granularity": "day",
+                "field": "created_on", "granularity": "day",
                 "date_range": ["2024-02-10", "2024-03-01"],
             }],
         }))
@@ -512,7 +512,7 @@ class TestTrinoInvariants:
         def query(*measures: str) -> SlayerQuery:
             return SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["status"],
-                "metrics": [{"expression": f} for f in measures],
+                "metrics": [{"metric": f} for f in measures],
             })
 
         narrow = await trino_env.execute(query=query("count(*)"))
@@ -710,7 +710,7 @@ class TestCrossModelAndMultistageTrino:
         def query(*measures: str) -> SlayerQuery:
             return SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["status"],
-                "metrics": [{"expression": f} for f in measures],
+                "metrics": [{"metric": f} for f in measures],
             })
 
         narrow = await trino_cross_dataset_env.execute(query=query("count(*)"))

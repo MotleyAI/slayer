@@ -16,10 +16,10 @@ from slayer.core.models import (
     SlayerDataset,
 )
 from slayer.core.query import (
-    _FUNCSTYLE_PENDING,
     FieldRef,
     DatasetExtension,
     OrderItem,
+    QueryMetric,
     SlayerQuery,
     TimeDimension,
 )
@@ -91,7 +91,7 @@ class TestOrderItem:
         """The functional spelling is preserved verbatim — a
         placeholder defers resolution to binding (like custom aggs)."""
         item = OrderItem(field="sum(revenue)", direction="desc")
-        assert item.ref.name == _FUNCSTYLE_PENDING
+        assert item.ref is None
         assert item.raw_expression == "sum(revenue)"
 
     def test_funcstyle_custom_agg_accepted(self) -> None:
@@ -171,7 +171,7 @@ class TestOrderShorthandHealing:
     def test_shorthand_formula_key(self) -> None:
         q = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
         assert q.order is not None
-        assert q.order[0].field.name == "_funcstyle_pending"
+        assert q.order[0].ref is None
         assert q.order[0].raw_expression == "sum(revenue)"
         assert q.order[0].direction == "desc"
 
@@ -343,10 +343,10 @@ class TestOrderShorthandHealing:
         })
         assert q.order is not None
         assert len(q.order) == 2
-        assert q.order[0].field.name == "_funcstyle_pending"
+        assert q.order[0].ref is None
         assert q.order[0].raw_expression == "sum(revenue)"
         assert q.order[0].direction == "desc"
-        assert q.order[1].field.name == "_funcstyle_pending"
+        assert q.order[1].ref is None
         assert q.order[1].raw_expression == "max(amount)"
         assert q.order[1].direction == "asc"
 
@@ -355,7 +355,7 @@ class TestOrderShorthandHealing:
         q = SlayerQuery(population="orders", order=[item])
         assert q.order is not None
         assert len(q.order) == 1
-        assert q.order[0].field.name == "_funcstyle_pending"
+        assert q.order[0].ref is None
         assert q.order[0].direction == "desc"
 
     # --- OrderItem-level direction validation + extra=forbid ---
@@ -625,22 +625,15 @@ class TestWithinListDuplicateNames:
             )
 
     def test_unnamed_model_measure_rejected(self) -> None:
-        """Every ``ModelMeasure`` stored on a ``SlayerModel`` must have a name.
-
-        Unnamed entries are unreachable via ``get_measure()`` and bare-name
-        expansion, so persisting them is meaningless. (Inline measures on
-        ``SlayerQuery.metrics`` may still be unnamed — only model-level
-        measures are required to be named.)
-        """
+        """A dataset metric must have a name."""
         columns = [DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)]
-        measures = [DatasetMetric(expression="sum(amount)")]
         with pytest.raises(ValueError, match="must have a name"):
             SlayerDataset(
                 name="orders",
                 sql_table="t",
                 data_source="test",
                 fields=columns,
-                metrics=measures,
+                metrics=[DatasetMetric(expression="sum(amount)")],
             )
 
     def test_unique_names_accepted(self) -> None:
@@ -824,7 +817,7 @@ class TestSourceQueryStages:
         assert m.source_queries is not None
         assert isinstance(m.source_queries[0], SlayerQuery)
         assert m.source_queries[0].metrics is not None
-        assert m.source_queries[0].metrics[0].expression == "count(*)"
+        assert m.source_queries[0].metrics[0].metric == "count(*)"
 
     def test_invalid_entry_type_rejected(self) -> None:
         with pytest.raises((ValueError, TypeError)):
@@ -1438,19 +1431,15 @@ class TestStringCoercion:
     def test_fields_plain_strings(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
         assert len(query.metrics) == 2
-        assert query.metrics[0] == DatasetMetric(expression="count(*)")
-        assert query.metrics[1] == DatasetMetric(expression="sum(revenue)")
+        assert query.metrics[0] == QueryMetric(metric="count(*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(revenue)")
 
     def test_dimensions_plain_strings(self) -> None:
         query = SlayerQuery(population="orders", dimensions=["status", "customers.name"])
         assert query.dimensions is not None
         assert len(query.dimensions) == 2
-        assert isinstance(query.dimensions[0], FieldRef)
-        assert isinstance(query.dimensions[1], FieldRef)
-        assert query.dimensions[0].name == "status"
-        assert query.dimensions[0].dataset is None
-        assert query.dimensions[1].name == "name"
-        assert query.dimensions[1].dataset == "customers"
+        assert [d.field for d in query.dimensions or []] == ["status", "customers.name"]
+        assert all(d.ref is not None for d in query.dimensions or [])
 
     def test_fields_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
@@ -1458,8 +1447,8 @@ class TestStringCoercion:
             "metrics": ["count(*)", {"metric": "sum(revenue) / count(*)", "alias": "aov"}],
         })
         assert len(query.metrics) == 2
-        assert query.metrics[0] == DatasetMetric(expression="count(*)")
-        assert query.metrics[1] == DatasetMetric(expression="sum(revenue) / count(*)", name="aov")
+        assert query.metrics[0] == QueryMetric(metric="count(*)")
+        assert query.metrics[1] == QueryMetric(metric="sum(revenue) / count(*)", alias="aov")
 
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery(
@@ -1468,10 +1457,8 @@ class TestStringCoercion:
         )
         assert query.dimensions is not None
         assert len(query.dimensions) == 2
-        assert isinstance(query.dimensions[1], FieldRef)
-        assert query.dimensions[0].name == "status"
-        assert query.dimensions[1].name == "name"
-        assert query.dimensions[1].dataset == "customers"
+        assert query.dimensions[1].ref is not None
+        assert [d.field for d in query.dimensions or []] == ["status", "customers.name"]
         assert query.dimensions[1].label == "Customer"
 
     def test_dict_syntax_still_works(self) -> None:
@@ -1480,8 +1467,8 @@ class TestStringCoercion:
             "metrics": [{"metric": "count(*)"}],
             "dimensions": ["status"],
         })
-        assert query.metrics[0] == DatasetMetric(expression="count(*)")
-        assert query.dimensions[0].name == "status"
+        assert query.metrics[0] == QueryMetric(metric="count(*)")
+        assert query.dimensions[0].field == "status"
 
     def test_none_fields_and_dimensions(self) -> None:
         query = SlayerQuery(population="orders")
@@ -1498,10 +1485,6 @@ class TestStringCoercion:
         assert item.ref.name == "_count"
         assert item.ref.dataset == "customers"
 
-    def test_order_column_dict_still_works(self) -> None:
-        item = OrderItem(field={"name": "revenue_sum"}, direction="desc")
-        assert item.ref.name == "revenue_sum"
-
     def test_time_dimension_string(self) -> None:
         td = TimeDimension(field="created_at", granularity="month")
         assert td.field == "created_at"
@@ -1511,7 +1494,7 @@ class TestStringCoercion:
         assert td.field == "customers.ordered_at"
 
     def test_time_dimension_dict_still_works(self) -> None:
-        td = TimeDimension.model_validate({"field": {"name": "created_at"}, "granularity": "month"})
+        td = TimeDimension.model_validate({"dimension": {"name": "created_at"}, "granularity": "month"})
         assert td.field == "created_at"
 
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
@@ -1552,19 +1535,18 @@ class TestCoerceFieldsAndDimensions:
     def test_fields_list_of_strings_coerced(self) -> None:
         q = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
         assert q.metrics is not None
-        assert q.metrics[0].expression == "count(*)"
-        assert q.metrics[1].expression == "sum(revenue)"
+        assert q.metrics[0].metric == "count(*)"
+        assert q.metrics[1].metric == "sum(revenue)"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
         q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": "cnt"}]})
         assert q.metrics is not None
-        assert q.metrics[0].expression == "count(*)"
-        assert q.metrics[0].name == "cnt"
+        assert q.metrics[0].metric == "count(*)"
+        assert q.metrics[0].alias == "cnt"
 
     def test_dimensions_list_of_strings_coerced(self) -> None:
         q = SlayerQuery(population="orders", dimensions=["status", "region"])
-        assert q.dimensions[0].name == "status"
-        assert q.dimensions[1].name == "region"
+        assert [d.field for d in q.dimensions or []] == ["status", "region"]
 
     def test_the_v1_fields_key_is_reported_as_written(self) -> None:
         with recorded() as caught:
@@ -1788,8 +1770,8 @@ _ROOT_QUALIFIED = {
     "transform": ({"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(orders.revenue))"]},
                   {"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(revenue))"]}),
     "joined-formula": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),
-    "named-formula": ({"metrics": [{"expression": "sum(orders.revenue)", "name": "rev", "label": "Revenue"}]},
-                      {"metrics": [{"expression": "sum(revenue)", "name": "rev", "label": "Revenue"}]}),
+    "named-formula": ({"metrics": [{"metric": "sum(orders.revenue)", "alias": "rev", "label": "Revenue"}]},
+                      {"metrics": [{"metric": "sum(revenue)", "alias": "rev", "label": "Revenue"}]}),
     "filter": ({"metrics": ["count(*)"], "filter": ["orders.status = 'active'"]},
                {"metrics": ["count(*)"], "filter": ["status = 'active'"]}),
     "joined-filter": ({"metrics": ["count(*)"], "filter": ["orders.customers.name = 'foo'"]},
@@ -1821,7 +1803,7 @@ class TestRootQualifier:
             {"population": "orders", **bare})
 
     @pytest.mark.parametrize("source", [
-        {"population": "orders", "extensions": [{"source_name": "orders"}]},
+        {"population": "orders", "extensions": [{"dataset": "orders"}]},
         {"population": "orders", "extensions": [DatasetExtension(dataset="orders")]},
     ], ids=["extension-dict", "extension-object"])
     async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
@@ -1950,15 +1932,15 @@ class TestModelMeasureType:
     ``SlayerQuery.metrics[i]`` since query measures use the same shape."""
 
     def test_default_is_none(self) -> None:
-        m = DatasetMetric(expression="count(*)")
+        m = DatasetMetric(name="m", expression="count(*)")
         assert m.datatype is None
 
     def test_explicit_double(self) -> None:
-        m = DatasetMetric(expression="count(*) / count(orders)", datatype=DataType.FLOAT)
+        m = DatasetMetric(name="m", expression="count(*) / count(orders)", datatype=DataType.FLOAT)
         assert m.datatype == DataType.FLOAT
 
     def test_explicit_int(self) -> None:
-        m = DatasetMetric(expression="count(*)", datatype=DataType.INTEGER)
+        m = DatasetMetric(name="m", expression="count(*)", datatype=DataType.INTEGER)
         assert m.datatype == DataType.INTEGER
 
     def test_legacy_string_value_absorbed(self) -> None:

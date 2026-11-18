@@ -35,6 +35,10 @@ class TestTimeDimension:
         assert dumped["alias"] == "m"
         assert "name" not in dumped
 
+    def test_an_object_field_is_refused(self) -> None:
+        with pytest.raises((ValidationError, SlayerError)):
+            TimeDimension.model_validate({"field": {"name": "ordered_at"}, "granularity": "month"})
+
     def test_a_time_dimension_name_is_refused(self) -> None:
         with pytest.raises(ValidationError) as info:
             TimeDimension.model_validate({"field": "ordered_at", "granularity": "month", "name": "m"})

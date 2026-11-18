@@ -169,7 +169,7 @@ def _q(**kw) -> SlayerQuery:
 # The matrix. Keys are stable ids — renaming one is a golden change.
 # --------------------------------------------------------------------------- #
 def _cases() -> dict:
-    dim_status = [{"expression": "status", "name": "status"}]
+    dim_status = [{"field": "status", "alias": "status"}]
     return {
         # --- host scope, plain Mode-A surfaces ---
         "host/model_filter": _q(

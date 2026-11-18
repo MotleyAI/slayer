@@ -18,7 +18,7 @@ from slayer.core.errors import (
 )
 from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.names import match_path
-from slayer.core.query import FieldRef, ComputedDimension, QueryRefinement, SlayerQuery, refine_query
+from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
@@ -109,12 +109,6 @@ class TestFolding:
                                        metrics=[m("count(*)", "n")]))
         assert quoted.columns == plain.columns
         assert sorted_rows(quoted) == sorted_rows(plain)
-
-    async def test_a_quoted_column_object_time_dimension_is_exact(self, engine: SlayerQueryEngine) -> None:
-        query = q(time_dimensions=[{"field": {"name": "CREATED_AT", "quoted": [True]}, "granularity": "month"}],
-                  metrics=[m("count(*)", "n")])
-        with pytest.raises(UnknownReferenceError):
-            await engine.execute(query)
 
     @pytest.mark.parametrize(("column", "error"), [('"status"', None), ('"STATUS"', UnknownReferenceError)])
     async def test_a_quoted_order_column_is_exact(self, engine: SlayerQueryEngine, column: str,
@@ -359,27 +353,31 @@ def test_dotted_names_colliding_by_case_are_ambiguous() -> None:
         match_path(parts=("a", "b"), declared=["A.b", "a.B"], quoted=())
 
 
-@pytest.mark.parametrize(("dimension", "expected"), [
-    ('"Revenue"', {"name": "Revenue", "quoted": [True]}),
-    ('ledger."Revenue"', {"name": "Revenue", "dataset": "ledger", "quoted": [False, True]}),
-    ("Revenue", {"name": "Revenue"}),
+@pytest.mark.parametrize(("dimension", "quoted"), [
+    ('"Revenue"', [True]),
+    ('ledger."Revenue"', [False, True]),
+    ("Revenue", None),
 ])
-def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: str, expected: dict[str, Any]) -> None:
+def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: str, quoted: list[bool] | None) -> None:
     query = q(population="ledger", dimensions=[dimension], metrics=[m("count(*)", "n")])
     dumped = query.model_dump(mode="json", exclude_none=True)["dimensions"]
-    assert dumped == [expected]
+    assert dumped == [dimension]
+    [dim] = query.dimensions or []
+    assert dim.ref is not None
+    assert dim.ref.quoted == quoted
     assert SlayerQuery.model_validate(query.model_dump(mode="json")).dimensions == query.dimensions
 
 
-def test_an_explicitly_named_reference_stays_computed() -> None:
+def test_an_aliased_reference_keeps_its_reference() -> None:
     (dim,) = q(dimensions=[{"field": '"status"', "alias": "st"}]).dimensions or []
-    assert isinstance(dim, ComputedDimension)
+    assert dim.ref is not None
+    assert dim.alias == "st"
 
 
 def test_a_refinement_dedupes_a_quoted_and_a_plain_reference() -> None:
     saved = q(dimensions=['"orders".status'], metrics=[m("count(*)", "n")])
     refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"dimensions": ["status"]}))
-    assert [d.full_name for d in refined.dimensions or [] if isinstance(d, FieldRef)] == ["orders.status"]
+    assert [d.ref.full_name for d in refined.dimensions or [] if d.ref is not None] == ["orders.status"]
 
 
 def test_a_quoted_dimension_takes_its_column_name() -> None:

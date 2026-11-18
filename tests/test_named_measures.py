@@ -10,7 +10,6 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.engine.binding import _name_suggestion
 
 from tests._engine_helpers import _engine_generate
 
@@ -207,18 +206,6 @@ class TestNamedMeasureSQL:
             ValueError, match="needs an aggregation inside an expression"
         ):
             await _generate(query, model)
-
-    def test_name_suggestion_skips_unnamed_measures(self) -> None:
-        # Tested directly: the full pipeline rejects unnamed measures at model
-        # re-validation, so they only reach the helper via a raw mutation.
-        model = _orders_dataset(
-            metrics=[DatasetMetric(name="aov", expression="sum(revenue)")]
-        )
-        model.metrics.append(DatasetMetric(expression="avg(revenue)"))
-        assert (
-            _name_suggestion(name="revenu", dataset=model)
-            == "Did you mean 'revenue'?"
-        )
 
     async def test_unknown_column_suggests_a_close_column(self) -> None:
         model = _orders_dataset()

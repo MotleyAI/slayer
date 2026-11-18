@@ -19,7 +19,6 @@ from tests._dev1839_fixtures import (
     KEYLESS_RANK,
     MEASURE_DIFF,
     MIXED_RANK,
-    DatasetMetric,
     NESTED_RANK,
     SAMEGRAIN_DIFF,
     SAMEGRAIN_RANK,
@@ -39,7 +38,7 @@ WORKING_PREFIX = "lift/"
 
 
 def _cases() -> dict:
-    s = DatasetMetric(expression="sum(amount)", name="s")
+    s = QueryMetric(metric="sum(amount)", alias="s")
     return {
         "lift/dim_mixed_rank": q(
             dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],

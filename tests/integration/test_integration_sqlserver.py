@@ -447,7 +447,7 @@ class TestSQLServerQueries:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "count(*)"}],
-            "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
         })
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 3
@@ -457,7 +457,7 @@ class TestSQLServerQueries:
             "population": "orders",
             "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{
-                "field": {"name": "created_at"},
+                "field": "created_at",
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
@@ -1206,7 +1206,7 @@ async def test_sqlserver_week_uses_iso_week(sqlserver_env: SlayerQueryEngine) ->
     query = SlayerQuery.model_validate({
         "population": "orders",
         "metrics": [{"metric": "count(*)"}],
-        "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "week"}],
+        "time_dimensions": [{"field": "created_at", "granularity": "week"}],
     })
     dry = await sqlserver_env.execute(query=query, dry_run=True)
     assert dry.sql is not None
@@ -1758,7 +1758,7 @@ def _per_id(resp, name: str = "v") -> dict[int, Any]:
 
 
 def _v(expr: str) -> dict[str, str]:
-    return {"expression": expr, "name": "v"}
+    return {"field": expr, "alias": "v"}
 
 
 @pytest.mark.integration

@@ -13,6 +13,7 @@ import pytest
 from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
+from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import rows_by
 from tests._dev1900_fixtures import (
@@ -56,16 +57,16 @@ async def make_null_status_engine(
         yield engine
 
 
-SPEND_SUM = DatasetMetric(expression="sum(customers.spend)", name="csp")
-AMOUNT_SUM = DatasetMetric(expression="sum(amount)", name="amt")
-LOCAL_SPEND_SUM = DatasetMetric(expression="sum(spend)", name="sp")  # customers-rooted
-REGION_POP_SUM = DatasetMetric(expression="sum(customers.regions.pop)", name="rp")
-STORE_RENT_SUM = DatasetMetric(expression="sum(stores.rent)", name="rent")
+SPEND_SUM = QueryMetric(metric="sum(customers.spend)", alias="csp")
+AMOUNT_SUM = QueryMetric(metric="sum(amount)", alias="amt")
+LOCAL_SPEND_SUM = QueryMetric(metric="sum(spend)", alias="sp")  # customers-rooted
+REGION_POP_SUM = QueryMetric(metric="sum(customers.regions.pop)", alias="rp")
+STORE_RENT_SUM = QueryMetric(metric="sum(stores.rent)", alias="rent")
 # home-determined weight (includes c7) vs a fanning host column across the hop.
-SPEND_WAVG_HOME = DatasetMetric(
-    expression="weighted_avg(customers.spend, weight=customers.spend)", name="wa")
-SPEND_WAVG_AMOUNT = DatasetMetric(
-    expression="weighted_avg(customers.spend, weight=amount)", name="wa")
+SPEND_WAVG_HOME = QueryMetric(
+    metric="weighted_avg(customers.spend, weight=customers.spend)", alias="wa")
+SPEND_WAVG_AMOUNT = QueryMetric(
+    metric="weighted_avg(customers.spend, weight=amount)", alias="wa")
 
 
 def status_vals(resp, metric: str, *, root: str = "orders") -> dict:

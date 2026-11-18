@@ -14,7 +14,7 @@ from tests._time_points_fixtures import (
 
 D = datetime
 PLAIN = {"metric": "sum(amount)", "alias": "s"}
-WINDOW = {"expression": "sum(amount, window='90d')", "name": "w"}
+WINDOW = {"metric": "sum(amount, window='90d')", "alias": "w"}
 
 
 @pytest.fixture(params=BACKENDS)

@@ -37,7 +37,6 @@ from tests._dev1892_fixtures import assert_ref_free
 from tests._engine_helpers import _join_aliases
 from tests._dev1900_fixtures import (
     AMOUNT_SUM,
-    DatasetMetric,
     POP_FILTER_ASSOC_BY_STATUS,
     POP_FILTER_COUNT_BY_TIER,
     POP_FILTER_DERIVED_ASSOC,
@@ -65,13 +64,13 @@ MODES = ["broadcast", "associate", "error"]
 OK = "orders.status = 'ok'"
 OR_MIX = "tier = 'bronze' or orders.status = 'ok'"
 
-SPEND = DatasetMetric(expression="sum(spend)", name="sp")
-PARTITIONED = DatasetMetric(expression="sum(spend, partition_by=tier)", name="pt")
-COUNT = DatasetMetric(expression="count(*)", name="n")
-WINDOWED = DatasetMetric(expression="sum(spend, window='1y')", name="w")
-LAST = DatasetMetric(expression="last(spend, customers.signup_at)", name="l")
-NESTED = DatasetMetric(expression="avg(sum(spend, partition_by=tier))", name="ac")
-ORDERS_AMOUNT = DatasetMetric(expression="sum(orders.amount)", name="oa")
+SPEND = QueryMetric(metric="sum(spend)", alias="sp")
+PARTITIONED = QueryMetric(metric="sum(spend, partition_by=tier)", alias="pt")
+COUNT = QueryMetric(metric="count(*)", alias="n")
+WINDOWED = QueryMetric(metric="sum(spend, window='1y')", alias="w")
+LAST = QueryMetric(metric="last(spend, customers.signup_at)", alias="l")
+NESTED = QueryMetric(metric="avg(sum(spend, partition_by=tier))", alias="ac")
+ORDERS_AMOUNT = QueryMetric(metric="sum(orders.amount)", alias="oa")
 
 #: Python-warning carriers the semi-join push must never emit.
 _SLAYER_WARNS = (

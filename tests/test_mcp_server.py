@@ -2338,8 +2338,8 @@ class TestEditModelMultiStageRename:
         """Renaming an inner-stage measure old→new refreshes the cached SQL/columns."""
         await self._setup_orders_with_two_stage_dataset(
             storage,
-            inner_metrics=[{"expression": "sum(amount)", "name": "old"}],
-            outer_metrics=[{"expression": "sum(old)"}],
+            inner_metrics=[{"metric": "sum(amount)", "alias": "old"}],
+            outer_metrics=[{"metric": "sum(old)"}],
         )
         # Sanity: initial cache reflects 'old'.
         before = await storage.get_dataset("qb")
@@ -2392,10 +2392,10 @@ class TestEditModelMultiStageRename:
         await self._setup_orders_with_two_stage_dataset(
             storage,
             inner_metrics=[
-                {"expression": "sum(amount)", "name": "rev"},
-                {"expression": "count(*)", "name": "n"},
+                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "count(*)", "alias": "n"},
             ],
-            outer_metrics=[{"expression": "sum(rev)"}],
+            outer_metrics=[{"metric": "sum(rev)"}],
         )
         before = await storage.get_dataset("qb")
         assert before is not None
@@ -2606,7 +2606,7 @@ class TestQueryAcceptsInlineSourceModel:
                 "query": {
                     "population": "orders",
                     "extensions": [{
-                        "source_name": "orders",
+                        "dataset": "orders",
                         "fields": [
                             {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                         ],

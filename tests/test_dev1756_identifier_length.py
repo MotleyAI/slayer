@@ -16,8 +16,8 @@ from sqlglot import exp
 import slayer.sql._identifier_fit as fitmod
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError, SlayerError
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, QueryDimension, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.database.client import ExecutionResult, ResultColumnType, TypeProbe
 from slayer.sql.dialects import get_dialect
@@ -200,8 +200,8 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
         kwargs["order"] = [OrderItem.model_validate({"field": "avg(totalAmount)", "direction": "desc"})]
         kwargs["limit"] = 10
     return SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-            FieldRef(name=f"{DEEP}.name"),
-            FieldRef(name=f"{DEEP}.email"),
+            QueryDimension(field=f"{DEEP}.name"),
+            QueryDimension(field=f"{DEEP}.email"),
             QueryDimension(field="status"),
         ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], **kwargs})
 
@@ -608,9 +608,9 @@ class TestAllProjectionAliases:
 
 
 def _deep_cross_dataset_query(*, two_metrics: bool = False) -> SlayerQuery:
-    measures = [DatasetMetric(expression=f"sum({DEEP}.lifetimeValue)")]
+    measures = [QueryMetric(metric=f"sum({DEEP}.lifetimeValue)")]
     if two_metrics:
-        measures.append(DatasetMetric(expression=f"avg({DEEP}.lifetimeValue)"))
+        measures.append(QueryMetric(metric=f"avg({DEEP}.lifetimeValue)"))
     return SlayerQuery(
         population="SandboxInvoiceV2",
         dimensions=[QueryDimension(field="status")],
@@ -721,7 +721,7 @@ class TestCteNames:
         prepared = await engine._prepare_pipeline(
             query=SlayerQuery.model_validate({
                 "population": "ShiftOrders",
-                "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
+                "time_dimensions": [{"field": "created_at", "granularity": "month"}],
                 "metrics": [
                     {"metric": "sum(revenue)"},
                     {"metric": "time_shift(sum(revenue), -1)", "alias": long_transform_name},
@@ -873,8 +873,8 @@ class TestVirtualModelShorts:
         """``email`` and ``Email`` (grandfathered) as two result names: refused before SQL generation."""
         engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_columns=True)
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-                FieldRef(name=f"{DEEP}.email"),
-                FieldRef(name=f"{DEEP}.Email"),
+                QueryDimension(field=f"{DEEP}.email"),
+                QueryDimension(field=f"{DEEP}.Email"),
             ], "metrics": [{"metric": "count(*)"}]})
         with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
@@ -888,7 +888,7 @@ class TestVirtualModelShorts:
         engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.name"), FieldRef(name=flat)],
+            "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=flat)],
             "metrics": [{"metric": "count(*)"}],
         })
         with pytest.raises(IdentifierCollisionError) as exc:
@@ -931,7 +931,7 @@ class TestVirtualModelShorts:
         short = next(c.name for c in vm.fields if "email" in c.name.lower())
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": [FieldRef(name=short)],
+            "dimensions": [QueryDimension(field=short)],
             "metrics": [{"metric": "sum(totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
@@ -1024,7 +1024,7 @@ class TestSweep:
             _deep_cross_dataset_query(),                        # cross-model CTE (_cm_ + WITH)
             SlayerQuery(                                      # arithmetic expression
                 population="SandboxInvoiceV2",
-                dimensions=[FieldRef(name=f"{DEEP}.email")],
+                dimensions=[QueryDimension(field=f"{DEEP}.email")],
                 metrics=[
                     {"metric": "sum(totalAmount)"},
                     {"metric": "sum(totalAmount) / count(*)", "alias": "avg_ticket"},
@@ -1032,7 +1032,7 @@ class TestSweep:
             ),
             SlayerQuery.model_validate({
                 "population": "SandboxInvoiceV2",
-                "dimensions": [FieldRef(name=f"{DEEP}.name")],
+                "dimensions": [QueryDimension(field=f"{DEEP}.name")],
                 "metrics": [{"metric": "count(*)"}],
                 "filter": [f"{DEEP}.email IS NOT NULL"],
             }),

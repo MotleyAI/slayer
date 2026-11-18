@@ -56,8 +56,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "t"
+      "metric": "sum(orders.amount)",
+      "alias": "t"
      }
     ]
    }
@@ -117,8 +117,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "t"
+      "metric": "sum(amount)",
+      "alias": "t"
      }
     ]
    }
@@ -144,8 +144,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "t"
+      "metric": "sum(orders.amount)",
+      "alias": "t"
      }
     ]
    }
@@ -171,8 +171,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "t"
+      "metric": "sum(orders.amount)",
+      "alias": "t"
      }
     ]
    }
@@ -199,8 +199,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "t"
+      "metric": "sum(orders.amount)",
+      "alias": "t"
      }
     ],
     "to_many_handling": "broadcast"
@@ -228,8 +228,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(regions.pop)",
-      "name": "rp"
+      "metric": "sum(regions.pop)",
+      "alias": "rp"
      }
     ],
     "to_many_handling": "broadcast"
@@ -278,8 +278,8 @@
     "population": "customers",
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "t"
+      "metric": "sum(orders.amount)",
+      "alias": "t"
      }
     ]
    }
@@ -316,8 +316,8 @@
     ],
     "metrics": [
      {
-      "expression": "orders.total_amount",
-      "name": "t"
+      "metric": "orders.total_amount",
+      "alias": "t"
      }
     ]
    }

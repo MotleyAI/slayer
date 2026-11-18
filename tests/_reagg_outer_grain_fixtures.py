@@ -114,7 +114,7 @@ def query(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str = "v") -> Dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 MONTH_TD = {"field": "account_snapshots.snapshot_date", "granularity": "month"}

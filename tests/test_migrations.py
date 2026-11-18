@@ -454,8 +454,8 @@ def test_query_v1_to_v2_fields_renamed() -> None:
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     assert q.metrics is not None
-    assert q.metrics[0].expression == "sum(revenue)"
-    assert q.metrics[0].name == "rev"
+    assert q.metrics[0].metric == "sum(revenue)"
+    assert q.metrics[0].alias == "rev"
 
 
 def test_query_v1_to_v2_both_fields_and_measures_raises() -> None:
@@ -532,8 +532,8 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     # renamed to 'measures' and version bumped to current.
     assert isinstance(inner, SlayerQuery)
     assert inner.metrics is not None
-    assert inner.metrics[0].expression == "sum(revenue)"
-    assert inner.metrics[0].name == "rev"
+    assert inner.metrics[0].metric == "sum(revenue)"
+    assert inner.metrics[0].alias == "rev"
     assert inner.version == mig.CURRENT_VERSIONS["SlayerQuery"]
 
 
@@ -580,8 +580,8 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
     assert inner.metrics is not None
-    assert inner.metrics[0].expression == "sum(revenue)"
-    assert inner.metrics[0].name == "rev"
+    assert inner.metrics[0].metric == "sum(revenue)"
+    assert inner.metrics[0].alias == "rev"
 
 
 async def test_v1_yaml_round_trip_to_v2() -> None:

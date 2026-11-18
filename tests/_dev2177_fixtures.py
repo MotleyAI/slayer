@@ -18,8 +18,8 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarOperandTypeError
-from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._mcp_idiom_fixtures import idiom_datasets
@@ -59,8 +59,8 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def num(value: Any) -> float | None:

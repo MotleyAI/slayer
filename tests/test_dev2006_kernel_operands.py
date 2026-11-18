@@ -275,8 +275,8 @@ class TestConsumerPositions:
 
     async def test_computed_dimension(self, exec_engine):
         band = {
-            "expression": f"CASE WHEN sum({LAST}, partition_by=[customer_id]) > 100 THEN 'big' ELSE 'small' END",
-            "name": "band",
+            "field": f"CASE WHEN sum({LAST}, partition_by=[customer_id]) > 100 THEN 'big' ELSE 'small' END",
+            "alias": "band",
         }
         resp = await exec_engine.execute(snap_q(dimensions=[band], metrics=[m("sum(balance)")]))
         vals = {r["account_snapshots.band"]: num(r["account_snapshots.v"]) for r in resp.data}

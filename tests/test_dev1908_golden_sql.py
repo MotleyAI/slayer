@@ -9,8 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -24,8 +23,8 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1908_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
 
-def _m(expression: str) -> list[DatasetMetric]:
-    return [DatasetMetric(expression=expression, name="w")]
+def _m(expression: str) -> list[QueryMetric]:
+    return [QueryMetric(metric=expression, alias="w")]
 
 
 def _cases() -> dict:

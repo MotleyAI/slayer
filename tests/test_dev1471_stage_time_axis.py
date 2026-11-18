@@ -111,7 +111,7 @@ _MONTHLY_MODEL_TABLE = {
 async def test_windowed_aggregate_over_stage_time_dimension(backend: str) -> None:
     """rev:sum(window='60d') on the stage bucket equals the model-backed evaluation
     over a dataset holding the same monthly rows (transforms spec equivalence)."""
-    windowed = [{"expression": "sum(rev, window='60d')", "name": "win"}]
+    windowed = [{"metric": "sum(rev, window='60d')", "alias": "win"}]
     stage_outer = SlayerQuery.model_validate({
         "population": "s1",
         "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],

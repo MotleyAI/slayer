@@ -27,7 +27,7 @@
     "fields": [
      {
       "name": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ],
     "aggregations": [

@@ -19,13 +19,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import (
-    DatasetExtension,
-    OrderItem,
-    QueryDimension,
-    SlayerQuery,
-    TimeDimension,
-)
+from slayer.core.query import DatasetExtension, OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -334,8 +328,8 @@ _CASE_FUNC = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 def _band_query(expr: str, **kw) -> SlayerQuery:
     kw.setdefault("population", "orders")
-    kw.setdefault("dimensions", ["region", {"expression": expr, "name": "band"}])
-    kw.setdefault("metrics", [DatasetMetric(expression="sum(amount)", name="t")])
+    kw.setdefault("dimensions", ["region", {"field": expr, "alias": "band"}])
+    kw.setdefault("metrics", [QueryMetric(metric="sum(amount)", alias="t")])
     return SlayerQuery(**kw)
 
 

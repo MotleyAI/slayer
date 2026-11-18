@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -45,13 +45,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "name": "buyer",
+    "from_columns": [
+     "customer_id"
     ],
-    "name": "buyer"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -68,13 +68,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "name": "buyer",
+    "from_columns": [
+     "b_id"
     ],
-    "name": "buyer"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -91,13 +91,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "s_id",
-      "id"
-     ]
+    "name": "seller",
+    "from_columns": [
+     "s_id"
     ],
-    "name": "seller"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -113,11 +113,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

@@ -30,7 +30,6 @@ from slayer.ir.source_bundle import resolve_scope
 from slayer.core.query import QueryMetric
 
 from tests._dev1838_fixtures import (
-    DatasetMetric,
     SPEND_BAND,
     cte_aliases,
     dev1838_datasets,
@@ -55,7 +54,7 @@ def _cm_count(sql: str, dialect: str) -> int:
 
 
 def _dim(expression: str, name: str) -> dict:
-    return {"expression": expression, "name": name}
+    return {"field": expression, "alias": name}
 
 
 # --------------------------------------------------------------------------- #
@@ -67,64 +66,64 @@ _COMBINED_CONSUMER_CASES = [
     # today; local twin already clean. (dims, measures, order, filters, key)
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [DatasetMetric(expression=LOCAL_AGG, name="rt")],
+        [QueryMetric(metric=LOCAL_AGG, alias="rt")],
         None, None, "city", id="dual_role_measure-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [DatasetMetric(expression=CM_AGG, name="rt")],
+        [QueryMetric(metric=CM_AGG, alias="rt")],
         None, None, "customers.tier", id="dual_role_measure-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [DatasetMetric(expression="sum(amount)", name="m")],
+        [QueryMetric(metric="sum(amount)", alias="m")],
         [{"field": LOCAL_AGG, "direction": "asc"}], None, "city",
         id="raw_order_target-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [DatasetMetric(expression="sum(amount)", name="m")],
+        [QueryMetric(metric="sum(amount)", alias="m")],
         [{"field": CM_AGG, "direction": "asc"}], None, "customers.tier",
         id="raw_order_target-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [DatasetMetric(expression=f"{LOCAL_AGG} + 1", name="rt")],
+        [QueryMetric(metric=f"{LOCAL_AGG} + 1", alias="rt")],
         None, None, "city", id="composite_operand-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [DatasetMetric(expression=f"{CM_AGG} + 1", name="rt")],
+        [QueryMetric(metric=f"{CM_AGG} + 1", alias="rt")],
         None, None, "customers.tier", id="composite_operand-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [DatasetMetric(expression=f"coalesce({LOCAL_AGG}, 0)", name="rt")],
+        [QueryMetric(metric=f"coalesce({LOCAL_AGG}, 0)", alias="rt")],
         None, None, "city", id="scalar_call_operand-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [DatasetMetric(expression=f"coalesce({CM_AGG}, 0)", name="rt")],
+        [QueryMetric(metric=f"coalesce({CM_AGG}, 0)", alias="rt")],
         None, None, "customers.tier", id="scalar_call_operand-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [DatasetMetric(expression=f"rank({LOCAL_AGG}, direction='desc')", name="rt")],
+        [QueryMetric(metric=f"rank({LOCAL_AGG}, direction='desc')", alias="rt")],
         None, None, "city", id="transform_input-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [DatasetMetric(expression=f"rank({CM_AGG}, direction='desc')", name="rt")],
+        [QueryMetric(metric=f"rank({CM_AGG}, direction='desc')", alias="rt")],
         None, None, "customers.tier", id="transform_input-cross_model",
     ),
     # Already-clean today (no computed dimension): the aggregate is consumed only
     # as a measure, or only in a filter — a combined position, so it stays rejected.
     pytest.param(
-        ["status"], [DatasetMetric(expression=CM_AGG, name="rt")],
+        ["status"], [QueryMetric(metric=CM_AGG, alias="rt")],
         None, None, "customers.tier", id="measure_only-cross_model",
     ),
     pytest.param(
-        ["status"], [DatasetMetric(expression="sum(amount)", name="m")],
+        ["status"], [QueryMetric(metric="sum(amount)", alias="m")],
         None, [f"{CM_AGG} > 100"], "customers.tier", id="filter_only-cross_model",
     ),
 ]

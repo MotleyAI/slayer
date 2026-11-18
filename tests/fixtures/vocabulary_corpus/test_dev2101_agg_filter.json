@@ -22,8 +22,8 @@
     ],
     "metrics": [
      {
-      "expression": "last(balance, updated_at) FILTER (WHERE status = 'active')",
-      "name": "v"
+      "metric": "last(balance, updated_at) FILTER (WHERE status = 'active')",
+      "alias": "v"
      }
     ]
    }
@@ -49,8 +49,8 @@
     ],
     "metrics": [
      {
-      "expression": "first(balance, updated_at) FILTER (WHERE status = 'inactive')",
-      "name": "v"
+      "metric": "first(balance, updated_at) FILTER (WHERE status = 'inactive')",
+      "alias": "v"
      }
     ]
    }

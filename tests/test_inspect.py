@@ -967,21 +967,6 @@ class TestModelSkeletonHelpers:
         assert "Fields: _(none)_" in md
         assert "secret" not in md
 
-    def test_render_model_skeleton_unnamed_only_measures_render_none(
-        self,
-    ) -> None:
-
-        # SlayerModel rejects unnamed measures at validation, so model_copy is
-        # used to reach the defensive ``m.name is not None`` filter path.
-        base = SlayerDataset(
-            name="m", sql_table="m", data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
-            metrics=[DatasetMetric(name="tmp", expression="sum(id)")],
-        )
-        m = base.model_copy(update={"metrics": [DatasetMetric(expression="max(id)")]})
-        md = render_dataset_skeleton(dataset=m)
-        assert "Metrics: _(none)_" in md
-
     def test_render_model_skeleton_truncates_description(self) -> None:
 
         md = render_dataset_skeleton(dataset=_orders_like_dataset(), max_chars=4)
@@ -1010,21 +995,6 @@ class TestModelSkeletonHelpers:
             ],
         )
         assert dataset_skeleton_fields(dataset=m)["field_names"] == ["id", "visible"]
-
-    def test_model_skeleton_fields_excludes_unnamed_measures(self) -> None:
-
-        # model_copy bypasses the SlayerModel "every measure must be named"
-        # validator so we can prove the defensive filter in the helper.
-        base = SlayerDataset(
-            name="m", sql_table="m", data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
-            metrics=[DatasetMetric(name="named", expression="sum(id)")],
-        )
-        m = base.model_copy(update={"metrics": [
-            DatasetMetric(name="named", expression="sum(id)"),
-            DatasetMetric(expression="max(id)"),  # unnamed
-        ]})
-        assert dataset_skeleton_fields(dataset=m)["metric_names"] == ["named"]
 
     def test_model_skeleton_fields_joins_sorted_deduped(self) -> None:
 

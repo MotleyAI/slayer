@@ -343,7 +343,7 @@ def spine_td(*, granularity: str = "month", date_range: Any = JAN_JUN) -> dict[s
 
 
 def m(expression: str, name: str) -> dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 TWO_FACTS = [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r"), m("count(orders.id)", "n")]

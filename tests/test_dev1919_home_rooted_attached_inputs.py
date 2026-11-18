@@ -19,6 +19,7 @@ from slayer.engine.plan import plan_query
 from slayer.ir.planned import PlainProducerKernel, PlannedQuery, RegroupAttachPlan, TrailingWindowProducerKernel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import (
     bundle,
@@ -26,7 +27,7 @@ from tests._dev1840_fixtures import (
     gen,
     make_exec_engine as make_orders_engine,
 )
-from tests._dev1841_fixtures import DatasetMetric, associated_warnings, broadcast_warnings
+from tests._dev1841_fixtures import associated_warnings, broadcast_warnings
 from tests._dev1859_fixtures import assoc_wavg_region_weight, broadcast_wavg_global, customers_wsum_datasets
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
@@ -71,11 +72,11 @@ from tests._dev1919_fixtures import (
     windowed_param_by_month,
 )
 
-AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
+AMOUNT = QueryMetric(metric="sum(amount)", alias="a")
 
 
-def _m(expression: str) -> DatasetMetric:
-    return DatasetMetric(expression=expression, name="w")
+def _m(expression: str) -> QueryMetric:
+    return QueryMetric(metric=expression, alias="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

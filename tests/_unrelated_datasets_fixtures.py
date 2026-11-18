@@ -205,7 +205,7 @@ def wide_metrics() -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def m(expression: str, name: str) -> dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 RATIO = m("count(events.id) / count(*)", "events_per_customer")

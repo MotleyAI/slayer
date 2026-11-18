@@ -17,7 +17,6 @@ import pytest
 from slayer.core.query import QueryMetric
 
 from tests._dev1841_fixtures import (
-    DatasetMetric,
     assoc_q,
     associated_warnings,
     field_default_agg_datasets,
@@ -92,10 +91,10 @@ class TestAssociationColumnParameter:
     async def test_explicit_and_positional_spellings_identical(self, assoc_engine):
         """Requirement: a positional parameter folds onto the declared name —
         weighted_avg(spend) equals weighted_avg(weight=spend)."""
-        kw = DatasetMetric(
-            expression="weighted_avg(customers.spend, weight=customers.spend)", name="w")
-        pos = DatasetMetric(
-            expression="weighted_avg(customers.spend, customers.spend)", name="w")
+        kw = QueryMetric(
+            metric="weighted_avg(customers.spend, weight=customers.spend)", alias="w")
+        pos = QueryMetric(
+            metric="weighted_avg(customers.spend, customers.spend)", alias="w")
         kw_by = status_key(await assoc_engine.execute(
             assoc_q(dimensions=["status"], metrics=[kw])))
         pos_by = status_key(await assoc_engine.execute(

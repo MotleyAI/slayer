@@ -25,11 +25,11 @@
    },
    "new": {
     "to": "ghost",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -54,8 +54,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(salary)",
-      "name": "total"
+      "metric": "sum(salary)",
+      "alias": "total"
      }
     ]
    }
@@ -75,8 +75,8 @@
     "population": "hr_summary",
     "metrics": [
      {
-      "expression": "sum(total)",
-      "name": "grand"
+      "metric": "sum(total)",
+      "alias": "grand"
      }
     ]
    }
@@ -102,8 +102,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "amt"
+      "metric": "sum(amount)",
+      "alias": "amt"
      }
     ]
    }
@@ -135,8 +135,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "amt"
+      "metric": "sum(amount)",
+      "alias": "amt"
      }
     ],
     "order": [
@@ -162,8 +162,8 @@
     "population": "fin",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "amt"
+      "metric": "sum(amount)",
+      "alias": "amt"
      }
     ]
    }
@@ -188,7 +188,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -213,7 +213,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(gross)"
+      "metric": "sum(gross)"
      }
     ]
    }

@@ -20,14 +20,13 @@ from slayer.core.query import QueryMetric
 
 from tests._dev1838_fixtures import (
     BAND,
-    DatasetMetric,
     OrderItem,
     dev1838_datasets,
     month_td,
     q,
 )
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 class _LegacyCrossModelPlan(Protocol):

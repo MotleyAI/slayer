@@ -10,8 +10,7 @@ from typing import Callable, Dict, List
 
 import pytest
 
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev2046_fixtures import m, make_exec_engine, month_td, orders_q
 
@@ -29,7 +28,7 @@ async def engine(request):
         yield e
 
 
-def _metrics(source: str, *, suffix: str = "") -> List[DatasetMetric]:
+def _metrics(source: str, *, suffix: str = "") -> List[QueryMetric]:
     """Every aggregation in ``EMPTY`` over ``source`` plus the boolean ``sum`` / ``max``, named by aggregation."""
     measures = [m(f"{agg}({source}{suffix})", agg) for agg in EMPTY]
     return measures + [m(f"sum({source} > 15{suffix})", "bsum"), m(f"max({source} > 15{suffix})", "bmax")]

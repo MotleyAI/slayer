@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import open_connection
+from slayer.core.query import QueryMetric
 
 from tests._dev1739_fixtures import dev1739_datasets, _seed_duckdb, _seed_sqlite
 from tests._engine_helpers import seeded_exec_engine
@@ -348,7 +349,7 @@ def build_query(
     kwargs: dict[str, Any] = {"dimensions": LAW_DIM_FAMILY_DIMS[shape.dim_family]}
     if not dims_only:
         kwargs["metrics"] = [
-            DatasetMetric(expression=MEASURE_POOL[k], name=f"m_{k}")
+            QueryMetric(metric=MEASURE_POOL[k], alias=f"m_{k}")
             for k in shape.measure_keys if k != drop
         ]
     if shape.with_month:

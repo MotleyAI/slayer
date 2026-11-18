@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -46,14 +46,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "status",
-      "name": "status"
+      "field": "status",
+      "alias": "status"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(eu_amount)",
-      "name": "eu"
+      "metric": "sum(eu_amount)",
+      "alias": "eu"
      }
     ],
     "filter": [
@@ -85,14 +85,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "status",
-      "name": "status"
+      "field": "status",
+      "alias": "status"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "a"
+      "metric": "sum(amount)",
+      "alias": "a"
      }
     ],
     "filter": [

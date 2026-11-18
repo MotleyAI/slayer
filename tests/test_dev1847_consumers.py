@@ -187,9 +187,9 @@ class TestComputedDimensionConsumer:
     async def test_dimension_bands_a_reaggregated_value(self, exec_engine):
         """Deferred from stage 2: a computed dimension consumes a re-aggregated
         value (region avg of city totals) at ROW phase and bands by it."""
-        rlevel = {"expression": f"CASE WHEN avg({INNER_CR}, partition_by=region) "
+        rlevel = {"field": f"CASE WHEN avg({INNER_CR}, partition_by=region) "
                                 f"> 50 THEN 'high' ELSE 'low' END",
-                  "name": "rlevel"}
+                  "alias": "rlevel"}
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", rlevel],
             metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))

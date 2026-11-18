@@ -135,7 +135,7 @@ class TestExpressionGrainNonTransitivity:
         """Deferred from stage 2: an expression inner grain (spend_band)
         determines only itself — region is NOT attributed through it; each row
         carries its band's cell value and region broadcasts with a warning."""
-        band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+        band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         resp = await exec_engine.execute(sales_q(
             dimensions=[band, "region"],
             metrics=[QueryMetric(

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "warehouses",
-    "join_pairs": [
-     [
-      "warehouse_id",
-      "id"
-     ]
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -109,14 +109,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "amount",
-      "name": "amount"
+      "field": "amount",
+      "alias": "amount"
      }
     ],
     "metrics": [
      {
-      "expression": "percentile(amount, p=0.9)",
-      "name": "p90"
+      "metric": "percentile(amount, p=0.9)",
+      "alias": "p90"
      }
     ],
     "filter": [
@@ -148,14 +148,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "amount",
-      "name": "amount"
+      "field": "amount",
+      "alias": "amount"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(eu_amount)",
-      "name": "eu"
+      "metric": "sum(eu_amount)",
+      "alias": "eu"
      }
     ],
     "filter": [

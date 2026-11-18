@@ -59,7 +59,7 @@ def query(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str) -> Dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 # --------------------------------------------------------------------------- #

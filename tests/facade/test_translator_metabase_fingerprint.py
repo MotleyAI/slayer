@@ -28,7 +28,8 @@ import logging
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import QueryResult, TranslationError, translate
@@ -304,8 +305,8 @@ def test_aggregate_over_three_part_qualified_column() -> None:
     assert isinstance(result, QueryResult)
     aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["total_sum"]
-    def _formula(m: DatasetMetric | dict[str, str]) -> str:
-        return m["formula"] if isinstance(m, dict) else m.expression
+    def _formula(m: QueryMetric | dict[str, str]) -> str:
+        return m["metric"] if isinstance(m, dict) else m.metric
     measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
     assert "sum(total)" in measure_formulas
 
@@ -379,7 +380,7 @@ def test_metabase_gui_question_count_orders_corpus_20() -> None:
     # Underlying engine measure is `count(*)` (the canonical count-all form).
     # The measures list carries pydantic ModelMeasure-shaped entries; accept
     # both dict and attribute access.
-    def _formula(m: DatasetMetric | dict[str, str]) -> str:
-        return m["formula"] if isinstance(m, dict) else m.expression
+    def _formula(m: QueryMetric | dict[str, str]) -> str:
+        return m["metric"] if isinstance(m, dict) else m.metric
     measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
     assert "count(*)" in measure_formulas

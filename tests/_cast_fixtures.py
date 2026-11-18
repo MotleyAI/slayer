@@ -112,7 +112,7 @@ TRY_CAST_CASE_IDS = [f"{src}->{to}" for src, to, _ in TRY_CAST_TARGET_CASES]
 
 
 def try_cast_metrics() -> list[dict[str, str]]:
-    return [{"expression": f"max(TRY_CAST({src} AS {to}))", "name": f"c{i}"}
+    return [{"metric": f"max(TRY_CAST({src} AS {to}))", "alias": f"c{i}"}
             for i, (src, to, _) in enumerate(TRY_CAST_TARGET_CASES)]
 
 

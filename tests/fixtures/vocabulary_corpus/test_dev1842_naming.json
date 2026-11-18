@@ -2,12 +2,12 @@
  "source": "tests/test_dev1842_naming.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "customers.aov"
    },
    "new": {
-    "expression": "customers.aov"
+    "metric": "customers.aov"
    }
   },
   {

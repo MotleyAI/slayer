@@ -376,7 +376,7 @@ class TestStrictSubsetNesting:
                    for s in pq.aggregate_slots)
 
 
-BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+BAND = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
 
 
 # Constant weight per band: lo averages its 8 non-NULL amounts (90); Void's NULLs skip their weight.

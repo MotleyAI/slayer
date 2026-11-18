@@ -116,7 +116,7 @@ class TestBucketCalls:
     def test_every_built_in_unit(self, unit: str) -> None:
         query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
                                             "measures": [f"count_distinct({unit}(ordered_at))"]})
-        assert [m.expression for m in query.metrics or []] == [f"count_distinct(date_trunc('{unit}', ordered_at))"]
+        assert [m.metric for m in query.metrics or []] == [f"count_distinct(date_trunc('{unit}', ordered_at))"]
 
     def test_week_sunday(self) -> None:
         query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
@@ -284,7 +284,7 @@ class TestDeprecatedSpellings:
             "source_model": "orders", "measures": [{"formula": "customers.count(*)", "name": "n"}],
             "filters": ["status in ['ok', 'new']", "customer_id is None or status == 'ok'"]}))
         stage = (model.source_queries or [])[0]
-        assert [m.expression for m in stage.metrics or []] == ["count(customers.*)"]
+        assert [m.metric for m in stage.metrics or []] == ["count(customers.*)"]
         assert stage.filter == ["status in ('ok', 'new')", "customer_id IS NULL or status = 'ok'"]
 
     @pytest.mark.parametrize("backend", BACKENDS)

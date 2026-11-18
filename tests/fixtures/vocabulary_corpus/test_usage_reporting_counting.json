@@ -68,7 +68,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }

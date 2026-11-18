@@ -22,8 +22,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -82,12 +82,12 @@ class TestTypeAndFormatInheritance:
         """``customers.typed_aov`` declares ``type=DOUBLE``; the virtual column
         carries it."""
         col = await self._virtual_column(
-            DatasetMetric(expression="customers.typed_aov", name="ta"), "ta")
+            QueryMetric(metric="customers.typed_aov", alias="ta"), "ta")
         assert col.datatype == DataType.FLOAT
 
     async def test_query_level_type_overrides_saved_type(self) -> None:
         col = await self._virtual_column(
-            DatasetMetric(expression="customers.typed_aov", name="ti", datatype=DataType.INTEGER),
+            QueryMetric(metric="customers.typed_aov", alias="ti", datatype=DataType.INTEGER),
             "ti")
         assert col.datatype == DataType.INTEGER
 
@@ -95,16 +95,16 @@ class TestTypeAndFormatInheritance:
         """``customers.aov`` (no declared type) infers the SAME type as the
         hand-expanded ``sum(customers.spend) / count(customers.*)``."""
         dotted = await self._virtual_column(
-            DatasetMetric(expression="customers.aov", name="af"), "af")
+            QueryMetric(metric="customers.aov", alias="af"), "af")
         hand = await self._virtual_column(
-            DatasetMetric(expression="sum(customers.spend) / count(customers.*)", name="af"),
+            QueryMetric(metric="sum(customers.spend) / count(customers.*)", alias="af"),
             "af")
         assert dotted.datatype == hand.datatype
 
     async def test_format_matches_hand_expanded(self) -> None:
         dotted = await self._virtual_column(
-            DatasetMetric(expression="customers.aov", name="af"), "af")
+            QueryMetric(metric="customers.aov", alias="af"), "af")
         hand = await self._virtual_column(
-            DatasetMetric(expression="sum(customers.spend) / count(customers.*)", name="af"),
+            QueryMetric(metric="sum(customers.spend) / count(customers.*)", alias="af"),
             "af")
         assert dotted.format == hand.format

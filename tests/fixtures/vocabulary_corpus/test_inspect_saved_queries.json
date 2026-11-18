@@ -38,7 +38,7 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders",
+      "dataset": "orders",
       "metrics": [
        {
         "expression": "sum(amount * 2)",
@@ -49,8 +49,8 @@
     ],
     "metrics": [
      {
-      "expression": "dbl",
-      "name": "d"
+      "metric": "dbl",
+      "alias": "d"
      }
     ]
    }
@@ -70,8 +70,8 @@
     "population": "rollup",
     "metrics": [
      {
-      "expression": "sum(revenue)",
-      "name": "total"
+      "metric": "sum(revenue)",
+      "alias": "total"
      }
     ]
    }
@@ -91,8 +91,8 @@
     "population": "monthly_revenue",
     "metrics": [
      {
-      "expression": "sum(revenue)",
-      "name": "total"
+      "metric": "sum(revenue)",
+      "alias": "total"
      }
     ]
    }

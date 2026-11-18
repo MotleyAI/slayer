@@ -21,7 +21,6 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.core.query import QueryMetric
 
 from tests._dev1824_fixtures import (
-    DatasetMetric,
     REGION_LAST,
     SlayerQuery,
     gen,
@@ -68,8 +67,8 @@ def _assert_flat_and_unique(
 TWO_PRODUCERS = dict(
     dimensions=["region", "city"],
     metrics=[
-        DatasetMetric(expression="last(amount, partition_by=region)", name="a"),
-        DatasetMetric(expression="last(amount, partition_by=city)", name="b"),
+        QueryMetric(metric="last(amount, partition_by=region)", alias="a"),
+        QueryMetric(metric="last(amount, partition_by=city)", alias="b"),
     ],
 )
 

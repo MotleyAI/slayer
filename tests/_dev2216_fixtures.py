@@ -21,10 +21,9 @@ from slayer.core.models import (
     AggregationParam,
     DatasetField,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -140,8 +139,8 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def metric(expression: str, name: str) -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def metric(expression: str, name: str) -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def cells(resp: SlayerResponse, dim: str, value: str) -> dict:

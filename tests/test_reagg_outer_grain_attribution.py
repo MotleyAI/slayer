@@ -271,8 +271,8 @@ class TestOtherConsumerShapes:
         _clean(resp)
 
     async def test_computed_dimension(self, engine: SlayerQueryEngine):
-        size = {"expression": f"CASE WHEN {SUM_MAX_Q_BY_OUTER_ACCOUNT} > 100 "
-                              f"THEN 'big' ELSE 'small' END", "name": "size"}
+        size = {"field": f"CASE WHEN {SUM_MAX_Q_BY_OUTER_ACCOUNT} > 100 "
+                              f"THEN 'big' ELSE 'small' END", "alias": "size"}
         resp = await engine.execute(query(dimensions=["name", ACCOUNT, size]))
         n, a, s = (col(resp.columns, k) for k in ("name", "account_id", "size"))
         got = {(r[n], r[a]): r[s] for r in resp.data}

@@ -195,8 +195,8 @@ def _assert_query_filled(q: SlayerQuery) -> None:
     expr = next(d for d in dims if getattr(d, "name", None) == "rk")
     _assert_only_direction_added(before=raw["dimensions"][1]["expression"], after=getattr(expr, "expression"))
     measures = q.metrics or []
-    _assert_only_direction_added(before=raw["measures"][0], after=measures[0].expression)
-    _assert_only_direction_added(before=raw["measures"][1]["formula"], after=measures[1].expression)
+    _assert_only_direction_added(before=raw["measures"][0], after=measures[0].metric)
+    _assert_only_direction_added(before=raw["measures"][1]["formula"], after=measures[1].metric)
     assert q.filter == ["rank(sum(amount, partition_by=region), direction='desc') <= 3 and city <> 'rank('"]
     order = q.order or []
     assert order[0].raw_expression == "abs(rank(sum(amount), direction='desc'))"
@@ -239,7 +239,7 @@ class TestPayloadVersions:
     def test_fresh_or_current_query_untouched(self, version):
         v = mig.CURRENT_VERSIONS["SlayerQuery"] if version == "current" else None
         q = SlayerQuery.model_validate({**_query_dict(version=v)})
-        assert (q.metrics or [])[0].expression == "rank(sum(amount)) + 1"
+        assert (q.metrics or [])[0].metric == "rank(sum(amount)) + 1"
         assert q.filter == _query_dict(version=v)["filter"]
 
     @pytest.mark.parametrize("version", [None, "current"])
@@ -254,17 +254,17 @@ class TestPayloadVersions:
         data.pop("columns", None)
         data.pop("fields", None)
         [q] = SlayerDataset.model_validate(data).source_queries or []
-        assert (q.metrics or [])[0].expression == "rank(sum(amount)) + 1"
+        assert (q.metrics or [])[0].metric == "rank(sum(amount)) + 1"
 
     def test_fresh_memory_untouched(self):
         mem = Memory.model_validate({"id": "m1", "learning": "x", "query": _query_dict(version=None)})
         assert mem.query is not None
-        assert (mem.query.metrics or [])[0].expression == "rank(sum(amount)) + 1"
+        assert (mem.query.metrics or [])[0].metric == "rank(sum(amount)) + 1"
 
     @pytest.mark.parametrize("version", [3, 4])
     def test_explicit_old_query_is_filled(self, version):
         q = SlayerQuery.model_validate({"version": version, "source_model": "sales", "measures": [BARE]})
-        assert (q.metrics or [])[0].expression == FILLED
+        assert (q.metrics or [])[0].metric == FILLED
 
 
 # --------------------------------------------------------------------------- #
@@ -351,7 +351,7 @@ class TestStorageLoad:
         model = await storage.get_dataset("qb", data_source="test")
         assert model is not None
         [q] = model.source_queries or []
-        assert (q.metrics or [])[0].expression == FILLED
+        assert (q.metrics or [])[0].metric == FILLED
 
     async def test_unversioned_memory_and_query(self, seed: Seeder):
         storage = await seed(memories=[{
@@ -360,7 +360,7 @@ class TestStorageLoad:
         }])
         mem = await storage.get_memory("m1")
         assert mem.query is not None
-        assert (mem.query.metrics or [])[0].expression == FILLED
+        assert (mem.query.metrics or [])[0].metric == FILLED
         assert mem.query.filter == [f"{FILLED} <= 2"]
 
     async def test_versioned_legacy_memory(self, seed: Seeder):
@@ -370,7 +370,7 @@ class TestStorageLoad:
         }])
         mem = await storage.get_memory("m2")
         assert mem.query is not None
-        assert (mem.query.metrics or [])[0].expression == FILLED
+        assert (mem.query.metrics or [])[0].metric == FILLED
 
     async def test_untouched_calls_stay_byte_identical(self, seed: Seeder):
         formulas = ["rank(sum(amount), direction='asc')", "ntile(sum(amount), n=4)",

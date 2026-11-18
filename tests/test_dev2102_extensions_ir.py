@@ -25,7 +25,7 @@ CUSTOMERS_EXT = {
 ORDERS_EXT = {"dataset": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}
 WITH_FILTERS = {"dataset": "customers", "filters": ["credit > 5"]}
 MEASURES_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
-ONE_MEASURE = [{"expression": "count(*)"}]
+ONE_MEASURE = [{"metric": "count(*)"}]
 
 
 def _query(**raw: Any) -> SlayerQuery:

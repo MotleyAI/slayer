@@ -38,8 +38,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -63,8 +63,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -183,8 +183,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(widgets.x)",
-      "name": "wc"
+      "metric": "count(widgets.x)",
+      "alias": "wc"
      }
     ]
    }
@@ -252,8 +252,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }

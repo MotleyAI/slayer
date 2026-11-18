@@ -41,7 +41,7 @@ from slayer.sql.generator import generate_from_planned as render_planned
 
 from slayer.core.query import QueryMetric
 
-from tests._dev1800_fixtures import DatasetMetric, SlayerQuery, dev1800_datasets, signup_td
+from tests._dev1800_fixtures import SlayerQuery, dev1800_datasets, signup_td
 
 CM = "sum(customers.spend)"
 
@@ -121,27 +121,27 @@ def _transforms_read(key, by_key: dict) -> list:
 # measures, filter predicates and ORDER-BY keys, since every value the plan
 # carries (mask and order slots included) must be staged.
 _INVARIANT_QUERIES = [
-    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")]),
-    dict(metrics=[DatasetMetric(expression="change(sum(amount))", name="c")]),
-    dict(metrics=[DatasetMetric(expression="change(cumsum(sum(amount)))", name="n")]),
-    dict(metrics=[DatasetMetric(expression=CM, name="s")]),
-    dict(metrics=[DatasetMetric(expression=f"{CM} + sum(amount)", name="c")]),
-    dict(metrics=[DatasetMetric(expression=f"change({CM}) + sum(amount)", name="c")]),
-    dict(metrics=[DatasetMetric(expression="consecutive_periods(sum(amount) > 0)", name="p")]),
+    dict(metrics=[QueryMetric(metric="sum(amount)", alias="a")]),
+    dict(metrics=[QueryMetric(metric="change(sum(amount))", alias="c")]),
+    dict(metrics=[QueryMetric(metric="change(cumsum(sum(amount)))", alias="n")]),
+    dict(metrics=[QueryMetric(metric=CM, alias="s")]),
+    dict(metrics=[QueryMetric(metric=f"{CM} + sum(amount)", alias="c")]),
+    dict(metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")]),
+    dict(metrics=[QueryMetric(metric="consecutive_periods(sum(amount) > 0)", alias="p")]),
     # filter predicate over a transform composite (a mask slot must be staged)
-    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")],
+    dict(metrics=[QueryMetric(metric="sum(amount)", alias="a")],
          filter=[f"change({CM}) + sum(amount) > 0"]),
     # a row-typed and a measure-typed mask together
-    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")],
+    dict(metrics=[QueryMetric(metric="sum(amount)", alias="a")],
          filter=["amount > 5", "sum(amount) > 50"]),
     # ORDER-BY key over a transform composite (an order slot must be staged)
-    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")],
+    dict(metrics=[QueryMetric(metric="sum(amount)", alias="a")],
          order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}]),
     # the alternation class (D10): a transform over a composite over a transform,
     # beside the projected composite — the dev1859 stall shape
-    dict(metrics=[DatasetMetric(expression="change(sum(amount))", name="ch")],
+    dict(metrics=[QueryMetric(metric="change(sum(amount))", alias="ch")],
          filter=["last(change(sum(amount))) < 0"]),
-    dict(metrics=[DatasetMetric(expression="last(change(cumsum(sum(amount))))", name="t")]),
+    dict(metrics=[QueryMetric(metric="last(change(cumsum(sum(amount))))", alias="t")]),
 ]
 
 
@@ -266,7 +266,7 @@ class TestConcreteStages:
 # Transparent-composite levels (D10/D11) — only transforms stratify.
 # --------------------------------------------------------------------------- #
 _LOCAL_STALL: dict = dict(
-    metrics=[DatasetMetric(expression="change(sum(amount))", name="ch")],
+    metrics=[QueryMetric(metric="change(sum(amount))", alias="ch")],
     filter=["last(change(sum(amount))) < 0"],
 )
 

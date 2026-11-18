@@ -17,7 +17,6 @@ from slayer.core.query import QueryMetric, TimeDimension
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
-    DatasetMetric,
     SPEND_1Y_BY_SIGNUP_MONTH,
     SPEND_BY_TIER,
     SPEND_FIRST_BY_TIER,
@@ -38,7 +37,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 def signup_month_td() -> list[TimeDimension]:

@@ -145,7 +145,7 @@ class TestSameNameCollisionGuardLive:
                 {"metric": "cumsum(sum(amount))", "alias": "dup"},
             ],
             time_dimensions=[
-                {"field": {"name": "created_at"}, "granularity": "month"},
+                {"field": "created_at", "granularity": "month"},
             ],
         )
         model = self._orders()

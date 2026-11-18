@@ -15,7 +15,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount_paid)"
+      "metric": "sum(amount_paid)"
      }
     ]
    }
@@ -34,7 +34,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount_paid)"
+      "metric": "sum(amount_paid)"
      }
     ]
    }
@@ -53,18 +53,18 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount_paid)"
+      "metric": "sum(amount_paid)"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount_paid)"
    },
    "new": {
-    "expression": "sum(amount_paid)"
+    "metric": "sum(amount_paid)"
    }
   }
  ],

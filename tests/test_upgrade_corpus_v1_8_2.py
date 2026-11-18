@@ -64,4 +64,4 @@ async def test_the_store_holds_the_list_column_shapes(backend: str, tmp_path, mo
     assert "contains_any(" in filters, filters
     memory = await storage.get_memory("m_assignments")
     assert memory.query is not None
-    assert "collect(assignments.id)" in [m.expression for m in memory.query.metrics or []]
+    assert "collect(assignments.id)" in [m.metric for m in memory.query.metrics or []]

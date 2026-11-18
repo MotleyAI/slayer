@@ -16,11 +16,10 @@ from slayer.ir.planned import (
     RegroupAttachPlan,
     regroup_producer_identity,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1832_fixtures import (
-    DatasetMetric,
     dev1832_datasets,
     month_td,
     monthly_q,
@@ -41,7 +40,7 @@ def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
 def _plan(*formulas: str) -> PlannedQuery:
     return plan_query(query=monthly_q(
         dimensions=["region"], time_dimensions=month_td(),
-        metrics=[DatasetMetric(expression=f, name=f"t{i}") for i, f in enumerate(formulas)]),
+        metrics=[QueryMetric(metric=f, alias=f"t{i}") for i, f in enumerate(formulas)]),
         bundle=_bundle())
 
 

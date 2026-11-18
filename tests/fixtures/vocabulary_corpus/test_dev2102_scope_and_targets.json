@@ -55,8 +55,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "spent"
+      "metric": "sum(amount)",
+      "alias": "spent"
      }
     ]
    }
@@ -192,8 +192,8 @@
     ],
     "metrics": [
      {
-      "expression": "customers.credit_total",
-      "name": "a"
+      "metric": "customers.credit_total",
+      "alias": "a"
      }
     ]
    }

@@ -7,7 +7,6 @@ import re
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, SlayerDataset
-from slayer.core.query import FieldRef
 from slayer.live_schema.ingestion import _updated_detail_lines
 from slayer.live_schema.schema_drift import DatasetAddition
 from slayer.facade.catalog import FacadeCatalog, FacadeTable, build_catalog
@@ -108,7 +107,7 @@ def _customers() -> SlayerDataset:
 
 
 def _dimension_names(result: QueryResult) -> list[str]:
-    return [d.full_name if isinstance(d, FieldRef) else repr(d) for d in result.query.dimensions or []]
+    return [d.ref.full_name if d.ref is not None else repr(d) for d in result.query.dimensions or []]
 
 
 class TestTranslatorMatchesTheDeclaredEdge:

@@ -32,15 +32,15 @@ from tests._dev1847_fixtures import (
 from tests.test_filtered_local_isolation import _s5_bundle
 
 LOCAL_BAND = {
-    "expression": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
-    "name": "band",
+    "field": "CASE WHEN sum(amount, partition_by=channel) > 30 THEN 1 ELSE 0 END",
+    "alias": "band",
 }
 _X = "sum(amount, partition_by=[region, ordered_at])"
 REAGG_STANDALONE = f"min({_X}, partition_by=region)"
 HANDWRITTEN_MIN = f"sum(amount * {REAGG_STANDALONE})"
 REAGG_BAND = {
-    "expression": f"CASE WHEN {REAGG_STANDALONE} > 5 THEN 'hi' ELSE 'lo' END",
-    "name": "rb",
+    "field": f"CASE WHEN {REAGG_STANDALONE} > 5 THEN 'hi' ELSE 'lo' END",
+    "alias": "rb",
 }
 
 
@@ -324,7 +324,7 @@ class TestDeletedSymbols:
 
 
 _R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
-_RLEVEL = {"expression": f"CASE WHEN {_R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
+_RLEVEL = {"field": f"CASE WHEN {_R} > 50 THEN 'hi' ELSE 'lo' END", "alias": "rlevel"}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -371,8 +371,8 @@ class TestUnderReaggregationPartitionKeys:
     def test_computed_dimension_key_keeps_its_row_role(self):
         """A computed dimension named in a re-aggregation's ``partition_by`` yields no
         combined twin for its own partitioned aggregate."""
-        band = {"expression": "CASE WHEN sum(amount, partition_by=product) > 100 "
-                              "THEN 'big' ELSE 'small' END", "name": "pband"}
+        band = {"field": "CASE WHEN sum(amount, partition_by=product) > 100 "
+                              "THEN 'big' ELSE 'small' END", "alias": "pband"}
         formula = "avg(sum(amount, partition_by=[city, region, pband]), partition_by=pband)"
         ds = _discover(sales_q(dimensions=[band],
                                metrics=[QueryMetric(metric=formula, alias="r")]),

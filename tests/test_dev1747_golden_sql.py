@@ -57,7 +57,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    rev = [{"expression": "sum(amount)", "name": "rev"}]
+    rev = [{"metric": "sum(amount)", "alias": "rev"}]
     return {
         # --- the five ORDER BY render paths ---
         "order/host_base_alias": _q(

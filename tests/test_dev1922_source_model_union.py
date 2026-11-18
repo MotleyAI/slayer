@@ -45,7 +45,7 @@ INLINE_MODEL = {
     "fields": [{"name": "x", "sql": "x", "datatype": "Float"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
-ONE_MEASURE = [{"expression": "sum(amount)"}]
+ONE_MEASURE = [{"metric": "sum(amount)"}]
 
 
 def _leaf_types(tp) -> set:
@@ -102,7 +102,7 @@ class TestSchema:
     def test_extension_definition_is_closed_and_typed(self) -> None:
         ext = SlayerQuery.model_json_schema()["$defs"]["DatasetExtension"]
         assert ext["additionalProperties"] is False
-        assert ext["required"] == ["source_name"]
+        assert ext["required"] == ["dataset"]
         assert ext["properties"]["metrics"]["anyOf"][0]["items"] == {"$ref": "#/$defs/DatasetMetric"}
         assert ext["properties"]["relationships"]["anyOf"][0]["items"] == {"$ref": "#/$defs/DatasetRelationship"}
 
@@ -203,7 +203,7 @@ class TestTypedAtConstruction:
         assert q.population == "orders"
         (sm,) = q.extensions or []
         assert isinstance(sm, DatasetExtension)
-        assert sm.source_name == "orders"
+        assert sm.dataset == "orders"
         assert sm.relationships
         assert sm.metrics
         assert isinstance(sm.relationships[0], DatasetRelationship)

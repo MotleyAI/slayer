@@ -145,7 +145,7 @@ async def test_expression_time_dimension_auto_name_keeps_its_text(engine: Slayer
 # Every root kind
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(("root", "qualifier"), [
-    ({"population": "orders", "extensions": [{"source_name": "orders"}]}, "orders"),
+    ({"population": "orders", "extensions": [{"dataset": "orders"}]}, "orders"),
     ({"population": "qb"}, "qb"),
 ], ids=["extension", "query-backed"])
 async def test_every_root_kind_takes_its_own_name(engine: SlayerQueryEngine, root: dict[str, Any], qualifier: str) -> None:
@@ -281,7 +281,7 @@ def _tds(*entries: Any, extensions: Any = None) -> SlayerQuery:
     return SlayerQuery.model_validate({**root, "time_dimensions": list(entries)})
 
 
-@pytest.mark.parametrize("extensions", [None, [{"source_name": "orders"}]], ids=["model", "extension"])
+@pytest.mark.parametrize("extensions", [None, [{"dataset": "orders"}]], ids=["model", "extension"])
 def test_a_root_qualified_duplicate_dedupes(extensions: Any) -> None:
     query = _tds("date_trunc('month', created_at)", "date_trunc('month', orders.created_at)", extensions=extensions)
     assert [(td.field, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "month")]
@@ -338,11 +338,11 @@ async def test_a_root_qualified_entry_is_the_saved_entry(refine: SlayerQueryEngi
 
 
 @pytest.mark.parametrize("measures", [
-    [{"expression": "revenue", "name": "revenue"}, "count(*)"],
-    [{"expression": "revenue"}, "count(*)"],
+    [{"metric": "revenue", "alias": "revenue"}, "count(*)"],
+    [{"metric": "revenue"}, "count(*)"],
     ["revenue", "count(*)"],
     ["orders.revenue", "count(*)"],
-    [{"expression": "orders.revenue", "name": "revenue"}, "count(*)"],
+    [{"metric": "orders.revenue", "alias": "revenue"}, "count(*)"],
 ], ids=["named", "unnamed", "shorthand", "root-qualified", "root-qualified-named"])
 async def test_restating_a_saved_measure_by_name(refine: SlayerQueryEngine, measures: list) -> None:
     refined = await refine.execute("monthly_revenue", refine={"metrics": measures})

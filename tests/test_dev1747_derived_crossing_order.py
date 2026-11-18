@@ -30,7 +30,7 @@ import os
 import tempfile
 
 from slayer.core.errors import UnresolvableOrderFieldError
-from slayer.core.query import FieldRef, OrderItem, QueryDimension, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
@@ -55,7 +55,7 @@ def _squash(sql: str) -> str:
     lines in one context and inline in another; that is not the subject."""
     return " ".join(sql.split())
 
-_MEASURE = [{"expression": "sum(amount)", "name": "rev"}]
+_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
@@ -78,7 +78,7 @@ def _grouped(direction: str, column: str = "cust_region") -> SlayerQuery:
         population="orders",
         dimensions=[QueryDimension(field="status")],
         metrics=_MEASURE,
-        order=[OrderItem(field=FieldRef(name=column), direction=direction)],
+        order=[OrderItem(field=column, direction=direction)],
     )
 
 
@@ -89,7 +89,7 @@ def _ungrouped(direction: str, column: str = "cust_region") -> SlayerQuery:
         population="orders",
         dimensions=[QueryDimension(field="status")],
         distinct_dimension_values=False,
-        order=[OrderItem(field=FieldRef(name=column), direction=direction)],
+        order=[OrderItem(field=column, direction=direction)],
     )
 
 

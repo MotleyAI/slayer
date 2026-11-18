@@ -16,14 +16,16 @@ from pydantic import BaseModel
 
 from slayer.core.deprecation import DeprecatedInputFutureWarning
 from slayer.core.models import Aggregation, DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
-from slayer.core.query import DatasetExtension, FieldRef, OrderItem, QueryRefinement, SlayerQuery, TimeDimension
+from slayer.core.query import (
+    DatasetExtension, OrderItem, QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension,
+)
 
 CORPUS = Path(__file__).parent / "fixtures" / "vocabulary_corpus"
 INDEX = json.loads((CORPUS / "_index.json").read_text())["files"]
 KINDS: dict[str, type[BaseModel]] = {
     "dataset": SlayerDataset, "field": DatasetField, "metric": DatasetMetric, "relationship": DatasetRelationship,
     "aggregation": Aggregation, "query": SlayerQuery, "refinement": QueryRefinement, "time_dimension": TimeDimension,
-    "order_item": OrderItem, "field_ref": FieldRef, "extension": DatasetExtension,
+    "order_item": OrderItem, "extension": DatasetExtension, "query_metric": QueryMetric, "dimension": QueryDimension,
 }
 
 

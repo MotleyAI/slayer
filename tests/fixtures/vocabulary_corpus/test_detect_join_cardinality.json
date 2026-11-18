@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "cart_lines",
-    "join_pairs": [
-     [
-      "id",
-      "cart_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "cart_id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "right_m",
-    "join_pairs": [
-     [
-      "k",
-      "k"
-     ]
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
     ]
    }
   },
@@ -98,11 +98,11 @@
    },
    "new": {
     "to": "empty_tgt",
-    "join_pairs": [
-     [
-      "k",
-      "k"
-     ]
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
     ]
    }
   },
@@ -119,11 +119,11 @@
    },
    "new": {
     "to": "empty_tgt",
-    "join_pairs": [
-     [
-      "k",
-      "k"
-     ]
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
     ]
    }
   },
@@ -140,11 +140,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "k",
-      "id"
-     ]
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -165,15 +165,13 @@
    },
    "new": {
     "to": "ck_parent",
-    "join_pairs": [
-     [
-      "a",
-      "a"
-     ],
-     [
-      "b",
-      "b"
-     ]
+    "from_columns": [
+     "a",
+     "b"
+    ],
+    "to_columns": [
+     "a",
+     "b"
     ]
    }
   },
@@ -190,11 +188,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "ck",
-      "id"
-     ]
+    "from_columns": [
+     "ck"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -211,11 +209,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -232,11 +230,11 @@
    },
    "new": {
     "to": "carts",
-    "join_pairs": [
-     [
-      "cart_id",
-      "id"
-     ]
+    "from_columns": [
+     "cart_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -253,11 +251,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "a",
-      "id"
-     ]
+    "from_columns": [
+     "a"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -274,11 +272,11 @@
    },
    "new": {
     "to": "empty_tgt",
-    "join_pairs": [
-     [
-      "k",
-      "k"
-     ]
+    "from_columns": [
+     "k"
+    ],
+    "to_columns": [
+     "k"
     ]
    }
   }

@@ -25,7 +25,7 @@ import slayer.sql.dialects as dialects_registry
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import DatasetExtension, DatasetMetric, FieldRef, QueryDimension, QueryMetric, SlayerQuery
+from slayer.core.query import DatasetExtension, DatasetMetric, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql._identifier_fit import SqlLexis, fit_identifier, substitute_quoted
 from slayer.sql.dialects import get_dialect
@@ -444,7 +444,7 @@ class TestUserSurfacesExempt:
         ])
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name=LONG_COL_NAME)],
+            dimensions=[QueryDimension(field=LONG_COL_NAME)],
             metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         sql = await _dry_sql([model], query)

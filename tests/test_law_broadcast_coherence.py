@@ -11,7 +11,6 @@ from slayer.core.query import QueryMetric
 
 from tests._law_harness import (
     OPERANDS,
-    DatasetMetric,
     canon,
     make_law_engine,
     month_key,
@@ -117,7 +116,7 @@ async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):
     """Coercions compose: one region-grain operand read at (region),
     (region, city), and (region, city, month) yields the same per-region value
     all along the chain."""
-    rt = DatasetMetric(expression=OPERANDS["part_region"], name="rt")
+    rt = QueryMetric(metric=OPERANDS["part_region"], alias="rt")
     per_region: list[dict] = []
     for kwargs in (
         {"dimensions": ["region"]},

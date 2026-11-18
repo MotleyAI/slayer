@@ -26,7 +26,6 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1748_fixtures import dev1748_bundle
 from tests._dev1838_fixtures import (
     BAND,
-    DatasetMetric,
     dev1838_datasets,
     month_td,
     q,
@@ -34,7 +33,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 def _bundle() -> ResolvedSourceBundle:

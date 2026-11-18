@@ -57,12 +57,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(total)"
    },
    "new": {
-    "expression": "sum(total)"
+    "metric": "sum(total)"
    }
   },
   {

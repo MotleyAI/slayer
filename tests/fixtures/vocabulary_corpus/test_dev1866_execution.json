@@ -20,8 +20,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -47,8 +47,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -75,8 +75,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "filter": [
@@ -108,8 +108,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "filter": [
@@ -155,8 +155,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -195,8 +195,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }

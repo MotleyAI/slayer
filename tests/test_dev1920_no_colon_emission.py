@@ -127,7 +127,7 @@ class TestFacade:
     def test_aggregates_and_having(self) -> None:
         result = _translated(
             "SELECT status, COUNT(*), SUM(revenue) FROM orders GROUP BY status HAVING SUM(revenue) > 1000")
-        assert [m.expression for m in result.query.metrics or []] == ["count(*)", "sum(revenue)"]
+        assert [m.metric for m in result.query.metrics or []] == ["count(*)", "sum(revenue)"]
         assert result.query.filter == ["sum(revenue) > 1000"]
         assert dict(result.field_name_mapping) == {
             "orders.status": "status", "orders.row_count": "row_count", "orders.revenue_sum": "revenue_sum"}
@@ -140,7 +140,7 @@ class TestFacade:
         ("SELECT revenue_sum FROM orders", "sum(revenue)"),
     ])
     def test_projected_metric(self, sql: str, formula: str) -> None:
-        assert [m.expression for m in _translated(sql).query.metrics or []] == [formula]
+        assert [m.metric for m in _translated(sql).query.metrics or []] == [formula]
 
     @pytest.mark.parametrize(("sql", "filters"), [
         ("SELECT status FROM orders WHERE revenue_sum > 1000", ["sum(revenue) > 1000"]),
@@ -153,7 +153,7 @@ class TestFacade:
     def test_order_by_aggregate(self) -> None:
         result = _translated("SELECT status, SUM(revenue) FROM orders GROUP BY status ORDER BY SUM(revenue) DESC")
         assert [(o.ref.name, o.raw_expression) for o in result.query.order or []] == [("revenue_sum", None)]
-        assert [m.expression for m in result.query.metrics or []] == ["sum(revenue)"]
+        assert [m.metric for m in result.query.metrics or []] == ["sum(revenue)"]
 
     @pytest.mark.parametrize("configured", [True, False], ids=["configured-join", "dynamic-join"])
     @pytest.mark.parametrize(("metric", "filter_"), [

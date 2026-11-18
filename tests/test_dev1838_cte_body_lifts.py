@@ -34,7 +34,6 @@ from tests._dev1838_fixtures import (
     BAND_TIER_ORDER,
     BAND_WMAX_BY_REGION,
     LASTDIM_GOLD,
-    DatasetMetric,
     OrderItem,
     SPEND_LAST_BAND,
     SlayerQuery,
@@ -47,7 +46,7 @@ from tests._dev1838_fixtures import (
 )
 from tests.test_dev1837_guards import ARM_COMBINED_CTE_BODY, ARM_ROW_CTE_BODY
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 #: The generator's re-rooted first/last CTE-body residual (generator.py) —
 #: the third guard the lift removes.

@@ -10,8 +10,6 @@ import pytest
 from slayer.core.errors import SlayerError, TimeSpineError, VariableError
 from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.core.query import (
-    ORDER_PLACEHOLDER_NAMES,
-    ComputedDimension,
     OrderItem,
     SlayerQuery,
     extract_placeholder_names,
@@ -312,20 +310,20 @@ def test_saved_measure_formula_demand(formula: str, required: list[str]) -> None
 # --------------------------------------------------------------------------- #
 # Parity pins: order coercion
 # --------------------------------------------------------------------------- #
-ORDER_PINS: dict[str, tuple[Optional[str], str, Optional[str]]] = {
-    "status": (None, "status", None),
-    "customers.name": ("customers", "name", None),
-    "orders.status": ("orders", "status", None),
-    "sum(revenue)": (None, "_funcstyle_pending", "sum(revenue)"),
-    "my_agg(price)": (None, "_funcstyle_pending", "my_agg(price)"),
-    "month(created_at)": (None, "_funcstyle_pending", "month(created_at)"),
-    "count(*)": (None, "_funcstyle_pending", "count(*)"),
-    "sum(orders.amount)": (None, "_funcstyle_pending", "sum(orders.amount)"),
-    'sum("amount")': (None, "_funcstyle_pending", 'sum("amount")'),
-    "change(sum(revenue))": (None, "_funcstyle_pending", "change(sum(revenue))"),
-    "rev / cnt": (None, "_expr_pending", "rev / cnt"),
-    "amount::int": (None, "_expr_pending", "amount::int"),
-    "orders.amount + 1": (None, "_expr_pending", "orders.amount + 1"),
+ORDER_PINS: dict[str, tuple[Optional[str], Optional[str]]] = {
+    "status": ("status", None),
+    "customers.name": ("customers.name", None),
+    "orders.status": ("orders.status", None),
+    "sum(revenue)": (None, "sum(revenue)"),
+    "my_agg(price)": (None, "my_agg(price)"),
+    "month(created_at)": (None, "month(created_at)"),
+    "count(*)": (None, "count(*)"),
+    "sum(orders.amount)": (None, "sum(orders.amount)"),
+    'sum("amount")': (None, 'sum("amount")'),
+    "change(sum(revenue))": (None, "change(sum(revenue))"),
+    "rev / cnt": (None, "rev / cnt"),
+    "amount::int": (None, "amount::int"),
+    "orders.amount + 1": (None, "orders.amount + 1"),
 }
 
 ORDER_LITERALS = [
@@ -337,15 +335,14 @@ ORDER_LITERALS = [
 @pytest.mark.parametrize("entry", sorted(ORDER_PINS))
 def test_order_coercion_pin(entry: str) -> None:
     column = OrderItem.model_validate({"field": entry})
-    coerced = (column.field.dataset, column.field.name, column.raw_expression)
+    coerced = (column.ref.full_name if column.ref else None, column.raw_expression)
     assert coerced == ORDER_PINS[entry]
 
 
 @pytest.mark.parametrize("entry", ORDER_LITERALS)
 def test_an_order_literal_is_one_whole_expression(entry: str) -> None:
     column = OrderItem.model_validate({"field": entry})
-    assert column.field.dataset is None
-    assert column.field.name in ORDER_PLACEHOLDER_NAMES
+    assert column.ref is None
     assert column.raw_expression == entry
 
 
@@ -403,7 +400,7 @@ def test_functional_time_dimension_refusal_pin(entry: str) -> None:
 def test_a_non_granularity_call_stays_a_dimension() -> None:
     query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(status)"]})
     assert not query.time_dimensions
-    assert [d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)] == ["upper(status)"]
+    assert [d.field for d in query.dimensions or [] if d.ref is None] == ["upper(status)"]
 
 
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:

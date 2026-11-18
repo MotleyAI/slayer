@@ -36,7 +36,7 @@ def _ordered_query() -> SlayerQuery:
         "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         "dimensions": ["status"],
         "time_dimensions": [TimeDimension(field="ordered_at", granularity="month")],
-        "order": [OrderItem.model_validate({"field": {"name": "status"}, "direction": "desc"})],
+        "order": [OrderItem.model_validate({"field": "status", "direction": "desc"})],
     })
 
 

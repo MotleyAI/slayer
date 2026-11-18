@@ -200,8 +200,8 @@
    "new": {
     "dimensions": [
      {
-      "expression": "amount * {? {k} ?}",
-      "name": "d"
+      "field": "amount * {? {k} ?}",
+      "alias": "d"
      }
     ],
     "metrics": [

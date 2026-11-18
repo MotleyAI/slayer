@@ -27,8 +27,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "revenue"
+      "metric": "count(*)",
+      "alias": "revenue"
      }
     ]
    }

@@ -20,7 +20,7 @@
     "population": "order_facts",
     "metrics": [
      {
-      "expression": "count"
+      "metric": "count"
      }
     ],
     "variables": {

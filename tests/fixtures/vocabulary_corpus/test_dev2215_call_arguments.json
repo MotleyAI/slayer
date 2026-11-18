@@ -14,8 +14,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "AGG(amount)",
-      "name": "v"
+      "metric": "AGG(amount)",
+      "alias": "v"
      }
     ]
    }
@@ -33,8 +33,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "agg(amount) + 1",
-      "name": "v"
+      "metric": "agg(amount) + 1",
+      "alias": "v"
      }
     ]
    }
@@ -55,8 +55,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "filter": [
@@ -83,14 +83,14 @@
    "new": {
     "dimensions": [
      {
-      "expression": "agg(amount, partition_by=status)",
-      "name": "a"
+      "field": "agg(amount, partition_by=status)",
+      "alias": "a"
      }
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }

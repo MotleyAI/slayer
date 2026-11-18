@@ -2,21 +2,21 @@
  "source": "tests/test_dev1829_guards.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount, window='90d', partition_by=region)"
    },
    "new": {
-    "expression": "sum(amount, window='90d', partition_by=region)"
+    "metric": "sum(amount, window='90d', partition_by=region)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "cumsum(sum(amount, partition_by=region))"
    },
    "new": {
-    "expression": "cumsum(sum(amount, partition_by=region))"
+    "metric": "cumsum(sum(amount, partition_by=region))"
    }
   },
   {
@@ -42,21 +42,21 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount, partition_by=city)"
    },
    "new": {
-    "expression": "sum(amount, partition_by=city)"
+    "metric": "sum(amount, partition_by=city)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.spend, partition_by=region)"
    },
    "new": {
-    "expression": "sum(customers.spend, partition_by=region)"
+    "metric": "sum(customers.spend, partition_by=region)"
    }
   },
   {

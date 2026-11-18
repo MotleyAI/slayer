@@ -24,7 +24,6 @@ from slayer.core.models import (
 )
 from slayer.core.query import (
     DatasetExtension,
-    FieldRef,
     OrderItem,
     QueryDimension,
     QueryMetric,
@@ -1778,7 +1777,7 @@ def _b_a_unique_field_query(hop1: str, hop2: str) -> SlayerQuery:
     # "unique_b_field" only exists on model b, so translation can't short-circuit.
     return SlayerQuery(
         population="a",
-        dimensions=[FieldRef(name=f"{hop1}.{hop2}.unique_b_field")],
+        dimensions=[QueryDimension(field=f"{hop1}.{hop2}.unique_b_field")],
         metrics=[QueryMetric(metric="count(*)")],
     )
 

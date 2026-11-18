@@ -266,8 +266,8 @@ async def test_time_spine_returns_every_bucket_of_the_range(engine: SlayerQueryE
 
 async def test_several_child_models_each_over_their_own_rows(child_engine: SlayerQueryEngine) -> None:
     metrics = [
-        {"expression": "sum(orders.amount)", "name": "ordered"},
-        {"expression": fx.SECOND_CHILD, "name": "returned"},
+        {"metric": "sum(orders.amount)", "alias": "ordered"},
+        {"metric": fx.SECOND_CHILD, "alias": "returned"},
     ]
     resp = await _run(child_engine, {"population": "customers", "dimensions": ["name"], "metrics": metrics})
     assert {
@@ -278,7 +278,7 @@ async def test_several_child_models_each_over_their_own_rows(child_engine: Slaye
 
 
 async def test_parentless_child_rows_land_in_the_null_parent_row(child_engine: SlayerQueryEngine) -> None:
-    metrics = [{"expression": "sum(orders.amount)", "name": "ordered"}]
+    metrics = [{"metric": "sum(orders.amount)", "alias": "ordered"}]
     resp = await _run(child_engine, {"population": "customers", "dimensions": ["regions.name"], "metrics": metrics})
     assert {fx.value(r, ".name"): fx.value(r, ".ordered") for r in resp.data} == {
         "North": 65, "South": 40, None: 63,
@@ -290,7 +290,7 @@ async def test_parentless_child_rows_land_in_the_null_parent_row(child_engine: S
 async def test_parentless_child_rows_without_a_null_population_row(
     child_engine_all_regioned: SlayerQueryEngine,
 ) -> None:
-    metrics = [{"expression": "sum(orders.amount)", "name": "ordered"}]
+    metrics = [{"metric": "sum(orders.amount)", "alias": "ordered"}]
     resp = await _run(child_engine_all_regioned, {
         "population": "customers", "dimensions": ["regions.name"], "metrics": metrics,
     })

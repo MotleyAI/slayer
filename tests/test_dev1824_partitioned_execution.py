@@ -35,7 +35,6 @@ from tests._dev1824_fixtures import (
     BAND35_OF,
     CITY_TOTAL,
     GRAND_TOTAL,
-    DatasetMetric,
     RCM_GROUPS,
     RC_GROUPS,
     REGION_FIRST,
@@ -75,7 +74,7 @@ class TestWindowPlusPartition:
         )
         with_w = base.model_copy(update={"metrics": [
             *(base.metrics or []),
-            DatasetMetric(expression="sum(amount, window='90d', partition_by=region)", name="w"),
+            QueryMetric(metric="sum(amount, window='90d', partition_by=region)", alias="w"),
         ]})
         plain = _rcm_rows(await exec_engine.execute(base))
         rows = _rcm_rows(await exec_engine.execute(with_w))
@@ -383,7 +382,7 @@ class TestCoexistenceAcrossFamilies:
     async def _assert_solo_equality(self, exec_engine, *, dims, tds, metrics) -> None:
         """Each measure's combined-query values equal its solo-query values."""
         def _mk(pairs):
-            return [DatasetMetric(expression=f, name=n) for f, n in pairs]
+            return [QueryMetric(metric=f, alias=n) for f, n in pairs]
 
         def _index(resp):
             keys = [f"orders.{d}" for d in dims]
@@ -446,7 +445,7 @@ class TestCoexistenceAcrossFamilies:
 class TestCardinalityNeutral:
     @pytest.mark.parametrize("dims,tds", [
         (["region", "city"], None),
-        (["region", {"expression": BAND35, "name": "band"}], None),
+        (["region", {"field": BAND35, "alias": "band"}], None),
         (["region", "city"], "month"),
     ])
     async def test_adding_partitioned_measure_is_neutral(
@@ -459,7 +458,7 @@ class TestCardinalityNeutral:
         )
         with_rt = base.model_copy(update={"metrics": [
             *(base.metrics or []),
-            DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+            QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
         ]})
         plain = await exec_engine.execute(base)
         extended = await exec_engine.execute(with_rt)

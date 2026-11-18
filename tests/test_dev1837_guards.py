@@ -34,7 +34,7 @@ from tests._dev1837_fixtures import (
     q,
 )
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 
 #: The lifted windowed/ranked arm — kept only as the no-residue scan needle
 #: (tests/test_dev1835_guards.py imports it).

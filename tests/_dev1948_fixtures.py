@@ -268,8 +268,8 @@ def shared_producer_list() -> List[SlayerQuery]:
 
 def pop_check_list() -> List[SlayerQuery]:
     """``s1`` renders producer P, ``s2`` producer Q, ``s3`` reuses both."""
-    p = {"expression": "sum(amount, partition_by=[status])", "name": "st"}
-    q = {"expression": "sum(amount, partition_by=[customer_id])", "name": "ct"}
+    p = {"metric": "sum(amount, partition_by=[status])", "alias": "st"}
+    q = {"metric": "sum(amount, partition_by=[customer_id])", "alias": "ct"}
 
     def stage(name: str, measures: list) -> SlayerQuery:
         return _query(

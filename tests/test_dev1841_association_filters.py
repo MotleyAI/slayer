@@ -24,13 +24,13 @@ from tests._dev1840_fixtures import dev1840_datasets
 from tests._dev1841_fixtures import (
     ASSOC_APP_SPEND_BY_STATUS,
     ASSOC_BASIC_SPEND_BY_STATUS,
-    DatasetMetric,
     assoc_q,
     make_exec_engine,
     status_key,
 )
+from slayer.core.query import QueryMetric
 
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

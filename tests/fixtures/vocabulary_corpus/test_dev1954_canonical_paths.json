@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "name": "hr2",
+    "from_columns": [
+     "region_id"
     ],
-    "name": "hr2"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {

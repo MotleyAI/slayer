@@ -61,8 +61,8 @@
     "population": "orders",
     "dimensions": [
      {
-      "name": "c",
-      "expression": "upper(city)"
+      "field": "upper(city)",
+      "alias": "c"
      }
     ],
     "time_dimensions": [
@@ -129,14 +129,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "name": "c",
-      "expression": "upper(city)"
+      "field": "upper(city)",
+      "alias": "c"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -172,8 +172,8 @@
    "new": {
     "dimensions": [
      {
-      "name": "m",
-      "expression": "month(ordered_at)"
+      "field": "month(ordered_at)",
+      "alias": "m"
      }
     ],
     "metrics": [

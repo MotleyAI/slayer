@@ -29,7 +29,7 @@ ON_ORDERS = {
     "ext_revenue": EXTRA_DESCRIPTIONS["ext_revenue"],
     "rollup": EXTRA_DESCRIPTIONS["rollup"],
 }
-REVENUE = {"expression": "sum(amount)", "name": "revenue"}
+REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
 
 
 def _plain_dataset(name: str) -> SlayerDataset:
