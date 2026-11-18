@@ -238,7 +238,7 @@ class SlayerClient:
     @staticmethod
     def _parse_response(result: dict, *, deprecations: list[DeprecatedInputWarning] | None = None) -> SlayerResponse:
         """Parse an API JSON response into a SlayerResponse; its warnings are the server's plus the client's ``deprecations``."""
-        def _parse_meta_dict(d: dict) -> dict[str, FieldMetadata]:
+        def _parse_meta_dict(d: dict | None) -> dict[str, FieldMetadata]:
             out = {}
             for k, v in (d or {}).items():
                 fmt = None
