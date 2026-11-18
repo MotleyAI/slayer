@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
@@ -106,7 +106,7 @@ class OtelCapture(BaseModel):
 
 
 @contextmanager
-def sdk_enabled() -> Iterator[None]:
+def sdk_enabled() -> Generator[None]:
     """Clear OTEL_SDK_DISABLED while providers are built: the SDK reads it at construction."""
     saved = os.environ.pop("OTEL_SDK_DISABLED", None)
     try:

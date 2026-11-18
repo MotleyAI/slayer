@@ -26,8 +26,8 @@ A REST request span SHALL use the route template as its operation. A path that m
 - **THEN** one `slayer.request` span has `slayer.surface=rest` and `slayer.operation=/query`, and the `slayer.query` span is its child
 
 #### Scenario: Route template
-- **WHEN** a client gets `/models/orders`
-- **THEN** the request span has `slayer.operation=/models/{name}`
+- **WHEN** a client gets `/datasets/orders`
+- **THEN** the request span has `slayer.operation=/datasets/{name}`
 
 #### Scenario: Unknown path
 - **WHEN** a client gets a path that matches no route
@@ -59,11 +59,11 @@ A dry run SHALL produce no `slayer.db.execute` or `slayer.db.explain` span. With
 - **THEN** a `slayer.query` span exists, and no span name starts with `slayer.db.`
 
 ### Requirement: An ingest is one span tree with its outcome
-An ingest SHALL produce a `slayer.ingest` span with the children `slayer.ingest.scan.schema`, `slayer.ingest.merge`, `slayer.ingest.drift` and `slayer.ingest.embeddings`. The ingest span SHALL carry its outcome: `slayer.ingest.models.added`, `.updated`, `.skipped` and `slayer.ingest.drift.entries`. `.updated` SHALL count only the existing models with a reported change, not the unchanged ones.
+An ingest SHALL produce a `slayer.ingest` span with the children `slayer.ingest.scan.schema`, `slayer.ingest.merge`, `slayer.ingest.drift` and `slayer.ingest.embeddings`. The ingest span SHALL carry its outcome: `slayer.ingest.datasets.added`, `.updated`, `.skipped` and `slayer.ingest.drift.entries`. `.updated` SHALL count only the existing datasets with a reported change, not the unchanged ones.
 
-#### Scenario: Ingest of one changed model
-- **WHEN** an idempotent ingest updates one model
-- **THEN** the `slayer.ingest` span has `slayer.ingest.models.updated=1`, and the four step spans are its children
+#### Scenario: Ingest of one changed dataset
+- **WHEN** an idempotent ingest updates one dataset
+- **THEN** the `slayer.ingest` span has `slayer.ingest.datasets.updated=1`, and the four step spans are its children
 
 ### Requirement: Spans nest under the caller's span
 If a span is current at the call into SLayer, SLayer's top-level span SHALL be its child. SLayer's other spans keep the tree that the other requirements define.
@@ -93,9 +93,9 @@ Database spans SHALL have kind `CLIENT`. If these values are known, they SHALL c
 ### Requirement: Errors are reported by class
 A probe that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded.
 
-#### Scenario: Unknown model
-- **WHEN** a query names a model that does not exist
-- **THEN** the `slayer.query` span has status `ERROR` and `error.type=ModelNotFoundError`, and no `exception` event
+#### Scenario: Unknown dataset
+- **WHEN** a query names a dataset that does not exist
+- **THEN** the `slayer.query` span has status `ERROR` and `error.type=DatasetNotFoundError`, and no `exception` event
 
 ### Requirement: Duration histograms in seconds
 SLayer SHALL record durations in seconds. `db.client.operation.duration` SHALL use the buckets of the OTel database convention, from 1 ms to 10 s. `slayer.request.duration`, `slayer.query.duration` and `slayer.query.prepare.duration` SHALL use buckets from 1 ms to 2 minutes. `slayer.ingest.duration` SHALL use buckets from 0.1 s to 30 minutes.
@@ -105,11 +105,11 @@ SLayer SHALL record durations in seconds. `db.client.operation.duration` SHALL u
 - **THEN** `slayer.query.duration` records one value in seconds with the labels `slayer.datasource.name=test` and `slayer.datasource.type=sqlite`
 
 #### Scenario: Failed query
-- **WHEN** a query fails with `ModelNotFoundError`
-- **THEN** `slayer.query.duration` records one value labeled `error.type=ModelNotFoundError`
+- **WHEN** a query fails with `DatasetNotFoundError`
+- **THEN** `slayer.query.duration` records one value labeled `error.type=DatasetNotFoundError`
 
 ### Requirement: Counters for retries, cache and ingest
-SLayer SHALL count retried transient database errors in `slayer.db.retries`. It SHALL count result-cache lookups in `slayer.cache.lookups`, labeled with `slayer.cache.hit`. It SHALL count ingested models in `slayer.ingest.models`, labeled with `slayer.ingest.change` (`added`, `updated` or `skipped`). It SHALL count drift entries in `slayer.ingest.drift.entries`.
+SLayer SHALL count retried transient database errors in `slayer.db.retries`. It SHALL count result-cache lookups in `slayer.cache.lookups`, labeled with `slayer.cache.hit`. It SHALL count ingested datasets in `slayer.ingest.datasets`, labeled with `slayer.ingest.change` (`added`, `updated` or `skipped`). It SHALL count drift entries in `slayer.ingest.drift.entries`.
 
 #### Scenario: Cache lookups
 - **WHEN** the same cached query runs twice

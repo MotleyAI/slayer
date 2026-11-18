@@ -73,8 +73,8 @@ def attach(*, logger_provider: LoggerProvider, full: bool = False) -> list[loggi
     if not logger.hasHandlers() and logging.lastResort is not None:
         added.append(logging.lastResort)
     added.append(TemplateLogHandler(logger_provider=logger_provider, full=full))
-    level = logging.getLevelName(os.environ.get("OTEL_PYTHON_LOG_LEVEL", "").strip().upper())
-    if isinstance(level, int):
+    level = logging.getLevelNamesMapping().get(os.environ.get("OTEL_PYTHON_LOG_LEVEL", "").strip().upper())
+    if level is not None:
         _previous_level = logger.level
         logger.setLevel(level)
     for handler in added:

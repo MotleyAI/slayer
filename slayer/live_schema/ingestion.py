@@ -819,10 +819,10 @@ def _ingest_outcome(result: "schema_drift.IdempotentIngestResult") -> dict[str, 
     added = sum(1 for addition in result.additions if addition.created)
     return {
         "ingest.objects": len(result.objects),
-        "ingest.models.added": added,
+        "ingest.datasets.added": added,
         # The pass also lists unchanged datasets; count only the ones with a reported change.
-        "ingest.models.updated": sum(1 for a in result.additions if not a.created and _reports_change(a)),
-        "ingest.models.skipped": len(result.skipped),
+        "ingest.datasets.updated": sum(1 for a in result.additions if not a.created and _reports_change(a)),
+        "ingest.datasets.skipped": len(result.skipped),
         "ingest.drift.entries": len(result.to_delete),
         "ingest.errors": len(result.errors),
     }

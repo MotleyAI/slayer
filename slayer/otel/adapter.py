@@ -115,7 +115,7 @@ class OtelProbeListener:
         )
         self._retries = meter.create_counter(f"{PREFIX}db.retries", unit="{retry}")
         self._cache = meter.create_counter(f"{PREFIX}cache.lookups", unit="{lookup}")
-        self._models = meter.create_counter(f"{PREFIX}ingest.models", unit="{model}")
+        self._datasets = meter.create_counter(f"{PREFIX}ingest.datasets", unit="{dataset}")
         self._drift = meter.create_counter(f"{PREFIX}ingest.drift.entries", unit="{entry}")
         self._open: dict[int, tuple[trace.Span, Any]] = {}
 
@@ -193,9 +193,9 @@ class OtelProbeListener:
 
     def _record_ingest(self, *, attributes: Attributes, labels: Attributes) -> None:
         for change in _INGEST_CHANGES:
-            count = attributes.get(f"ingest.models.{change}")
+            count = attributes.get(f"ingest.datasets.{change}")
             if isinstance(count, int) and count:
-                self._models.add(count, attributes={**labels, exported_name("ingest.change"): change})
+                self._datasets.add(count, attributes={**labels, exported_name("ingest.change"): change})
 
 
 def exported_name(key: str) -> str:

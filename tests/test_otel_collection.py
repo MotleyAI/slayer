@@ -14,8 +14,8 @@ from slayer.otel import adapter
 from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
 
-_REVENUE = {"source_model": "orders", "measures": ["sum(amount)"], "dimensions": ["region"]}
-_MISSING = {"source_model": "no_such_model", "measures": ["count(*)"]}
+_REVENUE = {"population": "orders", "metrics": ["sum(amount)"], "dimensions": ["region"]}
+_MISSING = {"population": "no_such_dataset", "metrics": ["count(*)"]}
 
 
 def _run(query: dict[str, Any], **kwargs: Any) -> None:
@@ -46,7 +46,7 @@ def _ingest() -> None:
 
 
 def _failing() -> None:
-    with pytest.raises(Exception, match="no_such_model"):
+    with pytest.raises(Exception, match="no_such_dataset"):
         _run(_MISSING)
 
 
@@ -94,14 +94,14 @@ def test_a_failing_query_marks_its_span_as_an_error(otel_env: OtelCapture) -> No
     _failing()
     span = otel_env.span("slayer.query")
     assert (span.status.status_code, dict(span.attributes or {}).get("error.type")) == (
-        StatusCode.ERROR, "ModelNotFoundError",
+        StatusCode.ERROR, "DatasetNotFoundError",
     )
 
 
 def test_ingest_is_one_span_with_its_outcome(otel_env: OtelCapture) -> None:
     _ingest()
     attributes = otel_env.attributes("slayer.ingest")
-    assert (attributes["slayer.datasource.name"], attributes["slayer.ingest.models.updated"]) == ("test", 1)
+    assert (attributes["slayer.datasource.name"], attributes["slayer.ingest.datasets.updated"]) == ("test", 1)
 
 
 _INGEST_CHILDREN = ["slayer.ingest.scan.schema", "slayer.ingest.merge", "slayer.ingest.drift", "slayer.ingest.embeddings"]
@@ -135,7 +135,7 @@ def test_database_duration_uses_the_standard_metric(otel_env: OtelCapture) -> No
 def test_a_failing_query_is_labelled_with_its_error_type(otel_env: OtelCapture) -> None:
     _failing()
     (point,) = otel_env.metric("slayer.query.duration")
-    assert point.attributes == {"error.type": "ModelNotFoundError"}
+    assert point.attributes == {"error.type": "DatasetNotFoundError"}
 
 
 def test_cache_lookups_count_hits_and_misses(otel_env: OtelCapture) -> None:
@@ -146,7 +146,7 @@ def test_cache_lookups_count_hits_and_misses(otel_env: OtelCapture) -> None:
 
 def test_ingest_counts_models_by_change(otel_env: OtelCapture) -> None:
     _ingest()
-    counts = {point.attributes["slayer.ingest.change"]: point.value for point in otel_env.metric("slayer.ingest.models")}
+    counts = {point.attributes["slayer.ingest.change"]: point.value for point in otel_env.metric("slayer.ingest.datasets")}
     assert counts == {"updated": 1}
 
 

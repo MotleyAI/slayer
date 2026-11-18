@@ -163,7 +163,7 @@ SLayer uses the OTel standard attribute names where they exist:
 | `slayer.surface`, `slayer.operation` | the surface and the operation, on every request |
 | `slayer.datasource.name`, `slayer.datasource.type` | the datasource from your configuration |
 | `slayer.query.rows`, `slayer.query.dry_run`, `slayer.query.explain` | about the query |
-| `slayer.ingest.models.added`, `.updated`, `.skipped`, `slayer.ingest.drift.entries` | the outcome of an ingest run |
+| `slayer.ingest.datasets.added`, `.updated`, `.skipped`, `slayer.ingest.drift.entries` | the outcome of an ingest run |
 
 The resource has `service.name` (default `slayer`) and `service.version` (the SLayer version), unless you set them.
 
@@ -178,7 +178,7 @@ The resource has `service.name` (default `slayer`) and `service.version` (the SL
 | `slayer.ingest.duration` | histogram, seconds | datasource, `error.type` |
 | `slayer.db.retries` | counter | datasource, `error.type` |
 | `slayer.cache.lookups` | counter | datasource, `slayer.cache.hit` |
-| `slayer.ingest.models` | counter | datasource, `slayer.ingest.change` (`added`, `updated`, `skipped`) |
+| `slayer.ingest.datasets` | counter | datasource, `slayer.ingest.change` (`added`, `updated`, `skipped`) |
 | `slayer.ingest.drift.entries` | counter | datasource |
 
 The duration histograms use buckets in seconds. `db.client.operation.duration` runs from 1 ms to 10 s, as the OTel database conventions recommend. The request and query histograms run from 1 ms to 2 minutes, and the ingest histogram from 0.1 s to 30 minutes. Metrics are cumulative, so a later successful export recovers the counts of a failed one. If the last export of a short command fails, its counts are lost, as Performance explains. For a backend that needs delta values, set `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta`.

@@ -14,7 +14,7 @@ from slayer.core import probes
 from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._compat_helpers import future_warnings, recorded
-from tests._gateway_harness import orders_model, seed_shop, shop_datasource, shop_storage
+from tests._gateway_harness import orders_dataset, seed_shop, shop_datasource, shop_storage
 
 
 class _Recorder:
@@ -105,7 +105,7 @@ def test_an_error_still_raises_with_a_listener(recorder: _Recorder) -> None:
 
 
 _LEGACY_FILTER_QUERY = {
-    "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}], "filters": ["status == 'paid'"],
+    "population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}], "filters": ["status == 'paid'"],
 }
 
 
@@ -121,7 +121,7 @@ async def test_a_warning_through_a_probed_query_names_the_callers_line(
     seed_shop(db)
     datasource = shop_datasource(db)
     engine = SlayerQueryEngine(
-        storage=await shop_storage(str(tmp_path / "store"), datasource=datasource, models=[orders_model()]),
+        storage=await shop_storage(str(tmp_path / "store"), datasource=datasource, datasets=[orders_dataset()]),
     )
     listener = _Recorder()
     if listening:

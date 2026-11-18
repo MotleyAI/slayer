@@ -13,7 +13,7 @@ import pytest
 from tests._usage_reporting_capture import CaptureServer, RefusedEndpoint
 from tests._usage_reporting_helpers import build_storage, run_python, run_slayer, wait_until
 
-_QUERY = {"source_model": "orders", "measures": ["sum(amount)"], "dimensions": ["region"]}
+_QUERY = {"population": "orders", "metrics": ["sum(amount)"], "dimensions": ["region"]}
 _SLACK_SECONDS = 5.0
 
 _HOST_PROVIDER = (

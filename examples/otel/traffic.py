@@ -1,6 +1,6 @@
 """Send a mix of REST queries to SLayer, so the OTLP backend has traces and metrics to show.
 
-Exits 1 if a normal query or the dry run fails. The query on no_such_model fails on purpose.
+Exits 1 if a normal query or the dry run fails. The query on no_such_dataset fails on purpose.
 
 Usage: python traffic.py [BASE_URL] [ROUNDS]   (defaults: http://localhost:5143, 20)
 """
@@ -16,11 +16,11 @@ ROUNDS = int(sys.argv[2]) if len(sys.argv) > 2 else 20
 
 COUNT = ["count(*)"]
 QUERIES = [
-    {"source_model": "orders", "measures": COUNT, "dimensions": ["status"]},
-    {"source_model": "orders", "measures": COUNT, "dimensions": ["products.category"]},
-    {"source_model": "orders", "measures": COUNT, "dimensions": ["regions.name"]},
-    {"source_model": "orders", "measures": COUNT, "dimensions": ["status"], "dry_run": True},
-    {"source_model": "no_such_model", "measures": COUNT},
+    {"population": "orders", "metrics": COUNT, "dimensions": ["status"]},
+    {"population": "orders", "metrics": COUNT, "dimensions": ["products.category"]},
+    {"population": "orders", "metrics": COUNT, "dimensions": ["regions.name"]},
+    {"population": "orders", "metrics": COUNT, "dimensions": ["status"], "dry_run": True},
+    {"population": "no_such_dataset", "metrics": COUNT},
 ]
 # 200 for the first four queries; a client error for the last, which names a model that does not exist.
 EXPECTED = [range(200, 201)] * 4 + [range(400, 500)]

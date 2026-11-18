@@ -27,7 +27,7 @@ At start, the SLayer container runs `slayer ingest` once, which sends an ingest 
 docker compose run --rm traffic
 ```
 
-The traffic service sends 20 rounds of five REST queries: three normal queries, one dry run and one query on a model that does not exist. It exits 1 if a normal query or the dry run fails. You can also run it from the host:
+The traffic service sends 20 rounds of five REST queries: three normal queries, one dry run and one query on a dataset that does not exist. It exits 1 if a normal query or the dry run fails. You can also run it from the host:
 
 ```bash
 python traffic.py http://localhost:5143 50
@@ -48,7 +48,7 @@ In Traces, select the service `slayer`.
 
 A failed query has status `ERROR` and an `error.type` attribute. SLayer follows the OTel semantic conventions where they define a name, so backends with database views recognize the Postgres datasource as `postgresql`.
 
-In Metrics, look for the standard `db.client.operation.duration`, and for `slayer.request.duration`, `slayer.query.duration` and `slayer.ingest.duration`. The counters are `slayer.db.retries`, `slayer.cache.lookups`, `slayer.ingest.models` and `slayer.ingest.drift.entries`. OpenObserve replaces each `.` with `_`, for example `slayer_query_duration`. SLayer exports metrics every 10 seconds in this example.
+In Metrics, look for the standard `db.client.operation.duration`, and for `slayer.request.duration`, `slayer.query.duration` and `slayer.ingest.duration`. The counters are `slayer.db.retries`, `slayer.cache.lookups`, `slayer.ingest.datasets` and `slayer.ingest.drift.entries`. OpenObserve replaces each `.` with `_`, for example `slayer_query_duration`. SLayer exports metrics every 10 seconds in this example.
 
 A REST trace starts at `slayer.request`. SLayer keeps its tracer provider private, so FastAPI's own spans, such as `POST /query`, do not appear. They appear only with FastAPI instrumentation, for example through `opentelemetry-instrument`.
 
@@ -64,10 +64,10 @@ To see a log record, stop Postgres during a query. The SQL client then logs a re
 
 ```bash
 curl -s -X POST localhost:5143/query -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["count(*)"]}'
+  -d '{"population": "orders", "metrics": ["count(*)"]}'
 docker compose stop postgres
 curl -s -X POST localhost:5143/query -H "Content-Type: application/json" \
-  -d '{"source_model": "orders", "measures": ["count(*)"]}'
+  -d '{"population": "orders", "metrics": ["count(*)"]}'
 docker compose start postgres
 ```
 
@@ -106,7 +106,7 @@ Content capture adds `db.query.text`, the executed SQL, on database spans. It ad
 | `SLAYER_OTEL_CAPTURE_CONTENT` | not set, so no content leaves. See "Capture Sensitive Data". |
 | `SLAYER_USAGE_REPORTING` | `off`, so test traffic sends no usage reports |
 
-At start, `start.sh` runs `prepare.py`, which waits up to two minutes for the endpoint in `OTEL_EXPORTER_OTLP_ENDPOINT` and registers the demo datasource. If the endpoint stays down, SLayer serves anyway and drops its spans. SLayer keeps its models in the Docker volume `slayer-data`.
+At start, `start.sh` runs `prepare.py`, which waits up to two minutes for the endpoint in `OTEL_EXPORTER_OTLP_ENDPOINT` and registers the demo datasource. If the endpoint stays down, SLayer serves anyway and drops its spans. SLayer keeps its datasets in the Docker volume `slayer-data`.
 
 ## Stop
 
@@ -114,7 +114,7 @@ At start, `start.sh` runs `prepare.py`, which waits up to two minutes for the en
 docker compose down
 ```
 
-To also delete the volumes, the OpenObserve data and SLayer's models:
+To also delete the volumes, the OpenObserve data and SLayer's datasets:
 
 ```bash
 docker compose down -v

@@ -13,8 +13,8 @@ from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
 from tests._usage_reporting_helpers import SENT, assert_no_sentinel
 
-_FILTERED = {"source_model": "orders", "measures": ["count(*)"], "filters": [f"region = '{SENT}'"]}
-_MISSING = {"source_model": f"{SENT}_model", "measures": ["count(*)"]}
+_FILTERED = {"population": "orders", "metrics": ["count(*)"], "filters": [f"region = '{SENT}'"]}
+_MISSING = {"population": f"{SENT}_model", "metrics": ["count(*)"]}
 
 
 def _run(query: dict) -> None:
@@ -53,7 +53,7 @@ def test_sql_text_stays_in_the_process_by_default(otel_env: OtelCapture) -> None
 def test_exception_text_stays_in_the_process_by_default(otel_env: OtelCapture) -> None:
     _fail()
     events = [event.name for span in otel_env.spans() for event in span.events]
-    assert ("exception" in events, otel_env.attributes("slayer.query")["error.type"]) == (False, "ModelNotFoundError")
+    assert ("exception" in events, otel_env.attributes("slayer.query")["error.type"]) == (False, "DatasetNotFoundError")
 
 
 def test_nothing_derived_from_a_failing_query_leaves(otel_env: OtelCapture) -> None:

@@ -17,7 +17,7 @@ from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import build_refine_storage
 from tests._usage_reporting_helpers import build_storage, cli
 
-_QUERY = {"source_model": "orders", "measures": ["count(*)"]}
+_QUERY = {"population": "orders", "metrics": ["count(*)"]}
 
 
 @pytest.fixture
@@ -44,8 +44,8 @@ def test_a_rest_query_is_one_request_span_over_the_query(otel_env: OtelCapture, 
 
 def test_a_rest_route_is_named_by_its_template(otel_env: OtelCapture, storage: YAMLStorage) -> None:
     with TestClient(create_app(storage=storage)) as client:
-        client.get("/models/orders")
-    assert _request(otel_env) == ("rest", "/models/{name}")
+        client.get("/datasets/orders")
+    assert _request(otel_env) == ("rest", "/datasets/{name}")
 
 
 def test_an_unknown_rest_path_is_other(otel_env: OtelCapture, storage: YAMLStorage) -> None:
