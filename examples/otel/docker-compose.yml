@@ -33,8 +33,8 @@ services:
   seed:
     build: *slayer-build
     env_file: example.env
-    # $$ leaves the variable to the container shell, which reads it from example.env.
-    command: sh -c 'python /examples/seed.py "postgresql+psycopg://slayer:$${POSTGRES_PASSWORD}@postgres:5432/slayer_demo"'
+    # libpq reads PGPASSWORD, so the password needs no URL encoding; $$ defers to the container shell.
+    command: sh -c 'PGPASSWORD="$${POSTGRES_PASSWORD}" python /examples/seed.py postgresql+psycopg://slayer@postgres:5432/slayer_demo'
     volumes:
       - ../seed.py:/examples/seed.py:ro
     depends_on:

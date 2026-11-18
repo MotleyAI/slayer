@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import sqlite3
 from typing import Any
 
 import pytest
@@ -10,6 +12,8 @@ from opentelemetry.trace import SpanKind, StatusCode
 
 from slayer import otel
 from slayer.core import probes
+from slayer.core.models import DatasourceConfig
+from slayer.database import client as client_module
 from slayer.otel import adapter
 from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
@@ -240,3 +244,34 @@ def test_the_request_decorator_names_the_surface(otel_env: OtelCapture) -> None:
     handler()
     attributes = otel_env.attributes("slayer.request")
     assert (attributes["slayer.surface"], attributes["slayer.operation"]) == ("cli", "query")
+
+
+@pytest.mark.parametrize(("datasource", "expected"), [
+    (DatasourceConfig(name="shop", type="postgres", host="old-db", connection_string="postgresql://u:pw@new-db:5433/sales"),
+     ("new-db", 5433, "sales")),
+    (DatasourceConfig(name="shop", type="postgres", host="db", port=5434, database="sales", username="u"),
+     ("db", 5434, "sales")),
+])
+def test_database_server_attributes_follow_the_connection_used(
+    datasource: DatasourceConfig, expected: tuple[str, int, str],
+) -> None:
+    client = client_module.SlayerSQLClient(datasource)
+    bound = inspect.signature(client_module.SlayerSQLClient._typed_execute).bind(
+        client, sql="SELECT 1", timeout_seconds=1, writes=False,
+    )
+    attributes = client_module._db_probe_attributes(bound)
+    assert (attributes["server.address"], attributes["server.port"], attributes["db.namespace"]) == expected
+
+
+def test_direct_synchronous_execution_is_a_database_span(
+    otel_env: OtelCapture, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "x.db"
+    sqlite3.connect(database).close()
+    client = client_module.SlayerSQLClient(DatasourceConfig(name="shop", type="sqlite", database=str(database)))
+    monkeypatch.setattr(client, "_async_url", lambda: None)  # a driver with no async twin
+    try:
+        client.execute_sync("SELECT 1")
+    finally:
+        client.close()
+    assert otel_env.attributes("slayer.db.execute")["db.response.returned_rows"] == 1

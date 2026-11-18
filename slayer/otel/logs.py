@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import time
 import traceback
 from typing import Any
@@ -70,9 +71,11 @@ def attach(*, logger_provider: LoggerProvider, full: bool = False) -> list[loggi
     global _previous_level
     logger = logging.getLogger(SLAYER_LOGGER)
     added: list[logging.Handler] = []
+    exporter = TemplateLogHandler(logger_provider=logger_provider, full=full)
     if not logger.hasHandlers() and logging.lastResort is not None:
+        logging.lastResort.addFilter(_UnhandledOnly(ours=(logging.lastResort, exporter)))
         added.append(logging.lastResort)
-    added.append(TemplateLogHandler(logger_provider=logger_provider, full=full))
+    added.append(exporter)
     level = logging.getLevelNamesMapping().get(os.environ.get("OTEL_PYTHON_LOG_LEVEL", "").strip().upper())
     if level is not None:
         _previous_level = logger.level
@@ -87,9 +90,67 @@ def detach(handlers: list[logging.Handler]) -> None:
     logger = logging.getLogger(SLAYER_LOGGER)
     for handler in handlers:
         logger.removeHandler(handler)
+        for unhandled in [f for f in handler.filters if isinstance(f, _UnhandledOnly)]:
+            handler.removeFilter(unhandled)
     if _previous_level is not None:
         logger.setLevel(_previous_level)
         _previous_level = None
+
+
+# The OTLP exporters' loggers: their failure messages can quote the endpoint URL with query credentials.
+EXPORTER_LOGGERS = tuple(
+    f"opentelemetry.exporter.otlp.{name}"
+    for name in ("common.http", "proto.http.trace_exporter", "proto.http.metric_exporter", "proto.http._log_exporter")
+)
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,39}")
+
+
+class _ExportTextFilter(logging.Filter):
+    """Keep the template, numbers and short identifiers; an exception becomes its class, other text is hidden."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_safe_arg(arg) for arg in record.args)
+        return True
+
+
+def _safe_arg(arg: object) -> object:
+    if isinstance(arg, BaseException):
+        return type(arg).__qualname__
+    if arg is None or isinstance(arg, (int, float)):
+        return arg
+    if isinstance(arg, str) and _IDENTIFIER.fullmatch(arg):
+        return arg
+    return "<text hidden>"
+
+
+_EXPORT_TEXT_FILTER = _ExportTextFilter()
+
+
+def hide_export_text() -> None:
+    for name in EXPORTER_LOGGERS:
+        logging.getLogger(name).addFilter(_EXPORT_TEXT_FILTER)
+
+
+def show_export_text() -> None:
+    for name in EXPORTER_LOGGERS:
+        logging.getLogger(name).removeFilter(_EXPORT_TEXT_FILTER)
+
+
+class _UnhandledOnly(logging.Filter):
+    """Pass a record only if no handler but ``ours`` is on its logger's path, as Python's own fallback would."""
+
+    def __init__(self, *, ours: tuple[logging.Handler, ...]) -> None:
+        super().__init__()
+        self.ours = ours
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        current: logging.Logger | None = logging.getLogger(record.name)
+        while current is not None:
+            if any(handler not in self.ours for handler in current.handlers):
+                return False
+            current = current.parent if current.propagate else None
+        return True
 
 
 def _severity(levelno: int) -> tuple[SeverityNumber, str]:
@@ -117,8 +178,11 @@ def _attributes(*, record: logging.LogRecord, full: bool) -> dict[str, Any]:
     attributes.update({key: value for key, value in vars(record).items() if key not in _RESERVED})
     if exc_type is not None:
         attributes["exception.type"] = exc_type.__name__
-        attributes["exception.message"] = str(exc_value)
-        attributes["exception.stacktrace"] = "".join(
-            traceback.format_exception(exc_type, exc_value, exc_traceback),
-        )
+        # Best-effort text: an exception that cannot be printed still leaves its record.
+        with contextlib.suppress(Exception):
+            attributes["exception.message"] = str(exc_value)
+        with contextlib.suppress(Exception):
+            attributes["exception.stacktrace"] = "".join(
+                traceback.format_exception(exc_type, exc_value, exc_traceback),
+            )
     return attributes

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Iterator
 
 import pytest
@@ -127,6 +128,44 @@ def test_a_failing_listener_never_reaches_the_host(recorder: _Recorder) -> None:
     assert (value, recorder.calls[-1]) == (42, ("end", "query", None))
 
 
+class _RaisingHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        raise RuntimeError("handler bug")
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802 - logging API name
+        raise RuntimeError("handler bug")
+
+
+def test_a_failing_debug_handler_never_reaches_the_host(recorder: _Recorder) -> None:
+    logger = logging.getLogger("slayer.core.probes")
+    handler, level = _RaisingHandler(), logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    probes.add_listener(broken := _Broken())
+    try:
+        with probes.scope(name="query"):
+            value = 42
+    finally:
+        probes.remove_listener(broken)
+        logger.removeHandler(handler)
+        logger.setLevel(level)
+    assert value == 42
+
+
+def test_a_finished_probe_ignores_writes(recorder: _Recorder) -> None:
+    with probes.scope(name="query") as finished:
+        pass
+    finished.add_event(name="db.retry")
+    assert (finished.active, finished.events) == (False, [])
+
+
+def test_a_scope_takes_its_parent_when_entered(recorder: _Recorder) -> None:
+    later = probes.scope(name="inner")
+    with probes.scope(name="outer") as outer, later as inner:
+        pass
+    assert inner.parent is outer
+
+
 # --- registry ------------------------------------------------------------------------
 
 
@@ -144,6 +183,19 @@ def test_a_removed_listener_sees_nothing() -> None:
     with probes.scope(name="query"):
         pass
     assert listener.calls == []
+
+
+def test_a_probe_ends_on_the_listeners_it_started_on() -> None:
+    first, second = _Recorder(), _Recorder()
+    probes.add_listener(first)
+    try:
+        with probes.scope(name="query"):
+            probes.remove_listener(first)
+            probes.add_listener(second)
+    finally:
+        probes.remove_listener(first)
+        probes.remove_listener(second)
+    assert (first.calls, second.calls) == ([("start", "query", None), ("end", "query", None)], [])
 
 
 # --- concurrency ---------------------------------------------------------------------

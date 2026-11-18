@@ -158,8 +158,10 @@ def usage_reporting_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
 
 @pytest.fixture(scope="session", autouse=True)
 def _otel_off_by_default() -> Iterator[None]:
-    """Our own test runs never export telemetry; ``otel_env`` instruments in-memory providers."""
+    """Our own test runs never export telemetry, and no ``OTEL_*`` setting of the shell reaches them."""
     with pytest.MonkeyPatch.context() as mp:
+        for name in [name for name in os.environ if name.startswith("OTEL_")]:
+            mp.delenv(name)
         mp.setenv("SLAYER_OTEL", "off")
         yield
 

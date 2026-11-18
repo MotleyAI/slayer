@@ -192,7 +192,15 @@ _STATUS_IMPORTS = (
     "import sys\n"
     "from slayer.otel import control\n"
     "control.status()\n"
-    "print(sorted(name for name in sys.modules if name.startswith('opentelemetry.sdk')))\n"
+    "print(sorted(name for name in sys.modules if name.startswith('opentelemetry')))\n"
+)
+
+_STATUS_COMMAND_IMPORTS = (
+    "import sys\n"
+    "from slayer.cli import main\n"
+    "sys.argv = ['slayer', 'otel', 'status']\n"
+    "main()\n"
+    "print(sorted(name for name in sys.modules if name.startswith('opentelemetry')), file=sys.stderr)\n"
 )
 
 
@@ -201,9 +209,25 @@ def test_status_imports_no_otel_package(clean_env: pytest.MonkeyPatch) -> None:
     assert (result.returncode, result.stdout.strip()) == (0, "[]"), result.stderr
 
 
+def test_status_command_starts_no_otel_while_otel_is_on(clean_env: pytest.MonkeyPatch) -> None:
+    env = {**os.environ, "SLAYER_OTEL": "on", "SLAYER_USAGE_REPORTING": "off"}
+    result = run_python(_STATUS_COMMAND_IMPORTS, env=env)
+    assert (result.returncode, result.stderr.strip().splitlines()[-1]) == (0, "[]"), result.stderr
+
+
 def test_service_name_keeps_the_last_value_as_the_sdk_does(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=api,service.name=worker")
     assert settings.service_name() == "worker"
+
+
+def test_header_names_are_case_insensitive_as_in_the_exporter(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_HEADERS", "X-Token=old,x-token=stale,X-Token=current")
+    assert settings.headers("traces") == {"X-Token": "current"}
+
+
+def test_an_empty_last_service_name_leaves_the_name_unset(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=api,service.name=")
+    assert settings.service_name() is None
 
 
 def test_status_works_without_the_extra(clean_env: pytest.MonkeyPatch) -> None:
@@ -330,6 +354,34 @@ class _Redirecting(BaseHTTPRequestHandler):
         return None
 
 
+class _RedirectingSpans(BaseHTTPRequestHandler):
+    """Accepts the empty probes, redirects the non-empty test span."""
+
+    def do_POST(self) -> None:  # noqa: N802 — http.server naming
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        self.send_response(307 if length else 200)
+        self.send_header("Location", "/elsewhere")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 — http.server signature
+        return None
+
+
+def test_test_reports_a_redirected_test_span_as_failed(clean_env: pytest.MonkeyPatch) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RedirectingSpans)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host, port = server.server_address[:2]
+        clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"http://{host}:{port}")
+        report, code = control.test()
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert (code, "Test span: sent" in report) == (1, False), report
+
+
 def test_test_does_not_follow_a_redirect(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setattr(_Redirecting, "seen", [])
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Redirecting)
@@ -381,6 +433,17 @@ def test_test_reports_an_unsendable_header_without_its_value(clean_env: pytest.M
     clean_env.setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer%20hidden%0Avalue")
     report, code = control.test()
     assert (code, report.count("not sendable"), "hidden" in report) == (1, 3, False), report
+
+
+def test_test_reports_a_malformed_endpoint_on_every_signal(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://[::1")
+    report, code = control.test()
+    assert (code, report.count("not a valid URL")) == (1, 3), report
+
+
+def test_status_shows_a_malformed_endpoint(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://[::1")
+    assert control.status().count("<malformed URL>") == 3
 
 
 def test_test_command_exits_with_one_on_failure(clean_env: pytest.MonkeyPatch) -> None:

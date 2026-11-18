@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -10,7 +11,7 @@ import pytest
 
 from slayer import otel
 from slayer.core import probes
-from slayer.otel import exporters, recorder
+from slayer.otel import exporters, logs, recorder
 from tests._otel_helpers import OtelCapture
 from tests._usage_reporting_helpers import run_python
 
@@ -88,6 +89,10 @@ class _FastProvider:
 # --- inert by default ----------------------------------------------------------------
 
 
+def test_the_suite_inherits_no_otel_setting_from_the_shell() -> None:
+    assert [name for name in os.environ if name.startswith("OTEL_")] == []
+
+
 def test_no_slayer_module_imports_otel_when_off() -> None:
     result = run_python(_LOAD_MODULES, env=_env())
     assert (result.returncode, result.stdout.strip()) == (0, "[]")
@@ -149,6 +154,32 @@ def test_a_late_setup_failure_closes_the_providers_created_so_far(monkeypatch: p
     otel.start()
     workers = [t for t in threading.enumerate() if t.name.startswith(("OtelBatchSpanRecordProcessor", "OtelPeriodic"))]
     assert (otel.is_active(), recorder._owned, len(closed), workers) == (False, [], 3, [])
+
+
+def test_a_setup_rollback_waits_at_most_the_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL", "on")
+
+    def slow_then_broken(configured: exporters.Configured) -> None:
+        configured.owned.append(_SlowProvider())
+        raise RuntimeError("exporter bug")
+
+    monkeypatch.setattr(exporters, "_create_providers", slow_then_broken)
+    began = time.monotonic()
+    otel.start()
+    assert (otel.is_active(), time.monotonic() - began < recorder.SHUTDOWN_WAIT_SECONDS + 1) == (False, True)
+
+
+def test_exporter_log_text_is_hidden_while_slayer_owns_the_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL", "on")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")
+    exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
+    otel.start()
+    try:
+        hidden = any(isinstance(f, logs._ExportTextFilter) for f in exporter_logger.filters)
+    finally:
+        otel.reset()
+    shown = not any(isinstance(f, logs._ExportTextFilter) for f in exporter_logger.filters)
+    assert (hidden, shown) == (True, True)
 
 
 def test_providers_stay_private_and_a_second_start_gets_new_ones() -> None:

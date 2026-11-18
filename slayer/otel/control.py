@@ -16,6 +16,7 @@ import os
 import ssl
 import urllib.error
 import urllib.request
+from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from slayer import __version__
@@ -91,7 +92,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _probe(*, url: str, headers: dict[str, str], tls: settings.TlsFiles) -> tuple[bool, str]:
     """POST an empty OTLP request: valid protobuf, so it checks reachability, credentials and path only."""
-    if urlsplit(url).scheme not in ("http", "https"):
+    if _scheme(url) not in ("http", "https"):
         return False, "not a valid URL: the endpoint needs http:// or https://"
     url, headers = _with_url_credentials(url=url, headers=headers)
     try:
@@ -136,9 +137,19 @@ def _tls_context(tls: settings.TlsFiles) -> ssl.SSLContext:
     return context
 
 
+def _scheme(url: str) -> str | None:
+    try:
+        return urlsplit(url).scheme
+    except ValueError:
+        return None
+
+
 def _shown(url: str) -> str:
     """The URL for display: a password in it and every query value become ``***``."""
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<malformed URL>"
     netloc = parts.netloc
     if parts.password is not None:
         userinfo, _, host = netloc.rpartition("@")
@@ -159,22 +170,38 @@ def _send_test_span() -> tuple[bool | None, str]:
     from opentelemetry.sdk.trace import TracerProvider  # ALLOW(import-not-top): optional extra
     from opentelemetry.sdk.trace.export import SpanExportResult  # ALLOW(import-not-top): optional extra
     from opentelemetry.sdk.trace.sampling import ALWAYS_ON  # ALLOW(import-not-top): optional extra
+    from requests import Session  # ALLOW(import-not-top): optional extra, the exporter's HTTP client
 
+    from slayer.otel import logs  # ALLOW(import-not-top): optional extra
     from slayer.otel.exporters import build_resource  # ALLOW(import-not-top): optional extra
 
     # ALWAYS_ON: an explicit test sends its span whatever OTEL_TRACES_SAMPLER says.
     provider = TracerProvider(resource=build_resource(), sampler=ALWAYS_ON, shutdown_on_exit=False)
     span = provider.get_tracer("slayer", __version__).start_span(TEST_SPAN)
     span.end()
-    exporter = OTLPSpanExporter(timeout=TEST_TIMEOUT_SECONDS)
+    # The exporter counts a redirect as delivered without following it; the test calls it a failure.
+    session = Session()
+    session.hooks["response"].append(_refuse_redirect)
+    exporter = OTLPSpanExporter(timeout=TEST_TIMEOUT_SECONDS, session=session)
+    logs.hide_export_text()
     try:
         result = exporter.export([span])  # pyright: ignore[reportArgumentType]
     finally:
         exporter.shutdown()
+        logs.show_export_text()
     if result is SpanExportResult.SUCCESS:
         service = provider.resource.attributes.get("service.name", _service_name())
         return True, f"Test span: sent; search your backend for the span {TEST_SPAN} from service {service}."
     return False, "Test span: the backend rejected it; see the error above."
+
+
+class _Redirected(Exception):
+    """Not a connection error, so the exporter fails at once instead of retrying."""
+
+
+def _refuse_redirect(response: Any, *args: object, **kwargs: object) -> None:
+    if 300 <= response.status_code < 400:
+        raise _Redirected(f"HTTP {response.status_code}: {_REDIRECT_HINT}")
 
 
 def _extra_installed() -> bool:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import logging
 from collections.abc import Iterator
 from unittest import mock
@@ -42,7 +43,6 @@ def _attach(*, full: bool = False) -> _Exported:
 
 
 def _attached(monkeypatch: pytest.MonkeyPatch, *, full: bool) -> Iterator[_Exported]:
-    # A developer's own OTEL_PYTHON_LOG_LEVEL must not filter out the test's warning.
     monkeypatch.setenv("OTEL_PYTHON_LOG_LEVEL", "WARNING")
     exported = _attach(full=full)
     try:
@@ -114,6 +114,22 @@ def test_full_records_leave_with_content_capture(full: _Exported) -> None:
     )
 
 
+class _Unprintable(Exception):
+    def __str__(self) -> str:
+        raise RuntimeError("no text")
+
+
+def test_a_record_survives_an_unprintable_exception(full: _Exported) -> None:
+    try:
+        raise _Unprintable
+    except _Unprintable:
+        logging.getLogger("slayer.pg_facade").exception("query failed")
+    (attributes,) = full.attributes()
+    assert (full.bodies(), attributes["error.type"], "exception.message" in attributes) == (
+        ["query failed"], "_Unprintable", False,
+    )
+
+
 def test_a_retry_warning_sends_its_sql_with_content_capture(full: _Exported) -> None:
     _log_retry(sql=f"SELECT * FROM orders WHERE note = '{SENT}'")
     assert SENT in full.bodies()[0]
@@ -142,6 +158,22 @@ def test_stderr_output_survives_when_slayer_had_no_handler(monkeypatch: pytest.M
         assert logging.lastResort in exported.handlers
     finally:
         logs.detach(exported.handlers)
+
+
+def test_a_record_with_its_own_handler_is_not_printed_twice(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(logging.getLogger(logs.SLAYER_LOGGER), "propagate", False)
+    child = logging.getLogger("slayer.pg_facade")
+    own = logging.StreamHandler(stream=io.StringIO())
+    child.addHandler(own)
+    exported = _attach()
+    try:
+        child.warning("pool exhausted")
+    finally:
+        logs.detach(exported.handlers)
+        child.removeHandler(own)
+    assert (own.stream.getvalue(), capsys.readouterr().err) == ("pool exhausted\n", "")
 
 
 def test_no_stderr_handler_is_added_when_a_handler_exists(templates: _Exported) -> None:
@@ -196,3 +228,20 @@ def test_a_failing_emit_never_reaches_the_caller(templates: _Exported) -> None:
     with mock.patch.object(handler.logger_provider, "get_logger", autospec=True, return_value=broken):
         logging.getLogger("slayer.pg_facade").warning(_TEMPLATE, SENT, "detail")
     assert broken.emit.called
+
+
+# --- exporter logs -------------------------------------------------------------------
+
+
+def test_exporter_logs_keep_no_url_text(caplog: pytest.LogCaptureFixture) -> None:
+    failure = ConnectionError(f"Max retries exceeded with url: /v1/traces?api_key={SENT}")
+    exporter_logger = logging.getLogger("opentelemetry.exporter.otlp.proto.http.trace_exporter")
+    logs.hide_export_text()
+    try:
+        with caplog.at_level(logging.WARNING, logger=exporter_logger.name):
+            exporter_logger.error("Failed to export %s batch code: %s, reason: %s", "span", None, failure)
+    finally:
+        logs.show_export_text()
+    assert (SENT in caplog.text, "Failed to export span batch code: None, reason: ConnectionError" in caplog.text) == (
+        False, True,
+    )

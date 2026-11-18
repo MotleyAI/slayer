@@ -83,7 +83,10 @@ def headers(signal: str) -> dict[str, str]:
     raw = (os.environ.get(f"OTEL_EXPORTER_OTLP_{signal.upper()}_HEADERS")
            or os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", ""))
     pairs = (item.split("=", 1) for item in raw.split(",") if "=" in item)
-    return {unquote(name).strip(): unquote(value).strip() for name, value in pairs}
+    found: dict[str, tuple[str, str]] = {}
+    for name, value in pairs:
+        found[unquote(name).strip().lower()] = (unquote(name).strip(), unquote(value).strip())  # last wins, any case
+    return dict(found.values())
 
 
 def protocol(signal: str) -> str:
@@ -97,12 +100,12 @@ def service_name() -> str | None:
     explicit = os.environ.get("OTEL_SERVICE_NAME", "").strip()
     if explicit:
         return explicit
-    found = None
+    found = ""
     for item in os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "").split(","):
         key, _, value = item.partition("=")
-        if key.strip() == "service.name" and value.strip():
-            found = unquote(value.strip())  # the SDK keeps the last value
-    return found
+        if key.strip() == "service.name":
+            found = unquote(value.strip())  # the SDK keeps the last value, even an empty one
+    return found or None
 
 
 class TlsFiles(BaseModel):

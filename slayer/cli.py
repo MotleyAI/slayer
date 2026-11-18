@@ -269,7 +269,8 @@ def _run_command(
         return
     if token is not None:
         usage_reporting.start()
-        otel.start()
+        if args.command != "otel":  # the otel diagnostics report on OTel and must not start it
+            otel.start()
     try:
         with usage_reporting.counting(surface="cli", token=token):
             _guarded_dispatch(parser, args, guard=guard)

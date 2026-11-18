@@ -8,6 +8,7 @@ test, no timestamp, no allocation.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import inspect
 import logging
@@ -91,34 +92,33 @@ _INACTIVE_SCOPE = _InactiveScope()
 
 
 class _ProbeScope:
-    __slots__ = ("_probe", "_token")
+    __slots__ = ("_listeners", "_probe", "_token")
 
-    def __init__(self, opened: Probe) -> None:
+    def __init__(self, opened: Probe, *, listeners: tuple[ProbeListener, ...]) -> None:
         self._probe = opened
+        self._listeners = listeners  # the same listeners see the start and the end
         self._token: Token[Probe | None] | None = None
 
     def __enter__(self) -> Probe:
+        self._probe.parent = _current.get()
+        self._probe.start_ns, self._probe.started = time.time_ns(), time.perf_counter()
         self._token = _current.set(self._probe)
-        _notify_start(self._probe)
+        _notify_start(self._probe, listeners=self._listeners)
         return self._probe
 
     def __exit__(self, exc_type: object, exc: BaseException | None, tb: object) -> bool:
         if self._token is not None:
             _current.reset(self._token)
-        _finish(self._probe, error=exc)
+        _finish(self._probe, error=exc, listeners=self._listeners)
         return False
 
 
 def scope(*, name: str, attributes: Attributes | None = None) -> _ProbeScope | _InactiveScope:
     """A context manager for one probe around a block."""
-    if not _listeners:
+    listeners = _listeners
+    if not listeners:
         return _INACTIVE_SCOPE
-    return _ProbeScope(
-        Probe(
-            name=name, parent=_current.get(), attributes=_clean(attributes or {}),
-            start_ns=time.time_ns(), started=time.perf_counter(),
-        )
-    )
+    return _ProbeScope(Probe(name=name, attributes=_clean(attributes or {})), listeners=listeners)
 
 
 def probe(
@@ -178,21 +178,22 @@ def _checked_signature(fn: Callable[..., Any], *, name: str, params: Mapping[str
     return signature
 
 
-def _finish(finished: Probe, *, error: BaseException | None) -> None:
+def _finish(finished: Probe, *, error: BaseException | None, listeners: tuple[ProbeListener, ...]) -> None:
     finished.duration_s = time.perf_counter() - finished.started
-    for listener in _listeners:
+    for listener in listeners:
         try:
             listener.on_end(finished, error=error)
         except Exception:
-            logger.debug("probe listener failed on end of %s", finished.name, exc_info=True)
+            _debug("probe listener failed on end of %s", finished.name)
+    finished.active = False  # a task that outlives the probe can no longer write to it
 
 
-def _notify_start(started: Probe) -> None:
-    for listener in _listeners:
+def _notify_start(started: Probe, *, listeners: tuple[ProbeListener, ...]) -> None:
+    for listener in listeners:
         try:
             listener.on_start(started)
         except Exception:
-            logger.debug("probe listener failed on start of %s", started.name, exc_info=True)
+            _debug("probe listener failed on start of %s", started.name)
 
 
 def _bound_attributes(
@@ -213,7 +214,7 @@ def _bound_attributes(
             attributes.update(_clean(extract(bound)))
         return attributes
     except Exception:
-        logger.debug("probe attributes failed", exc_info=True)
+        _debug("probe attributes failed")
         return {}
 
 
@@ -223,7 +224,13 @@ def _apply_result(target: Probe, *, result: Callable[[Any], Attributes] | None, 
     try:
         target.set(result(value))
     except Exception:
-        logger.debug("probe result attributes failed for %s", target.name, exc_info=True)
+        _debug("probe result attributes failed for %s", target.name)
+
+
+def _debug(message: str, *args: object) -> None:
+    """Log a probe failure; a failing handler must not reach the host either."""
+    with contextlib.suppress(Exception):
+        logger.debug(message, *args, exc_info=True)
 
 
 def _clean(attributes: Mapping[str, Any]) -> dict[str, AttributeValue]:

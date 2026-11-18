@@ -60,6 +60,8 @@ def start() -> None:
         return
     content = settings.capture_content()
     configured = exporters.configure()
+    if configured.owned:
+        logs.hide_export_text()  # our exporters' failure logs can quote the endpoint URL
     try:
         if configured.logger_provider is not None:
             _log_handlers = logs.attach(logger_provider=configured.logger_provider, full=content)
@@ -71,6 +73,7 @@ def start() -> None:
     except Exception:
         _detach_logs()
         exporters.shutdown_all(configured.owned)
+        logs.show_export_text()
         raise
     _owned = configured.owned
 
@@ -107,10 +110,14 @@ def reset() -> None:
     uninstrument()
     _detach_logs()
     providers, _owned = _owned, []
-    _close(providers)
+    close_providers(providers)
+    if providers:
+        from slayer.otel import logs  # ALLOW(import-not-top): optional extra
+
+        logs.show_export_text()
 
 
-def _close(providers: list[Any]) -> None:
+def close_providers(providers: list[Any]) -> None:
     """Shut each provider down in its own thread, so a slow backend delays no other signal's final batch."""
     workers = [
         threading.Thread(target=_shutdown_one, kwargs={"provider": provider}, name="slayer-otel-shutdown", daemon=True)

@@ -677,7 +677,8 @@ class SqlClient(Protocol):
 
 
 def _db_probe_attributes(bound: Any) -> dict[str, Any]:
-    datasource = bound.arguments["self"].datasource
+    client = bound.arguments["self"]
+    datasource = client.datasource
     executed = bound.arguments.get("sql")
     statements = bound.arguments.get("statements")
     if executed is None and statements is not None:  # _explain passes the statement inside its plan
@@ -685,20 +686,16 @@ def _db_probe_attributes(bound: Any) -> dict[str, Any]:
     attributes: dict[str, Any] = {
         "datasource.name": datasource.name,
         "datasource.type": datasource.type or "",
-        "db.namespace": datasource.database,
-        "server.address": datasource.host,
-        "server.port": datasource.port,
         "db.query.text": executed,
     }
-    if not datasource.host and datasource.connection_string:
-        with contextlib.suppress(Exception):
-            url = make_url(datasource.connection_string)
-            attributes.update({
-                "server.address": url.host,
-                "server.port": url.port,
-                "db.namespace": url.database,
-            })
+    with contextlib.suppress(Exception):
+        url = client.connection_url()  # host, port and database only; never the credentials
+        attributes.update({"server.address": url.host, "server.port": url.port, "db.namespace": url.database})
     return attributes
+
+
+def _returned_rows(executed: ExecutionResult) -> dict[str, int]:
+    return {"db.response.returned_rows": len(executed.rows)}
 
 
 class SlayerSQLClient:
@@ -802,6 +799,12 @@ class SlayerSQLClient:
     @property
     def _dialect(self) -> SqlDialect:
         return dialect_for_ds_type(self.datasource.type)
+
+    def connection_url(self) -> URL:
+        """The URL this client connects through: its caller's engine's, else its datasource's."""
+        if self._sync_engine_owner == "caller" and self._sync_engine is not None:
+            return self._sync_engine.url
+        return make_url(self._connection_datasource().get_connection_string())
 
     def _in_memory(self) -> bool:
         """Whether this client's database is an in-memory one, which it may write."""
@@ -948,7 +951,7 @@ class SlayerSQLClient:
 
     @probes.probe(
         name="db.execute", extract=_db_probe_attributes,
-        result=lambda executed: {"db.response.returned_rows": len(executed.rows)},
+        result=_returned_rows,
     )
     async def _typed_execute(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
@@ -1208,6 +1211,13 @@ class SlayerSQLClient:
         writes = admit_statement(sql, dialect=self._dialect, writes_allowed=self._in_memory())
         if self._async_url() is not None:
             return run_sync(self._execute_bridged(sql=sql, timeout_seconds=timeout_seconds, writes=writes))
+        return self._typed_execute_sync(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
+
+    @probes.probe(
+        name="db.execute", extract=_db_probe_attributes,
+        result=_returned_rows,
+    )
+    def _typed_execute_sync(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
             return _execute_with_retry_sync(
                 sql=sql,
@@ -1412,6 +1422,7 @@ async def _retry_with_backoff(
         except _RETRYABLE_ERRORS as exc:
             _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay, writes=writes)
             await asyncio.sleep(delay)
+            _record_retry(exc=exc, attempt=attempt)
             delay = min(delay * 2, max_delay)
     return await do_call()
 
@@ -1424,13 +1435,17 @@ def _check_max_attempts(max_attempts: int) -> None:
 _RETRYABLE_ERRORS = (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError)
 
 
+def _record_retry(*, exc: Exception, attempt: int) -> None:
+    """A retry event once the backoff is over and the next attempt starts."""
+    probes.current().add_event(
+        name="db.retry", attributes={"db.attempt": attempt + 1, "error.type": type(exc).__qualname__},
+    )
+
+
 def _log_transient_or_raise(*, exc: Exception, sql: str, attempt: int, delay: float, writes: bool = False) -> None:
     """Re-raise a non-transient error; log the retry of a transient one."""
     if not _is_transient_db_error(exc, writes=writes):
         raise exc
-    probes.current().add_event(
-        name="db.retry", attributes={"db.attempt": attempt + 1, "error.type": type(exc).__qualname__},
-    )
     sql_lines = (sql or "").strip().splitlines()
     sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
     logger.warning(
@@ -1558,6 +1573,7 @@ def _execute_with_retry_sync(
         except _RETRYABLE_ERRORS as exc:
             _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay, writes=writes)
             time.sleep(delay)
+            _record_retry(exc=exc, attempt=attempt)
             delay = min(delay * 2, max_delay)
     return _call()
 

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+import sqlalchemy.exc
 
 from slayer.core import probes
+from slayer.database import client as client_module
 from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._compat_helpers import future_warnings, recorded
@@ -184,3 +188,45 @@ def test_a_generator_is_refused(fn) -> None:
     decorate = probes.probe(name="query")
     with pytest.raises(TypeError, match="generator"):
         decorate(fn)
+
+
+# --- retry events ----------------------------------------------------------------------
+
+
+def _locked() -> sqlalchemy.exc.OperationalError:
+    return sqlalchemy.exc.OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+
+async def _retried(*, monkeypatch: pytest.MonkeyPatch, sleep: Any) -> list[str]:
+    calls = iter([_locked(), None])
+
+    async def do_call() -> Any:
+        failure = next(calls)
+        if failure is not None:
+            raise failure
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", sleep)
+    with probes.scope(name="db.execute") as probe:
+        with contextlib.suppress(asyncio.CancelledError):
+            await client_module._retry_with_backoff(
+                sql="SELECT 1", do_call=do_call, max_attempts=2, initial_delay=0, max_delay=0,
+            )
+    return [event.name for event in probe.events]
+
+
+async def test_a_retry_is_recorded_when_the_next_attempt_starts(
+    recorder: _Recorder, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_wait(_delay: float) -> None:
+        return None
+
+    assert await _retried(monkeypatch=monkeypatch, sleep=no_wait) == ["db.retry"]
+
+
+async def test_a_retry_cancelled_during_backoff_is_not_recorded(
+    recorder: _Recorder, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def cancelled(_delay: float) -> None:
+        raise asyncio.CancelledError
+
+    assert await _retried(monkeypatch=monkeypatch, sleep=cancelled) == []

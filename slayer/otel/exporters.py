@@ -6,7 +6,6 @@ read the endpoint, headers, sampler, metric interval and resource variables them
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from typing import Any
 
@@ -24,7 +23,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer import __version__
-from slayer.otel import settings
+from slayer.otel import recorder, settings
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +77,8 @@ def _create_providers(configured: Configured) -> None:
 
 
 def shutdown_all(providers: list[Any]) -> None:
-    for provider in providers:
-        with contextlib.suppress(Exception):
-            provider.shutdown()
+    """Close ``providers`` within the same 1 s bound as the exit flush."""
+    recorder.close_providers(providers)
 
 
 def _note_unsupported_values() -> None:
