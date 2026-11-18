@@ -101,13 +101,18 @@ def test_capture_exceptions_alone_keeps_sql_text_in_the_process(capturing: OtelC
     assert "db.query.text" not in capturing.attributes("slayer.db.execute")
 
 
-def _failing_statement() -> None:
+def _raise_wrapped_statement_error() -> None:
+    """A failed statement, re-wrapped as SLayer's client does, with the SQL in the chain and the text."""
     sql = f"SELECT * FROM orders WHERE region = '{SENT}'"
+    try:
+        raise OperationalError(sql, {"region": SENT}, Exception("no such column"))
+    except OperationalError as error:
+        raise RuntimeError(f"query failed: {error}") from error
+
+
+def _failing_statement() -> None:
     with pytest.raises(RuntimeError), stages.stage(name="db.execute"):
-        try:
-            raise OperationalError(sql, {"region": SENT}, Exception("no such column"))
-        except OperationalError as error:
-            raise RuntimeError(f"query failed: {error}") from error
+        _raise_wrapped_statement_error()
 
 
 @pytest.mark.parametrize("capturing", [("exceptions",)], indirect=True)

@@ -23,16 +23,14 @@ from slayer.otel import settings
 TEST_SPAN = "slayer.otel.test"
 TEST_TIMEOUT_SECONDS = 5
 
+_REDIRECT_HINT = "the endpoint redirects; set the URL it redirects to"
 _HINTS = {
     401: "the backend rejected the credentials; check OTEL_EXPORTER_OTLP_HEADERS",
     403: "the backend rejected the credentials; check OTEL_EXPORTER_OTLP_HEADERS",
     404: "no OTLP receiver at this path; OTEL_EXPORTER_OTLP_ENDPOINT is a base URL, /v1/<signal> is added",
     405: "this URL does not accept OTLP; check the endpoint",
-    301: "the endpoint redirects; set the URL it redirects to",
-    302: "the endpoint redirects; set the URL it redirects to",
-    307: "the endpoint redirects; set the URL it redirects to",
-    308: "the endpoint redirects; set the URL it redirects to",
     413: "the backend refused the request size",
+    **dict.fromkeys((301, 302, 307, 308), _REDIRECT_HINT),
 }
 
 

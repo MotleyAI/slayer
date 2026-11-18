@@ -312,7 +312,7 @@ class _Redirecting(BaseHTTPRequestHandler):
 
 
 def test_test_does_not_follow_a_redirect(clean_env: pytest.MonkeyPatch) -> None:
-    _Redirecting.seen = []
+    clean_env.setattr(_Redirecting, "seen", [])
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Redirecting)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
