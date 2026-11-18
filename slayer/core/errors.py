@@ -831,7 +831,7 @@ class UnknownFunctionError(SlayerError, ValueError):
 
 
 class MetricRecursionLimitError(SlayerError, ValueError):
-    """Named-metric expansion exceeded the depth limit (default 32; ``SLAYER_MEASURE_EXPANSION_DEPTH``)."""
+    """Named-metric expansion exceeded the depth limit (default 32; ``SLAYER_METRIC_EXPANSION_DEPTH``)."""
 
     def __init__(self, chain: List[str], limit: int = 32) -> None:
         self.chain = list(chain)

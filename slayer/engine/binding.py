@@ -46,6 +46,7 @@ from slayer.core.direction import rank_direction, with_direction_kwarg
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, resolve_granularity, unknown_granularity_message
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS, key_display
+from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
 from slayer.core.keys import FieldTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
     LIST_ELEMENT_FIELD,
@@ -175,13 +176,20 @@ def range_read() -> Generator[None, None, None]:
 
 
 _DEFAULT_METRIC_DEPTH = 32
-_METRIC_DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
+_METRIC_DEPTH_ENV_VAR = "SLAYER_METRIC_EXPANSION_DEPTH"
+_OLD_METRIC_DEPTH_ENV_VAR = "SLAYER_MEASURE_EXPANSION_DEPTH"
 _NO_ANCHOR_SCOPE_SUMMARY = "(no population anchor; anchor-less mode not implemented)"
 
 
 def _metric_depth_limit() -> int:
     """Saved-metric expansion depth cap (env override, default 32)."""
-    raw = os.environ.get(_METRIC_DEPTH_ENV_VAR)
+    env = renamed_arguments(
+        {k: v for k, v in os.environ.items() if k in (_METRIC_DEPTH_ENV_VAR, _OLD_METRIC_DEPTH_ENV_VAR)},
+        renames={_OLD_METRIC_DEPTH_ENV_VAR: _METRIC_DEPTH_ENV_VAR},
+    )
+    if _OLD_METRIC_DEPTH_ENV_VAR in os.environ:
+        deprecated_spelling(_OLD_METRIC_DEPTH_ENV_VAR, _METRIC_DEPTH_ENV_VAR)
+    raw = env.get(_METRIC_DEPTH_ENV_VAR)
     if raw is None:
         return _DEFAULT_METRIC_DEPTH
     try:

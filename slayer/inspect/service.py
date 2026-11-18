@@ -9,13 +9,14 @@ import json
 from typing import Any, NamedTuple
 
 from slayer.core.time_spine import TIME_SPINE_DATASET
-from slayer.core.vocabulary import deprecated_spelling
+from slayer.core.vocabulary import DATASET_KEYS, ENTITY_KINDS, deprecated_spelling, respelled_token
 from slayer.core.errors import (
     AmbiguousDatasetError,
     EntityResolutionError,
     MemoryNotFoundError,
 )
 from slayer.core.models import SlayerDataset
+from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.inspect.collection_render import (
     BLOCK_SEP,
@@ -111,6 +112,11 @@ class InspectService:
 
         Batch blocks keep input order with per-id errors isolated; collections support dataset/datasource only.
         """
+        renamed: list[DeprecatedInputWarning] = []
+        entity_type = respelled_token(entity_type, ENTITY_KINDS, renamed)
+        if sections:
+            sections = [respelled_token(section, DATASET_KEYS, renamed) for section in sections]
+        renamed_lines = [r.human_message() for r in renamed]
         if entity_type not in VALID_ENTITY_TYPES:
             raise ValueError(
                 f"Invalid entity_type '{entity_type}'. Must be one of: "
@@ -131,14 +137,16 @@ class InspectService:
             if entity_type not in _COLLECTION_KINDS:
                 raise ValueError(_COLLECTION_UNSUPPORTED)
             if entity_type == "dataset":
-                return await self._inspect_collection_dataset(
+                collection = await self._inspect_collection_dataset(
                     compact=compact, fmt=fmt,
                     descriptions_max_chars=descriptions_max_chars,
                 )
-            return await self._inspect_collection_datasource(
-                compact=compact, fmt=fmt,
-                descriptions_max_chars=descriptions_max_chars,
-            )
+            else:
+                collection = await self._inspect_collection_datasource(
+                    compact=compact, fmt=fmt,
+                    descriptions_max_chars=descriptions_max_chars,
+                )
+            return self._with_renamed(collection, renamed_lines, fmt=fmt)
 
         if isinstance(reference, list):
             if any(not isinstance(ref, str) for ref in reference):
@@ -147,7 +155,7 @@ class InspectService:
             raise ValueError("reference must be a string or a list of strings.")
 
         # Seeds every batch id; each id appends its resolver warnings to a copy.
-        warnings: list[str] = self._dataset_only_arg_warnings(
+        warnings: list[str] = renamed_lines + self._dataset_only_arg_warnings(
             entity_type=entity_type,
             num_rows=num_rows,
             show_sql=show_sql,
@@ -288,6 +296,17 @@ class InspectService:
                     )
             out.append(line)
         return "\n".join(out)
+
+    @classmethod
+    def _with_renamed(cls, rendered: str, renamed: list[str], *, fmt: str) -> str:
+        """A collection render with the pre-2.0 spellings it read reported (a JSON object's ``warnings``)."""
+        if not renamed:
+            return rendered
+        if fmt != "json":
+            return cls._markdown_with_warnings(rendered, renamed)
+        payload = json.loads(rendered)
+        payload["warnings"] = [*payload.get("warnings", []), *renamed]
+        return json.dumps(payload, indent=2)
 
     @staticmethod
     def _markdown_with_warnings(body: str, warnings: list[str]) -> str:

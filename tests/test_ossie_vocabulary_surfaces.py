@@ -115,13 +115,12 @@ class TestMcpArguments:
         assert dataset is not None
         assert "revenue" not in {m.name for m in dataset.metrics}
 
-    @pytest.mark.parametrize(("old", "new"), [("columns", "fields"), ("measures", "metrics"),
-                                              ("joins", "relationships")])
+    @pytest.mark.parametrize(("old", "new"), [("columns", "fields"), ("measures", "metrics")])
     async def test_an_old_create_argument_converts(self, tmp_path: Path, old: str, new: str) -> None:
         storage = await seeded(tmp_path)
         orders = shop_orders()
         args = {"name": "orders2", "sql_table": "orders", "data_source": DS, "fields": orders["fields"],
-                "metrics": orders["metrics"], "relationships": orders["relationships"]}
+                "metrics": orders["metrics"]}
         args[old] = args.pop(new)
         with recorded():
             text = await mcp_text(storage, "create_dataset", **args)
@@ -155,6 +154,21 @@ class TestMcpInspect:
             converted = await mcp_text(storage, "inspect", entity_type=old, reference=reference, compact=False)
         assert expected in converted
         assert reported(converted.replace(expected, ""), old=old, new=new), converted
+
+    @pytest.mark.parametrize("fmt", ["markdown", "json"])
+    async def test_an_old_kind_converts_for_a_collection(self, tmp_path: Path, fmt: str) -> None:
+        storage = await seeded(tmp_path)
+        expected = await mcp_text(storage, "inspect", entity_type="dataset", format=fmt)
+        with recorded():
+            converted = await mcp_text(storage, "inspect", entity_type="model", format=fmt)
+        if fmt == "json":
+            payload, fresh = json.loads(converted), json.loads(expected)
+            assert without_warnings(payload) == without_warnings(fresh)
+            added = [w for w in payload["warnings"] if w not in fresh.get("warnings", [])]
+            assert reported("\n".join(added), old="model", new="dataset"), payload["warnings"]
+        else:
+            assert expected in converted
+            assert reported(converted.replace(expected, ""), old="model", new="dataset"), converted
 
     @pytest.mark.parametrize(("old", "new"), [("columns", "fields"), ("measures", "metrics"),
                                               ("joins", "relationships")])

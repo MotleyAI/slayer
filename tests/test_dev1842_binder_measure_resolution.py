@@ -150,7 +150,7 @@ class TestCycleAndDepthThroughBinder:
         for i in range(4, 0, -1):
             measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
         model = _dataset(measures)
-        with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "2"}):
+        with mock.patch.dict(os.environ, {"SLAYER_METRIC_EXPANSION_DEPTH": "2"}):
             with pytest.raises(MetricRecursionLimitError) as ei:
                 await _gen(model, "m1")
             assert ei.value.limit == 2

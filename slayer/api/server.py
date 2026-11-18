@@ -1,9 +1,10 @@
 """FastAPI server for SLayer."""
 
 import contextlib
+import functools
 import logging
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
@@ -31,6 +32,7 @@ from slayer.core.query import (
     check_unique_extensions,
     prepare_query_input,
 )
+from slayer.core.vocabulary import deprecated_spelling
 from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.async_utils import run_sync
 from slayer.live_schema import ingestion as engine_ingestion
@@ -307,6 +309,66 @@ class _UsageMiddleware:
         usage_reporting.record(surface="rest", token=token, error=error, dry_run=dry_run)
 
 
+#: Each pre-2.0 route template, by its replacement.
+_OLD_ROUTES = {
+    "/datasets": "/models",
+    "/datasets/{name}": "/models/{name}",
+    "/validate-datasets": "/validate-models",
+    "/recommend-population": "/recommend-root-model",
+}
+
+
+class _DeprecationHeaderMiddleware:
+    """Marks every response of a pre-2.0 route with a ``Deprecation`` header."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def marked(message: Message) -> None:
+            route = scope.get("route")
+            if message["type"] == "http.response.start" and isinstance(route, APIRoute) and route.deprecated:
+                message = {**message, "headers": [*message.get("headers", []), (b"deprecation", b"true")]}
+            await send(message)
+
+        await self.app(scope, receive, marked)
+
+
+def _route_twin(endpoint: Callable[..., Awaitable[Any]], *, old: str, new: str) -> Callable[..., Awaitable[Any]]:
+    """``endpoint`` served at a pre-2.0 route: one deprecation, appended to a response's ``warnings``."""
+    @functools.wraps(endpoint)
+    async def twin(*args: Any, **kwargs: Any) -> Any:
+        renamed = deprecated_spelling(old, new)
+        result = await endpoint(*args, **kwargs)
+        if isinstance(result, dict) and "warnings" in result:
+            return {**result, "warnings": [*result["warnings"], renamed.model_dump(mode="json")]}
+        return result
+
+    return twin
+
+
+def _add_old_routes(app: FastAPI) -> None:
+    """Serve each route of ``_OLD_ROUTES`` at its pre-2.0 template too, marked deprecated."""
+    for route in list(app.routes):
+        if not isinstance(route, APIRoute) or route.path not in _OLD_ROUTES:
+            continue
+        old = _OLD_ROUTES[route.path]
+        for method in sorted(route.methods):
+            app.add_api_route(
+                old,
+                _route_twin(route.endpoint, old=f"{method} {old}", new=f"{method} {route.path}"),
+                methods=[method],
+                response_model=route.response_model,
+                responses=route.responses,
+                deprecated=True,
+                name=f"{route.name}_pre_2_0",
+            )
+
+
 def _slayer_version() -> str:
     try:
         return _pkg_version("motley-slayer")
@@ -348,6 +410,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     app = FastAPI(title="SLayer", version=_slayer_version(), lifespan=lifespan)
     app.add_middleware(_UsageMiddleware, mounted=_MCP_MOUNT)
+    app.add_middleware(_DeprecationHeaderMiddleware)
 
     # Mount MCP server over SSE at /mcp. The embedded server intentionally
     # does NOT receive `ingest_on_startup` — orchestration happens once,
@@ -922,4 +985,5 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(exc))
         return {"result": result}
 
+    _add_old_routes(app)
     return app

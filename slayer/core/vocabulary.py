@@ -19,12 +19,12 @@ if TYPE_CHECKING:
     from slayer.core.warnings import DeprecatedInputWarning
 
 __all__ = [
-    "AGGREGATION_KEYS", "COVERAGE_KEYS", "DATASET_KEYS", "EXTENSION_KEYS", "FIELD_KEYS", "FIELD_REF_KEYS",
+    "AGGREGATION_KEYS", "COVERAGE_KEYS", "DATASET_KEYS", "ENTITY_KINDS", "EXTENSION_KEYS", "FIELD_KEYS", "FIELD_REF_KEYS",
     "METRIC_KEYS", "ORDER_ITEM_KEYS", "QUERY_KEYS", "RECOMMENDATION_KEYS", "REFINEMENT_KEYS", "RELATIONSHIP_KEYS",
     "RESPONSE_ATTRIBUTE_KEYS", "SOURCE_ORIGIN_KEYS", "TIME_DIMENSION_KEYS", "WARNING_KEYS",
     "SpellingConflictError", "Spellings", "attribute_used", "bridge_renamed_hooks", "converted_document",
     "current_spellings", "deprecated_spelling", "method_twin", "name_twins", "one_document", "renamed_arguments",
-    "renamed_input", "renamed_name", "same_ignoring_deprecations", "stored_dataset", "stored_query",
+    "renamed_input", "renamed_name", "respelled_token", "same_ignoring_deprecations", "stored_dataset", "stored_query",
 ]
 
 DATASET_KEYS = {"columns": "fields", "measures": "metrics", "joins": "relationships"}
@@ -42,6 +42,8 @@ SOURCE_ORIGIN_KEYS = {"agg_column_names": "agg_field_names"}
 RESPONSE_ATTRIBUTE_KEYS = {"measures": "metrics"}
 RECOMMENDATION_KEYS = {"root_model": "population"}
 COVERAGE_KEYS = {"model_name": "dataset_name"}
+#: Entity kinds as ``inspect`` and search name them.
+ENTITY_KINDS = {"model": "dataset", "column": "field", "measure": "metric"}
 #: A warning payload's pre-2.0 keys, by its ``kind``.
 WARNING_KEYS: dict[str, dict[str, str]] = {
     "associated": {"measure": "metric"},
@@ -78,6 +80,14 @@ def same_ignoring_deprecations(a: BaseModel, b: BaseModel) -> bool:
 def deprecated_spelling(old: str, new: str) -> DeprecatedInputWarning:
     """Report reading the pre-2.0 spelling ``old`` as ``new`` (a surface token, label or reference)."""
     return _deprecation(old, new)
+
+
+def respelled_token(token: str, table: Mapping[str, str], reported: list[DeprecatedInputWarning]) -> str:
+    """``token``'s replacement in ``table`` (its deprecation appended to ``reported``), else ``token``."""
+    if token not in table:
+        return token
+    reported.append(_deprecation(token, table[token]))
+    return table[token]
 
 
 def renamed_arguments(kwargs: Mapping[str, Any], *, renames: Mapping[str, str]) -> dict[str, Any]:

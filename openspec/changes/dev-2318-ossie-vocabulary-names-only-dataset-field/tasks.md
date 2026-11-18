@@ -38,11 +38,11 @@
 
 ## 4. Phase 2: translate old to new
 
-- [ ] 4.1 Add `slayer/core/vocabulary.py`: the rename tables, per-entity dict converters, one deprecation per distinct old form per document across nested parts, and `SpellingConflictError`. It imports only `core`. Verify the fresh-input and conflict scenario tests pass.
+- [x] 4.1 Add `slayer/core/vocabulary.py`: the rename tables, per-entity dict converters, one deprecation per distinct old form per document across nested parts, and `SpellingConflictError`. It imports only `core`. Verify the fresh-input and conflict scenario tests pass.
 - [x] 4.2 Add the version steps SlayerModel 25→26, SlayerQuery 15→16, Memory 11→12 and Embedding 1→2, renumbering if another slice merged first. They are silent, they recurse through nested `source_queries` and memory queries, and they are never pinned for removal. Verify the stored-migration and 1.x upgrade-store tests pass.
 - [x] 4.3 Rewrite the embeddings sidecar's `entity_kind` values in place, in one idempotent transaction on open, in both backends. Verify the sidecar test passes with no re-embed and no content-hash change.
 - [x] 4.4 Add the curated Python twins in the design decision 15 form, plus the storage hook bridge for 1.x backends. Verify the twin tests, the type-checker probe and the custom-backend test pass.
-- [ ] 4.5 Surfaces:
+- [x] 4.5 Surfaces:
   - REST: old `/models…` routes with a `Deprecation` header;
   - CLI: old commands and flags with a `Deprecated: …` stderr line;
   - MCP: old tool arguments, `inspect` kinds and sections, and help references converted;
@@ -55,7 +55,7 @@
   Verify the surface, search and response-attribute tests pass.
 - [x] 4.6 Move the Ossie `SLAYER` payload to version 2. The version-1 reader verifies the fingerprint over the content as written, then converts silently. Verify the export and import tests pass.
 - [x] 4.7 Move the usage report to schema 3: `dataset_count`, new tokens and route templates. Spooled schema-2 batches map their renamed keys and tokens before unknown keys fold into `other`. Verify the usage-reporting tests pass, including the mixed spool case.
-- [ ] 4.8 Add a section to `docs/upgrading/2.0.md` with a before and after for every renamed form, every old and new MCP tool name and module path, and the curated twin list. Verify every page is linked from `zensical.toml`.
+- [x] 4.8 Add a section to `docs/upgrading/2.0.md` with a before and after for every renamed form, every old and new MCP tool name and module path, and the curated twin list. Verify every page is linked from `zensical.toml`.
 
 ## 5. Pairwise corpus
 

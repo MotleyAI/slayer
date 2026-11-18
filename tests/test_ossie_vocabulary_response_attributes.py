@@ -94,8 +94,8 @@ async def shop_app(tmp_path: Path) -> TestClient:
     return TestClient(create_app(storage=storage))
 
 
-SHOP_QUERY: dict[str, Any] = {"population": "orders", "dimensions": ["customers.region"],
-                              "metrics": [{"expression": "sum(amount)", "name": "total"}]}
+SHOP_QUERY: dict[str, Any] = {"population": "orders", "dimensions": [{"name": "customers.region", "label": "Region"}],
+                              "metrics": [{"expression": "sum(amount)", "name": "total", "label": "Total"}]}
 
 
 async def test_the_http_client_reads_metrics(tmp_path: Path) -> None:

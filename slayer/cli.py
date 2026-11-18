@@ -26,6 +26,8 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
+from slayer.core.vocabulary import ENTITY_KINDS, respelled_token
+from slayer.core.warnings import DeprecatedInputWarning
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.parser import parse_cube_project
 from slayer.cube.report import CubeConversionIssue, CubeConversionResult, CubeIssueCategory
@@ -208,11 +210,39 @@ def _fail(message: str) -> NoReturn:
     raise _CommandFailed(message)
 
 
+_OLD_COMMANDS = {"models": "datasets", "validate-models": "validate-datasets",
+                 "recommend-root-model": "recommend-population"}
+_OLD_FLAGS = {"--model": "--dataset", "--models": "--datasets", "--include-hidden-models": "--include-hidden-datasets"}
+
+
+def _respelled_argv(argv: Sequence[str]) -> list[str]:
+    """``argv`` with its pre-2.0 command, flags and ``inspect --type`` kinds respelled, one deprecation each."""
+    reported: list[DeprecatedInputWarning] = []
+    out = list(argv)
+    command_at = next((i for i, token in enumerate(out) if not token.startswith("-")), None)
+    if command_at is not None:
+        out[command_at] = respelled_token(out[command_at], _OLD_COMMANDS, reported)
+    inspecting = command_at is not None and out[command_at] == "inspect"
+    end = out.index("--") if "--" in out else len(out)
+    for i in range(end):
+        flag, eq, value = out[i].partition("=")
+        flag = respelled_token(flag, _OLD_FLAGS, reported) if flag.startswith("--") else flag
+        if inspecting and flag == "--type":
+            if eq:
+                value = respelled_token(value, ENTITY_KINDS, reported)
+            elif i + 1 < end:
+                out[i + 1] = respelled_token(out[i + 1], ENTITY_KINDS, reported)
+        out[i] = f"{flag}{eq}{value}"
+    return out
+
+
 def main():
     parser = _build_parser()
     _assign_usage_tokens(parser)
     _add_debug_flags(parser)
-    args = parser.parse_args()
+    with deprecations_on_one_line():
+        argv = _respelled_argv(sys.argv[1:])
+    args = parser.parse_args(argv)
     token = getattr(args, "usage_token", None)
     guard = _TerminationGuard(token=token) if args.command in _SERVER_COMMANDS else None
     try:

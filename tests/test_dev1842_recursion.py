@@ -14,9 +14,10 @@ from unittest import mock
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import MetricRecursionLimitError
+from slayer.core.errors import MetricRecursionLimitError, SpellingConflictError
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 
+from tests._deprecated_input_helpers import deprecations, payload_of, recorded
 from tests._dev1842_fixtures import gen, make_exec_engine, month_td, q
 from tests._engine_helpers import _engine_generate
 
@@ -118,10 +119,24 @@ class TestDepthLimit:
         )
 
     async def test_depth_limit_exceeded_raises(self):
-        with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "1"}):
+        with mock.patch.dict(os.environ, {"SLAYER_METRIC_EXPANSION_DEPTH": "1"}):
             with pytest.raises(MetricRecursionLimitError) as ei:
                 await self._generate("sub.d1")
             assert ei.value.limit == 1
+
+    async def test_the_pre_2_0_depth_variable_still_applies_with_a_deprecation(self):
+        with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "1"}), recorded() as caught:
+            with pytest.raises(MetricRecursionLimitError) as ei:
+                await self._generate("sub.d1")
+        assert ei.value.limit == 1
+        assert {(p.old, p.new) for p in map(payload_of, deprecations(caught))} == {
+            ("SLAYER_MEASURE_EXPANSION_DEPTH", "SLAYER_METRIC_EXPANSION_DEPTH")}
+
+    async def test_both_depth_variables_are_refused(self):
+        both = {"SLAYER_MEASURE_EXPANSION_DEPTH": "1", "SLAYER_METRIC_EXPANSION_DEPTH": "2"}
+        with mock.patch.dict(os.environ, both), recorded():
+            with pytest.raises(SpellingConflictError):
+                await self._generate("sub.d1")
 
     async def test_within_depth_limit_resolves(self):
         # The same chain resolves to ``sum(sub.amount)`` under the default cap.

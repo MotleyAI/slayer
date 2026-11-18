@@ -33,7 +33,8 @@ from slayer.core.granularity import CustomGranularity
 from slayer.core.relationship_edges import RelationshipEdgeRef, edge_reference, resolve_relationship_refs, without_relationships
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import render_recommendation_markdown
-from slayer.core.warnings import ResponseTruncationWarning, SlayerWarning
+from slayer.core.vocabulary import DATASET_KEYS, deprecated_spelling, renamed_arguments
+from slayer.core.warnings import DeprecatedInputWarning, ResponseTruncationWarning, SlayerWarning
 from slayer import async_utils
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.live_schema.ingestion import (
@@ -178,6 +179,62 @@ def _import_fastmcp():
     return FastMCP
 
 
+#: Pre-2.0 tool arguments, by tool.
+_OLD_ARGUMENTS: dict[str, dict[str, str]] = {
+    "create_dataset": DATASET_KEYS,
+    "edit_dataset": {"model_name": "dataset_name", **DATASET_KEYS},
+}
+_OLD_REMOVE_KEYS = {**DATASET_KEYS, "join_edges": "relationship_edges"}
+
+
+def _respelled(
+    arguments: dict[str, Any], renames: dict[str, str], reported: dict[tuple[str, str], DeprecatedInputWarning],
+) -> dict[str, Any]:
+    out = renamed_arguments(arguments, renames=renames)
+    for old, new in renames.items():
+        if old in arguments and (old, new) not in reported:
+            reported[(old, new)] = deprecated_spelling(old, new)
+    return out
+
+
+def _converted_arguments(
+    *, tool: str, arguments: dict[str, Any],
+) -> tuple[dict[str, Any], list[DeprecatedInputWarning]]:
+    """``arguments`` with their pre-2.0 spellings replaced, and one deprecation per old spelling."""
+    reported: dict[tuple[str, str], DeprecatedInputWarning] = {}
+    out = _respelled(arguments, _OLD_ARGUMENTS.get(tool, {}), reported)
+    if tool == "edit_dataset" and isinstance(out.get("remove"), dict):
+        out["remove"] = _respelled(out["remove"], _OLD_REMOVE_KEYS, reported)
+    return out, list(reported.values())
+
+
+def _reported_text(text: str, lines: list[str]) -> str:
+    """``text`` reporting ``lines``: in a JSON object's ``warnings`` list, else as trailing warning lines."""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        payload["warnings"] = [*payload.get("warnings", []), *lines]
+        return json.dumps(payload, indent=2)
+    return text + "".join(f"\nWarning: {line}" for line in lines)
+
+
+def _with_deprecations(result: Any, renamed: list[DeprecatedInputWarning]) -> Any:
+    """A tool result (content blocks, optionally with structured output) whose first text reports ``renamed``."""
+    if not renamed:
+        return result
+    lines = [r.human_message() for r in renamed]
+    blocks, structured = result if isinstance(result, tuple) else (result, None)
+    blocks = list(blocks)
+    first = next((i for i, b in enumerate(blocks) if getattr(b, "type", None) == "text"), None)
+    if first is not None:
+        blocks[first] = blocks[first].model_copy(update={"text": _reported_text(blocks[first].text, lines)})
+    if isinstance(structured, dict) and isinstance(structured.get("result"), str):
+        structured = {**structured, "result": _reported_text(structured["result"], lines)}
+    return (blocks, structured) if isinstance(result, tuple) else blocks
+
+
 def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
     """``fastmcp_cls`` counting every tool call, and each session's client once."""
 
@@ -190,7 +247,8 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             session = self._observe_session()
             with usage_reporting.action() as action:
                 try:
-                    result = await super().call_tool(name, arguments)
+                    arguments, renamed = _converted_arguments(tool=name, arguments=arguments)
+                    result = _with_deprecations(await super().call_tool(name, arguments), renamed)
                 except BaseException as exc:
                     usage_reporting.record(
                         surface="mcp", token=name, error=_counted_error(exc), dry_run=action.dry_run, session=session,
