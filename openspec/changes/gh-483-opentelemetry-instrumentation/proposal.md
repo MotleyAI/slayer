@@ -15,7 +15,7 @@ OpenTelemetry (OTel) is the vendor-neutral standard for traces, metrics and logs
 - SLayer's own log records are exported with trace correlation. Without content capture, they leave as their message templates, and their argument values stay in the process.
 - SQL text and exception text leave the process only with content capture: `SLAYER_OTEL_CAPTURE_CONTENT=on` for the `slayer` command, or `otel.instrument(capture_content=True)` for a library caller.
 - New commands: `slayer otel status` prints the configuration that a start uses, without a network call. `slayer otel test` sends one empty OTLP request per signal and one test span. If an endpoint fails, it exits 1.
-- At exit, SLayer waits at most 1 second for the final export. A down, slow or rejecting backend never fails a command.
+- At exit, SLayer waits at most 1 second for the final export of the providers it created; a host's own providers follow the host's shutdown. A down, slow or rejecting backend never fails a command.
 - Usage reporting gains the usage keys `cli:otel.status` and `cli:otel.test` and the extra token `otel`.
 
 ## Capabilities

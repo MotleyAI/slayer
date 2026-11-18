@@ -61,7 +61,7 @@ The query path starts at `SlayerQueryEngine.execute`. It normalizes the input, p
 - [The OTel Logs API is still experimental] → Log export sits behind `OTEL_LOGS_EXPORTER`, and traces and metrics do not depend on it.
 - [The MCP and GenAI conventions can be renamed] → The names sit in one table in `slayer/otel/adapter.py`.
 - [One extra frame per decorated function in tracebacks] → Error types and messages do not change.
-- [A slow backend can lose the final batch at exit] → The docs state the 1-second bound. Metrics are cumulative, so a failed export loses no counts.
+- [A slow backend can lose the final batch at exit] → The docs state the 1-second bound. Metrics are cumulative, so a later successful export from the same process recovers the counts of a failed one; a process that exits after a failed final export loses them.
 - [Worker threads that SLayer starts do not inherit the trace context] → Their probes start new traces. A later change can copy the context.
 
 ## Migration Plan

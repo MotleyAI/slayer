@@ -70,6 +70,7 @@ from slayer.pg_facade.types import (
     value_to_binary,
     value_to_text,
 )
+from slayer.core import probes as core_probes
 from slayer.core import timing
 from slayer import otel
 
@@ -1149,6 +1150,7 @@ class PgConnection:
                     )
             usage_reporting.observe_executed(response)
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
+            core_probes.current().set({"error.type": type(exc).__qualname__})  # the request failed though handled
             code, message = _engine_error_fields(exc)
             await self._send_error(code=code, message=message)
             self._fail_tx()

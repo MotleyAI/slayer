@@ -91,7 +91,7 @@ Database spans SHALL have kind `CLIENT`. If these values are known, they SHALL c
 - **THEN** the `slayer.db.execute` span has kind `CLIENT`, `db.system.name=sqlite` and `db.response.returned_rows=2`
 
 ### Requirement: Errors are reported by class
-A probe that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded.
+A probe that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded. A surface that handles a failure and answers with an error SHALL mark its request span the same way: a REST response with status 500 or above, with `error.type` set to the status code, and a failed Postgres-facade query, with `error.type` set to the exception class. A REST request span SHALL carry `http.response.status_code`.
 
 #### Scenario: Unknown dataset
 - **WHEN** a query names a dataset that does not exist

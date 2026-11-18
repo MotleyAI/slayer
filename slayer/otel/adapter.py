@@ -40,6 +40,7 @@ STANDARD_KEYS = frozenset({
     "mcp.method.name",
     "gen_ai.operation.name",
     "gen_ai.tool.name",
+    "http.response.status_code",
 })
 _CONTENT_KEYS = frozenset({"db.query.text"})
 
@@ -142,10 +143,11 @@ class OtelProbeListener:
         self._record_metrics(probe, attributes=attributes)
 
     def _finish_span(self, span: trace.Span, *, probe: probes.Probe, error: BaseException | None) -> Attributes:
-        if error is not None:
+        # A raised error, or one the surface handled and named with error.type, fails the span.
+        if error is not None or ERROR_TYPE in probe.attributes:
             span.set_status(Status(StatusCode.ERROR))
-            if self.capture_content:
-                self._record_exception(span, error=error)
+        if error is not None and self.capture_content:
+            self._record_exception(span, error=error)
         _lift_datasource(probe)
         attributes = {**probe.attributes, **_derived(probe, error=error)}
         span.set_attributes(self._exported(attributes))

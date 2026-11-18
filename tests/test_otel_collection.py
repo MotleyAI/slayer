@@ -277,3 +277,37 @@ def test_direct_synchronous_execution_is_a_database_span(
     finally:
         client.close()
     assert otel_env.attributes("slayer.db.execute")["db.response.returned_rows"] == 1
+
+
+def test_a_probe_with_an_error_type_is_a_failed_span(otel_env: OtelCapture) -> None:
+    with probes.scope(name="request", attributes={"surface": "rest"}) as request:
+        request.set({"error.type": "500"})
+    (point,) = otel_env.metric("slayer.request.duration")
+    assert (otel_env.span("slayer.request").status.status_code, point.attributes["error.type"]) == (
+        StatusCode.ERROR, "500",
+    )
+
+
+def _responding(status: int) -> Any:
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    return app
+
+
+@pytest.mark.parametrize(("status", "failed"), [(500, True), (503, True), (404, False), (200, False)])
+async def test_a_rest_request_span_records_its_status_and_fails_on_5xx(
+    otel_env: OtelCapture, status: int, failed: bool,
+) -> None:
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request"}
+
+    async def send(_message: Any) -> None:
+        return None
+
+    await otel.RequestMiddleware(_responding(status), mounted="/mcp")({"type": "http", "path": "/query"}, receive, send)
+    span = otel_env.span("slayer.request")
+    attributes = otel_env.attributes("slayer.request")
+    assert (span.status.status_code is StatusCode.ERROR, attributes["http.response.status_code"],
+            attributes.get("error.type")) == (failed, status, str(status) if failed else None)

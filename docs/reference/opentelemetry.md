@@ -148,18 +148,19 @@ POST /query                   FastAPI's own span, only with FastAPI instrumentat
 
 Database spans have kind `CLIENT`. Request spans from Flight SQL and the Postgres facade have kind `SERVER`. All other spans are `INTERNAL`. A REST request contains FastAPI's own spans only when FastAPI instrumentation is active, for example through `opentelemetry-instrument`. In that case, SLayer's spans sit inside them. When SLayer configures OTel itself, its providers stay private. A FastAPI version with native tracing then exports nothing through SLayer, so its URL paths and query values stay in the process.
 
-A failed operation has status `ERROR` and an `error.type` attribute with the exception class. A transient database error that SLayer retries adds a `slayer.db.retry` event to the database span.
+A failed operation has status `ERROR` and an `error.type` attribute with the exception class. A request that a surface answers with an error is failed too: a REST response with status 500 or above, with `error.type` set to the status code, and a failed Postgres-facade query. A transient database error that SLayer retries adds a `slayer.db.retry` event to the database span.
 
 SLayer uses the OTel standard attribute names where they exist:
 
 | Attribute | Value |
 |---|---|
-| `error.type` | the exception class |
+| `error.type` | the exception class, or a REST request's 5xx status code |
 | `db.system.name` | the standard name of the database, for example `postgresql`, `mysql`, `clickhouse` or `microsoft.sql_server`. Types without a standard name, such as DuckDB, Snowflake and BigQuery, are `other_sql`. |
 | `db.namespace` | the database name |
 | `server.address`, `server.port` | the database host and port, never credentials |
 | `db.response.returned_rows` | the rows that the statement returned |
 | `mcp.method.name`, `gen_ai.operation.name`, `gen_ai.tool.name` | on MCP requests: `tools/call`, `execute_tool` and the tool name |
+| `http.response.status_code` | on REST requests: the response status |
 | `slayer.surface`, `slayer.operation` | the surface and the operation, on every request |
 | `slayer.datasource.name`, `slayer.datasource.type` | the datasource from your configuration |
 | `slayer.query.rows`, `slayer.query.dry_run`, `slayer.query.explain` | about the query |
