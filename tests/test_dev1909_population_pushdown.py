@@ -464,7 +464,7 @@ class TestUnanalyzableFailsClosed:
         """A filter on a derived column no dialect can parse fails closed, with or
         without an aggregate, in every mode — naming the filter and the column."""
         _, engine = unparse_backend
-        kw = {"filters": ["customers.regions.unparseable > 0"], "to_many_handling": mode}
+        kw = {"filter": ["customers.regions.unparseable > 0"], "to_many_handling": mode}
         q = (orders_q(metrics=[AMOUNT_SUM], **kw) if with_measure
              else orders_q(dimensions=["customers.tier"], **kw))
         with pytest.raises(ValueError) as ei:

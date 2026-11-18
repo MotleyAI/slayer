@@ -697,7 +697,7 @@ async def _persist_int_dataset(
     col_kwargs: dict[str, Any] = {
         "name": column,
         "sql": column,
-        "type": DataType.INT,
+        "datatype": DataType.INT,
         "format": column_format or NumberFormat(type=NumberFormatType.INTEGER),
         "description": description,
     }

@@ -19,7 +19,7 @@ class TestDimensionsRewrite:
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity=gran)
+            fx.td(field="created_at", granularity=gran)
         ]
 
     def test_case_insensitive_callee(self) -> None:
@@ -38,7 +38,7 @@ class TestDimensionsRewrite:
             metrics=[{"expression": "count(*)"}],
         )
         assert q.time_dimensions == [
-            fx.td(dimension="customers.created_at", granularity="month")
+            fx.td(field="customers.created_at", granularity="month")
         ]
 
     def test_plain_entries_survive_in_place(self) -> None:
@@ -49,7 +49,7 @@ class TestDimensionsRewrite:
         )
         assert q.dimensions == [FieldRef(name="status")]
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]
 
     def test_rewritten_append_after_explicit_in_appearance_order(self) -> None:
@@ -60,9 +60,9 @@ class TestDimensionsRewrite:
             metrics=[{"expression": "count(*)"}],
         )
         assert q.time_dimensions == [
-            fx.td(dimension="updated_at", granularity="day"),
-            fx.td(dimension="created_at", granularity="month"),
-            fx.td(dimension="shipped_at", granularity="week"),
+            fx.td(field="updated_at", granularity="day"),
+            fx.td(field="created_at", granularity="month"),
+            fx.td(field="shipped_at", granularity="week"),
         ]
 
     def test_canonical_serialization_moves_entry(self) -> None:
@@ -101,7 +101,7 @@ class TestDimensionsRewrite:
         })
         assert q.to_many_handling == "error"
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]
 
 
@@ -113,7 +113,7 @@ class TestTimeDimensionsStringEntries:
             metrics=[{"expression": "count(*)"}],
         )
         assert q.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]
 
     def test_string_and_dict_entries_mix(self) -> None:
@@ -126,8 +126,8 @@ class TestTimeDimensionsStringEntries:
             metrics=[{"expression": "count(*)"}],
         )
         assert q.time_dimensions == [
-            fx.td(dimension="updated_at", granularity="day"),
-            fx.td(dimension="created_at", granularity="month"),
+            fx.td(field="updated_at", granularity="day"),
+            fx.td(field="created_at", granularity="month"),
         ]
 
     @pytest.mark.parametrize("bad", [5, 0, "", {}, "foo"])

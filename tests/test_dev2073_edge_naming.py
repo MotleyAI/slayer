@@ -35,7 +35,7 @@ class TestParallelFksAreAddressable:
             assert edges[BILLING] == "billing_address"
             assert edges[SHIPPING] == "shipping_address"
             resp = await lv.query(
-                source_model="orders",
+                population="orders",
                 dimensions=["id", "billing_address.city", "shipping_address.city"],
             )
             assert rows_set(resp, "orders.id", "orders.billing_address.city") == BILLING_CITIES
@@ -52,7 +52,7 @@ class TestParallelFksAreAddressable:
         async with live(CHAIN) as lv:
             await lv.ingest()
             assert await lv.edges() == {("orders", "customers", (("customer_id", "id"),)): None}
-            resp = await lv.query(source_model="orders", dimensions=["id", "customers.name"])
+            resp = await lv.query(population="orders", dimensions=["id", "customers.name"])
             assert rows_set(resp, "orders.id", "orders.customers.name") == {
                 (1, "Alice"), (2, "Alice"), (3, "Bob"),
             }
@@ -77,7 +77,7 @@ class TestNamingRespectsAuthoredJoins:
             edges = await lv.edges()
             assert edges[("orders", "addresses", (("legacy_addr", "id"),))] == "legacy_addr"
             assert edges[BILLING] == "billing_address"
-            resp = await lv.query(source_model="orders", dimensions=["legacy_addr.city", "billing_address.city"])
+            resp = await lv.query(population="orders", dimensions=["legacy_addr.city", "billing_address.city"])
             assert rows_set(resp, "orders.legacy_addr.city", "orders.billing_address.city") == {("Lima", "Oslo")}
 
     async def test_purely_hand_authored_parallel_set_is_untouched(self) -> None:

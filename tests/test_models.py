@@ -26,6 +26,7 @@ from slayer.core.query import (
 from slayer.sql.dialects import SqliteDialect
 from slayer.sql.mode_a_variables import bind_mode_a
 from slayer.storage.migrations import CURRENT_VERSIONS
+from tests._deprecated_input_helpers import deprecations, payload_of, recorded
 from tests._engine_helpers import _engine_generate
 
 _SQLITE = SqliteDialect()
@@ -1556,6 +1557,13 @@ class TestCoerceFieldsAndDimensions:
         q = SlayerQuery(population="orders", dimensions=["status", "region"])
         assert q.dimensions[0].name == "status"
         assert q.dimensions[1].name == "region"
+
+    def test_the_v1_fields_key_is_reported_as_written(self) -> None:
+        with recorded() as caught:
+            q = SlayerQuery.model_validate({"population": "orders", "fields": ["count(*)"]})
+        assert q.metrics is not None
+        assert [(p.old, p.new) for p in map(payload_of, deprecations(caught))] == [("fields", "metrics")]
+        assert [(p.old, p.new) for p in q.deprecated_inputs] == [("fields", "metrics")]
 
     def test_fields_none_accepted(self) -> None:
         q = SlayerQuery(population="orders", fields=None)

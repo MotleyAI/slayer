@@ -15,7 +15,7 @@ def q(**kw: Any) -> SlayerQuery:
 
 
 def td(**kw: Any) -> TimeDimension:
-    """Build a ``TimeDimension`` from shorthand (string ``dimension``/``granularity`` coerced by validators)."""
+    """Build a ``TimeDimension`` from shorthand (string ``field``/``granularity`` coerced by validators)."""
     return TimeDimension(**kw)
 
 

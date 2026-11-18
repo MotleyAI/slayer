@@ -74,7 +74,7 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders: Slaye
 
 @pytest.mark.parametrize(
     "measure",
-    [{"formula": "sum(amount)", "type": "INT"}, "as_int"],
+    [{"expression": "sum(amount)", "datatype": "INT"}, "as_int"],
 )
 def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset, measure):
     sql, _ = _sql(dataset=integer_orders, metrics=[measure])
@@ -122,7 +122,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
     )
     measure = {"expression": "sum(customers.amount)", "name": "total"}
     if explicit:
-        measure["type"] = "INT"
+        measure["datatype"] = "INT"
     sql, _ = _sql(
         dataset=integer_orders,
         referenced_datasets=[customers],
@@ -141,7 +141,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
 def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDataset, explicit):
     measure = {"expression": "sum(amount, partition_by=created_at)", "name": "total"}
     if explicit:
-        measure["type"] = "INT"
+        measure["datatype"] = "INT"
     sql, _ = _sql(dataset=integer_orders, metrics=[measure], dimensions=["id", "created_at"])
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (id INT, amount INT, created_at TIMESTAMP)")
@@ -161,6 +161,6 @@ def test_inferred_integer_sum_preserves_null_and_empty_semantics(integer_orders:
 
 
 def test_query_type_override_wins_over_saved_integer_type(integer_orders: SlayerDataset):
-    sql, planned = _sql(dataset=integer_orders, metrics=[{"formula": "as_int", "type": "DOUBLE"}])
+    sql, planned = _sql(dataset=integer_orders, metrics=[{"expression": "as_int", "datatype": "DOUBLE"}])
     assert planned.aggregate_slots[0].type is DataType.DOUBLE
     assert "CAST(SUM(orders.amount) AS DOUBLE)" in sql

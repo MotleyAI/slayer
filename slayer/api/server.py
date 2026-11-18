@@ -305,7 +305,7 @@ class _UsageMiddleware:
     @staticmethod
     def _record(scope: Scope, *, error: BaseException | None, dry_run: bool) -> None:
         route = scope.get("route")
-        token = route.path if isinstance(route, APIRoute) else "other"
+        token = _REPLACEMENT_ROUTES.get(route.path, route.path) if isinstance(route, APIRoute) else "other"
         usage_reporting.record(surface="rest", token=token, error=error, dry_run=dry_run)
 
 
@@ -316,6 +316,7 @@ _OLD_ROUTES = {
     "/validate-datasets": "/validate-models",
     "/recommend-population": "/recommend-root-model",
 }
+_REPLACEMENT_ROUTES = {old: new for new, old in _OLD_ROUTES.items()}
 
 
 class _DeprecationHeaderMiddleware:

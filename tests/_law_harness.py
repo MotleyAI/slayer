@@ -347,14 +347,14 @@ def build_query(
 ) -> SlayerQuery:
     kwargs: dict[str, Any] = {"dimensions": LAW_DIM_FAMILY_DIMS[shape.dim_family]}
     if not dims_only:
-        kwargs["measures"] = [
+        kwargs["metrics"] = [
             DatasetMetric(expression=MEASURE_POOL[k], name=f"m_{k}")
             for k in shape.measure_keys if k != drop
         ]
     if shape.with_month:
         kwargs["time_dimensions"] = month_td()
     if shape.filter:
-        kwargs["filters"] = [shape.filter]
+        kwargs["filter"] = [shape.filter]
     return q(**kwargs)
 
 

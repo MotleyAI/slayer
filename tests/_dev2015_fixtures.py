@@ -258,7 +258,7 @@ EVENTS = TableSpec(
 
 
 def cg_orders_dataset(*, order_date_granularity: Optional[str] = None) -> SlayerDataset:
-    column: dict[str, Any] = {"name": "order_date", "type": "DATE"}
+    column: dict[str, Any] = {"name": "order_date", "datatype": "DATE"}
     if order_date_granularity is not None:
         column["granularity"] = order_date_granularity
     return SlayerDataset.model_validate({

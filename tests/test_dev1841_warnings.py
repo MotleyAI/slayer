@@ -70,7 +70,7 @@ class TestDiceSliceHint:
         _, engine = exec_backend
         kw = {"dimensions": ["status"], "metrics": [CM], "to_many_handling": "broadcast"}
         if filters:
-            kw["filters"] = filters
+            kw["filter"] = filters
         resp = await engine.execute(q(**kw))
         (w,) = broadcast_warnings(resp)
         hint = getattr(w, "hint", None)

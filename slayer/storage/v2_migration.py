@@ -37,7 +37,7 @@ def _migrate_dataset_extension_v1_to_v2(ext: dict) -> dict:
 
     for meas in out.pop(metrics_key, None) or []:
         if isinstance(meas, dict):
-            _record(_migrate_metric_dict(dict(meas)), fields, seen, collisions)
+            _record(_migrate_metric_dict(dict(meas), fields_key=fields_key), fields, seen, collisions)
 
     if collisions:
         raise ValueError(
@@ -56,20 +56,22 @@ def _v1_keys(data: dict) -> tuple[str, str]:
     return ("fields", "metrics") if "metrics" in data and "measures" not in data else ("columns", "measures")
 
 
-def _migrate_metric_dict(col: dict) -> dict:
+def _migrate_metric_dict(col: dict, *, fields_key: str) -> dict:
     """Apply v1-Measure-specific migrations to a measure dict bound for the
     columns list.
 
     - Drop the deprecated ``type: sum/avg/...`` alias; preserve user intent by
       seeding ``allowed_aggregations`` if not already present.
-    - Default ``type`` to ``number`` if absent (v1 Measures had no DataType).
+    - Default the type to ``number`` if absent (v1 Measures had no DataType), under the key of ``fields_key``'s
+      vocabulary.
     - Force ``primary_key`` to False (v1 Measures could not be PKs).
     """
     legacy_type = col.get("type")
     if isinstance(legacy_type, str) and legacy_type.lower() in BUILTIN_AGGREGATIONS:
         col.pop("type")
         col.setdefault("allowed_aggregations", [legacy_type.lower()])
-    col.setdefault("type", "number")
+    if "type" not in col and "datatype" not in col:
+        col["datatype" if fields_key == "fields" else "type"] = "number"
     col["primary_key"] = False
     return col
 
@@ -140,7 +142,7 @@ def _dataset_v1_to_v2(data: dict) -> dict:
         # (b) v1 Measures → Columns (with measure-specific defaults).
         for meas in data.pop(metrics_key, None) or []:
             if isinstance(meas, dict):
-                _record(_migrate_metric_dict(dict(meas)), columns, seen, collisions)
+                _record(_migrate_metric_dict(dict(meas), fields_key=fields_key), columns, seen, collisions)
 
         if collisions:
             raise ValueError(

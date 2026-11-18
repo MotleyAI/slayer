@@ -119,27 +119,27 @@ def _transforms_read(key, by_key: dict) -> list:
 # measures, filter predicates and ORDER-BY keys, since every value the plan
 # carries (mask and order slots included) must be staged.
 _INVARIANT_QUERIES = [
-    dict(measures=[DatasetMetric(expression="sum(amount)", name="a")]),
-    dict(measures=[DatasetMetric(expression="change(sum(amount))", name="c")]),
-    dict(measures=[DatasetMetric(expression="change(cumsum(sum(amount)))", name="n")]),
-    dict(measures=[DatasetMetric(expression=CM, name="s")]),
-    dict(measures=[DatasetMetric(expression=f"{CM} + sum(amount)", name="c")]),
-    dict(measures=[DatasetMetric(expression=f"change({CM}) + sum(amount)", name="c")]),
-    dict(measures=[DatasetMetric(expression="consecutive_periods(sum(amount) > 0)", name="p")]),
+    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")]),
+    dict(metrics=[DatasetMetric(expression="change(sum(amount))", name="c")]),
+    dict(metrics=[DatasetMetric(expression="change(cumsum(sum(amount)))", name="n")]),
+    dict(metrics=[DatasetMetric(expression=CM, name="s")]),
+    dict(metrics=[DatasetMetric(expression=f"{CM} + sum(amount)", name="c")]),
+    dict(metrics=[DatasetMetric(expression=f"change({CM}) + sum(amount)", name="c")]),
+    dict(metrics=[DatasetMetric(expression="consecutive_periods(sum(amount) > 0)", name="p")]),
     # filter predicate over a transform composite (a mask slot must be staged)
-    dict(measures=[DatasetMetric(expression="sum(amount)", name="a")],
-         filters=[f"change({CM}) + sum(amount) > 0"]),
+    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")],
+         filter=[f"change({CM}) + sum(amount) > 0"]),
     # a row-typed and a measure-typed mask together
-    dict(measures=[DatasetMetric(expression="sum(amount)", name="a")],
-         filters=["amount > 5", "sum(amount) > 50"]),
+    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")],
+         filter=["amount > 5", "sum(amount) > 50"]),
     # ORDER-BY key over a transform composite (an order slot must be staged)
-    dict(measures=[DatasetMetric(expression="sum(amount)", name="a")],
-         order=[{"column": f"change({CM}) + sum(amount)", "direction": "desc"}]),
+    dict(metrics=[DatasetMetric(expression="sum(amount)", name="a")],
+         order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}]),
     # the alternation class (D10): a transform over a composite over a transform,
     # beside the projected composite — the dev1859 stall shape
-    dict(measures=[DatasetMetric(expression="change(sum(amount))", name="ch")],
-         filters=["last(change(sum(amount))) < 0"]),
-    dict(measures=[DatasetMetric(expression="last(change(cumsum(sum(amount))))", name="t")]),
+    dict(metrics=[DatasetMetric(expression="change(sum(amount))", name="ch")],
+         filter=["last(change(sum(amount))) < 0"]),
+    dict(metrics=[DatasetMetric(expression="last(change(cumsum(sum(amount))))", name="t")]),
 ]
 
 
@@ -264,8 +264,8 @@ class TestConcreteStages:
 # Transparent-composite levels (D10/D11) — only transforms stratify.
 # --------------------------------------------------------------------------- #
 _LOCAL_STALL: dict = dict(
-    measures=[DatasetMetric(expression="change(sum(amount))", name="ch")],
-    filters=["last(change(sum(amount))) < 0"],
+    metrics=[DatasetMetric(expression="change(sum(amount))", name="ch")],
+    filter=["last(change(sum(amount))) < 0"],
 )
 
 

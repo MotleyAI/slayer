@@ -65,7 +65,7 @@ def _assert_flat_and_unique(
 #: internal CTE shapes that must hoist under distinct names.
 TWO_PRODUCERS = dict(
     dimensions=["region", "city"],
-    measures=[
+    metrics=[
         DatasetMetric(expression="last(amount, partition_by=region)", name="a"),
         DatasetMetric(expression="last(amount, partition_by=city)", name="b"),
     ],

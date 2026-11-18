@@ -84,7 +84,7 @@ class TestConjunctionSplits:
         base_kwargs = dict(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="change(sum(amount))", name="c"),
             ],
@@ -104,7 +104,7 @@ class TestConjunctionSplits:
     async def test_band_and_row_predicate_conjunction_splits(self, exec_engine) -> None:
         base_kwargs = dict(
             dimensions=[BAND],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         anded = await exec_engine.execute(q(
             filter=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -143,8 +143,8 @@ class TestShiftedCteRegroupAwareness:
     QUERY_KWARGS = dict(
         dimensions=[BAND],
         time_dimensions=month_td(),
-        filters=["band == 1"],
-        measures=[
+        filter=["band == 1"],
+        metrics=[
             DatasetMetric(expression="sum(amount)", name="m"),
             DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
         ],

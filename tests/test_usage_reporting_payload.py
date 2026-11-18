@@ -160,7 +160,8 @@ def test_every_mcp_tool_has_a_vocabulary_token(tmp_path: Path) -> None:
 
 def test_every_rest_route_has_a_vocabulary_token(tmp_path: Path) -> None:
     app = create_app(storage=YAMLStorage(base_dir=str(tmp_path)))
-    paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
+    # A deprecated route counts as its replacement.
+    paths = {route.path for route in app.routes if isinstance(route, APIRoute) and not route.deprecated}
     assert {f"rest:{path}" for path in paths} <= usage_key_vocabulary()
 
 

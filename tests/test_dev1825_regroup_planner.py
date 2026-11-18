@@ -140,7 +140,7 @@ class TestFilterClassifier:
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         anded = await gen(_q(
             filter=["band == 1 and status == 'ok'"], **base_kwargs,

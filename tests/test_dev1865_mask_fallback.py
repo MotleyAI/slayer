@@ -17,8 +17,8 @@ from tests._dev1865_fixtures import DatasetMetric, make_exec_engine, q
 # the outer scope the fallback routes to actually exists.
 _QUERY_KWARGS = dict(
     dimensions=["region", "city"],
-    filters=["sum(amount) > 55"],
-    measures=[
+    filter=["sum(amount) > 55"],
+    metrics=[
         DatasetMetric(expression="sum(amount)", name="s"),
         DatasetMetric(expression="sum(amount, partition_by=region)", name="part"),
     ],

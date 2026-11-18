@@ -144,5 +144,5 @@ class TestRestSurface:
         })
         query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert query.time_dimensions == [
-            fx.td(dimension="created_at", granularity="month")
+            fx.td(field="created_at", granularity="month")
         ]

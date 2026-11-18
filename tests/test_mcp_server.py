@@ -877,7 +877,7 @@ class TestInspectModelSectionGating:
         await self._save_rich_dataset(storage)
         for sections_arg in (
             None,
-            ["columns", "measures", "aggregations", "joins", "samples", "learnings"],
+            ["fields", "metrics", "aggregations", "relationships", "samples", "learnings"],
         ):
             args: dict = {"entity_type": "dataset", "reference": "rich", "compact": False}
             if sections_arg is not None:
@@ -1191,7 +1191,7 @@ class TestInspectModelHelpers:
     def test_render_inspect_footer_sanitizes_unknown_section_names(self) -> None:
         """``repr()`` escapes control chars so unknown names can't forge extra footer lines."""
         result = _render_inspect_footer(
-            included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
+            included=["fields", "metrics", "aggregations", "relationships", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["foo\n> evil-injected"],
         )
         assert result is not None
@@ -1203,7 +1203,7 @@ class TestInspectModelHelpers:
 
     def test_render_inspect_footer_none_when_no_trim(self) -> None:
         result = _render_inspect_footer(
-            included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
+            included=["fields", "metrics", "aggregations", "relationships", "samples", "learnings"],
             names_only=[], omitted=[], unknown=[],
         )
         assert result is None
@@ -1211,7 +1211,7 @@ class TestInspectModelHelpers:
     def test_render_inspect_footer_warning_only(self) -> None:
         """All sections shown but unknown names → warning line only, no other footer text."""
         result = _render_inspect_footer(
-            included=["columns", "measures", "aggregations", "joins", "samples", "learnings"],
+            included=["fields", "metrics", "aggregations", "relationships", "samples", "learnings"],
             names_only=[], omitted=[], unknown=["fish"],
         )
         assert result is not None
@@ -2630,8 +2630,8 @@ class TestQueryAcceptsInlineSourceModel:
                         "name": "ad_hoc",
                         "sql_table": "things",
                         "data_source": "test",
-                        "columns": [
-                            {"name": "x", "sql": "x", "type": "DOUBLE"},
+                        "fields": [
+                            {"name": "x", "sql": "x", "datatype": "DOUBLE"},
                         ],
                     },
                     "metrics": [{"expression": "sum(x)"}],

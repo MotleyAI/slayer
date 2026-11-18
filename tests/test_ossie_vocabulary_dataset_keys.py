@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.core.models import SlayerDataset
+from tests._deprecated_input_helpers import recorded
 from tests._ossie_vocabulary_fixtures import shop_customers, shop_orders, shop_store, stored_document
 from tests._stored_upgrade_fixtures import AMOUNT_BY_REGION, BACKENDS, DS, by_dimension, run
 
@@ -93,3 +94,18 @@ async def test_rest_serves_ossie_keys(tmp_path: Path) -> None:
     assert resp.status_code == 200, resp.text
     assert_ossie_document(resp.json())
     assert_kept_keys(resp.json())
+
+
+#: A v1-shaped dataset (``{name, sql}`` metric entries become fields), in each vocabulary.
+V1_SHAPED = {
+    "new": {"name": "orders", "sql_table": "orders", "data_source": DS, "metrics": [{"name": "revenue", "sql": "amount"}]},
+    "old": {"name": "orders", "sql_table": "orders", "data_source": DS, "measures": [{"name": "revenue", "sql": "amount"}]},
+}
+
+
+@pytest.mark.parametrize(("spelling", "reported"), [("new", []), ("old", [("measures", "metrics")])])
+def test_a_v1_shaped_dataset_reports_only_what_it_spells(spelling: str, reported: list[tuple[str, str]]) -> None:
+    with recorded():
+        dataset = SlayerDataset.model_validate(V1_SHAPED[spelling])
+    assert [f.name for f in dataset.fields] == ["revenue"]
+    assert [(p.old, p.new) for p in dataset.deprecated_inputs] == reported

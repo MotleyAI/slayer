@@ -17,8 +17,8 @@ class TestLiteralEdgeFirst:
         async with live(DIRECTED_3_CYCLE) as lv:
             await lv.ingest()
             resp = await lv.query(
-                source_model="x", dimensions=["id"],
-                measures=[{"expression": "sum(z.amount)", "name": "s"}],
+                population="x", dimensions=["id"],
+                metrics=[{"expression": "sum(z.amount)", "name": "s"}],
             )
             # Direct z.x_id edge: x2 owns both z rows; via y.z it would be {1: 10, 2: 5}.
             assert {r["x.id"]: r["x.s"] for r in resp.data} == {1: None, 2: 15.0}
@@ -35,5 +35,5 @@ class TestRootlessAcrossADirectedCycle:
     async def test_succeeds_with_a_source_model(self) -> None:
         async with live(DIRECTED_3_CYCLE) as lv:
             await lv.ingest()
-            resp = await lv.query(source_model="x", dimensions=["v", "y.v", "z.v"])
+            resp = await lv.query(population="x", dimensions=["v", "y.v", "z.v"])
             assert resp.data

@@ -817,7 +817,7 @@ class TestOpaqueElements:
 # Aggregation metadata: defaults, save time, re-ingest
 # --------------------------------------------------------------------------- #
 def _list_column(**kw: Any) -> dict[str, Any]:
-    return {"name": "skills", "type": "ARRAY", "element_type": "TEXT", **kw}
+    return {"name": "skills", "datatype": "ARRAY", "element_type": "TEXT", **kw}
 
 
 class TestAllowedAggregations:

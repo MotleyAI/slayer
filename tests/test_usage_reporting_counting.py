@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import threading
+import warnings
 import weakref
 from collections.abc import Generator
 from types import SimpleNamespace
@@ -229,6 +230,19 @@ def test_rest_counts_route_templates(store: str, started) -> None:
     assert usage(report, "rest:/health") == {"ok": 1, "errors": {}}
     assert total(usage(report, "rest:/datasets/{name}")) == 2
     assert usage(report, "rest:/query")["ok"] == 1
+
+
+def test_a_pre_2_0_route_counts_as_its_replacement(store: str, started) -> None:
+    client = TestClient(create_app(storage=YAMLStorage(base_dir=store)))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        client.get("/models/orders")
+        client.get("/models")
+    end_process()
+    report = show()
+    assert total(usage(report, "rest:/datasets/{name}")) == 1
+    assert total(usage(report, "rest:/datasets")) == 1
+    assert not [key for key in report["usage"] if "models" in key]
 
 
 def test_rest_unmatched_maps_to_a_fixed_token(store: str, started) -> None:

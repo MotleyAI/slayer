@@ -510,7 +510,7 @@ class TestNoCountableRows:
 
     @pytest.mark.parametrize("extra", [
         {"dimensions": ["time_spine.timestamp"], "time_dimensions": [], "metrics": TWO_FACTS},
-        {"distinct_dimension_values": False, "measures": []},
+        {"distinct_dimension_values": False, "metrics": []},
         {"dimensions": [{"expression": "date_part('month', time_spine.timestamp)", "name": "mo"}],
          "metrics": TWO_FACTS},
         {"order": [{"field": "date_trunc('day', time_spine.timestamp)"}], "metrics": TWO_FACTS},
@@ -520,7 +520,7 @@ class TestNoCountableRows:
         tds = extra.pop("time_dimensions", None)
         query = {"time_dimensions": [spine_td()] if tds is None else tds, **extra}
         if not query["time_dimensions"]:
-            query["filters"] = ["time_spine.timestamp >= '2025-01-01'"]
+            query["filter"] = ["time_spine.timestamp >= '2025-01-01'"]
         parsed = SlayerQuery.model_validate(query)
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(parsed, dry_run=True)
