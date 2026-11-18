@@ -43,6 +43,6 @@ one request per call; it imports only the probe API in `core`.
 
 Probes placed in SLayer's own code keep every observed point visible to
 reviewers and to the import law, where patches applied from outside would break
-silently on a rename (`gh-483-opentelemetry-instrumentation`). Principles 1–4
+silently on a rename (`2026-11-18-gh-483-opentelemetry-instrumentation`). Principles 1–4
 follow usage reporting's: OTel runs inside the host process, so its defects
 and the data it sends must never reach further than the operator asked.
