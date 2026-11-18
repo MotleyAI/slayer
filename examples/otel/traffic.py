@@ -22,7 +22,8 @@ QUERIES = [
     {"source_model": "orders", "measures": COUNT, "dimensions": ["status"], "dry_run": True},
     {"source_model": "no_such_model", "measures": COUNT},
 ]
-EXPECTED_OK = [True, True, True, True, False]  # the last query names a model that does not exist
+# 200 for the first four queries; a client error for the last, which names a model that does not exist.
+EXPECTED = [range(200, 201)] * 4 + [range(400, 500)]
 
 
 def post(path: str, body: dict) -> int:
@@ -46,12 +47,14 @@ def wait_until_ready() -> None:
     raise SystemExit(f"SLayer at {BASE} did not become ready")
 
 
+if ROUNDS < 1:
+    raise SystemExit("ROUNDS must be 1 or more")
 wait_until_ready()
 unexpected = 0
 for round_number in range(1, ROUNDS + 1):
     statuses = [post("/query", query) for query in QUERIES]
     print(f"round {round_number}: {statuses}", flush=True)
-    unexpected += sum(1 for status, ok in zip(statuses, EXPECTED_OK, strict=True) if (status == 200) != ok)
+    unexpected += sum(1 for status, expected in zip(statuses, EXPECTED, strict=True) if status not in expected)
     time.sleep(1)
 if unexpected:
     raise SystemExit(f"{unexpected} queries had an unexpected status")

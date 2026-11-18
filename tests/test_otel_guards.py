@@ -36,6 +36,13 @@ _WITHOUT_EXTRA = (
     "        if name.split('.')[0] == 'opentelemetry':\n"
     "            raise ImportError(name)\n"
     "sys.meta_path.insert(0, Block())\n"
+    "import importlib.metadata as md\n"
+    "real = md.distribution\n"
+    "def hidden(name):\n"
+    "    if name.startswith('opentelemetry'):\n"
+    "        raise md.PackageNotFoundError(name)\n"
+    "    return real(name)\n"
+    "md.distribution = hidden\n"
     "from slayer import otel\n"
     "from slayer.otel import control\n"
     "otel.start()\n"
@@ -124,15 +131,24 @@ def test_a_failing_configuration_stays_off(monkeypatch: pytest.MonkeyPatch) -> N
 def test_a_late_setup_failure_closes_the_providers_created_so_far(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_OTEL", "on")
     monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    for signal in ("TRACES", "METRICS", "LOGS"):
+        monkeypatch.setenv(f"OTEL_{signal}_EXPORTER", "otlp")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")
     closed: list[object] = []
+    original = exporters.shutdown_all
 
     def broken_log_exporter() -> None:
         raise RuntimeError("log exporter bug")
 
+    def observed(providers: list[object]) -> None:
+        closed.extend(providers)
+        original(providers)
+
     monkeypatch.setattr(exporters, "OTLPLogExporter", broken_log_exporter)
-    monkeypatch.setattr(exporters, "shutdown_all", lambda providers: closed.extend(providers))
+    monkeypatch.setattr(exporters, "shutdown_all", observed)
     otel.start()
-    assert (otel.is_active(), recorder._owned, len(closed)) == (False, [], 3)
+    workers = [t for t in threading.enumerate() if t.name.startswith(("OtelBatchSpanRecordProcessor", "OtelPeriodic"))]
+    assert (otel.is_active(), recorder._owned, len(closed), workers) == (False, [], 3, [])
 
 
 def test_providers_stay_private_and_a_second_start_gets_new_ones() -> None:

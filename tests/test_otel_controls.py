@@ -182,9 +182,33 @@ _STATUS_WITHOUT_EXTRA = (
     "sys.meta_path.insert(0, Block())\n"
     "for module in [name for name in sys.modules if name.split('.')[0] == 'opentelemetry']:\n"
     "    del sys.modules[module]\n"
+    "import importlib.metadata as md\n"
+    "real = md.distribution\n"
+    "def hidden(name):\n"
+    "    if name.startswith('opentelemetry'):\n"
+    "        raise md.PackageNotFoundError(name)\n"
+    "    return real(name)\n"
+    "md.distribution = hidden\n"
     "from slayer.otel import control\n"
     "print(control.status())\n"
 )
+
+_STATUS_IMPORTS = (
+    "import sys\n"
+    "from slayer.otel import control\n"
+    "control.status()\n"
+    "print(sorted(name for name in sys.modules if name.startswith('opentelemetry.sdk')))\n"
+)
+
+
+def test_status_imports_no_otel_package(clean_env: pytest.MonkeyPatch) -> None:
+    result = run_python(_STATUS_IMPORTS, env=dict(os.environ))
+    assert (result.returncode, result.stdout.strip()) == (0, "[]"), result.stderr
+
+
+def test_service_name_keeps_the_last_value_as_the_sdk_does(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=api,service.name=worker")
+    assert settings.service_name() == "worker"
 
 
 def test_status_works_without_the_extra(clean_env: pytest.MonkeyPatch) -> None:
@@ -334,6 +358,20 @@ def test_test_uses_the_configured_certificate(clean_env: pytest.MonkeyPatch, tmp
     assert (code, report.count("cannot connect"), "missing-ca.pem" in report or "No such file" in report) == (
         1, 3, True,
     )
+
+
+def test_test_ignores_tls_files_for_an_http_endpoint(
+    backend: CaptureServer, clean_env: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_CERTIFICATE", str(tmp_path / "stale-ca.pem"))
+    report, code = control.test()
+    assert (code, "cannot connect" in report) == (0, False), report
+
+
+def test_test_reports_an_endpoint_without_a_scheme(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "collector")
+    report, code = control.test()
+    assert (code, report.count("not a valid URL")) == (1, 3)
 
 
 def test_test_command_exits_with_one_on_failure(clean_env: pytest.MonkeyPatch) -> None:

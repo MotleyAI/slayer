@@ -100,11 +100,12 @@ def service_name() -> str | None:
     explicit = os.environ.get("OTEL_SERVICE_NAME", "").strip()
     if explicit:
         return explicit
+    found = None
     for item in os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "").split(","):
         key, _, value = item.partition("=")
         if key.strip() == "service.name" and value.strip():
-            return unquote(value.strip())
-    return None
+            found = unquote(value.strip())  # the SDK keeps the last value
+    return found
 
 
 class TlsFiles(BaseModel):

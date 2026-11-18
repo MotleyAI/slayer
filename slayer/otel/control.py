@@ -10,7 +10,7 @@ switch, so no saved setting can contradict them, and telemetry has no single rep
 
 from __future__ import annotations
 
-import importlib.util
+import importlib.metadata
 import os
 import ssl
 import urllib.error
@@ -90,13 +90,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _probe(*, url: str, headers: dict[str, str], tls: settings.TlsFiles) -> tuple[bool, str]:
     """POST an empty OTLP request: valid protobuf, so it checks reachability, credentials and path only."""
+    if urlsplit(url).scheme not in ("http", "https"):
+        return False, "not a valid URL: the endpoint needs http:// or https://"
     request = urllib.request.Request(
         url, data=b"", method="POST", headers={**headers, "Content-Type": "application/x-protobuf"},
     )
     try:
-        opener = urllib.request.build_opener(
-            _NoRedirect(), urllib.request.HTTPSHandler(context=_tls_context(tls)),
-        )
+        # The TLS files apply to HTTPS only, as in the exporter: a stale CA path must not fail an HTTP probe.
+        handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
+        if request.type == "https":
+            handlers.append(urllib.request.HTTPSHandler(context=_tls_context(tls)))
+        opener = urllib.request.build_opener(*handlers)
         with opener.open(request, timeout=TEST_TIMEOUT_SECONDS) as response:
             return True, f"ok, HTTP {response.status}"
     except urllib.error.HTTPError as error:
@@ -156,15 +160,16 @@ def _send_test_span() -> tuple[bool | None, str]:
 
 
 def _extra_installed() -> bool:
-    return all(_module_exists(name) for name in ("opentelemetry.sdk", "opentelemetry.exporter.otlp.proto.http"))
+    return all(_distribution_exists(name) for name in ("opentelemetry-sdk", "opentelemetry-exporter-otlp-proto-http"))
 
 
-def _module_exists(name: str) -> bool:
-    # find_spec imports the parent package, and raises if the parent is missing or broken.
+def _distribution_exists(name: str) -> bool:
+    # Package metadata, not find_spec: find_spec imports the parent package, which status must not do.
     try:
-        return importlib.util.find_spec(name) is not None
-    except ImportError:
+        importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
         return False
+    return True
 
 
 def _service_name() -> str:

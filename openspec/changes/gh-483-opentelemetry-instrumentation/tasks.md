@@ -21,7 +21,7 @@
 - [x] 2.6 `slayer/otel/logs.py`: `TemplateLogHandler` on the OTel Logs API, attached to the `slayer` logger only.
 - [x] 2.7 `slayer/otel/middleware.py` and `slayer/otel/control.py`: the REST request middleware, and `slayer otel status` and `slayer otel test`.
 - [x] 2.8 Hook points, with added lines only. Surfaces: `cli.py`, `api/server.py`, `mcp/server.py`, `flight/handlers.py`, `pg_facade/connection.py`. Engine: `engine/query_engine.py`, `engine/cache.py`. Database: `database/client.py`. Ingest: `live_schema/ingestion.py`, `live_schema/schema_drift.py`. Usage vocabulary: `usage_reporting/payload.py`.
-- [x] 2.9 `pyproject.toml` and `poetry.lock`: the `otel` extra, version 1.39 or later, also in `all`.
+- [x] 2.9 `pyproject.toml` and `poetry.lock`: the `otel` extra, version 1.45 or later, also in `all`.
 - [x] 2.10 `architecture/model.c4`: the `otel` node and its three edges. Regenerate the diagrams with `la-arch-diagrams`.
 - [ ] 2.11 Maintainer sign-off on the architecture change, on #483.
 

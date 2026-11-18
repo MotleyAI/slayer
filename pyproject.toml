@@ -84,9 +84,9 @@ snowflake-sqlalchemy = {version = ">=1.7", optional = true}
 # 0.340: credentials pass through undecoded, and HTTP auth needs allow_insecure_auth.
 trino = {version = ">=0.340", optional = true}
 # OpenTelemetry for slayer.otel (opt-in traces, metrics and logs over OTLP).
-opentelemetry-api = {version = ">=1.39", optional = true}
-opentelemetry-sdk = {version = ">=1.39", optional = true}
-opentelemetry-exporter-otlp-proto-http = {version = ">=1.39", optional = true}
+opentelemetry-api = {version = ">=1.45", optional = true}
+opentelemetry-sdk = {version = ">=1.45", optional = true}
+opentelemetry-exporter-otlp-proto-http = {version = ">=1.45", optional = true}
 
 [tool.poetry.extras]
 client = ["httpx", "pandas"]

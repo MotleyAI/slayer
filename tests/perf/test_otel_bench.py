@@ -12,9 +12,11 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from slayer import otel
 from slayer.core import stages
+from tests._otel_helpers import sdk_enabled
 
 
 def _plain(value: int, *, name: str) -> int:
@@ -35,9 +37,11 @@ class _Discard(SpanExporter):
 
 @pytest.fixture
 def listening() -> Iterator[None]:
-    tracer_provider = TracerProvider(shutdown_on_exit=False)
+    # Record every span, whatever the shell's sampler or SDK switch says.
+    with sdk_enabled():
+        tracer_provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
+        meter_provider = MeterProvider(metric_readers=[InMemoryMetricReader()], shutdown_on_exit=False)
     tracer_provider.add_span_processor(SimpleSpanProcessor(_Discard()))
-    meter_provider = MeterProvider(metric_readers=[InMemoryMetricReader()], shutdown_on_exit=False)
     otel.instrument(tracer_provider=tracer_provider, meter_provider=meter_provider)
     try:
         yield

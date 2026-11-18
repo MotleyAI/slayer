@@ -89,7 +89,7 @@ Capture: none (SLAYER_OTEL_CAPTURE)
 Log level: Python logging (OTEL_PYTHON_LOG_LEVEL not set)
 ```
 
-`slayer otel test` checks the connection to your backend. It sends one empty OTLP request to each signal's endpoint, then one span named `slayer.otel.test`. If an endpoint fails, the command exits with code 1, so you can use it in scripts and health checks.
+`slayer otel test` checks the connection to your backend. It sends one empty OTLP request to each signal's endpoint, then one span named `slayer.otel.test`. If an endpoint fails, the command exits with code 1, so you can use it in scripts and health checks. Two cases send fewer requests and still exit 0: with `OTEL_SDK_DISABLED=true` the command sends nothing, and a signal whose exporter is `none` is skipped, so `OTEL_TRACES_EXPORTER=none` also skips the test span. A health check that must reach the backend needs both settings unset.
 
 ```text
 $ slayer otel test
@@ -204,15 +204,15 @@ To debug with full detail on your own backend, opt in with `SLAYER_OTEL_CAPTURE`
 | Value | Adds |
 |---|---|
 | `sql` | `db.query.text`, the executed SQL, on database spans |
-| `exceptions` | `exception.message` and `exception.stacktrace` on failed spans and in exported logs, with each SQL statement replaced by `<sql>`. Log bodies stay templates. |
-| `sql` and `exceptions` together | the exception text unchanged, and full log records: the formatted message and the `extra` fields |
+| `exceptions` | `exception.message` and `exception.stacktrace` on failed spans and in exported logs. For a database error, only `database error (<driver class>, SQLSTATE <code>)` and the stack frames leave. Log bodies stay templates. |
+| `sql` and `exceptions` together | the complete exception text, also for database errors, and full log records: the formatted message and the `extra` fields |
 
 ```bash
 export SLAYER_OTEL_CAPTURE=sql,exceptions
 ```
 
 !!! warning
-    Executed SQL contains the literal values of filters and of row-level-security policies, for example tenant ids. With `exceptions` alone, SLayer removes the SQL statement from exception text, but a driver message can still repeat a literal value, for example `invalid input syntax for type integer: "abc"`. Turn on capture only for a backend that is allowed to store this data.
+    Executed SQL contains the literal values of filters and of row-level-security policies, for example tenant ids. Driver messages often contain the SQL, an excerpt of it, or a value, for example `DETAIL: Key (tenant_id)=(42)`. So with `exceptions` alone, a database error leaves only as its classes, its SQLSTATE code and its stack frames. To also send the driver's message, add `sql`. Turn on capture only for a backend that is allowed to store this data.
 
 Captured SQL and stack traces can be long. To cut long values, set the standard `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`, for example `4096`.
 

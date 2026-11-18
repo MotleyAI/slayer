@@ -45,14 +45,17 @@ An MCP tool call span SHALL carry the tool name as `slayer.operation` and `gen_a
 - **THEN** the request span has `gen_ai.tool.name=other`
 
 ### Requirement: A query is one span tree
-A query SHALL produce a `slayer.query` span with the children `slayer.query.normalize`, `slayer.query.prepare` and `slayer.query.run`. The policy rewrite SHALL be `slayer.query.policy`. The result cache SHALL be `slayer.query.cache.get` and `slayer.query.cache.put`. Each database call SHALL be a child span: `slayer.db.execute`, `slayer.db.explain` or `slayer.db.metadata`. A dry run SHALL produce no `slayer.db.*` span.
+A query SHALL produce a `slayer.query` span with the children `slayer.query.normalize`, `slayer.query.prepare` and `slayer.query.run`. The policy rewrite SHALL be `slayer.query.policy`. The result cache SHALL be `slayer.query.cache.get` and `slayer.query.cache.put`. Each database call SHALL be a child span: `slayer.db.execute`, `slayer.db.explain` or `slayer.db.metadata`.
 
 #### Scenario: Query span tree
 - **WHEN** a query runs on a SQLite datasource
 - **THEN** `slayer.db.execute` is a child of `slayer.query.run`, and `slayer.query.run` is a child of `slayer.query`
 
+### Requirement: A dry run runs no query
+A dry run SHALL produce no `slayer.db.execute` or `slayer.db.explain` span. Without a session policy, it SHALL produce no `slayer.db.*` span. A column session policy can read the column catalog once, which produces a `slayer.db.metadata` span.
+
 #### Scenario: Dry run
-- **WHEN** a query runs with `dry_run=True`
+- **WHEN** a query without a session policy runs with `dry_run=True`
 - **THEN** a `slayer.query` span exists, and no span name starts with `slayer.db.`
 
 ### Requirement: An ingest is one span tree with its outcome
@@ -135,19 +138,26 @@ Without any capture, no span, event, metric or log record SHALL carry SQL text o
 - **THEN** the `slayer.db.execute` span has `db.query.text`
 
 ### Requirement: Exception text needs the exceptions capture
-With `SLAYER_OTEL_CAPTURE=exceptions`, a failed span SHALL record the exception as an `exception` event with its message and stack trace. Without the `sql` capture, each SQL statement that a SQLAlchemy error in the exception chain carries SHALL be replaced by `<sql>`, in the message and in the stack trace. A driver message can still repeat a literal value, and the reference SHALL say so.
+With `SLAYER_OTEL_CAPTURE=exceptions`, a failed span SHALL record the exception as an `exception` event with its message and stack trace.
 
 #### Scenario: Exceptions capture
 - **WHEN** a query fails with `SLAYER_OTEL_CAPTURE=exceptions`
 - **THEN** the `slayer.query` span has one `exception` event, its `exception.message` contains the message, and its `exception.stacktrace` is not empty
 
+### Requirement: Without the sql capture, no database error text leaves
+If the exception chain or an exception group holds a database error, and the `sql` capture is off, the exception fields SHALL carry no exception message text. `exception.message` SHALL be `database error (<driver class>)`, with `, SQLSTATE <code>` when the driver gives a five-character code. `exception.stacktrace` SHALL hold the stack frames and the exception classes only. Other exceptions SHALL leave in full. A database error is a SQLAlchemy `StatementError` or a PEP 249 driver error.
+
 #### Scenario: A failed statement with the exceptions capture alone
 - **WHEN** a statement with the literal `<sentinel>` fails with `SLAYER_OTEL_CAPTURE=exceptions`
-- **THEN** the `exception` event contains `<sql>`, and no exported field contains the sentinel
+- **THEN** `exception.message` starts with `database error`, and no exported field contains the sentinel
+
+#### Scenario: A driver excerpt and a DETAIL line
+- **WHEN** a three-line DuckDB statement fails to bind and the driver quotes its third line, or a Postgres error carries `DETAIL: Key (tenant)=(42)`, with `SLAYER_OTEL_CAPTURE=exceptions`
+- **THEN** no exported field contains a line of the statement or the key value, also when an exception group holds the error, and the Postgres message names its SQLSTATE
 
 #### Scenario: A failed statement with both captures
 - **WHEN** the same statement fails with `SLAYER_OTEL_CAPTURE=sql,exceptions`
-- **THEN** the `exception.message` contains the sentinel
+- **THEN** the `exception.message` contains the complete statement and its parameters
 
 ### Requirement: Only the slayer logger is exported
 When SLayer configures OTel itself, it SHALL attach one log handler to the `slayer` logger only. Records from other loggers SHALL NOT be exported. An export error SHALL never reach the code that logged.

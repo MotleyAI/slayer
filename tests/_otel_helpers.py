@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from opentelemetry.sdk.metrics import MeterProvider
@@ -37,11 +40,13 @@ class OtelCapture(BaseModel):
     @classmethod
     def build(cls) -> OtelCapture:
         exporter = InMemorySpanExporter()
-        # ALWAYS_ON: an inherited OTEL_TRACES_SAMPLER=always_off would leave nothing to check.
-        tracer_provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
-        tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
         reader = InMemoryMetricReader()
-        meter_provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+        # ALWAYS_ON and an enabled SDK: an inherited OTEL_TRACES_SAMPLER=always_off or
+        # OTEL_SDK_DISABLED=true would otherwise leave nothing to check.
+        with sdk_enabled():
+            tracer_provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
+            meter_provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+        tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
         return cls(
             spans_exporter=exporter, metric_reader=reader,
             tracer_provider=tracer_provider, meter_provider=meter_provider,
@@ -96,6 +101,17 @@ class OtelCapture(BaseModel):
         parts = [span.to_json() for span in self.spans()]
         parts += [point.model_dump_json() for point in self.metrics()]
         return "\n".join(parts)
+
+
+@contextmanager
+def sdk_enabled() -> Iterator[None]:
+    """Clear OTEL_SDK_DISABLED while providers are built: the SDK reads it at construction."""
+    saved = os.environ.pop("OTEL_SDK_DISABLED", None)
+    try:
+        yield
+    finally:
+        if saved is not None:
+            os.environ["OTEL_SDK_DISABLED"] = saved
 
 
 def _point(*, name: str, unit: str, point: Any) -> MetricPoint:

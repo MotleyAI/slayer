@@ -4,9 +4,10 @@ By default a record leaves as its message template (``"pg facade: cannot transla
 logger name, level and code location; its arguments, ``extra`` fields, exception message and
 traceback stay in the process, and the exception is reported by class as ``error.type``. SLayer
 logs every value as a lazy ``%`` argument, so the template never carries SQL, literals or
-credentials. ``SLAYER_OTEL_CAPTURE=exceptions`` adds the exception message and stack trace,
-with SQL statements replaced by ``<sql>``. ``exceptions`` and ``sql`` together send the full
-record: the formatted message, the ``extra`` fields and the unredacted exception.
+credentials. ``SLAYER_OTEL_CAPTURE=exceptions`` adds the exception message and stack trace. For a
+database error, only its classes, SQLSTATE code and stack frames leave (see ``redact``).
+``exceptions`` and ``sql`` together send the full record: the formatted message, the ``extra``
+fields and the complete exception.
 
 The handler writes to the OTel Logs API directly, so it needs neither the SDK's deprecated
 ``LoggingHandler`` nor ``opentelemetry-instrumentation-logging``.

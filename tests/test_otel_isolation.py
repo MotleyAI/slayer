@@ -91,10 +91,14 @@ def test_a_refused_backend_adds_at_most_the_shutdown_bound(store: str) -> None:
     assert (code, bool(stdout), elapsed - baseline < _SLACK_SECONDS) == (0, True, True)
 
 
+# Only traces export, so a request at the backend proves that trace export ran.
+_TRACES_ONLY = {"OTEL_METRICS_EXPORTER": "none", "OTEL_LOGS_EXPORTER": "none"}
+
+
 def test_a_stalled_backend_adds_at_most_the_shutdown_bound(store: str, backend: CaptureServer) -> None:
     baseline = _query(store)[2]
     backend.behaviour.delay = 30
-    _, code, elapsed = _query(store, SLAYER_OTEL="on", OTEL_EXPORTER_OTLP_ENDPOINT=_base(backend.url))
+    _, code, elapsed = _query(store, SLAYER_OTEL="on", OTEL_EXPORTER_OTLP_ENDPOINT=_base(backend.url), **_TRACES_ONLY)
     assert (code, elapsed - baseline < _SLACK_SECONDS, backend.wait_for_arrival()) == (0, True, True)
 
 
@@ -102,6 +106,7 @@ def test_a_rejecting_backend_leaves_stderr_clean(store: str, backend: CaptureSer
     backend.behaviour.status = 401
     result = run_slayer(
         ["query", json.dumps(_QUERY), "--storage", store],
-        env=_env(SLAYER_OTEL="on", OTEL_EXPORTER_OTLP_ENDPOINT=_base(backend.url)),
+        env=_env(SLAYER_OTEL="on", OTEL_EXPORTER_OTLP_ENDPOINT=_base(backend.url), **_TRACES_ONLY),
     )
-    assert (result.returncode, "Traceback" in result.stderr, bool(backend.wait_for(count=1))) == (0, False, True)
+    received = backend.wait_for(count=1)
+    assert (result.returncode, "Traceback" in result.stderr, [r.path for r in received][:1]) == (0, False, ["/v1/traces"])

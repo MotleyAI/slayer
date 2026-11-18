@@ -3,13 +3,14 @@
 The one place where names gain the ``slayer.`` namespace. OTel standard keys (semantic
 conventions) pass through unchanged. Sensitive standard keys leave only on the operator's
 opt-in: ``db.query.text`` with ``SLAYER_OTEL_CAPTURE=sql``, exception text with ``exceptions``.
-Exception text leaves with its SQL statements replaced by ``<sql>`` unless ``sql`` is also set.
+Without ``sql``, a database error leaves only as its classes, SQLSTATE code and stack frames.
 The listener reads stages and never writes to them, except to copy a query's datasource up
 from its preparation stage.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -20,6 +21,8 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 from slayer import __version__
 from slayer.core import stages
 from slayer.otel import redact
+
+logger = logging.getLogger(__name__)
 
 PREFIX = "slayer."
 ERROR_TYPE = "error.type"
@@ -143,13 +146,22 @@ class OtelStageListener:
         if error is not None:
             span.set_status(Status(StatusCode.ERROR))
             if "exceptions" in self.capture:
-                span.add_event("exception", attributes=redact.exception_fields(error, sql="sql" in self.capture))
+                self._add_exception_event(span, error=error)
         _lift_datasource(stage)
         attributes = {**stage.attributes, **_derived(stage, error=error)}
         span.set_attributes(self._exported(attributes))
         for event in stage.events:
             span.add_event(PREFIX + event.name, attributes=self._exported(event.attributes), timestamp=event.time_ns)
         return attributes
+
+    def _add_exception_event(self, span: trace.Span, *, error: BaseException) -> None:
+        """The exception event is extra detail: if formatting fails, error.type and metrics still record."""
+        try:
+            fields = redact.exception_fields(error, sql="sql" in self.capture)
+        except Exception:
+            logger.debug("otel: cannot format %s for export", type(error).__qualname__, exc_info=True)
+            return
+        span.add_event("exception", attributes=fields)
 
     def _allowed(self, key: str) -> bool:
         """A sensitive key leaves only with its ``SLAYER_OTEL_CAPTURE`` value; every other key leaves."""

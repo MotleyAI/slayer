@@ -7,7 +7,7 @@ OpenTelemetry (OTel) is the vendor-neutral standard for traces, metrics and logs
 ## What Changes
 
 - A new dependency-free module, `slayer/core/stages.py`, marks the orchestration points of SLayer as named stages, through the `@staged` decorator and the `stage()` context manager. A stage with no listener takes a fast path that adds about 0.1 µs. `core.timing` and `SLAYER_PROFILE_TIMING` do not change.
-- A new package, `slayer.otel`, turns stages into OTel spans and metrics. It is installed by the new `otel` extra (`opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`, version 1.39 or later), which `all` includes.
+- A new package, `slayer.otel`, turns stages into OTel spans and metrics. It is installed by the new `otel` extra (`opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`, version 1.45 or later), which `all` includes.
 - Processes started by the `slayer` command turn OTel on with `SLAYER_OTEL=on` and configure it from the standard `OTEL_*` variables. `OTEL_SDK_DISABLED=true` keeps it off. A tracer provider that already exists, for example from `opentelemetry-instrument`, is kept.
 - Library callers turn it on with `otel.instrument()`, which uses the caller's providers and never configures any.
 - Every surface opens one `slayer.request` span: the CLI (`query`, `ingest`), REST, MCP, Flight SQL and the Postgres facade. Queries, database calls, the result cache and ingest runs open child spans.
