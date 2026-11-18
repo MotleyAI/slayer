@@ -88,17 +88,21 @@ def test_no_argument_or_exception_text_leaves(templates: _Exported) -> None:
     assert_no_sentinel(templates.everything())
 
 
+_RETRY_TEMPLATE = "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s"
+
+
 def _log_retry(*, sql: str) -> None:
     try:
         raise OperationalError(sql, {}, Exception("server closed the connection"))
     except OperationalError as error:
         logging.getLogger("slayer.database.client").warning(
-            "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s", 1, 0.5, error, sql, exc_info=True,
+            _RETRY_TEMPLATE, 1, 0.5, error, sql, exc_info=True,
         )
 
 
 def test_a_retry_warning_sends_no_sql_by_default(templates: _Exported) -> None:
     _log_retry(sql=f"SELECT * FROM orders WHERE note = '{SENT}'")
+    assert templates.bodies() == [_RETRY_TEMPLATE]
     assert_no_sentinel(templates.everything())
 
 

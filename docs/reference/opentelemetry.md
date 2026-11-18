@@ -65,7 +65,7 @@ otel.instrument()  # uses your global tracer and meter providers
 You can also pass providers and opt-ins directly:
 
 ```python
-otel.instrument(tracer_provider=my_tracer_provider, meter_provider=my_meter_provider, capture={"sql"})
+otel.instrument(tracer_provider=my_tracer_provider, meter_provider=my_meter_provider, capture_content=True)
 ```
 
 In library use, SLayer exports traces and metrics. It does not attach a log handler. Your application's logging setup decides what happens to SLayer's log records.
@@ -197,7 +197,7 @@ When SLayer configures OTel itself, in processes started by the `slayer` command
 
 ## Sensitive data
 
-By default, these never leave the process: SQL text, query variables, filter values, row values, exception messages, stack traces and connection strings.
+By default, SLayer exports none of these: SQL text, query variables, filter values, row values, exception messages, stack traces and connection strings. This covers what SLayer exports. If your application adds its own log instrumentation, for example with `OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true`, that instrumentation decides what it exports from SLayer's log records.
 
 To debug with full detail on your own backend, turn on content capture:
 
