@@ -300,14 +300,14 @@ On load, a stored model, saved query or memory written before this change whose 
 - **WHEN** a stored measure is `count(DISTINCT customer_id)`
 - **THEN** it loads unchanged
 
-### Requirement: A store written by this release reads on the previous release
+### Requirement: A store written by this release omits unset fields
 
-Every persisted model, saved query, datasource and memory, in every storage backend, SHALL omit a field whose value is unset (`None`), so a document written with the fields added by this release left unset holds only fields the previous release (v1.4.1) declares. A backend's own document layout (a YAML memory's file name and body) SHALL be unchanged.
+Every persisted model, saved query, datasource and memory, in every storage backend, SHALL omit a field whose value is unset (`None`). A backend's own document layout (a YAML memory's file name and body) SHALL be unchanged. A store written by this release is not readable by SLayer 1.x: its documents use the Ossie vocabulary.
 
 #### Scenario: Memory with an ordered query
 
-- **WHEN** a memory whose query orders by a column without `nulls` is saved to YAML and to SQLite
-- **THEN** neither stored form contains a `nulls` key, and each stored document validates against the v1.4.1 field sets
+- **WHEN** a memory whose query orders by a field without `nulls` is saved to YAML and to SQLite
+- **THEN** neither stored form contains a `nulls` key
 
 #### Scenario: No unset field in any kind
 

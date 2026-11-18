@@ -25,11 +25,7 @@ def reserved_prefix_fields(dataset: SlayerDataset | StageSchema | None) -> list[
     """``dataset`` fields colliding with the reserved regroup placeholder prefix."""
     if dataset is None:
         return []
-    if isinstance(dataset, StageSchema):
-        names = [c.name for c in dataset.fields]
-    else:
-        names = [c.name for c in dataset.fields]
-    return [n for n in names if n.startswith(REGROUP_LEAF_PREFIX)]
+    return [c.name for c in dataset.fields if c.name.startswith(REGROUP_LEAF_PREFIX)]
 
 
 class RegroupPlaceholderRegistry:

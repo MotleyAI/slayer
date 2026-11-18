@@ -63,6 +63,7 @@ _INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings", "saved_queries")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
 _NONE_PLACEHOLDER = "_(none)_"
+_COUNT_STAR = "count(*)"
 
 
 def _escape_md_cell(value: Any) -> str:
@@ -257,7 +258,7 @@ def _build_sample_query_args(
     metric_types = metric_types or {}
     dims, dim_names = _choose_sample_dims(dataset)
 
-    metrics: list[dict[str, str]] = [{"expression": "count(*)"}]
+    metrics: list[dict[str, str]] = [{"expression": _COUNT_STAR}]
     for c in dataset.fields:
         if c.hidden or is_identifier(field=c, fields=dataset.fields) or c.name in dim_names:
             continue
@@ -300,7 +301,7 @@ async def _get_row_count(
     try:
         q = SlayerQuery.model_validate({
             "population": dataset.name,
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"expression": _COUNT_STAR}],
         })
         r = await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception:
@@ -487,10 +488,12 @@ def render_dataset_skeleton(
     lines: list[str] = []
     if fields["description"]:
         lines.append(fields["description"])
-    lines.append(f"Fields: {_skeleton_csv(fields['field_names'])}")
-    lines.append(f"Metrics: {_skeleton_csv(fields['metric_names'])}")
-    lines.append(f"Aggregations: {_skeleton_csv(fields['aggregation_names'])}")
-    lines.append(f"Relationships to: {_skeleton_csv(fields['relationships_to'])}")
+    lines.extend([
+        f"Fields: {_skeleton_csv(fields['field_names'])}",
+        f"Metrics: {_skeleton_csv(fields['metric_names'])}",
+        f"Aggregations: {_skeleton_csv(fields['aggregation_names'])}",
+        f"Relationships to: {_skeleton_csv(fields['relationships_to'])}",
+    ])
     var_line = _render_variables_line(fields["variables"])
     if var_line:
         lines.append(var_line)
@@ -755,7 +758,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 if not _is_unsupported_grouping_error(exc):
                     raise
                 minimal_args = dict(query_args)
-                minimal_args["metrics"] = [{"expression": "count(*)"}]
+                minimal_args["metrics"] = [{"expression": _COUNT_STAR}]
                 minimal_args["dimensions"] = []
                 sample_query = SlayerQuery.model_validate(minimal_args)
                 try:

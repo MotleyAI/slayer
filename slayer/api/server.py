@@ -354,9 +354,9 @@ def _route_twin(endpoint: Callable[..., Awaitable[Any]], *, old: str, new: str) 
 
 def _add_old_routes(app: FastAPI) -> None:
     """Serve each route of ``_OLD_ROUTES`` at its pre-2.0 template too, marked deprecated."""
-    for route in list(app.routes):
-        if not isinstance(route, APIRoute) or route.path not in _OLD_ROUTES:
-            continue
+    # Snapshot first: add_api_route appends to app.routes.
+    renamed = [r for r in app.routes if isinstance(r, APIRoute) and r.path in _OLD_ROUTES]
+    for route in renamed:
         old = _OLD_ROUTES[route.path]
         for method in sorted(route.methods):
             app.add_api_route(

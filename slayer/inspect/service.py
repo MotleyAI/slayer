@@ -84,6 +84,26 @@ def _warn_line(*, arg: str, entity_type: str) -> str:
     )
 
 
+def _validated_format(*, entity_type: str, format: str, descriptions_max_chars: int | None) -> str:
+    """The normalised output format, after refusing an invalid entity type, format or char cap."""
+    if entity_type not in VALID_ENTITY_TYPES:
+        raise ValueError(
+            f"Invalid entity_type '{entity_type}'. Must be one of: "
+            f"{', '.join(sorted(VALID_ENTITY_TYPES))}."
+        )
+    fmt = format.lower().strip()
+    if fmt not in _VALID_FORMATS:
+        raise ValueError(
+            f"Invalid format '{format}'. Must be 'markdown' or 'json'."
+        )
+    if descriptions_max_chars is not None and descriptions_max_chars < 0:
+        raise ValueError(
+            f"descriptions_max_chars must be >= 0, got "
+            f"{descriptions_max_chars}."
+        )
+    return fmt
+
+
 class InspectService:
     """Shared single-entity point-lookup core."""
 
@@ -117,21 +137,9 @@ class InspectService:
         if sections:
             sections = [respelled_token(section, DATASET_KEYS, renamed) for section in sections]
         renamed_lines = [r.human_message() for r in renamed]
-        if entity_type not in VALID_ENTITY_TYPES:
-            raise ValueError(
-                f"Invalid entity_type '{entity_type}'. Must be one of: "
-                f"{', '.join(sorted(VALID_ENTITY_TYPES))}."
-            )
-        fmt = format.lower().strip()
-        if fmt not in _VALID_FORMATS:
-            raise ValueError(
-                f"Invalid format '{format}'. Must be 'markdown' or 'json'."
-            )
-        if descriptions_max_chars is not None and descriptions_max_chars < 0:
-            raise ValueError(
-                f"descriptions_max_chars must be >= 0, got "
-                f"{descriptions_max_chars}."
-            )
+        fmt = _validated_format(
+            entity_type=entity_type, format=format, descriptions_max_chars=descriptions_max_chars,
+        )
 
         if reference is None or reference == []:
             if entity_type not in _COLLECTION_KINDS:

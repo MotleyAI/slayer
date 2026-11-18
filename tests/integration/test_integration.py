@@ -1795,7 +1795,7 @@ async def test_circular_join_graph_raises(tmp_path):
     engine = await _mutual_join_engine(tmp_path, ab_name="fwd", ba_name="back")
     # fwd.back walks a→b→a — a cycle.
     query = _b_a_unique_field_query("fwd", "back")
-    with pytest.raises(ValueError, match="Circular join"):
+    with pytest.raises(ValueError, match="Circular relationship"):
         await engine.execute(query)
 
 

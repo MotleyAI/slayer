@@ -239,11 +239,11 @@ async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_datasets: dict[str, S
             raw = await asyncio.to_thread(Path(path).read_text)
             on_disk = yaml.safe_load(raw)
             assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"], model_name
-            assert "columns" in on_disk, model_name
+            assert "fields" in on_disk, model_name
             assert "dimensions" not in on_disk, (
                 f"{model_name}: v1 'dimensions' key should not be on disk"
             )
-            # ``measures`` MAY appear (as []) in the v2 ModelMeasure library;
+            # ``metrics`` MAY appear (as []) in the DatasetMetric library;
             # if present, it must not contain v1 measure shape (sql + agg etc).
-            for entry in on_disk.get("measures") or []:
-                assert "formula" in entry, f"{model_name}: v2 measure entry must carry 'formula'"
+            for entry in on_disk.get("metrics") or []:
+                assert "expression" in entry, f"{model_name}: metric entry must carry 'expression'"
