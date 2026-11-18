@@ -14,12 +14,13 @@ import urllib.request
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:5143"
 ROUNDS = int(sys.argv[2]) if len(sys.argv) > 2 else 20
 
+COUNT = ["count(*)"]
 QUERIES = [
-    {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]},
-    {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["products.category"]},
-    {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["regions.name"]},
-    {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"], "dry_run": True},
-    {"source_model": "no_such_model", "measures": ["count(*)"]},
+    {"source_model": "orders", "measures": COUNT, "dimensions": ["status"]},
+    {"source_model": "orders", "measures": COUNT, "dimensions": ["products.category"]},
+    {"source_model": "orders", "measures": COUNT, "dimensions": ["regions.name"]},
+    {"source_model": "orders", "measures": COUNT, "dimensions": ["status"], "dry_run": True},
+    {"source_model": "no_such_model", "measures": COUNT},
 ]
 EXPECTED_OK = [True, True, True, True, False]  # the last query names a model that does not exist
 

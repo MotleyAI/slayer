@@ -134,12 +134,7 @@ def staged(
     mapping = dict(params or {})
 
     def decorate(fn: F) -> F:
-        if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
-            raise TypeError(f"@staged cannot wrap generator {fn.__qualname__}")
-        signature = inspect.signature(fn)
-        missing = sorted(set(mapping.values()) - set(signature.parameters))
-        if missing:
-            raise TypeError(f"@staged(name={name!r}) on {fn.__qualname__}: no parameter {missing}")
+        signature = _checked_signature(fn, name=name, params=mapping)
 
         def opened(args: tuple[Any, ...], kwargs: dict[str, Any]) -> _StageScope | _InactiveScope:
             bound = _bound_attributes(signature, args=args, kwargs=kwargs, params=mapping, extract=extract)
@@ -170,6 +165,17 @@ def staged(
         return cast(F, sync_wrapper)
 
     return decorate
+
+
+def _checked_signature(fn: Callable[..., Any], *, name: str, params: Mapping[str, str]) -> inspect.Signature:
+    """Refuse a generator and an unknown parameter name at decoration time."""
+    if inspect.isgeneratorfunction(fn) or inspect.isasyncgenfunction(fn):
+        raise TypeError(f"@staged cannot wrap generator {fn.__qualname__}")
+    signature = inspect.signature(fn)
+    missing = sorted(set(params.values()) - set(signature.parameters))
+    if missing:
+        raise TypeError(f"@staged(name={name!r}) on {fn.__qualname__}: no parameter {missing}")
+    return signature
 
 
 def _finish(finished: Stage, *, error: BaseException | None) -> None:

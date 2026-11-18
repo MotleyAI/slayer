@@ -16,12 +16,12 @@ WORKDIR /app
 # so no package runs a setup script. The one exception is esprima, a pure-Python core
 # dependency that publishes only a source archive. Poetry builds SLayer itself from the
 # copied source. The last line adds a non-root user that owns the storage volume.
+ENV POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_INSTALLER_ONLY_BINARY=":all:" \
+    POETRY_INSTALLER_NO_BINARY="esprima"
 COPY pyproject.toml poetry.lock README.md LICENSE ./
 COPY slayer/ slayer/
 RUN pip install --no-cache-dir --only-binary :all: "poetry==2.5.1" && \
-    poetry config virtualenvs.create false && \
-    poetry config installer.only-binary :all: && \
-    poetry config installer.no-binary esprima && \
     poetry install --only main -E postgres -E otel --no-interaction --no-ansi && \
     pip uninstall -y poetry && \
     useradd --create-home slayer && mkdir /data && chown slayer /data

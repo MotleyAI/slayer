@@ -22,10 +22,14 @@ from slayer.core import stages
 from slayer.otel import redact
 
 PREFIX = "slayer."
+ERROR_TYPE = "error.type"
+DB_SYSTEM = "db.system.name"
+CACHE_HIT = "cache.hit"
+_SQL_SERVER = "microsoft.sql_server"
 
 STANDARD_KEYS = frozenset({
-    "error.type",
-    "db.system.name",
+    ERROR_TYPE,
+    DB_SYSTEM,
     "db.namespace",
     "db.query.text",
     "db.response.returned_rows",
@@ -48,9 +52,9 @@ DB_SYSTEMS: dict[str, str] = {
     "trino": "trino",
     "oracle": "oracle.db",
     "redshift": "aws.redshift",
-    "sqlserver": "microsoft.sql_server",
-    "mssql": "microsoft.sql_server",
-    "tsql": "microsoft.sql_server",
+    "sqlserver": _SQL_SERVER,
+    "mssql": _SQL_SERVER,
+    "tsql": _SQL_SERVER,
 }
 
 # Histogram bucket boundaries, in seconds. Without them the SDK uses millisecond-sized
@@ -69,15 +73,15 @@ _LABEL_KEYS = frozenset({
     "operation",
     "datasource.name",
     "datasource.type",
-    "error.type",
+    ERROR_TYPE,
 })
 _DB_LABEL_KEYS = frozenset({
-    "db.system.name",
+    DB_SYSTEM,
     "db.namespace",
     "server.address",
     "server.port",
     "datasource.name",
-    "error.type",
+    ERROR_TYPE,
 })
 _SERVER_SURFACES = frozenset({"flight", "pg"})
 _INGEST_CHANGES = ("added", "updated", "skipped")
@@ -157,25 +161,33 @@ class OtelStageListener:
 
     def _record_metrics(self, stage: stages.Stage, *, attributes: Attributes) -> None:
         labels = _labels(attributes, keys=_LABEL_KEYS)
+        self._record_durations(stage, attributes=attributes, labels=labels)
+        self._record_counts(stage, attributes=attributes, labels=labels)
+
+    def _record_durations(self, stage: stages.Stage, *, attributes: Attributes, labels: Attributes) -> None:
         if stage.name == "db.execute":
             self._db_duration.record(stage.duration_s, attributes=_labels(attributes, keys=_DB_LABEL_KEYS))
         duration = self._durations.get(stage.name)
         if duration is not None:
             duration.record(stage.duration_s, attributes=labels)
-        for event in stage.events:
-            if event.name == "db.retry":
-                self._retries.add(1, attributes=labels)
-        if stage.name == "query.cache.get" and "cache.hit" in attributes:
-            self._cache.add(1, attributes={**labels, exported_name("cache.hit"): attributes["cache.hit"]})
+
+    def _record_counts(self, stage: stages.Stage, *, attributes: Attributes, labels: Attributes) -> None:
+        retries = sum(1 for event in stage.events if event.name == "db.retry")
+        if retries:
+            self._retries.add(retries, attributes=labels)
+        if stage.name == "query.cache.get" and CACHE_HIT in attributes:
+            self._cache.add(1, attributes={**labels, exported_name(CACHE_HIT): attributes[CACHE_HIT]})
         if stage.name == "ingest":
-            for change in _INGEST_CHANGES:
-                count = attributes.get(f"ingest.models.{change}")
-                if isinstance(count, int) and count:
-                    self._models.add(count, attributes={**labels, exported_name("ingest.change"): change})
-        if stage.name == "ingest.drift":
-            count = attributes.get("ingest.drift.entries")
+            self._record_ingest(attributes=attributes, labels=labels)
+        drift = attributes.get("ingest.drift.entries") if stage.name == "ingest.drift" else None
+        if isinstance(drift, int) and drift:
+            self._drift.add(drift, attributes=labels)
+
+    def _record_ingest(self, *, attributes: Attributes, labels: Attributes) -> None:
+        for change in _INGEST_CHANGES:
+            count = attributes.get(f"ingest.models.{change}")
             if isinstance(count, int) and count:
-                self._drift.add(count, attributes=labels)
+                self._models.add(count, attributes={**labels, exported_name("ingest.change"): change})
 
 
 def exported_name(key: str) -> str:
@@ -191,10 +203,10 @@ def _derived(stage: stages.Stage, *, error: BaseException | None) -> dict[str, s
     """Export-only attributes: ``error.type``, and the standard ``db.system.name`` on database stages."""
     derived: dict[str, stages.AttributeValue] = {}
     if error is not None:
-        derived["error.type"] = type(error).__qualname__
+        derived[ERROR_TYPE] = type(error).__qualname__
     datasource_type = stage.attributes.get("datasource.type")
     if stage.name.startswith("db.") and datasource_type:
-        derived["db.system.name"] = DB_SYSTEMS.get(str(datasource_type), "other_sql")
+        derived[DB_SYSTEM] = DB_SYSTEMS.get(str(datasource_type), "other_sql")
     return derived
 
 
