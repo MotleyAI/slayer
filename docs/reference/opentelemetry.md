@@ -2,7 +2,7 @@
 
 SLayer can send traces, metrics and logs to any OpenTelemetry (OTel) backend over OTLP, the OTel protocol. SLayer sends OTLP over HTTP/protobuf, not gRPC, so the backend must accept OTLP/HTTP. It is off by default, and it sends no SQL text, query values or row data unless you opt in.
 
-You configure it with the standard `OTEL_*` environment variables, plus two SLayer variables: `SLAYER_OTEL` to turn it on, and `SLAYER_OTEL_CAPTURE` to opt in to sensitive data.
+You configure it with the standard `OTEL_*` environment variables, plus two SLayer variables: `SLAYER_OTEL` to turn it on, and `SLAYER_OTEL_CAPTURE_CONTENT` to opt in to content, such as SQL text.
 
 ## Install
 
@@ -85,7 +85,7 @@ logs:    otlp -> http://localhost:4318/v1/logs
 Headers: Authorization (values hidden)
 Protocol: http/protobuf
 Sampler: parentbased_always_on (default)
-Capture: none (SLAYER_OTEL_CAPTURE)
+Content capture: off (SLAYER_OTEL_CAPTURE_CONTENT)
 Log level: Python logging (OTEL_PYTHON_LOG_LEVEL not set)
 ```
 
@@ -199,20 +199,22 @@ When SLayer configures OTel itself, in processes started by the `slayer` command
 
 By default, these never leave the process: SQL text, query variables, filter values, row values, exception messages, stack traces and connection strings.
 
-To debug with full detail on your own backend, opt in with `SLAYER_OTEL_CAPTURE`, a comma-separated list:
-
-| Value | Adds |
-|---|---|
-| `sql` | `db.query.text`, the executed SQL, on database spans |
-| `exceptions` | `exception.message` and `exception.stacktrace` on failed spans and in exported logs. For a database error, only `database error (<driver class>, SQLSTATE <code>)` and the stack frames leave. Log bodies stay templates. |
-| `sql` and `exceptions` together | the complete exception text, also for database errors, and full log records: the formatted message and the `extra` fields |
+To debug with full detail on your own backend, turn on content capture:
 
 ```bash
-export SLAYER_OTEL_CAPTURE=sql,exceptions
+export SLAYER_OTEL_CAPTURE_CONTENT=on
 ```
 
+It adds all content at once:
+
+- `db.query.text`, the executed SQL, on database spans.
+- An `exception` event with `exception.message` and `exception.stacktrace` on failed spans.
+- Full log records: the formatted message, the `extra` fields, and the exception message and stack trace.
+
+Metrics never carry content.
+
 !!! warning
-    Executed SQL contains the literal values of filters and of row-level-security policies, for example tenant ids. Driver messages often contain the SQL, an excerpt of it, or a value, for example `DETAIL: Key (tenant_id)=(42)`. So with `exceptions` alone, a database error leaves only as its classes, its SQLSTATE code and its stack frames. To also send the driver's message, add `sql`. Turn on capture only for a backend that is allowed to store this data.
+    Content contains the literal values of filters and of row-level-security policies, for example tenant ids. Error messages from database drivers and from the SQL parser often repeat the SQL or a value, for example `DETAIL: Key (tenant_id)=(42)`. Turn on content capture only for a backend that is allowed to store this data.
 
 Captured SQL and stack traces can be long. To cut long values, set the standard `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`, for example `4096`.
 
@@ -221,7 +223,7 @@ Captured SQL and stack traces can be long. To cut long values, set the standard 
 | Variable | Kind | Effect |
 |---|---|---|
 | `SLAYER_OTEL` | SLayer | `on` turns OTel on for the `slayer` command |
-| `SLAYER_OTEL_CAPTURE` | SLayer | opt-in sensitive data: `sql`, `exceptions` |
+| `SLAYER_OTEL_CAPTURE_CONTENT` | SLayer | `on` sends content: SQL text, exception text and full log records |
 | `OTEL_SDK_DISABLED` | standard | `true` keeps OTel off |
 | `OTEL_SERVICE_NAME` | standard | the service name, default `slayer` |
 | `OTEL_RESOURCE_ATTRIBUTES` | standard | extra resource attributes, for example `deployment.environment.name=prod` |

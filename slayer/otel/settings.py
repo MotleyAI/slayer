@@ -16,7 +16,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 _ON = frozenset({"1", "true", "yes", "on"})
-CAPTURE_VALUES = frozenset({"sql", "exceptions"})
+CAPTURE_CONTENT_ENV = "SLAYER_OTEL_CAPTURE_CONTENT"
 SIGNALS = ("traces", "metrics", "logs")
 DEFAULT_ENDPOINT = "http://localhost:4318"
 SUPPORTED_EXPORTERS = frozenset({"otlp", "none"})
@@ -54,12 +54,9 @@ def enabled() -> bool:
     return state.enabled
 
 
-def capture() -> frozenset[str]:
-    """The sensitive data the operator opted into with ``SLAYER_OTEL_CAPTURE``, for example ``sql,exceptions``."""
-    requested = {item.strip().lower() for item in os.environ.get("SLAYER_OTEL_CAPTURE", "").split(",") if item.strip()}
-    if requested - CAPTURE_VALUES:
-        logger.debug("otel: ignoring unknown SLAYER_OTEL_CAPTURE values %s", sorted(requested - CAPTURE_VALUES))
-    return frozenset(requested & CAPTURE_VALUES)
+def capture_content() -> bool:
+    """Whether ``SLAYER_OTEL_CAPTURE_CONTENT`` opts into content: SQL text, exception text and full log records."""
+    return os.environ.get(CAPTURE_CONTENT_ENV, "").strip().lower() in _ON
 
 
 def exporters_requested(signal: str) -> frozenset[str]:

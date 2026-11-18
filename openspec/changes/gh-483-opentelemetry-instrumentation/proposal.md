@@ -13,7 +13,7 @@ OpenTelemetry (OTel) is the vendor-neutral standard for traces, metrics and logs
 - Every surface opens one `slayer.request` span: the CLI (`query`, `ingest`), REST, MCP, Flight SQL and the Postgres facade. Queries, database calls, the result cache and ingest runs open child spans.
 - Spans and metrics use the OTel standard names where they exist (`error.type`, `db.system.name`, `db.client.operation.duration`, `mcp.method.name`, `gen_ai.tool.name`). Other names carry the `slayer.` prefix.
 - SLayer's own log records are exported as their message templates, with trace correlation. Their argument values stay in the process.
-- SQL text and exception text leave the process only with `SLAYER_OTEL_CAPTURE=sql` or `exceptions`.
+- SQL text and exception text leave the process only with `SLAYER_OTEL_CAPTURE_CONTENT=on`.
 - New commands: `slayer otel status` prints the configuration that a start uses, without a network call. `slayer otel test` sends one empty OTLP request per signal and one test span. If an endpoint fails, it exits 1.
 - At exit, SLayer waits at most 1 second for the final export. A down, slow or rejecting backend never fails a command.
 - Usage reporting gains the usage keys `cli:otel.status` and `cli:otel.test` and the extra token `otel`.

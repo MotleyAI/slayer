@@ -87,14 +87,9 @@ SLayer sends OTLP over HTTP/protobuf. The SDK adds `/v1/traces`, `/v1/metrics` a
 
 ## Capture Sensitive Data
 
-By default, no SQL text, exception message or stack trace leaves SLayer. To debug with full detail on your own backend, set `SLAYER_OTEL_CAPTURE` in `example.env`, then run `docker compose up -d slayer`:
+By default, no SQL text, exception message or stack trace leaves SLayer. To debug with full detail on your own backend, set `SLAYER_OTEL_CAPTURE_CONTENT=on` in `example.env`, then run `docker compose up -d slayer`.
 
-| Value | Adds |
-|---|---|
-| `sql` | `db.query.text`, the executed SQL, on database spans |
-| `exceptions` | exception messages and stack traces on failed spans, and full messages in logs |
-
-For example, `SLAYER_OTEL_CAPTURE=sql,exceptions`. Both can contain row-level-security values and filter literals.
+Content capture adds `db.query.text`, the executed SQL, on database spans. It adds exception messages and stack traces on failed spans, and full records in logs. All of it can contain row-level-security values and filter literals.
 
 ## Configuration
 
@@ -108,7 +103,7 @@ For example, `SLAYER_OTEL_CAPTURE=sql,exceptions`. Both can contain row-level-se
 | `OTEL_EXPORTER_OTLP_HEADERS` | backend authentication, empty for a backend without it |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `10000` (milliseconds) |
 | `OTEL_PYTHON_LOG_LEVEL` | `info` in this example. Without it, the level follows Python logging. |
-| `SLAYER_OTEL_CAPTURE` | not set, so no sensitive data leaves. See "Capture Sensitive Data". |
+| `SLAYER_OTEL_CAPTURE_CONTENT` | not set, so no content leaves. See "Capture Sensitive Data". |
 | `SLAYER_USAGE_REPORTING` | `off`, so test traffic sends no usage reports |
 
 At start, `start.sh` runs `prepare.py`, which waits up to two minutes for the endpoint in `OTEL_EXPORTER_OTLP_ENDPOINT` and registers the demo datasource. If the endpoint stays down, SLayer serves anyway and drops its spans. SLayer keeps its models in the Docker volume `slayer-data`.

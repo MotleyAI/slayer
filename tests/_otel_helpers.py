@@ -52,8 +52,10 @@ class OtelCapture(BaseModel):
             tracer_provider=tracer_provider, meter_provider=meter_provider,
         )
 
-    def instrument(self, *, capture: tuple[str, ...] = ()) -> None:
-        otel.instrument(tracer_provider=self.tracer_provider, meter_provider=self.meter_provider, capture=capture)
+    def instrument(self, *, capture_content: bool = False) -> None:
+        otel.instrument(
+            tracer_provider=self.tracer_provider, meter_provider=self.meter_provider, capture_content=capture_content,
+        )
 
     def close(self) -> None:
         otel.reset()

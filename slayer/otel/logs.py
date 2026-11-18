@@ -4,10 +4,8 @@ By default a record leaves as its message template (``"pg facade: cannot transla
 logger name, level and code location; its arguments, ``extra`` fields, exception message and
 traceback stay in the process, and the exception is reported by class as ``error.type``. SLayer
 logs every value as a lazy ``%`` argument, so the template never carries SQL, literals or
-credentials. ``SLAYER_OTEL_CAPTURE=exceptions`` adds the exception message and stack trace. For a
-database error, only its classes, SQLSTATE code and stack frames leave (see ``redact``).
-``exceptions`` and ``sql`` together send the full record: the formatted message, the ``extra``
-fields and the complete exception.
+credentials. With ``SLAYER_OTEL_CAPTURE_CONTENT=on`` the full record leaves: the formatted
+message, the ``extra`` fields, and the exception message and stack trace.
 
 The handler writes to the OTel Logs API directly, so it needs neither the SDK's deprecated
 ``LoggingHandler`` nor ``opentelemetry-instrumentation-logging``.
@@ -19,14 +17,12 @@ import contextlib
 import logging
 import os
 import time
-from collections.abc import Iterable
+import traceback
 from typing import Any
 
 from opentelemetry._logs import SeverityNumber
 from opentelemetry.context import get_current
 from opentelemetry.sdk._logs import LoggerProvider
-
-from slayer.otel import redact
 
 SLAYER_LOGGER = "slayer"
 _previous_level: int | None = None
@@ -42,14 +38,12 @@ _SEVERITIES = [
 
 
 class TemplateLogHandler(logging.Handler):
-    """Exports each record as its template, plus what ``capture`` allows; never raises."""
+    """Exports each record as its template, or in full when ``full``; never raises."""
 
-    def __init__(self, *, logger_provider: LoggerProvider, capture: Iterable[str] = ()) -> None:
+    def __init__(self, *, logger_provider: LoggerProvider, full: bool = False) -> None:
         super().__init__()
         self.logger_provider = logger_provider
-        self.capture = frozenset(capture)
-        # Arguments and ``extra`` fields can carry SQL, so the full record needs both opt-ins.
-        self.full = {"exceptions", "sql"} <= self.capture
+        self.full = full
 
     def emit(self, record: logging.LogRecord) -> None:
         # Fail-silent without logging: a log call from inside a log handler can recurse.
@@ -62,11 +56,11 @@ class TemplateLogHandler(logging.Handler):
                 severity_number=severity_number,
                 severity_text=severity_text,
                 body=record.getMessage() if self.full else _template(record),
-                attributes=_attributes(record=record, capture=self.capture),
+                attributes=_attributes(record=record, full=self.full),
             )
 
 
-def attach(*, logger_provider: LoggerProvider, capture: Iterable[str] = ()) -> list[logging.Handler]:
+def attach(*, logger_provider: LoggerProvider, full: bool = False) -> list[logging.Handler]:
     """Attach the handler to the ``slayer`` logger only; the host's other loggers stay untouched.
 
     The level follows Python logging; ``OTEL_PYTHON_LOG_LEVEL`` (the OTel Python name), if set,
@@ -78,7 +72,7 @@ def attach(*, logger_provider: LoggerProvider, capture: Iterable[str] = ()) -> l
     added: list[logging.Handler] = []
     if not logger.hasHandlers() and logging.lastResort is not None:
         added.append(logging.lastResort)
-    added.append(TemplateLogHandler(logger_provider=logger_provider, capture=capture))
+    added.append(TemplateLogHandler(logger_provider=logger_provider, full=full))
     level = logging.getLevelName(os.environ.get("OTEL_PYTHON_LOG_LEVEL", "").strip().upper())
     if isinstance(level, int):
         _previous_level = logger.level
@@ -109,18 +103,22 @@ def _template(record: logging.LogRecord) -> str:
     return record.msg if isinstance(record.msg, str) else type(record.msg).__qualname__
 
 
-def _attributes(*, record: logging.LogRecord, capture: frozenset[str]) -> dict[str, Any]:
+def _attributes(*, record: logging.LogRecord, full: bool) -> dict[str, Any]:
     attributes: dict[str, Any] = {
         "code.file.path": record.pathname,
         "code.function.name": record.funcName,
         "code.line.number": record.lineno,
     }
-    exc_type, exc_value, _ = record.exc_info or (None, None, None)
+    exc_type, exc_value, exc_traceback = record.exc_info or (None, None, None)
     if exc_type is not None:
         attributes["error.type"] = exc_type.__qualname__
-    sql = "sql" in capture
-    if sql and "exceptions" in capture:
-        attributes.update({key: value for key, value in vars(record).items() if key not in _RESERVED})
-    if exc_value is not None and "exceptions" in capture:
-        attributes.update(redact.exception_fields(exc_value, sql=sql))
+    if not full:
+        return attributes
+    attributes.update({key: value for key, value in vars(record).items() if key not in _RESERVED})
+    if exc_type is not None:
+        attributes["exception.type"] = exc_type.__name__
+        attributes["exception.message"] = str(exc_value)
+        attributes["exception.stacktrace"] = "".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback),
+        )
     return attributes

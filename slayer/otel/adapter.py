@@ -1,9 +1,9 @@
 """core.stages listener: each stage becomes an OTel span, plus duration and count metrics.
 
 The one place where names gain the ``slayer.`` namespace. OTel standard keys (semantic
-conventions) pass through unchanged. Sensitive standard keys leave only on the operator's
-opt-in: ``db.query.text`` with ``SLAYER_OTEL_CAPTURE=sql``, exception text with ``exceptions``.
-Without ``sql``, a database error leaves only as its classes, SQLSTATE code and stack frames.
+conventions) pass through unchanged. Content leaves only with ``SLAYER_OTEL_CAPTURE_CONTENT=on``:
+``db.query.text`` and the ``exception`` event with its message and stack trace. Both can hold SQL,
+filter values and row-level-security values.
 The listener reads stages and never writes to them, except to copy a query's datasource up
 from its preparation stage.
 """
@@ -20,7 +20,6 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from slayer import __version__
 from slayer.core import stages
-from slayer.otel import redact
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ STANDARD_KEYS = frozenset({
     "gen_ai.operation.name",
     "gen_ai.tool.name",
 })
-_SENSITIVE = {"db.query.text": "sql"}
+_CONTENT_KEYS = frozenset({"db.query.text"})
 
 # SLayer datasource types with an OTel db.system.name value; every other type is "other_sql".
 DB_SYSTEMS: dict[str, str] = {
@@ -100,9 +99,9 @@ class OtelStageListener:
         *,
         tracer_provider: trace.TracerProvider | None = None,
         meter_provider: metrics.MeterProvider | None = None,
-        capture: frozenset[str] = frozenset(),
+        capture_content: bool = False,
     ) -> None:
-        self.capture = capture
+        self.capture_content = capture_content
         self._tracer = trace.get_tracer("slayer", __version__, tracer_provider=tracer_provider)
         meter = metrics.get_meter("slayer", __version__, meter_provider=meter_provider)
         self._durations = {
@@ -145,8 +144,8 @@ class OtelStageListener:
     def _finish_span(self, span: trace.Span, *, stage: stages.Stage, error: BaseException | None) -> Attributes:
         if error is not None:
             span.set_status(Status(StatusCode.ERROR))
-            if "exceptions" in self.capture:
-                self._add_exception_event(span, error=error)
+            if self.capture_content:
+                self._record_exception(span, error=error)
         _lift_datasource(stage)
         attributes = {**stage.attributes, **_derived(stage, error=error)}
         span.set_attributes(self._exported(attributes))
@@ -154,19 +153,16 @@ class OtelStageListener:
             span.add_event(PREFIX + event.name, attributes=self._exported(event.attributes), timestamp=event.time_ns)
         return attributes
 
-    def _add_exception_event(self, span: trace.Span, *, error: BaseException) -> None:
+    def _record_exception(self, span: trace.Span, *, error: BaseException) -> None:
         """The exception event is extra detail: if formatting fails, error.type and metrics still record."""
         try:
-            fields = redact.exception_fields(error, sql="sql" in self.capture)
+            span.record_exception(error)
         except Exception:
             logger.debug("otel: cannot format %s for export", type(error).__qualname__, exc_info=True)
-            return
-        span.add_event("exception", attributes=fields)
 
     def _allowed(self, key: str) -> bool:
-        """A sensitive key leaves only with its ``SLAYER_OTEL_CAPTURE`` value; every other key leaves."""
-        needed = _SENSITIVE.get(key)
-        return needed is None or needed in self.capture
+        """A content key leaves only with ``SLAYER_OTEL_CAPTURE_CONTENT``; every other key leaves."""
+        return key not in _CONTENT_KEYS or self.capture_content
 
     def _exported(self, attributes: Attributes) -> dict[str, stages.AttributeValue]:
         return {exported_name(key): value for key, value in attributes.items() if self._allowed(key)}

@@ -91,7 +91,7 @@ Database spans SHALL have kind `CLIENT`. If these values are known, they SHALL c
 - **THEN** the `slayer.db.execute` span has kind `CLIENT`, `db.system.name=sqlite` and `db.response.returned_rows=2`
 
 ### Requirement: Errors are reported by class
-A stage that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the `exceptions` capture, no exception message, exception event or stack trace SHALL be recorded.
+A stage that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded.
 
 #### Scenario: Unknown model
 - **WHEN** a query names a model that does not exist
@@ -120,43 +120,29 @@ SLayer SHALL count retried transient database errors in `slayer.db.retries`. It 
 - **THEN** the database span gets a `slayer.db.retry` event with `slayer.db.attempt` and `error.type`, and `slayer.db.retries` counts 1
 
 ### Requirement: Metric labels carry no captured text
-Metric labels SHALL come only from the datasource name and type, the surface and operation, the database system, namespace and server, `error.type`, `slayer.cache.hit` and `slayer.ingest.change`. A label SHALL never carry SQL or exception text, with or without a capture.
+Metric labels SHALL come only from the datasource name and type, the surface and operation, the database system, namespace and server, `error.type`, `slayer.cache.hit` and `slayer.ingest.change`. A label SHALL never carry SQL or exception text, also with the content capture.
 
-#### Scenario: SQL capture stays off metrics
-- **WHEN** a query runs with `SLAYER_OTEL_CAPTURE=sql`
+#### Scenario: Content stays off metrics
+- **WHEN** a query runs with `SLAYER_OTEL_CAPTURE_CONTENT=on`
 - **THEN** no metric point has the label `db.query.text`
 
-### Requirement: SQL text needs the sql capture
-Without any capture, no span, event, metric or log record SHALL carry SQL text or a value derived from query input. Without the `sql` capture, none SHALL carry a SQL statement. With `SLAYER_OTEL_CAPTURE=sql`, database spans SHALL carry the executed SQL as `db.query.text`. This includes `slayer.db.explain` spans.
+### Requirement: Content needs the content capture
+Content is the executed SQL and the text of exceptions: messages and stack traces. Without `SLAYER_OTEL_CAPTURE_CONTENT=on`, no span, event, metric or log record SHALL carry SQL text or a value derived from query input. With it, database spans SHALL carry the executed SQL as `db.query.text`, including `slayer.db.explain` spans. A failed span SHALL record its exception as an `exception` event with the complete message and stack trace.
 
-#### Scenario: Default keeps SQL in the process
-- **WHEN** a query with the filter `region = '<sentinel>'` runs without a capture
+#### Scenario: Default keeps content in the process
+- **WHEN** a query with the filter `region = '<sentinel>'` runs without the content capture
 - **THEN** no exported span, event or metric contains the sentinel, and no span has `db.query.text`
 
-#### Scenario: SQL capture
-- **WHEN** the same query runs with `SLAYER_OTEL_CAPTURE=sql`
+#### Scenario: Content capture sends the SQL
+- **WHEN** the same query runs with `SLAYER_OTEL_CAPTURE_CONTENT=on`
 - **THEN** the `slayer.db.execute` span has `db.query.text`
 
-### Requirement: Exception text needs the exceptions capture
-With `SLAYER_OTEL_CAPTURE=exceptions`, a failed span SHALL record the exception as an `exception` event with its message and stack trace.
-
-#### Scenario: Exceptions capture
-- **WHEN** a query fails with `SLAYER_OTEL_CAPTURE=exceptions`
+#### Scenario: Content capture sends the exception
+- **WHEN** a query fails with `SLAYER_OTEL_CAPTURE_CONTENT=on`
 - **THEN** the `slayer.query` span has one `exception` event, its `exception.message` contains the message, and its `exception.stacktrace` is not empty
 
-### Requirement: Without the sql capture, no database error text leaves
-If the exception chain or an exception group holds a database error, and the `sql` capture is off, the exception fields SHALL carry no exception message text. `exception.message` SHALL be `database error (<driver class>)`, with `, SQLSTATE <code>` when the driver gives a five-character code. `exception.stacktrace` SHALL hold the stack frames and the exception classes only. Other exceptions SHALL leave in full. A database error is a SQLAlchemy `StatementError` or a PEP 249 driver error.
-
-#### Scenario: A failed statement with the exceptions capture alone
-- **WHEN** a statement with the literal `<sentinel>` fails with `SLAYER_OTEL_CAPTURE=exceptions`
-- **THEN** `exception.message` starts with `database error`, and no exported field contains the sentinel
-
-#### Scenario: A driver excerpt and a DETAIL line
-- **WHEN** a three-line DuckDB statement fails to bind and the driver quotes its third line, or a Postgres error carries `DETAIL: Key (tenant)=(42)`, with `SLAYER_OTEL_CAPTURE=exceptions`
-- **THEN** no exported field contains a line of the statement or the key value, also when an exception group holds the error, and the Postgres message names its SQLSTATE
-
-#### Scenario: A failed statement with both captures
-- **WHEN** the same statement fails with `SLAYER_OTEL_CAPTURE=sql,exceptions`
+#### Scenario: A failed statement keeps its text
+- **WHEN** a statement fails with `SLAYER_OTEL_CAPTURE_CONTENT=on`
 - **THEN** the `exception.message` contains the complete statement and its parameters
 
 ### Requirement: Only the slayer logger is exported
@@ -173,15 +159,15 @@ A record SHALL leave as its message template, with its logger name, level, code 
 - **WHEN** `slayer.pg_facade` logs `"pg facade: cannot translate %r: %s"` with a sentinel argument
 - **THEN** the exported body is the template, and no exported field contains the sentinel
 
-### Requirement: Log capture follows both opt-ins
-With `SLAYER_OTEL_CAPTURE=exceptions`, the exception message and stack trace of a record SHALL also leave, with SQL statements replaced as for spans. The body SHALL stay the template, because log arguments can carry SQL. With both `sql` and `exceptions`, the full record SHALL leave: the formatted message, the `extra` fields and the exception text unchanged.
+### Requirement: Full log records need the content capture
+With `SLAYER_OTEL_CAPTURE_CONTENT=on`, the full record SHALL leave: the formatted message, the `extra` fields, and the exception message and stack trace.
 
-#### Scenario: Retry warning with the exceptions capture alone
-- **WHEN** the database client logs its retry warning, with the SQL as an argument and the error attached, with `SLAYER_OTEL_CAPTURE=exceptions`
-- **THEN** the exported body is the template, the attributes contain `exception.message`, and no exported field contains the SQL
+#### Scenario: Retry warning by default
+- **WHEN** the database client logs its retry warning, with the SQL as an argument, without the content capture
+- **THEN** the exported body is the template, and no exported field contains the SQL
 
-#### Scenario: Full record with both captures
-- **WHEN** a record with an exception is logged with `SLAYER_OTEL_CAPTURE=sql,exceptions`
+#### Scenario: Full record with the content capture
+- **WHEN** a record with an exception is logged with `SLAYER_OTEL_CAPTURE_CONTENT=on`
 - **THEN** the exported body contains the argument values, and the attributes contain `exception.stacktrace`
 
 ### Requirement: Log export keeps stderr output and the level

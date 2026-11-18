@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from unittest import mock
 
 import pytest
@@ -34,17 +34,17 @@ class _Exported(BaseModel):
         return "\n".join(f"{body} {attributes}" for body, attributes in zip(self.bodies(), self.attributes(), strict=True))
 
 
-def _attach(*, capture: Iterable[str] = ()) -> _Exported:
+def _attach(*, full: bool = False) -> _Exported:
     exporter = InMemoryLogRecordExporter()
     provider = LoggerProvider(shutdown_on_exit=False)
     provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
-    return _Exported(exporter=exporter, handlers=logs.attach(logger_provider=provider, capture=capture))
+    return _Exported(exporter=exporter, handlers=logs.attach(logger_provider=provider, full=full))
 
 
-def _attached(monkeypatch: pytest.MonkeyPatch, *, capture: Iterable[str]) -> Iterator[_Exported]:
+def _attached(monkeypatch: pytest.MonkeyPatch, *, full: bool) -> Iterator[_Exported]:
     # A developer's own OTEL_PYTHON_LOG_LEVEL must not filter out the test's warning.
     monkeypatch.setenv("OTEL_PYTHON_LOG_LEVEL", "WARNING")
-    exported = _attach(capture=capture)
+    exported = _attach(full=full)
     try:
         yield exported
     finally:
@@ -53,17 +53,12 @@ def _attached(monkeypatch: pytest.MonkeyPatch, *, capture: Iterable[str]) -> Ite
 
 @pytest.fixture
 def templates(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Exported]:
-    yield from _attached(monkeypatch, capture=())
-
-
-@pytest.fixture
-def exceptions_only(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Exported]:
-    yield from _attached(monkeypatch, capture=("exceptions",))
+    yield from _attached(monkeypatch, full=False)
 
 
 @pytest.fixture
 def full(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Exported]:
-    yield from _attached(monkeypatch, capture=("exceptions", "sql"))
+    yield from _attached(monkeypatch, full=True)
 
 
 def _fail_and_log(logger: logging.Logger) -> None:
@@ -93,30 +88,31 @@ def test_no_argument_or_exception_text_leaves(templates: _Exported) -> None:
     assert_no_sentinel(templates.everything())
 
 
-def test_full_records_leave_with_capture_exceptions_and_sql(full: _Exported) -> None:
-    _fail_and_log(logging.getLogger("slayer.pg_facade"))
-    assert (SENT in full.bodies()[0], "exception.stacktrace" in full.attributes()[0]) == (True, True)
-
-
-def test_exceptions_alone_keeps_the_template_and_adds_the_exception(exceptions_only: _Exported) -> None:
-    _fail_and_log(logging.getLogger("slayer.pg_facade"))
-    attributes = exceptions_only.attributes()[0]
-    assert (exceptions_only.bodies(), SENT in attributes["exception.message"], bool(attributes["exception.stacktrace"])) == (
-        [_TEMPLATE], True, True,
-    )
-
-
-def test_a_retry_warning_sends_no_sql_with_exceptions_alone(exceptions_only: _Exported) -> None:
-    sql = f"SELECT * FROM orders WHERE note = '{SENT}'"
+def _log_retry(*, sql: str) -> None:
     try:
         raise OperationalError(sql, {}, Exception("server closed the connection"))
     except OperationalError as error:
         logging.getLogger("slayer.database.client").warning(
             "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s", 1, 0.5, error, sql, exc_info=True,
         )
-    assert ("exception.message" in exceptions_only.attributes()[0], SENT in exceptions_only.everything()) == (
-        True, False,
+
+
+def test_a_retry_warning_sends_no_sql_by_default(templates: _Exported) -> None:
+    _log_retry(sql=f"SELECT * FROM orders WHERE note = '{SENT}'")
+    assert_no_sentinel(templates.everything())
+
+
+def test_full_records_leave_with_content_capture(full: _Exported) -> None:
+    _fail_and_log(logging.getLogger("slayer.pg_facade"))
+    attributes = full.attributes()[0]
+    assert (SENT in full.bodies()[0], SENT in attributes["exception.message"], bool(attributes["exception.stacktrace"])) == (
+        True, True, True,
     )
+
+
+def test_a_retry_warning_sends_its_sql_with_content_capture(full: _Exported) -> None:
+    _log_retry(sql=f"SELECT * FROM orders WHERE note = '{SENT}'")
+    assert SENT in full.bodies()[0]
 
 
 # --- scope ---------------------------------------------------------------------------

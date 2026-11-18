@@ -47,14 +47,14 @@ If OTel is on but the `otel` extra is not installed, or if the OTel setup raises
 - **THEN** the command succeeds and OTel stays off
 
 ### Requirement: Sensitive data needs an explicit opt-in
-`SLAYER_OTEL_CAPTURE` SHALL be a comma-separated, case-insensitive list. Its known values SHALL be `sql` and `exceptions`. SLayer SHALL ignore unknown values. Without a value, no SQL text and no exception message or stack trace SHALL leave the process. The value SHALL apply to the `slayer` command. A library caller SHALL pass it to `otel.instrument(capture=...)`.
+`SLAYER_OTEL_CAPTURE_CONTENT` SHALL be one switch for content: the executed SQL, exception messages and stack traces, and full log records. `on`, `1`, `true` and `yes`, in any case, SHALL turn it on. Any other value, or no value, SHALL leave it off. The switch SHALL apply to the `slayer` command. A library caller SHALL pass `otel.instrument(capture_content=True)`.
 
-#### Scenario: Capture list parsing
-- **WHEN** `SLAYER_OTEL_CAPTURE=" SQL , loud"` is set
-- **THEN** the capture set is `{sql}`
+#### Scenario: Switch values
+- **WHEN** `SLAYER_OTEL_CAPTURE_CONTENT=" TRUE "` is set
+- **THEN** content capture is on, and with `sql` it is off
 
 ### Requirement: slayer otel status reports the start configuration
-`slayer otel status` SHALL print, without a network call, the facts that a start of the `slayer` command uses. These facts SHALL be the state and its deciding rule, whether the extra is installed, and the service name and version. They SHALL also include each signal's exporter and endpoint, and the protocol, sampler, capture set and log level. The command SHALL exit 0.
+`slayer otel status` SHALL print, without a network call, the facts that a start of the `slayer` command uses. These facts SHALL be the state and its deciding rule, whether the extra is installed, and the service name and version. They SHALL also include each signal's exporter and endpoint, and the protocol, sampler, content capture and log level. The command SHALL exit 0.
 
 #### Scenario: Deciding rule
 - **WHEN** `OTEL_SDK_DISABLED=true` and `SLAYER_OTEL=on` are set and `slayer otel status` runs

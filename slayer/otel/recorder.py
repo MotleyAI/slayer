@@ -8,7 +8,7 @@ import inspect
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from slayer.core import stages
@@ -58,14 +58,15 @@ def start() -> None:
     except ImportError:
         logger.debug("otel: SLAYER_OTEL is on but the otel extra is missing; pip install 'motley-slayer[otel]'")
         return
-    capture = settings.capture()
+    content = settings.capture_content()
     configured = exporters.configure()
     try:
         if configured.logger_provider is not None:
-            _log_handlers = logs.attach(logger_provider=configured.logger_provider, capture=capture)
+            _log_handlers = logs.attach(logger_provider=configured.logger_provider, full=content)
         # SLayer's own providers are private and passed here; with a host provider, both are None.
         instrument(
-            tracer_provider=configured.tracer_provider, meter_provider=configured.meter_provider, capture=capture,
+            tracer_provider=configured.tracer_provider, meter_provider=configured.meter_provider,
+            capture_content=content,
         )
     except Exception:
         _detach_logs()
@@ -74,7 +75,7 @@ def start() -> None:
     _owned = configured.owned
 
 
-def instrument(*, tracer_provider: Any = None, meter_provider: Any = None, capture: Iterable[str] = ()) -> None:
+def instrument(*, tracer_provider: Any = None, meter_provider: Any = None, capture_content: bool = False) -> None:
     """Install the stage listener; the providers default to the global ones. Never configures providers."""
     global _listener
     if _listener is not None:
@@ -82,7 +83,7 @@ def instrument(*, tracer_provider: Any = None, meter_provider: Any = None, captu
     from slayer.otel.adapter import OtelStageListener  # ALLOW(import-not-top): optional extra
 
     _listener = OtelStageListener(
-        tracer_provider=tracer_provider, meter_provider=meter_provider, capture=frozenset(capture),
+        tracer_provider=tracer_provider, meter_provider=meter_provider, capture_content=capture_content,
     )
     stages.add_listener(_listener)
 

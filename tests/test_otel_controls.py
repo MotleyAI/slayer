@@ -21,7 +21,7 @@ _SECRET = "Basic%20c2VjcmV0dG9rZW4="
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     for var in (
-        "SLAYER_OTEL", "SLAYER_OTEL_CAPTURE", "OTEL_SDK_DISABLED", "OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES",
+        "SLAYER_OTEL", "SLAYER_OTEL_CAPTURE_CONTENT", "OTEL_SDK_DISABLED", "OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES",
         "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_PROTOCOL",
         "OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER", "OTEL_PYTHON_LOG_LEVEL",
         "OTEL_TRACES_SAMPLER", "OTEL_EXPORTER_OTLP_CERTIFICATE", "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
@@ -73,18 +73,13 @@ def test_precedence(clean_env: pytest.MonkeyPatch, env: dict[str, str], enabled:
 # --- standard variables --------------------------------------------------------------
 
 
-_CAPTURE = [
-    ("", frozenset()),
-    ("sql", frozenset({"sql"})),
-    (" SQL , exceptions ", frozenset({"sql", "exceptions"})),
-    ("sql,params,everything", frozenset({"sql"})),
-]
+_CAPTURE = [("", False), ("on", True), (" TRUE ", True), ("1", True), ("yes", True), ("off", False), ("sql", False)]
 
 
 @pytest.mark.parametrize(("raw", "expected"), _CAPTURE)
-def test_capture_keeps_only_known_values(clean_env: pytest.MonkeyPatch, raw: str, expected: frozenset[str]) -> None:
-    clean_env.setenv("SLAYER_OTEL_CAPTURE", raw)
-    assert settings.capture() == expected
+def test_capture_content_is_one_switch(clean_env: pytest.MonkeyPatch, raw: str, expected: bool) -> None:
+    clean_env.setenv("SLAYER_OTEL_CAPTURE_CONTENT", raw)
+    assert settings.capture_content() is expected
 
 
 _ENDPOINTS = [

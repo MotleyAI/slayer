@@ -53,7 +53,7 @@ def status() -> str:
         f"Headers: {', '.join(names) + ' (values hidden)' if names else 'none'}",
         f"Protocol: {_protocols()}",
         f"Sampler: {os.environ.get('OTEL_TRACES_SAMPLER') or 'parentbased_always_on (default)'}",
-        f"Capture: {', '.join(sorted(settings.capture())) or 'none (SLAYER_OTEL_CAPTURE)'}",
+        f"Content capture: {'on' if settings.capture_content() else 'off'} ({settings.CAPTURE_CONTENT_ENV})",
         f"Log level: {os.environ.get('OTEL_PYTHON_LOG_LEVEL') or 'Python logging (OTEL_PYTHON_LOG_LEVEL not set)'}",
     ]
     return "\n".join(lines)
@@ -104,7 +104,8 @@ def _probe(*, url: str, headers: dict[str, str], tls: settings.TlsFiles) -> tupl
         with opener.open(request, timeout=TEST_TIMEOUT_SECONDS) as response:
             return True, f"ok, HTTP {response.status}"
     except urllib.error.HTTPError as error:
-        return False, f"HTTP {error.code}: {_HINTS.get(error.code, error.reason)}"
+        # Not error.reason: the server chooses that text, and it can echo the URL with its query credentials.
+        return False, f"HTTP {error.code}: {_HINTS.get(error.code, 'the backend rejected the request')}"
     except OSError as error:
         reason = getattr(error, "reason", error)
         return False, f"cannot connect: {reason}"
