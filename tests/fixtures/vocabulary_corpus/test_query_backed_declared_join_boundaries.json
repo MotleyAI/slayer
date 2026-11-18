@@ -1,0 +1,92 @@
+{
+ "source": "tests/test_query_backed_declared_join_boundaries.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 51,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 74,
+   "reason": "unclassifiable"
+  }
+ ]
+}

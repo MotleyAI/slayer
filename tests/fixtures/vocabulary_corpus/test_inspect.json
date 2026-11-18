@@ -1,0 +1,457 @@
+{
+ "source": "tests/test_inspect.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(amount) / count(*)",
+    "description": "Average order value."
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(amount) / count(*)",
+    "description": "Average order value."
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "big",
+    "formula": "MAX({col})",
+    "description": "A custom aggregation named 'big'."
+   },
+   "new": {
+    "name": "big",
+    "expression": "MAX({col})",
+    "description": "A custom aggregation named 'big'."
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "dup",
+    "formula": "MAX({col})"
+   },
+   "new": {
+    "name": "dup",
+    "expression": "MAX({col})"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "dup",
+    "formula": "MIN({col})"
+   },
+   "new": {
+    "name": "dup",
+    "expression": "MIN({col})"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "same",
+    "formula": "sum(id)"
+   },
+   "new": {
+    "name": "same",
+    "expression": "sum(id)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "same",
+    "formula": "MAX({col})"
+   },
+   "new": {
+    "name": "same",
+    "expression": "MAX({col})"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(amount) / count(*)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(amount) / count(*)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "big",
+    "formula": "MAX({col})"
+   },
+   "new": {
+    "name": "big",
+    "expression": "MAX({col})"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "tmp",
+    "formula": "sum(id)"
+   },
+   "new": {
+    "name": "tmp",
+    "expression": "sum(id)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "named",
+    "formula": "sum(id)"
+   },
+   "new": {
+    "name": "named",
+    "expression": "sum(id)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "zebra",
+    "join_pairs": [
+     [
+      "z_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "zebra",
+    "join_pairs": [
+     [
+      "z_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "apple",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "apple",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 91,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 96,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 97,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 103,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 334,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 338,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 359,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 411,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 416,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 473,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 474,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 495,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 516,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 520,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 809,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 814,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 815,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 834,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 839,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 840,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 841,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 877,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 882,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 883,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 904,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 910,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 911,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 912,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 913,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 938,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 941,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 942,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 960,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 963,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 976,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 978,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1004,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1007,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1008,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1009,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1018,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1020,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1031,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1034,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1035,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1036,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1198,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1201,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1429,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1431,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1479,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1481,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1483,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1485,
+   "reason": "not fully literal"
+  }
+ ]
+}

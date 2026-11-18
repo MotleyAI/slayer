@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_dev1953_partition_membership.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,22 @@
+{
+ "source": "tests/test_scope_schema.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 29,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  }
+ ]
+}

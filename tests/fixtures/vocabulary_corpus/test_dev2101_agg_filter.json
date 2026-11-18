@@ -1,0 +1,85 @@
+{
+ "source": "tests/test_dev2101_agg_filter.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "last(balance, updated_at) FILTER (WHERE status = 'active')",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "expression": "last(balance, updated_at) FILTER (WHERE status = 'active')",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "measures": [
+     {
+      "formula": "first(balance, updated_at) FILTER (WHERE status = 'inactive')",
+      "name": "v"
+     }
+    ]
+   },
+   "new": {
+    "population": "balances",
+    "dimensions": [
+     "customer_id"
+    ],
+    "metrics": [
+     {
+      "expression": "first(balance, updated_at) FILTER (WHERE status = 'inactive')",
+      "name": "v"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(distinct region)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "count(distinct region)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "status"
+   },
+   "new": {
+    "field": "status"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "unclassifiable"
+  }
+ ]
+}

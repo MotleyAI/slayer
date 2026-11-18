@@ -1,0 +1,58 @@
+{
+ "source": "tests/test_dev1751_date_range_null_bound.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "created_at"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "created_at"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 20,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 46,
+   "reason": "no positional counterpart"
+  }
+ ]
+}

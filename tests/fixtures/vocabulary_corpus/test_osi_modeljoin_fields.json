@@ -1,0 +1,90 @@
+{
+ "source": "tests/test_osi_modeljoin_fields.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ],
+    "description": "desc",
+    "meta": {
+     "k": "v"
+    }
+   },
+   "new": {
+    "to": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ],
+    "description": "desc",
+    "meta": {
+     "k": "v"
+    }
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   },
+   "new": {
+    "to": "c",
+    "join_pairs": [
+     [
+      "a",
+      "b"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 18,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 22,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  }
+ ]
+}

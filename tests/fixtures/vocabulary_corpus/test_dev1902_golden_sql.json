@@ -1,0 +1,28 @@
+{
+ "source": "tests/test_dev1902_golden_sql.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(credit)",
+    "name": "cr"
+   },
+   "new": {
+    "expression": "sum(credit)",
+    "name": "cr"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,67 @@
+{
+ "source": "tests/test_dev1841_surfaces.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(customers.spend)",
+      "name": "cm"
+     }
+    ],
+    "to_many_handling": "associate"
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(customers.spend)",
+      "name": "cm"
+     }
+    ],
+    "to_many_handling": "associate"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "weighted_avg(customers.spend, weight=sum(amount, partition_by=status))"
+     }
+    ],
+    "to_many_handling": "associate"
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "weighted_avg(customers.spend, weight=sum(amount, partition_by=status))"
+     }
+    ],
+    "to_many_handling": "associate"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "the respelled literal keeps a deprecated form"
+  }
+ ]
+}

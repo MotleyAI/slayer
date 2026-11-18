@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_cascade_strip_on_delete.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  }
+ ]
+}

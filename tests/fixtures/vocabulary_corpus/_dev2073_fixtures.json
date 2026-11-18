@@ -1,0 +1,50 @@
+{
+ "source": "tests/_dev2073_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 191,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 196,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 197,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 198,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 206,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 208,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  }
+ ]
+}

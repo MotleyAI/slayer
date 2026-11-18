@@ -1,0 +1,159 @@
+{
+ "source": "tests/test_saved_query_refinement.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "refinement",
+   "old": {
+    "measures": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "region",
+     {
+      "expression": "amount * 2",
+      "name": "dbl"
+     }
+    ],
+    "order": [
+     {
+      "revenue": "desc"
+     }
+    ]
+   },
+   "new": {
+    "metrics": [
+     "count(*)"
+    ],
+    "dimensions": [
+     "region",
+     {
+      "expression": "amount * 2",
+      "name": "dbl"
+     }
+    ],
+    "order": [
+     {
+      "revenue": "desc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "rev2"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "rev2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "revenue"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "revenue"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "label": "Orders"
+   },
+   "new": {
+    "expression": "count(*)",
+    "label": "Orders"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "region",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "region",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "refinement",
+   "old": {
+    "dimensions": [
+     "status"
+    ],
+    "filters": [
+     "amount > 1"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "status"
+    ],
+    "filter": [
+     "amount > 1"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not a standalone refinement: ValidationError"
+  },
+  {
+   "line": 205,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 266,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 304,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 316,
+   "reason": "not fully literal"
+  }
+ ]
+}

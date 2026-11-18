@@ -1,0 +1,189 @@
+{
+ "source": "tests/test_dev1859_row_mixed_exec.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(quantity * avg(unit_price))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(quantity * avg(unit_price))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(region_id * sum(corders.amount, partition_by=region_id))",
+    "name": "xm"
+   },
+   "new": {
+    "expression": "sum(region_id * sum(corders.amount, partition_by=region_id))",
+    "name": "xm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(qty * sum(revenue, partition_by=store), window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(qty * sum(revenue, partition_by=store), window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(revenue, window='90d')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(revenue, window='90d')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(qty)",
+    "name": "q"
+   },
+   "new": {
+    "expression": "sum(qty)",
+    "name": "q"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 228,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 302,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 315,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 335,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 387,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 402,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 413,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 424,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 434,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 457,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 458,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 466,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  }
+ ]
+}

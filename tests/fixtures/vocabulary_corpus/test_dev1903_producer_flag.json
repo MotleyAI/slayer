@@ -1,0 +1,211 @@
+{
+ "source": "tests/test_dev1903_producer_flag.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=channel)",
+    "name": "pt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=channel)",
+    "name": "pt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "orders.amount",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "orders.amount",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(quantity * sum(amount, partition_by=product), partition_by=region)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(quantity * sum(amount, partition_by=product), partition_by=region)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend, partition_by=tier)",
+    "name": "pt"
+   },
+   "new": {
+    "expression": "sum(spend, partition_by=tier)",
+    "name": "pt"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(sp)",
+      "name": "t"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "tier"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(sp)",
+      "name": "t"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "orders.amount",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "orders.amount",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=channel)",
+    "name": "pt"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=channel)",
+    "name": "pt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=city) + sum(amount, partition_by=region))",
+    "name": "x"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=city) + sum(amount, partition_by=region))",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 372,
+   "reason": "not fully literal"
+  }
+ ]
+}

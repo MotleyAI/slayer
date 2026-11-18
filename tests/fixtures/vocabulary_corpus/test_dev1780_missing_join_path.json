@@ -1,0 +1,364 @@
+{
+ "source": "tests/test_dev1780_missing_join_path.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "Consumer",
+    "join_pairs": [
+     [
+      "consumerId",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "Consumer",
+    "join_pairs": [
+     [
+      "consumerId",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "Customer",
+    "join_pairs": [
+     [
+      "customerId",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "Customer",
+    "join_pairs": [
+     [
+      "customerId",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "Subscription",
+    "join_pairs": [
+     [
+      "subscriptionId",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "Subscription",
+    "join_pairs": [
+     [
+      "subscriptionId",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "Customer",
+    "join_pairs": [
+     [
+      "customerId",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "Customer",
+    "join_pairs": [
+     [
+      "customerId",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "Subscription.Customer.Consumer.signup_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "amt"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "Subscription.Customer.Consumer.signup_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "Customer.Consumer.signup_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "amt"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "Customer.Consumer.signup_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "A",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ],
+    "name": "to_a"
+   },
+   "new": {
+    "to": "A",
+    "join_pairs": [
+     [
+      "a_id",
+      "id"
+     ]
+    ],
+    "name": "to_a"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ],
+    "name": "to_b"
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ],
+    "name": "to_b"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "A",
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "amt"
+     }
+    ],
+    "dimensions": [
+     "to_b.to_a.amount"
+    ]
+   },
+   "new": {
+    "population": "A",
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "amt"
+     }
+    ],
+    "dimensions": [
+     "to_b.to_a.amount"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "Invoice",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(Subscription.Customer.Consumer.email)",
+      "name": "c"
+     }
+    ]
+   },
+   "new": {
+    "population": "Invoice",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "count(Subscription.Customer.Consumer.email)",
+      "name": "c"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "s1",
+    "source_model": "Invoice",
+    "dimensions": [
+     "Subscription.Customer.Consumer.name"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "name": "s1",
+    "population": "Invoice",
+    "dimensions": [
+     "Subscription.Customer.Consumer.name"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "s1",
+    "dimensions": [
+     "Subscription.Customer.Consumer.email"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "s1",
+    "dimensions": [
+     "Subscription.Customer.Consumer.email"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 75,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 78,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 233,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 239,
+   "reason": "not fully literal"
+  }
+ ]
+}

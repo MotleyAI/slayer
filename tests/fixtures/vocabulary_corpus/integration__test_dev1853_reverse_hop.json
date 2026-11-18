@@ -1,0 +1,23 @@
+{
+ "source": "tests/integration/test_dev1853_reverse_hop.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name",
+     "orders.status"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

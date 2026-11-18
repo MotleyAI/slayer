@@ -1,0 +1,30 @@
+{
+ "source": "tests/test_filtered_count_forms.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 35,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 38,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  }
+ ]
+}

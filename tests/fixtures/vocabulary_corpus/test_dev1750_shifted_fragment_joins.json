@@ -1,0 +1,103 @@
+{
+ "source": "tests/test_dev1750_shifted_fragment_joins.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wscaled_sum(amount), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
+    "name": "prev"
+   },
+   "new": {
+    "expression": "time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
+    "name": "prev"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "_time_shift_inner"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "_time_shift_inner"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount) - time_shift(sum(amount), -1)",
+    "name": "growth"
+   },
+   "new": {
+    "expression": "sum(amount) - time_shift(sum(amount), -1)",
+    "name": "growth"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 41,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 138,
+   "reason": "not fully literal"
+  }
+ ]
+}

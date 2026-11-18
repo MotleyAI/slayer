@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_dev1953_partition_alias.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 203,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 209,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 237,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 261,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 270,
+   "reason": "not fully literal"
+  }
+ ]
+}

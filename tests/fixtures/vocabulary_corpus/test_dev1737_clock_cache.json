@@ -1,0 +1,113 @@
+{
+ "source": "tests/test_dev1737_clock_cache.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "max(date_diff('day', created_at, current_date()))",
+      "name": "m"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "max(date_diff('day', created_at, current_date()))",
+      "name": "m"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "recent_orders",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "created_at <= now()"
+    ]
+   },
+   "new": {
+    "name": "recent_orders",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filter": [
+     "created_at <= now()"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "recent_orders",
+    "measures": [
+     "sum(n)"
+    ]
+   },
+   "new": {
+    "population": "recent_orders",
+    "metrics": [
+     "sum(n)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 48,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  }
+ ]
+}

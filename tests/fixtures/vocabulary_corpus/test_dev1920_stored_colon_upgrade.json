@@ -1,0 +1,85 @@
+{
+ "source": "tests/test_dev1920_stored_colon_upgrade.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "date_trunc('month', created_at)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "date_trunc('month', created_at)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "rev_q",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(rev)"
+    ]
+   },
+   "new": {
+    "population": "rev_q",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(rev)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "t",
+    "measures": [
+     "c"
+    ]
+   },
+   "new": {
+    "population": "t",
+    "metrics": [
+     "c"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "amount:sum"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "amount:sum"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 64,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 177,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  }
+ ]
+}

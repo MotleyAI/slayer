@@ -1,0 +1,168 @@
+{
+ "source": "tests/test_dev2101_null_ordering.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "discount"
+   },
+   "new": {
+    "field": "discount"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) * 2",
+    "nulls": "last"
+   },
+   "new": {
+    "field": "sum(amount) * 2",
+    "nulls": "last"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "city"
+   },
+   "new": {
+    "field": "city"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "id"
+   },
+   "new": {
+    "field": "id"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "by_city",
+    "source_model": "orders",
+    "dimensions": [
+     "city"
+    ],
+    "measures": [
+     {
+      "formula": "max(discount)",
+      "name": "md"
+     }
+    ]
+   },
+   "new": {
+    "name": "by_city",
+    "population": "orders",
+    "dimensions": [
+     "city"
+    ],
+    "metrics": [
+     {
+      "expression": "max(discount)",
+      "name": "md"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "by_city",
+    "dimensions": [
+     "city"
+    ],
+    "measures": [
+     {
+      "formula": "max(md)",
+      "name": "v"
+     }
+    ],
+    "order": [
+     {
+      "column": "v",
+      "direction": "asc",
+      "nulls": "first"
+     },
+     {
+      "column": "city"
+     }
+    ]
+   },
+   "new": {
+    "population": "by_city",
+    "dimensions": [
+     "city"
+    ],
+    "metrics": [
+     {
+      "expression": "max(md)",
+      "name": "v"
+     }
+    ],
+    "order": [
+     {
+      "field": "v",
+      "direction": "asc",
+      "nulls": "first"
+     },
+     {
+      "field": "city"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(discount)",
+    "name": "d"
+   },
+   "new": {
+    "expression": "max(discount)",
+    "name": "d"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "d",
+    "direction": "asc",
+    "nulls": "last"
+   },
+   "new": {
+    "field": "d",
+    "direction": "asc",
+    "nulls": "last"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "discount",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "discount",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 37,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not a standalone query: ValidationError"
+  },
+  {
+   "line": 97,
+   "reason": "unclassifiable"
+  }
+ ]
+}

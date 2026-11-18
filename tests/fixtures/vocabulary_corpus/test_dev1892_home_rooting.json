@@ -1,0 +1,100 @@
+{
+ "source": "tests/test_dev1892_home_rooting.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.spend, weight=amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.spend, weight=amount)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(customers.north_spend, weight=amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum(customers.north_spend, weight=amount)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum4(customers.spend, weight=amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum4(customers.spend, weight=amount)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum5(customers.spend)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "wsum5(customers.spend)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "weighted_avg(customers.bad_spend, weight=amount)",
+    "name": "w"
+   },
+   "new": {
+    "expression": "weighted_avg(customers.bad_spend, weight=amount)",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "tot"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "tot"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 180,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,94 @@
+{
+ "source": "tests/test_dev1840_execution.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "cm"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "cm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(stores.rent)",
+    "name": "rm"
+   },
+   "new": {
+    "expression": "sum(stores.rent)",
+    "name": "rm"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(customers.spend, customers.signup_at)",
+    "name": "f"
+   },
+   "new": {
+    "expression": "first(customers.spend, customers.signup_at)",
+    "name": "f"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(customers.spend, customers.signup_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='1y')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='1y')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(customers.spend, window='1y')",
+    "name": "w"
+   }
+  }
+ ],
+ "skipped": []
+}

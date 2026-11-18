@@ -1,0 +1,100 @@
+{
+ "source": "tests/test_deprecated_input_harvest.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "name": "a",
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "name": "a",
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "b",
+    "source_model": "a",
+    "measures": [
+     {
+      "formula": "sum(n)",
+      "name": "total"
+     }
+    ]
+   },
+   "new": {
+    "name": "b",
+    "population": "a",
+    "metrics": [
+     {
+      "expression": "sum(n)",
+      "name": "total"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "a",
+    "measures": [
+     {
+      "formula": "sum(n)",
+      "name": "grand"
+     }
+    ]
+   },
+   "new": {
+    "population": "a",
+    "metrics": [
+     {
+      "expression": "sum(n)",
+      "name": "grand"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "b",
+    "measures": [
+     {
+      "formula": "sum(total)",
+      "name": "grand"
+     }
+    ]
+   },
+   "new": {
+    "population": "b",
+    "metrics": [
+     {
+      "expression": "sum(total)",
+      "name": "grand"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

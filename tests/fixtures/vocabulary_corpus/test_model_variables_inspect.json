@@ -1,0 +1,38 @@
+{
+ "source": "tests/test_model_variables_inspect.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "amt_scaled",
+    "formula": "sum(amount) * {k}"
+   },
+   "new": {
+    "name": "amt_scaled",
+    "expression": "sum(amount) * {k}"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 18,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  }
+ ]
+}

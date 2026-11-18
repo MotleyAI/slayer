@@ -1,0 +1,33 @@
+{
+ "source": "tests/test_time_points_compile_guard.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filters": [
+     "ts >= 'last month'"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ],
+    "filter": [
+     "ts >= 'last month'"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,167 @@
+{
+ "source": "tests/test_dev1842_eligibility_errors.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.aov)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(customers.aov)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.aov",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "customers.aov",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=customers.aov)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=customers.aov)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.aov",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "customers.aov",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.zzz",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.zzz",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aovv",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.aovv",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.tierr",
+    "name": "x"
+   },
+   "new": {
+    "expression": "customers.tierr",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aov"
+   },
+   "new": {
+    "expression": "customers.aov"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aov"
+   },
+   "new": {
+    "expression": "customers.aov"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.aov",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "customers.aov",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "customers.aov",
+    "name": "myaov"
+   },
+   "new": {
+    "expression": "customers.aov",
+    "name": "myaov"
+   }
+  }
+ ],
+ "skipped": []
+}

@@ -1,0 +1,45 @@
+{
+ "source": "tests/test_inspect_surfaces.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(amount) / count(*)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(amount) / count(*)"
+   }
+  },
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "big",
+    "formula": "MAX({col})"
+   },
+   "new": {
+    "name": "big",
+    "expression": "MAX({col})"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  }
+ ]
+}

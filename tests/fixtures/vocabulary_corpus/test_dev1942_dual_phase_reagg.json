@@ -1,0 +1,89 @@
+{
+ "source": "tests/test_dev1942_dual_phase_reagg.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "c"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "c"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "c"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 135,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 236,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 256,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 257,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 267,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  }
+ ]
+}

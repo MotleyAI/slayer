@@ -1,0 +1,192 @@
+{
+ "source": "tests/test_mcp_row_cap.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "nums",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "id <= 25"
+    ]
+   },
+   "new": {
+    "population": "nums",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "id <= 25"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "nums",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "id <= 20"
+    ]
+   },
+   "new": {
+    "population": "nums",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "id <= 20"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "nums",
+    "dimensions": [
+     "id"
+    ]
+   },
+   "new": {
+    "population": "nums",
+    "dimensions": [
+     "id"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 137,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 144,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 152,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 164,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 172,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 184,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 195,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 207,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 215,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 252,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 263,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 270,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 283,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 293,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 305,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 318,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 328,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 351,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 365,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 378,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 395,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 403,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 410,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 432,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 477,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 491,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 552,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 567,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 575,
+   "reason": "unclassifiable"
+  }
+ ]
+}

@@ -1,0 +1,142 @@
+{
+ "source": "tests/test_dev2021_mode_a_variables.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "id",
+     "tagged"
+    ],
+    "filters": [
+     "id = 1"
+    ],
+    "variables": {
+     "suffix": "O'Brien"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "id",
+     "tagged"
+    ],
+    "filter": [
+     "id = 1"
+    ],
+    "variables": {
+     "suffix": "O'Brien"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "tag"
+    ],
+    "variables": {
+     "suffix": "!"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "tag"
+    ],
+    "variables": {
+     "suffix": "!"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "tagged"
+    ],
+    "measures": [
+     {
+      "formula": "sum(scaled)",
+      "name": "v"
+     }
+    ],
+    "variables": {
+     "statuses": [
+      "ok",
+      "new"
+     ],
+     "floor": "15",
+     "k": 2,
+     "suffix": "O'Brien"
+    }
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "tagged"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(scaled)",
+      "name": "v"
+     }
+    ],
+    "variables": {
+     "statuses": [
+      "ok",
+      "new"
+     ],
+     "floor": "15",
+     "k": 2,
+     "suffix": "O'Brien"
+    }
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 73,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 142,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 222,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  }
+ ]
+}

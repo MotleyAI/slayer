@@ -1,0 +1,1921 @@
+{
+ "source": "tests/test_dev1733_order_only_transform_composite.py",
+ "pairs": [
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "month"
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "month"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "suppliers",
+    "join_pairs": [
+     [
+      "supplier_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "suppliers",
+    "join_pairs": [
+     [
+      "supplier_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "change(sum(amount))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "change(sum(amount))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "change(sum(amount)) / 2",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "change(sum(amount)) / 2",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rev / cnt",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rev / cnt",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "status"
+   },
+   "new": {
+    "field": "status"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.region"
+   },
+   "new": {
+    "field": "customers.region"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount)"
+   },
+   "new": {
+    "field": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "_expr_pending",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "_expr_pending",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "ntile(sum(amount), n=4)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "ntile(sum(amount), n=4)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "change(sum(amount))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "change(sum(amount))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "cumsum(sum(amount)) / 2",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "cumsum(sum(amount)) / 2",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "abs(sum(amount))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "abs(sum(amount))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / sum(fee)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / sum(fee)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / sum(customers.revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / sum(customers.revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.revenue) / sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.revenue) / sum(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.revenue) / sum(suppliers.revenue)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.revenue) / sum(suppliers.revenue)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "abs(sum(customers.revenue))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "abs(sum(customers.revenue))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "cumsum(sum(customers.revenue))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "cumsum(sum(customers.revenue))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount)) + cumsum(count(id))",
+    "name": "both"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount)) + cumsum(count(id))",
+    "name": "both"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(fee), direction='desc')",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "rank(sum(fee), direction='desc')",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(fee) / count(id)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(fee) / count(id)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), 1)",
+    "name": "s1"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), 1)",
+    "name": "s1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "time_shift(sum(amount), 2)",
+    "name": "s2"
+   },
+   "new": {
+    "expression": "time_shift(sum(amount), 2)",
+    "name": "s2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount)) + 1",
+    "name": "shifted"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount)) + 1",
+    "name": "shifted"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)",
+    "name": "_cumsum_inner"
+   },
+   "new": {
+    "expression": "count(id)",
+    "name": "_cumsum_inner"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)",
+    "name": "_cumsum_inner"
+   },
+   "new": {
+    "expression": "count(id)",
+    "name": "_cumsum_inner"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount)) + 1",
+    "name": "shifted"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount)) + 1",
+    "name": "shifted"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "c1"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "c1"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(count(id))",
+    "name": "c2"
+   },
+   "new": {
+    "expression": "cumsum(count(id))",
+    "name": "c2"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d') / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d') / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w90"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w90"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(fee, window='30d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(fee, window='30d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w90"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w90"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "wa"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "wa"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "wb"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "wb"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "wa",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "wa",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "time_dimension",
+   "old": {
+    "dimension": "created_at",
+    "granularity": "month",
+    "date_range": [
+     "2025-02-01",
+     "2025-02-28"
+    ]
+   },
+   "new": {
+    "field": "created_at",
+    "granularity": "month",
+    "date_range": [
+     "2025-02-01",
+     "2025-02-28"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d')",
+    "name": "w90"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d')",
+    "name": "w90"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, window='90d') / count(id)",
+    "name": "x"
+   },
+   "new": {
+    "expression": "sum(amount, window='90d') / count(id)",
+    "name": "x"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "cumsum(sum(amount, window='90d'))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "cumsum(sum(amount, window='90d'))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(customers.revenue, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(customers.revenue, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "max(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "max(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "customers.region",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "customers.region",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "created_at",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) in (1, 2)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) in (1, 2)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) > 1 and sum(amount) < 500",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) > 1 and sum(amount) < 500",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / id",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / id",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount)) + cumsum(count(id))",
+    "name": "both"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount)) + cumsum(count(id))",
+    "name": "both"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "change(sum(amount))",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "change(sum(amount))",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "change(sum(amount))",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "change(sum(amount))",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "amount_sum",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "amount_sum",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)"
+   },
+   "new": {
+    "expression": "count(id)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "cnt"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "cnt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amt) / sum(cnt)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amt) / sum(cnt)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amt), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amt), direction='desc')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "cnt"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "cnt"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount) / count(id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount) / count(id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(cnt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(cnt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(n)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(n)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(id)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(id)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount, window='90d')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount, window='90d')",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount_sum_window_90d)",
+    "name": "leaked"
+   },
+   "new": {
+    "expression": "sum(amount_sum_window_90d)",
+    "name": "leaked"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount)) + cumsum(count(id))",
+    "name": "both"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount)) + cumsum(count(id))",
+    "name": "both"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(both)",
+    "name": "peak"
+   },
+   "new": {
+    "expression": "max(both)",
+    "name": "peak"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)"
+   },
+   "new": {
+    "expression": "count(*)"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "created_at",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "created_at",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "rank(sum(amount), direction='desc')",
+    "direction": "desc"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 143,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 145,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 148,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 153,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 288,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 289,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 293,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 304,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 311,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 327,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 338,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 351,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 362,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 377,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 394,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 398,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 412,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 438,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 452,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 477,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 493,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 506,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 517,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 532,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 543,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 559,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 576,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 579,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 587,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 607,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 623,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 636,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 653,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 667,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 683,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 704,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 718,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 747,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 761,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 774,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 789,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 806,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 826,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 838,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 855,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 867,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 878,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 895,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 913,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 938,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 954,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 966,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 985,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 989,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 996,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1042,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1072,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1097,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1118,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1141,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1168,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1225,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1239,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1259,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1265,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1286,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1298,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1305,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1317,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1324,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1337,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1345,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1361,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1377,
+   "reason": "not fully literal"
+  }
+ ]
+}

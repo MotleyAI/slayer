@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_dev1825_scope_attach.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,364 @@
+{
+ "source": "tests/test_dev1832_cross_model_exec.py",
+ "pairs": [
+  {
+   "kind": "aggregation",
+   "old": {
+    "name": "my_agg",
+    "formula": "AVG({value})"
+   },
+   "new": {
+    "name": "my_agg",
+    "expression": "AVG({value})"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count_distinct(upper(channel))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "count_distinct(upper(channel))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(1)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "count(1)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "percentile(amount * quantity, p=0.5)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "percentile(amount * quantity, p=0.5)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "my_agg(amount * quantity)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "my_agg(amount * quantity)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - cost)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount - cost)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - customers.discount, window='90d')",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount - customers.discount, window='90d')",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "sum(amount - customers.discount)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "sum(amount - customers.discount)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "wsum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "wsum(amount - cost)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "wsum(amount - cost)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - cost)",
+    "name": "amount_cost_sum"
+   },
+   "new": {
+    "expression": "sum(amount - cost)",
+    "name": "amount_cost_sum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount_cost_sum - 1)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(amount_cost_sum - 1)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - customers.regions.bad_pop)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount - customers.regions.bad_pop)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - customers.regions.unparseable)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount - customers.regions.unparseable)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "first(amount - customers.discount, ordered_at)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "first(amount - customers.discount, ordered_at)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(amount, partition_by=[city, region]))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "avg(sum(amount, partition_by=[city, region]))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(quantity * avg(unit_price, partition_by=product))",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(quantity * avg(unit_price, partition_by=product))",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend)",
+    "name": "s"
+   },
+   "new": {
+    "expression": "sum(customers.spend)",
+    "name": "s"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(customers.spend - customers.regions.pop)",
+    "name": "m"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount - customers.discount)",
+    "name": "m"
+   },
+   "new": {
+    "expression": "sum(amount - customers.discount)",
+    "name": "m"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 98,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 112,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 341,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 357,
+   "reason": "not fully literal"
+  }
+ ]
+}

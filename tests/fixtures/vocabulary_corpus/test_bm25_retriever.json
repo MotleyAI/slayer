@@ -1,0 +1,26 @@
+{
+ "source": "tests/test_bm25_retriever.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 36,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 39,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 149,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 151,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,18 @@
+{
+ "source": "tests/test_drift_probe_quoting.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 32,
+   "reason": "not fully literal"
+  }
+ ]
+}

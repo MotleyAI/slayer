@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_osi_converter.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 1340,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1341,
+   "reason": "not fully literal"
+  }
+ ]
+}

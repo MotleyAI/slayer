@@ -1,0 +1,79 @@
+{
+ "source": "tests/test_dev2280_osi.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "name": "early",
+    "formula": "count(*) FILTER (WHERE ts <= '2024-04-10')"
+   },
+   "new": {
+    "name": "early",
+    "expression": "count(*) FILTER (WHERE ts <= '2024-04-10')"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     "early"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     "early"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "ev",
+    "measures": [
+     "early"
+    ]
+   },
+   "new": {
+    "population": "ev",
+    "metrics": [
+     "early"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "late",
+    "formula": "count(*) FILTER (WHERE ts > '2024-04-10 09:00:00')"
+   },
+   "new": {
+    "name": "late",
+    "expression": "count(*) FILTER (WHERE ts > '2024-04-10 09:00:00')"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 28,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 31,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  }
+ ]
+}

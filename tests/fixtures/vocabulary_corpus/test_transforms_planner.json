@@ -1,0 +1,152 @@
+{
+ "source": "tests/test_transforms_planner.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount), partition_by=region)"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount), partition_by=region)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(amount), direction='desc')"
+   },
+   "new": {
+    "expression": "rank(sum(amount), direction='desc')"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "rank(sum(amount), direction='desc')"
+   },
+   "new": {
+    "expression": "rank(sum(amount), direction='desc')"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)"
+   },
+   "new": {
+    "expression": "sum(amount)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "change(sum(amount))"
+   },
+   "new": {
+    "expression": "change(sum(amount))"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 63,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 70,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 357,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 363,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 381,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 398,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 408,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 427,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 446,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 475,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 529,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 536,
+   "reason": "not fully literal"
+  }
+ ]
+}

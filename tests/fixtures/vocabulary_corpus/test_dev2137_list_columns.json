@@ -1,0 +1,283 @@
+{
+ "source": "tests/test_dev2137_list_columns.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grids",
+    "dimensions": [
+     "id",
+     {
+      "expression": "length(grid)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "grids",
+    "dimensions": [
+     "id",
+     {
+      "expression": "length(grid)",
+      "name": "n"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grids",
+    "dimensions": [
+     "grid.value"
+    ]
+   },
+   "new": {
+    "population": "grids",
+    "dimensions": [
+     "grid.value"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grids",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "contains(grid, 1)"
+    ]
+   },
+   "new": {
+    "population": "grids",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "contains(grid, 1)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "grids",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "grid IS NULL"
+    ]
+   },
+   "new": {
+    "population": "grids",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "grid IS NULL"
+    ]
+   }
+  },
+  {
+   "kind": "field",
+   "old": {
+    "name": "skills",
+    "type": "ARRAY"
+   },
+   "new": {
+    "name": "skills",
+    "datatype": "ARRAY"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "dev_skills",
+    "dimensions": [
+     "skills.value"
+    ]
+   },
+   "new": {
+    "population": "dev_skills",
+    "dimensions": [
+     "skills.value"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "dev_skills",
+    "dimensions": [
+     "id"
+    ],
+    "filters": [
+     "contains(skills, 'go')"
+    ]
+   },
+   "new": {
+    "population": "dev_skills",
+    "dimensions": [
+     "id"
+    ],
+    "filter": [
+     "contains(skills, 'go')"
+    ]
+   }
+  },
+  {
+   "kind": "dataset",
+   "old": {
+    "name": "tagged",
+    "sql": "SELECT id, tags FROM t",
+    "data_source": "sf",
+    "columns": [
+     {
+      "name": "id",
+      "type": "INT"
+     },
+     {
+      "name": "tags",
+      "type": "ARRAY"
+     }
+    ]
+   },
+   "new": {
+    "name": "tagged",
+    "sql": "SELECT id, tags FROM t",
+    "data_source": "sf",
+    "fields": [
+     {
+      "name": "id",
+      "datatype": "INT"
+     },
+     {
+      "name": "tags",
+      "datatype": "ARRAY"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 54,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 59,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 241,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 247,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 248,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 274,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 275,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 276,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 358,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 359,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 364,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 383,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 399,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 408,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 409,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 414,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 489,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 530,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 547,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 553,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 585,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 614,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 615,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 627,
+   "reason": "not a standalone dataset: ValidationError"
+  },
+  {
+   "line": 638,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 644,
+   "reason": "unclassifiable"
+  }
+ ]
+}

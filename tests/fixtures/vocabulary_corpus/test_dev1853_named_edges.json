@@ -1,0 +1,296 @@
+{
+ "source": "tests/test_dev1853_named_edges.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "billing_customer.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "billing_customer.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "shipping_customer.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "shipping_customer.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "measures": [
+     {
+      "formula": "sum(billing_customer.amount)",
+      "name": "b"
+     }
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "name"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(billing_customer.amount)",
+      "name": "b"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "billing_customer.tier"
+    ],
+    "measures": [
+     {
+      "formula": "sum(billing_customer.spend)",
+      "name": "cs"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "billing_customer.tier"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(billing_customer.spend)",
+      "name": "cs"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "last(billing_customer.spend, billing_customer.signup_at)",
+      "name": "l"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "last(billing_customer.spend, billing_customer.signup_at)",
+      "name": "l"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "bill_tier"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "bill_tier"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "filters": [
+     "billing_customer.tier = 'gold'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "filter": [
+     "billing_customer.tier = 'gold'"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "total_b",
+    "formula": "sum(billing_customer.amount)"
+   },
+   "new": {
+    "name": "total_b",
+    "expression": "sum(billing_customer.amount)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(billing_customer.gold_spend)",
+      "name": "g"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(billing_customer.gold_spend)",
+      "name": "g"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "avg(billing_customer.spend)",
+      "name": "a"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "avg(billing_customer.spend)",
+      "name": "a"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "billing_customer.total_b",
+      "name": "r"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "billing_customer.total_b",
+      "name": "r"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "billing_customer.tier_uc"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "billing_customer.tier_uc"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "t"
+     }
+    ],
+    "order": [
+     {
+      "column": "billing_customer.name",
+      "direction": "desc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(amount)",
+      "name": "t"
+     }
+    ],
+    "order": [
+     {
+      "field": "billing_customer.name",
+      "direction": "desc"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 72,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 144,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  }
+ ]
+}

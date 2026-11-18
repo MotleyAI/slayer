@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_strict_deprecated_alias.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 100,
+   "reason": "not a standalone query: ValidationError"
+  }
+ ]
+}

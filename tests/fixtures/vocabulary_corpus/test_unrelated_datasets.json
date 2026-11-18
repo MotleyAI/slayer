@@ -1,0 +1,173 @@
+{
+ "source": "tests/test_unrelated_datasets.py",
+ "pairs": [
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(events.id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "count(events.id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "ev",
+    "formula": "count(events.id)"
+   },
+   "new": {
+    "name": "ev",
+    "expression": "count(events.id)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "orgs",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ],
+    "name": "per_city"
+   },
+   "new": {
+    "to": "orgs",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ],
+    "name": "per_city"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "count(events.id)",
+    "direction": "desc"
+   },
+   "new": {
+    "field": "count(events.id)",
+    "direction": "desc"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "time_dimensions": [
+     {
+      "dimension": "events.created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "time_dimensions": [
+     {
+      "field": "events.created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "city",
+     "events.kind"
+    ],
+    "measures": [],
+    "distinct_dimension_values": false
+   },
+   "new": {
+    "dimensions": [
+     "city",
+     "events.kind"
+    ],
+    "metrics": [],
+    "distinct_dimension_values": false
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 119,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 147,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 157,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 235,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 260,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 262,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 262,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 264,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 269,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 277,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 394,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 419,
+   "reason": "not a standalone query: ValidationError"
+  }
+ ]
+}

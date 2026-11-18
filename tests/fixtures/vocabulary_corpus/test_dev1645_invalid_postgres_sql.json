@@ -1,0 +1,705 @@
+{
+ "source": "tests/test_dev1645_invalid_postgres_sql.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "clusters",
+    "join_pairs": [
+     [
+      "clu_ref",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "clusters",
+    "join_pairs": [
+     [
+      "clu_ref",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "accounts",
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "cnt"
+     }
+    ],
+    "filters": [
+     "is_inactive == True"
+    ]
+   },
+   "new": {
+    "population": "accounts",
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "cnt"
+     }
+    ],
+    "filter": [
+     "is_inactive == True"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "accounts",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "accounts",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "accounts",
+    "measures": [
+     {
+      "formula": "sum(amount)"
+     }
+    ]
+   },
+   "new": {
+    "population": "accounts",
+    "metrics": [
+     {
+      "expression": "sum(amount)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "cluster_analysis",
+    "join_pairs": [
+     [
+      "clu_ref",
+      "CLSTR_PIN"
+     ]
+    ]
+   },
+   "new": {
+    "to": "cluster_analysis",
+    "join_pairs": [
+     [
+      "clu_ref",
+      "CLSTR_PIN"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "score",
+    "model": "cluster_analysis"
+   },
+   "new": {
+    "name": "score",
+    "dataset": "cluster_analysis"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "accounts",
+    "measures": [
+     {
+      "formula": "sum(MixedAmt)",
+      "name": "s"
+     }
+    ]
+   },
+   "new": {
+    "population": "accounts",
+    "metrics": [
+     {
+      "expression": "sum(MixedAmt)",
+      "name": "s"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "regions"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "accounts",
+    "measures": [
+     {
+      "formula": "count(*)"
+     }
+    ]
+   },
+   "new": {
+    "population": "accounts",
+    "metrics": [
+     {
+      "expression": "count(*)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(revenue)"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(revenue)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "accounts",
+    "measures": [
+     {
+      "formula": "sum(j)"
+     }
+    ]
+   },
+   "new": {
+    "population": "accounts",
+    "metrics": [
+     {
+      "expression": "sum(j)"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "RegionRef",
+      "RegionId"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "RegionRef",
+      "RegionId"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "name",
+    "model": "regions"
+   },
+   "new": {
+    "name": "name",
+    "dataset": "regions"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 47,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 50,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 51,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 57,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 58,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 62,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 66,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 67,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 68,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 69,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 89,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 90,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 99,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 105,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 110,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 130,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 146,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 177,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 195,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 198,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 205,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 206,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 211,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 243,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 245,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 246,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 246,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 265,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 284,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 286,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 287,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 289,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 289,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 304,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 334,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 351,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 364,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 393,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 438,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 443,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 444,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 459,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 464,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 468,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 473,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 474,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 480,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 496,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 501,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 502,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 505,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 517,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 523,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 524,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 525,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 526,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 529,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 548,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 553,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 554,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 567,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 570,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 571,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 577,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 578,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 582,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 594,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 598,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 614,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 619,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 620,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 633,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 638,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 639,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 642,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 647,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 648,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 652,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 715,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 720,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 721,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 728,
+   "reason": "not fully literal"
+  }
+ ]
+}

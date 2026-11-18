@@ -1,0 +1,83 @@
+{
+ "source": "tests/_cli_shop.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(order_total)",
+     "change_pct(sum(order_total))"
+    ],
+    "dimensions": [
+     "stores.name",
+     "date_trunc('month', ordered_at)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(order_total)",
+     "change_pct(sum(order_total))"
+    ],
+    "dimensions": [
+     "stores.name",
+     "date_trunc('month', ordered_at)"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "sum(order_total)"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "sum(order_total)"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 45,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 46,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 49,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 53,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 54,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 55,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 56,
+   "reason": "not fully literal"
+  }
+ ]
+}

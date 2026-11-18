@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dev2073_reingest.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  }
+ ]
+}

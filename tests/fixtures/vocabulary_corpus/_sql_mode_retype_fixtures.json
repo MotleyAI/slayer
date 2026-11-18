@@ -1,0 +1,18 @@
+{
+ "source": "tests/_sql_mode_retype_fixtures.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 42,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 43,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  }
+ ]
+}

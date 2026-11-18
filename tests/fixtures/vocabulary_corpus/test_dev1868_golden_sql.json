@@ -1,0 +1,10 @@
+{
+ "source": "tests/test_dev1868_golden_sql.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 26,
+   "reason": "unclassifiable"
+  }
+ ]
+}

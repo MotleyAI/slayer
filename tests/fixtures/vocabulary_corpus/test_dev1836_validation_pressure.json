@@ -1,0 +1,101 @@
+{
+ "source": "tests/test_dev1836_validation_pressure.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "tags",
+    "join_pairs": [
+     [
+      "tag",
+      "tag"
+     ]
+    ]
+   },
+   "new": {
+    "to": "tags",
+    "join_pairs": [
+     [
+      "tag",
+      "tag"
+     ]
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 79,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 81,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 86,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 87,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 174,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 175,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 178,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 182,
+   "reason": "not fully literal"
+  }
+ ]
+}

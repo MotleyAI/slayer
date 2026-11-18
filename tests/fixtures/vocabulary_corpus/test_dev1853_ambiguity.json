@@ -1,0 +1,108 @@
+{
+ "source": "tests/test_dev1853_ambiguity.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "customers",
+    "dimensions": [
+     "orders.status"
+    ]
+   },
+   "new": {
+    "population": "customers",
+    "dimensions": [
+     "orders.status"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "customers.name"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "customers.name"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "filters": [
+     "customers.tier = 'gold'"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "filter": [
+     "customers.tier = 'gold'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(customers.spend)",
+      "name": "s"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(customers.spend)",
+      "name": "s"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "cust_tier"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "cust_tier"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

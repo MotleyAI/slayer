@@ -1,0 +1,126 @@
+{
+ "source": "tests/test_dev1967_stage_grain.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "t"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "t"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount, partition_by=status)",
+    "name": "st"
+   },
+   "new": {
+    "expression": "sum(amount, partition_by=status)",
+    "name": "st"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "cumsum(sum(amount))",
+    "name": "cs"
+   },
+   "new": {
+    "expression": "cumsum(sum(amount))",
+    "name": "cs"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "name": "c",
+    "source_model": "customers",
+    "dimensions": [
+     "id"
+    ],
+    "measures": [
+     {
+      "formula": "max(tier)",
+      "name": "tr"
+     }
+    ]
+   },
+   "new": {
+    "name": "c",
+    "population": "customers",
+    "dimensions": [
+     "id"
+    ],
+    "metrics": [
+     {
+      "expression": "max(tier)",
+      "name": "tr"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "c",
+    "dimensions": [
+     "tr"
+    ],
+    "measures": [
+     {
+      "formula": "count(*)",
+      "name": "n"
+     }
+    ]
+   },
+   "new": {
+    "population": "c",
+    "dimensions": [
+     "tr"
+    ],
+    "metrics": [
+     {
+      "expression": "count(*)",
+      "name": "n"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 15,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  }
+ ]
+}

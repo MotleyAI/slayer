@@ -242,6 +242,14 @@ class TestOrderShorthandHealing:
         })
         assert q.order[0].direction == "asc"
 
+    def test_the_pre_2_0_reserved_key_stays_canonical(self) -> None:
+        with recorded():
+            q = SlayerQuery.model_validate({"population": "orders", "order": [{"column": "desc"}]})
+        assert q.order is not None
+        assert q.order[0].field.name == "desc"
+        assert q.order[0].direction == "asc"
+        assert [(p.old, p.new) for p in q.deprecated_inputs] == [("column", "field")]
+
     def test_canonical_column_named_like_direction_word(self) -> None:
         # Single reserved 'column' key whose value happens to be a direction word
         # stays canonical (order by a column literally named "desc").

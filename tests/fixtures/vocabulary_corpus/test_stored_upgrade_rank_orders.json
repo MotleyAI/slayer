@@ -1,0 +1,27 @@
+{
+ "source": "tests/test_stored_upgrade_rank_orders.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "top_status",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "sum(total)"
+    ]
+   },
+   "new": {
+    "population": "top_status",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "sum(total)"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

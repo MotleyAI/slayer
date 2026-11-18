@@ -1,0 +1,14 @@
+{
+ "source": "tests/test_storage_fingerprints.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 23,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  }
+ ]
+}

@@ -1,0 +1,137 @@
+{
+ "source": "tests/test_dev1909_population_pushdown.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend)",
+    "name": "sp"
+   },
+   "new": {
+    "expression": "sum(spend)",
+    "name": "sp"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend, partition_by=tier)",
+    "name": "pt"
+   },
+   "new": {
+    "expression": "sum(spend, partition_by=tier)",
+    "name": "pt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend, window='1y')",
+    "name": "w"
+   },
+   "new": {
+    "expression": "sum(spend, window='1y')",
+    "name": "w"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "last(spend, customers.signup_at)",
+    "name": "l"
+   },
+   "new": {
+    "expression": "last(spend, customers.signup_at)",
+    "name": "l"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(sum(spend, partition_by=tier))",
+    "name": "ac"
+   },
+   "new": {
+    "expression": "avg(sum(spend, partition_by=tier))",
+    "name": "ac"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(orders.amount)",
+    "name": "oa"
+   },
+   "new": {
+    "expression": "sum(orders.amount)",
+    "name": "oa"
+   }
+  },
+  {
+   "kind": "order_item",
+   "old": {
+    "column": "orders.amount",
+    "direction": "asc"
+   },
+   "new": {
+    "field": "orders.amount",
+    "direction": "asc"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(spend, partition_by=tier)",
+    "name": "ptsum"
+   },
+   "new": {
+    "expression": "sum(spend, partition_by=tier)",
+    "name": "ptsum"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(spend, partition_by=tier)",
+    "name": "ptmax"
+   },
+   "new": {
+    "expression": "max(spend, partition_by=tier)",
+    "name": "ptmax"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 133,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 182,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 192,
+   "reason": "unclassifiable"
+  }
+ ]
+}

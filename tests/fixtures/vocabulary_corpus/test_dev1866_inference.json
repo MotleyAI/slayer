@@ -1,0 +1,430 @@
+{
+ "source": "tests/test_dev1866_inference.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders"
+   },
+   "new": {
+    "population": "orders"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "orders.status = 'ok'"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "orders.status = 'ok'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "sum(orders.amount) > 100"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "sum(orders.amount) > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "orders.revenue > 100"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "orders.revenue > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "tickets.subject"
+    ],
+    "filters": [
+     "tickets.reporter.handled > 0"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "tickets.subject"
+    ],
+    "filter": [
+     "tickets.reporter.handled > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "sum(orders.amount) = 100"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "sum(orders.amount) = 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "count(widgets.x)",
+      "name": "wc"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "count(widgets.x)",
+      "name": "wc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "orders.status = 'ok'"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "orders.status = 'ok'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "order": [
+     {
+      "column": "orders.amount",
+      "direction": "desc"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "order": [
+     {
+      "field": "orders.amount",
+      "direction": "desc"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "measures": [
+     {
+      "formula": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "metrics": [
+     {
+      "expression": "sum(orders.amount)",
+      "name": "rev"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "orders.revenue > 100"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "orders.revenue > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "tickets.subject"
+    ],
+    "filters": [
+     "tickets.reporter.handled > 0"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "tickets.subject"
+    ],
+    "filter": [
+     "tickets.reporter.handled > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "tickets.subject"
+    ],
+    "filters": [
+     "tickets.reporter.score > 0"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "tickets.subject"
+    ],
+    "filter": [
+     "tickets.reporter.score > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "sum(orders.amount) > 100"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "sum(orders.amount) > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "customers.region = 'North'"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "customers.region = 'North'"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "customers.region = {reg}"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "customers.region = {reg}"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "customers.region = {reg}"
+    ],
+    "variables": {
+     "reg": "customers.tier"
+    }
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "customers.region = {reg}"
+    ],
+    "variables": {
+     "reg": "customers.tier"
+    }
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "customers.region = {reg}"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "customers.region = {reg}"
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 220,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 301,
+   "reason": "unclassifiable"
+  }
+ ]
+}

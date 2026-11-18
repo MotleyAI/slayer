@@ -1,0 +1,36 @@
+{
+ "source": "tests/test_dev2172_wire_values.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "things",
+    "measures": [
+     "uids"
+    ]
+   },
+   "new": {
+    "population": "things",
+    "metrics": [
+     "uids"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "things",
+    "measures": [
+     "prices"
+    ]
+   },
+   "new": {
+    "population": "things",
+    "metrics": [
+     "prices"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

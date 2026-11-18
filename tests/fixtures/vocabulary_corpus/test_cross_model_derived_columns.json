@@ -1,0 +1,2149 @@
+{
+ "source": "tests/test_cross_model_derived_columns.py",
+ "pairs": [
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "foo_normalized",
+    "model": "B"
+   },
+   "new": {
+    "name": "foo_normalized",
+    "dataset": "B"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "other",
+    "join_pairs": [
+     [
+      "other_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "other",
+    "join_pairs": [
+     [
+      "other_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "b_display",
+    "model": "B"
+   },
+   "new": {
+    "name": "b_display",
+    "dataset": "B"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(B.foo_normalized)"
+   },
+   "new": {
+    "expression": "sum(B.foo_normalized)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(ratio_using_derived)"
+   },
+   "new": {
+    "expression": "sum(ratio_using_derived)"
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "foo_normalized",
+    "model": "B"
+   },
+   "new": {
+    "name": "foo_normalized",
+    "dataset": "B"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "C",
+    "join_pairs": [
+     [
+      "c_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "B",
+    "join_pairs": [
+     [
+      "b_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "x_derived",
+    "model": "B.C"
+   },
+   "new": {
+    "name": "x_derived",
+    "dataset": "B.C"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(B.C.x_derived)"
+   },
+   "new": {
+    "expression": "sum(B.C.x_derived)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "solar_panels",
+    "join_pairs": [
+     [
+      "primary_panel_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "solar_panels",
+    "join_pairs": [
+     [
+      "primary_panel_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "field_ref",
+   "old": {
+    "name": "panel_efficiency",
+    "model": "solar_panels"
+   },
+   "new": {
+    "name": "panel_efficiency",
+    "dataset": "solar_panels"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(solar_panels.panel_efficiency)"
+   },
+   "new": {
+    "expression": "avg(solar_panels.panel_efficiency)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "max(customers.regions.name_upper)"
+   },
+   "new": {
+    "expression": "max(customers.regions.name_upper)"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(eu_amount)",
+    "name": "eu_total"
+   },
+   "new": {
+    "expression": "sum(eu_amount)",
+    "name": "eu_total"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ],
+    "join_type": "inner"
+   },
+   "new": {
+    "to": "loss_payment",
+    "join_pairs": [
+     [
+      "id",
+      "id"
+     ]
+    ],
+    "join_type": "inner"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(loss_amt)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(loss_amt)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "claim",
+    "join_pairs": [
+     [
+      "claim_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "claim",
+    "join_pairs": [
+     [
+      "claim_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(deep_amt)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(deep_amt)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amount)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(amount)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(total_amt)",
+    "name": "total"
+   },
+   "new": {
+    "expression": "sum(total_amt)",
+    "name": "total"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(paid_amt)",
+    "name": "paid"
+   },
+   "new": {
+    "expression": "sum(paid_amt)",
+    "name": "paid"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(exists_amt)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(exists_amt)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(loss_amt)",
+    "name": "amt"
+   },
+   "new": {
+    "expression": "sum(loss_amt)",
+    "name": "amt"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "claim",
+    "join_pairs": [
+     [
+      "claim_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "claim",
+    "join_pairs": [
+     [
+      "claim_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(amt)",
+    "name": "a"
+   },
+   "new": {
+    "expression": "sum(amt)",
+    "name": "a"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(paid_amt) + sum(total_amt)",
+    "name": "combo"
+   },
+   "new": {
+    "expression": "sum(paid_amt) + sum(total_amt)",
+    "name": "combo"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "regions",
+    "join_pairs": [
+     [
+      "region_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "customers",
+    "join_pairs": [
+     [
+      "customer_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "sum(customers.premium_rev)",
+    "name": "prem"
+   },
+   "new": {
+    "expression": "sum(customers.premium_rev)",
+    "name": "prem"
+   }
+  },
+  {
+   "kind": "relationship",
+   "old": {
+    "target_model": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   },
+   "new": {
+    "to": "warehouses",
+    "join_pairs": [
+     [
+      "warehouse_id",
+      "id"
+     ]
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 77,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 83,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 84,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 88,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 93,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 94,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 95,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 136,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 140,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 152,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 156,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 159,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 164,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 182,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 186,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 187,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 204,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 210,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 230,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 232,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 244,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 249,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 250,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 251,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 252,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 255,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 273,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 278,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 279,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 280,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 281,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 282,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 309,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 312,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 313,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 317,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 320,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 321,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 323,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 328,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 331,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 332,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 337,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 364,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 369,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 370,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 371,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 375,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 380,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 381,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 386,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 391,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 392,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 393,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 396,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 405,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 423,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 428,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 429,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 434,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 439,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 440,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 445,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 450,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 451,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 456,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 462,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 463,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 464,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 476,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 492,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 497,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 498,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 499,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 502,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 522,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 527,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 528,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 531,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 544,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 550,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 566,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 590,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 596,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 616,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 640,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 648,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 649,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 653,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 656,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 677,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 679,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 700,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 701,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 702,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 711,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 716,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 719,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 720,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 725,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 728,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 729,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 730,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 743,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 771,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 803,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 826,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 827,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 829,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 831,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 834,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 859,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 862,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 863,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 864,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 866,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 872,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 875,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 876,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 877,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 886,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 897,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 913,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 916,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 917,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 918,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 922,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 925,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 926,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 931,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 934,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 935,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 940,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 943,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 944,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 945,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 953,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 988,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 989,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 991,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1034,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1037,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1038,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1039,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1059,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1060,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1063,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1064,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1069,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1092,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1121,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1123,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1131,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1151,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1154,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1158,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1166,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1169,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1170,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1171,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1181,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1202,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1228,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1237,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1282,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1285,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1302,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1305,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1314,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1326,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1329,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1348,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1351,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1352,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1357,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1359,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1367,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1399,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1401,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1430,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1433,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1434,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1461,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1465,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1488,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1491,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1514,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1517,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1518,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1522,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1529,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1551,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1554,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1555,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1574,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1577,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1578,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1581,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1584,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1585,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1586,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1588,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1592,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1595,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1596,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1597,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1603,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1624,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1627,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1628,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1634,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1638,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1672,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1696,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1699,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1700,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1701,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1709,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1743,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1751,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1777,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1782,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1783,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1784,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1785,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1788,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1802,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1807,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1808,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1809,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1810,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1811,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1814,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1829,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1834,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1835,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1836,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1837,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1840,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1855,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1860,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1861,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1862,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1863,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1868,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1873,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1878,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1886,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1902,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1907,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1908,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1909,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1913,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1920,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1944,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1954,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1974,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1979,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1980,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1981,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1983,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 1990,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2005,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2010,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2011,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2012,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2013,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2020,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2037,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2042,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2043,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2044,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2047,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2057,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2076,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2081,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2082,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2083,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2084,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2091,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2109,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2114,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2115,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2116,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2127,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2134,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2155,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2160,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2161,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2162,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2165,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2185,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2190,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2191,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2192,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2193,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2194,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2207,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2212,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 2223,
+   "reason": "not fully literal"
+  }
+ ]
+}

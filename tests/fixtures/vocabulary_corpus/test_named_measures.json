@@ -1,0 +1,516 @@
+{
+ "source": "tests/test_named_measures.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "aov",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "aov",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "cumsum(aov)",
+      "name": "result"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "dimension": "created_at",
+      "granularity": "month"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "cumsum(aov)",
+      "name": "result"
+     }
+    ],
+    "time_dimensions": [
+     {
+      "field": "created_at",
+      "granularity": "month"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "aov * 1.1",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "aov * 1.1",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "a",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "a",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "b",
+    "formula": "a"
+   },
+   "new": {
+    "name": "b",
+    "expression": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "b",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "b",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(revenue)",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(revenue)",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "a",
+    "formula": "b"
+   },
+   "new": {
+    "name": "a",
+    "expression": "b"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "b",
+    "formula": "a"
+   },
+   "new": {
+    "name": "b",
+    "expression": "a"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "a",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "a",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "nonexistent",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "nonexistent",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov_net",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "aov_net",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "aov_nett",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "aov_nett",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(aov)",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(aov)",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "round(revenue, 2)",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "round(revenue, 2)",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "avg(revenue)"
+   },
+   "new": {
+    "expression": "avg(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "sum(revenu)",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "sum(revenu)",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "aov",
+    "formula": "avg(revenue)"
+   },
+   "new": {
+    "name": "aov",
+    "expression": "avg(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     {
+      "formula": "aov",
+      "name": "result"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     {
+      "expression": "aov",
+      "name": "result"
+     }
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "rev_total",
+    "formula": "sum(revenue)"
+   },
+   "new": {
+    "name": "rev_total",
+    "expression": "sum(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "measures": [
+     "rev_total"
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "metrics": [
+     "rev_total"
+    ]
+   }
+  },
+  {
+   "kind": "metric",
+   "old": {
+    "name": "companies_count",
+    "formula": "count_distinct(revenue)"
+   },
+   "new": {
+    "name": "companies_count",
+    "expression": "count_distinct(revenue)"
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "source_model": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "measures": [
+     "companies_count"
+    ],
+    "order": [
+     {
+      "column": "companies_count",
+      "direction": "desc"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     "status"
+    ],
+    "metrics": [
+     "companies_count"
+    ],
+    "order": [
+     {
+      "field": "companies_count",
+      "direction": "desc"
+     }
+    ]
+   }
+  }
+ ],
+ "skipped": [
+  {
+   "line": 19,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 24,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 52,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 65,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 71,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 74,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 82,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 85,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 96,
+   "reason": "no positional counterpart"
+  },
+  {
+   "line": 104,
+   "reason": "not fully literal"
+  }
+ ]
+}

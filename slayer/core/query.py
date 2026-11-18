@@ -1063,13 +1063,16 @@ def _coerce_dimensions(v: Any) -> Any:
     return [_coerce_dimension_item(item) for item in v]
 
 
+_ORDER_ITEM_RESERVED = frozenset({"field", "direction", *(old for old, new in ORDER_ITEM_KEYS.items() if new == "field")})
+
+
 def _process_order_item(item: Any) -> list:
     """Heal a single ``order`` entry into the canonical items it expands to; a shorthand dict
     field → direction (no ``field``/``direction`` key, all-direction values) expands one item per key."""
     if not isinstance(item, dict):
         return [item]
-    # A dict with a reserved key is canonical-intended, never shorthand.
-    if "field" in item or "direction" in item:
+    # A dict with a reserved key, in either vocabulary, is canonical-intended, never shorthand.
+    if _ORDER_ITEM_RESERVED & item.keys():
         return [item]
     if (
         item

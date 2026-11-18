@@ -59,8 +59,8 @@
 
 ## 5. Pairwise corpus
 
-- [ ] 5.1 With a throwaway extractor that is not committed, write `tests/fixtures/vocabulary_corpus/<file>.json` (`pairs: [{kind, old, new}]`, `skipped: [{line, reason}]`) for every test file and fixture phase 1 changed, pairing `main`'s literals with the respelled ones by position (design decision 2). Verify every phase-1-changed file has a corpus file or a recorded reason it holds no document literal.
-- [ ] 5.2 Add one parametrized pairwise test per corpus file: each `old` converts to exactly its `new`, with its deprecations. Verify all pass.
+- [x] 5.1 With a throwaway extractor that is not committed, write `tests/fixtures/vocabulary_corpus/<file>.json` (`pairs: [{kind, old, new}]`, `skipped: [{line, reason}]`) for every test file and fixture phase 1 changed, pairing `main`'s literals with the respelled ones by position (design decision 2). Verify every phase-1-changed file has a corpus file or a recorded reason it holds no document literal.
+- [x] 5.2 Add one parametrized pairwise test per corpus file: each `old` converts to exactly its `new`, with its deprecations. Verify all pass.
 
 ## 6. Gate
 

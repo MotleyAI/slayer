@@ -1,0 +1,76 @@
+{
+ "source": "tests/test_dev1871_anchors_fold.py",
+ "pairs": [
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "tickets.reporter.handled > 0"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "tickets.reporter.handled > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "orders.revenue > 100"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "orders.revenue > 100"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filters": [
+     "agents.score > 0"
+    ]
+   },
+   "new": {
+    "dimensions": [
+     "customers.region"
+    ],
+    "filter": [
+     "agents.score > 0"
+    ]
+   }
+  },
+  {
+   "kind": "query",
+   "old": {
+    "filters": [
+     "orders.revenue > 100"
+    ]
+   },
+   "new": {
+    "filter": [
+     "orders.revenue > 100"
+    ]
+   }
+  }
+ ],
+ "skipped": []
+}

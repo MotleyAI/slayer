@@ -1,0 +1,46 @@
+{
+ "source": "tests/test_join_cardinality_surfacing.py",
+ "pairs": [],
+ "skipped": [
+  {
+   "line": 20,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 25,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 26,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 27,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 30,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 40,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 44,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 163,
+   "reason": "unclassifiable"
+  },
+  {
+   "line": 199,
+   "reason": "not fully literal"
+  },
+  {
+   "line": 200,
+   "reason": "not fully literal"
+  }
+ ]
+}

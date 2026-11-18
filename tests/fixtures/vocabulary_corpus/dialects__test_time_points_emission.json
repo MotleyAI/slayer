@@ -1,0 +1,17 @@
+{
+ "source": "tests/dialects/test_time_points_emission.py",
+ "pairs": [
+  {
+   "kind": "metric",
+   "old": {
+    "formula": "count(*)",
+    "name": "n"
+   },
+   "new": {
+    "expression": "count(*)",
+    "name": "n"
+   }
+  }
+ ],
+ "skipped": []
+}
