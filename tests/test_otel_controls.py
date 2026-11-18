@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import threading
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -386,11 +388,15 @@ def test_test_reports_a_redirected_test_span_as_failed(clean_env: pytest.MonkeyP
     try:
         host, port = server.server_address[:2]
         clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"http://{host}:{port}")
-        report, code = control.test()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            report, code = control.test()
+            gc.collect()
     finally:
         server.shutdown()
         server.server_close()
-    assert (code, "Test span: sent" in report) == (1, False), report
+    leaked = [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)]
+    assert (code, "Test span: sent" in report, leaked) == (1, False, []), report
 
 
 def test_test_does_not_follow_a_redirect(clean_env: pytest.MonkeyPatch) -> None:

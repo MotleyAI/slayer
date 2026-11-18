@@ -201,6 +201,7 @@ class _Redirected(Exception):
 
 def _refuse_redirect(response: Any, *args: object, **kwargs: object) -> None:
     if 300 <= response.status_code < 400:
+        response.close()  # the exporter never reads it, so its socket would leak
         raise _Redirected(f"HTTP {response.status_code}: {_REDIRECT_HINT}")
 
 
