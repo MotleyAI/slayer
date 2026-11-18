@@ -81,9 +81,9 @@ async def test_save_model_evicts(storage: YAMLStorage) -> None:
     await storage.save_dataset(_dataset(sql_table="public.a"))
     path = storage._dataset_path("ds", "m")
     assert (await storage.get_dataset("m", data_source="ds")).sql_table == "public.a"
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
     await storage.save_dataset(_dataset(sql_table="public.b"))
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
     assert (await storage.get_dataset("m", data_source="ds")).sql_table == "public.b"
 
 
@@ -119,10 +119,10 @@ async def test_external_delete_evicts_model_cache(storage: YAMLStorage) -> None:
     await storage.save_dataset(_dataset())
     await storage.get_dataset("m", data_source="ds")  # populate
     path = storage._dataset_path("ds", "m")
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
     os.remove(path)  # external delete
     assert await storage.get_dataset("m", data_source="ds") is None
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
 
 
 async def test_external_delete_evicts_datasource_cache(storage: YAMLStorage) -> None:
@@ -154,10 +154,10 @@ async def test_model_delete_race_at_stat_returns_none_and_evicts(storage: YAMLSt
     await storage.save_dataset(_dataset())
     await storage.get_dataset("m", data_source="ds")  # populate
     path = storage._dataset_path("ds", "m")
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
     _stat_key_raises_once(monkeypatch)
     assert await storage.get_dataset("m", data_source="ds") is None
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
 
 
 async def test_datasource_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -189,10 +189,10 @@ async def test_model_delete_race_at_open_returns_none_and_evicts(storage: YAMLSt
     path = storage._dataset_path("ds", "m")
     # Stale the key so get_model misses and reaches the open(), which then races
     # with a delete — the stale entry must be evicted.
-    storage._model_cache[path] = ((0, 0, 0, 0), storage._model_cache[path][1])
+    storage._dataset_cache[path] = ((0, 0, 0, 0), storage._dataset_cache[path][1])
     _open_raises_for(monkeypatch, path)
     assert await storage.get_dataset("m", data_source="ds") is None
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
 
 
 async def test_datasource_delete_race_at_open_returns_none_and_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -224,9 +224,9 @@ async def test_delete_model_evicts(storage: YAMLStorage) -> None:
     await storage.save_dataset(_dataset())
     await storage.get_dataset("m", data_source="ds")  # populate
     path = storage._dataset_path("ds", "m")
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
     await storage.delete_dataset("m", data_source="ds")
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
     assert await storage.get_dataset("m", data_source="ds") is None
 
 
@@ -234,7 +234,7 @@ async def test_failed_save_evicts_before_write(storage: YAMLStorage, monkeypatch
     await storage.save_dataset(_dataset(sql_table="public.a"))
     await storage.get_dataset("m", data_source="ds")  # populate
     path = storage._dataset_path("ds", "m")
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
 
     def boom(*args, **kwargs):
         raise RuntimeError("write failed")
@@ -243,7 +243,7 @@ async def test_failed_save_evicts_before_write(storage: YAMLStorage, monkeypatch
     monkeypatch.setattr(_yaml_storage.yaml, "dump", boom)
     with pytest.raises(RuntimeError):
         await storage.save_dataset(replacement)
-    assert path not in storage._model_cache  # evicted before the failed write
+    assert path not in storage._dataset_cache  # evicted before the failed write
 
 
 def _raise(*args, **kwargs):
@@ -254,25 +254,25 @@ async def test_failed_update_column_sampled_evicts(storage: YAMLStorage, monkeyp
     await storage.save_dataset(_dataset())
     await storage.get_dataset("m", data_source="ds")  # populate
     path = storage._dataset_path("ds", "m")
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
     monkeypatch.setattr(_yaml_storage.yaml, "dump", _raise)
     with pytest.raises(RuntimeError):
         await storage.update_field_sampled(
             data_source="ds", dataset_name="m", field_name="id",
             sampled="x", sampled_values=None, distinct_count=None,
         )
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
 
 
 async def test_failed_delete_model_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_dataset(_dataset())
     await storage.get_dataset("m", data_source="ds")  # populate
     path = storage._dataset_path("ds", "m")
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
     monkeypatch.setattr(_yaml_storage.os, "remove", _raise)
     with pytest.raises(RuntimeError):
         await storage.delete_dataset("m", data_source="ds")
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
 
 
 async def test_failed_save_datasource_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -315,7 +315,7 @@ async def test_failed_save_after_warm_cache_serves_preserved_file(
         await storage.save_dataset(replacement)
     reloaded = await storage.get_dataset("m", data_source="ds")
     assert reloaded.sql_table == "public.a"
-    assert path in storage._model_cache  # stable re-read was re-admitted
+    assert path in storage._dataset_cache  # stable re-read was re-admitted
 
 
 async def test_failed_save_datasource_after_warm_cache_serves_preserved_file(
@@ -338,7 +338,7 @@ async def test_external_atomic_replace_invalidates_cache(storage: YAMLStorage) -
     await storage.save_dataset(_dataset(sql_table="public.a"))
     await storage.get_dataset("m", data_source="ds")  # populate
     path = storage._dataset_path("ds", "m")
-    assert path in storage._model_cache
+    assert path in storage._dataset_cache
     _atomic_write_yaml(
         path=path,
         data=_dataset(sql_table="public.bbbb").model_dump(
@@ -393,10 +393,10 @@ async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage
     # First load migrates + writes the file back (new mtime), so the stable-read
     # guard does NOT cache it — the just-parsed bytes no longer match the file.
     await storage.get_dataset("m", data_source="ds")
-    assert path not in storage._model_cache
+    assert path not in storage._dataset_cache
     # Second load reads the now-current file and caches it coherently.
     await storage.get_dataset("m", data_source="ds")
-    assert storage._model_cache[path][0] == _yaml_storage.stat_key(path)
+    assert storage._dataset_cache[path][0] == _yaml_storage.stat_key(path)
     # Third load is a hit — no parse.
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     await storage.get_dataset("m", data_source="ds")
@@ -423,7 +423,7 @@ async def test_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypat
     monkeypatch.setattr(_yaml_storage.yaml, "safe_load", racing_load)
     first = await storage.get_dataset("m", data_source="ds")
     assert first.sql_table == "public.a"
-    assert path not in storage._model_cache  # stable-read guard skipped caching
+    assert path not in storage._dataset_cache  # stable-read guard skipped caching
     second = await storage.get_dataset("m", data_source="ds")
     assert second.sql_table == "public.b"
 
@@ -559,8 +559,8 @@ async def test_cache_is_per_instance() -> None:
         await a.save_dataset(_dataset(sql_table="public.a"))
         await a.get_dataset("m", data_source="ds")  # primes a only
         path = a._dataset_path("ds", "m")
-        assert path in a._model_cache
-        assert path not in b._model_cache
+        assert path in a._dataset_cache
+        assert path not in b._dataset_cache
         with open(path, "w") as f:
             _yaml.dump(_dataset(sql_table="public.b").model_dump(mode="json", exclude_none=True), f)
         _bump_mtime(path)

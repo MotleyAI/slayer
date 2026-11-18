@@ -32,7 +32,7 @@ async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch: pytest.Mon
     assert column is not None
     log = _record(engine=engine, monkeypatch=monkeypatch)
     outcome = await ensure_samples_fresh(dataset=stored, fields=[column], engine=engine, storage=engine.storage)
-    (profiled,) = outcome.columns
+    (profiled,) = outcome.fields
     return profiled, outcome, log
 
 

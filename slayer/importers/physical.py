@@ -62,11 +62,11 @@ class PhysicalIndex:
         self.dialect = dialect
         self._sql_dialect = as_sql_dialect(dialect)
         self._insensitive = case_insensitive(dialect)
-        self.columns = list(fields)
+        self.fields = list(fields)
         # Physical spellings: exact name -> whether written unquoted.
         self._reads: dict[int, tuple[str, bool]] = {
             id(c): self._spelling(physical_identifier(c, dialect=dialect))
-            for c in self.columns if c.is_base and c.filter is None}
+            for c in self.fields if c.is_base and c.filter is None}
         self._known: dict[str, bool] = dict.fromkeys(
             (live_exact_name(n, dialect=self._sql_dialect) for n in live), False)
         for name, unquoted in self._reads.values():
@@ -97,7 +97,7 @@ class PhysicalIndex:
     def reader(self, ident: exp.Identifier) -> DatasetField | None:
         """The unfiltered base field reading ``ident``'s physical column, a same-named one first."""
         targets = self._targets(ident)
-        readers = [c for c in self.columns if id(c) in self._reads and self._reads[id(c)][0] in targets]
+        readers = [c for c in self.fields if id(c) in self._reads and self._reads[id(c)][0] in targets]
         return next((c for c in readers if self._named(ident, c)), readers[0] if readers else None)
 
     def problem(self, ident: exp.Identifier, *, owner: str | None = None) -> str | None:
@@ -105,8 +105,8 @@ class PhysicalIndex:
         if len(found := self._matches(ident, self._known)) > 1:
             return f"physical column {ident.name!r} is ambiguous between {sorted(found)}"
         targets = self._targets(ident)
-        named = set(self._matches(ident, {c.name: True for c in self.columns}))
-        for col in self.columns:
+        named = set(self._matches(ident, {c.name: True for c in self.fields}))
+        for col in self.fields:
             if col.name not in named or (id(col) in self._reads and self._reads[id(col)][0] in targets):
                 continue
             if col.name == owner:

@@ -581,7 +581,7 @@ def convert_expression(
     owner_of: OwnerOf,
     ref_of: RefOf,
     sql_dialect: SqlDialect | None = None,
-    name_taken: NameTaken = lambda model, name: False,
+    name_taken: NameTaken = lambda dataset, name: False,
     target: str | None = None,
     is_list: IsList = lambda qualifier, column: False,
 ) -> ExprResult:

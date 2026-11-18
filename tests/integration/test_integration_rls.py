@@ -233,8 +233,8 @@ async def test_profiling_sample_values_org_scoped(rls_storage: StorageBackend):
     outcome = await ensure_samples_fresh(
         dataset=customers, fields=[region_col], engine=engine, storage=rls_storage,
     )
-    assert outcome.columns[0].sampled_values is not None
-    assert set(outcome.columns[0].sampled_values) == {"US", "EU"}  # APAC (orgB) excluded
+    assert outcome.fields[0].sampled_values is not None
+    assert set(outcome.fields[0].sampled_values) == {"US", "EU"}  # APAC (orgB) excluded
 
 
 # -- dry_run preview shows the wraps ----------------------------------------

@@ -181,6 +181,7 @@ def show() -> dict:
 
 def end_process() -> None:
     usage_reporting.flush()
+    usage_reporting.shutdown()
     usage_reporting.reset()
 
 

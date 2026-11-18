@@ -49,18 +49,18 @@ def _surviving_candidates(
     stored = {relationship_signature(dataset_name=m.name, relationship=j) for m in datasets.values() for j in m.relationships}
     chosen: dict[RelationshipSignature, tuple[str, DatasetRelationship]] = {}
     for dataset_name in sorted(candidates):
-        for join in candidates[dataset_name]:
-            if join.to not in datasets:
+        for relationship in candidates[dataset_name]:
+            if relationship.to not in datasets:
                 continue
-            sig = relationship_signature(dataset_name=dataset_name, relationship=join)
+            sig = relationship_signature(dataset_name=dataset_name, relationship=relationship)
             if sig in stored:
                 continue
             prev = chosen.get(sig)
             if prev is None or _inverse_survivor(
                 dataset_a=prev[0], relationship_a=prev[1].model_dump(mode="json"),
-                dataset_b=dataset_name, relationship_b=join.model_dump(mode="json"),
+                dataset_b=dataset_name, relationship_b=relationship.model_dump(mode="json"),
             ) == dataset_name:
-                chosen[sig] = (dataset_name, join.model_copy(update={"name": None}))
+                chosen[sig] = (dataset_name, relationship.model_copy(update={"name": None}))
     return chosen
 
 
@@ -71,25 +71,25 @@ def _assign_names(
     groups: dict[tuple[str, str], list[tuple[str, int, DatasetRelationship]]] = defaultdict(list)
     incident: dict[str, set[str]] = defaultdict(set)
     for declaring, dataset_relationships in relationships.items():
-        for i, join in enumerate(dataset_relationships):
-            pair = tuple(sorted((declaring, join.to)))
-            groups[(pair[0], pair[1])].append((declaring, i, join))
-            if join.name:
-                incident[declaring].add(join.name)
-                incident[join.to].add(join.name)
+        for i, relationship in enumerate(dataset_relationships):
+            pair = tuple(sorted((declaring, relationship.to)))
+            groups[(pair[0], pair[1])].append((declaring, i, relationship))
+            if relationship.name:
+                incident[declaring].add(relationship.name)
+                incident[relationship.to].add(relationship.name)
     pending = sorted(
         (
-            (pair, declaring, _fk_stem(join), sorted((p[0], p[1]) for p in join.join_pairs), i, join)
+            (pair, declaring, _fk_stem(relationship), sorted((p[0], p[1]) for p in relationship.join_pairs), i, relationship)
             for pair, members in groups.items()
             if len(members) >= 2
             and any(relationship_signature(dataset_name=d, relationship=j) in live for d, _, j in members)
-            for declaring, i, join in members if not join.name
+            for declaring, i, relationship in members if not relationship.name
         ),
         key=lambda e: e[:5],
     )
     names: dict[tuple[str, int], str] = {}
-    for _, declaring, stem, _, i, join in pending:
-        taken = dataset_names | incident[declaring] | incident[join.to]
+    for _, declaring, stem, _, i, relationship in pending:
+        taken = dataset_names | incident[declaring] | incident[relationship.to]
         name = next(
             (c for c in _name_candidates(declaring=declaring, stem=stem) if is_valid_edge_name(c) and c not in taken),
             None,
@@ -98,7 +98,7 @@ def _assign_names(
             continue
         names[(declaring, i)] = name
         incident[declaring].add(name)
-        incident[join.to].add(name)
+        incident[relationship.to].add(name)
     return names
 
 
@@ -109,17 +109,17 @@ def plan_fk_edges(*, datasets: dict[str, SlayerDataset], candidates: dict[str, l
         for m, js in candidates.items() for j in js if j.to in datasets
     }
     added: dict[str, list[DatasetRelationship]] = defaultdict(list)
-    for declaring, join in _surviving_candidates(datasets=datasets, candidates=candidates).values():
-        added[declaring].append(join)
-    joins = {n: [*m.relationships, *added.get(n, [])] for n, m in datasets.items()}
-    names = _assign_names(relationships=joins, live=live, dataset_names=set(datasets))
+    for declaring, relationship in _surviving_candidates(datasets=datasets, candidates=candidates).values():
+        added[declaring].append(relationship)
+    relationships = {n: [*m.relationships, *added.get(n, [])] for n, m in datasets.items()}
+    names = _assign_names(relationships=relationships, live=live, dataset_names=set(datasets))
 
     named: dict[str, list[str]] = defaultdict(list)
     out: dict[str, SlayerDataset] = {}
     for dataset_name, dataset in datasets.items():
         final = [
             j.model_copy(update={"name": names[(dataset_name, i)]}) if (dataset_name, i) in names else j
-            for i, j in enumerate(joins[dataset_name])
+            for i, j in enumerate(relationships[dataset_name])
         ]
         named[dataset_name] = [names[(dataset_name, i)] for i in range(len(final)) if (dataset_name, i) in names]
         out[dataset_name] = dataset.model_copy(update={"relationships": final}) if final != dataset.relationships else dataset

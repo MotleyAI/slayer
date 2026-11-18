@@ -337,7 +337,7 @@ class OsiToSlayerConverter:
         self._reset()
 
     def _reset(self) -> None:
-        self._models: dict[str, SlayerDataset] = {}
+        self._datasets: dict[str, SlayerDataset] = {}
         # Introspected source columns per dataset, for field validation.
         self._physical: dict[str, dict[str, DatasetField]] = {}
         self._live: dict[str, LiveSource | None] = {}
@@ -442,19 +442,19 @@ class OsiToSlayerConverter:
         self._restore_sources()
 
         return OsiConversionResult(
-            datasets=list(self._models.values()),
+            datasets=list(self._datasets.values()),
             unconverted_metrics=self._unconverted,
             warnings=self._warnings,
             query_backed=self._query_backed,
         )
 
     def _doc_datasets(self, doc: OSIDocument) -> list[str]:
-        return [d.name for d in doc.datasets if d.name in self._models]
+        return [d.name for d in doc.datasets if d.name in self._datasets]
 
     def _build_metrics_for(self, doc: OSIDocument) -> None:
         doc_datasets = self._doc_datasets(doc)
         for ds in doc.datasets:
-            if ds.name in self._models:
+            if ds.name in self._datasets:
                 for metric in ds.metrics or []:
                     self._metric(metric=metric, doc=doc, home=ds.name, doc_datasets=doc_datasets)
         for metric in doc.metrics or []:
@@ -557,7 +557,7 @@ class OsiToSlayerConverter:
             self._declare_fields(base, ds)
         self._drop_unreadable_fields(base)
         self._apply_dataset_metadata(base, ds, doc)
-        self._models[ds.name] = base
+        self._datasets[ds.name] = base
         found = self._payload(ds.nonportable_extensions, kind="dataset", entity=ds.name, label=f"dataset {ds.name!r}",
                               dataset_name=ds.name, ossie=ext.source_digest(ds.source, reader=self._target))
         if found is not None:
@@ -915,7 +915,7 @@ class OsiToSlayerConverter:
             return
 
         # DatasetRelationship keys only on ``to``, so a second relationship to one target is unreachable.
-        if any(j.to == rel.to for j in self._models[src].relationships):
+        if any(j.to == rel.to for j in self._datasets[src].relationships):
             self._warn(
                 f"Relationship {rel.name!r} is a second relationship from {src!r} to "
                 f"{rel.to!r}; SLayer cannot disambiguate multiple relationships to one "
@@ -925,7 +925,7 @@ class OsiToSlayerConverter:
             return
 
         pairs = [[f, t] for f, t in zip(rel.from_columns, rel.to_columns)]
-        self._models[src].relationships.append(DatasetRelationship(
+        self._datasets[src].relationships.append(DatasetRelationship(
             to=rel.to,
             join_pairs=pairs,
             # OSI relationships are direction-implied: from = many, to = one.
@@ -946,7 +946,7 @@ class OsiToSlayerConverter:
 
     def _drop_invalid_cross_dataset_fields(self) -> bool:
         dropped = False
-        for dataset in self._models.values():
+        for dataset in self._datasets.values():
             for col, bad in self._invalid_cross_dataset_fields(dataset):
                 self._revert_or_drop_field(dataset=dataset, col=col, bad=bad)
                 dropped = True
@@ -988,7 +988,7 @@ class OsiToSlayerConverter:
     def _drop_stale_relationships(self) -> bool:
         """Drop relationships whose key fields were removed by field validation."""
         dropped = False
-        for dataset in self._models.values():
+        for dataset in self._datasets.values():
             stale = [j for j in dataset.relationships if self._relationship_fields_missing(dataset=dataset, relationship=j)]
             for relationship in stale:
                 dataset.relationships.remove(relationship)
@@ -1008,7 +1008,7 @@ class OsiToSlayerConverter:
 
     def _type_cross_dataset_fields(self) -> None:
         """Type a derived field that is exactly one cross-dataset ref from the field its chain of such refs ends at."""
-        for dataset in self._models.values():
+        for dataset in self._datasets.values():
             for col in dataset.fields:
                 end = self._ref_chain_end(dataset=dataset, col=col)
                 if end is not None:
@@ -1043,7 +1043,7 @@ class OsiToSlayerConverter:
         return None if field is None else (target, field)
 
     def _relationship_fields_missing(self, dataset: SlayerDataset, relationship: DatasetRelationship) -> bool:
-        target = self._models.get(relationship.to)
+        target = self._datasets.get(relationship.to)
         for src_col, tgt_col in relationship.join_pairs:
             if not self._dataset_has_field(dataset_name=dataset.name, field=src_col):
                 return True
@@ -1058,7 +1058,7 @@ class OsiToSlayerConverter:
             return False
         try:
             return resolve_hop(
-                current=dataset, token=quals[0], datasets_by_name=self._models
+                current=dataset, token=quals[0], datasets_by_name=self._datasets
             ) is None
         except AmbiguousRelationshipPathError:
             return False
@@ -1090,16 +1090,16 @@ class OsiToSlayerConverter:
         return resolve_ref_target(
             qualifiers=tuple(alias.split(".")),
             source_dataset=host,
-            datasets_by_name=self._models,
+            datasets_by_name=self._datasets,
         )
 
     def _dataset_has_field(self, dataset_name: str, field: str) -> bool:
-        dataset = self._models.get(dataset_name)
+        dataset = self._datasets.get(dataset_name)
         return dataset is not None and name_taken(field, (c.name for c in dataset.fields))
 
     def _dataset_has_name(self, dataset_name: str, name: str) -> bool:
         """Whether ``name`` is taken by a field or metric (one shared namespace)."""
-        dataset = self._models.get(dataset_name)
+        dataset = self._datasets.get(dataset_name)
         if dataset is None:
             return False
         return name_taken(name, [*(c.name for c in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
@@ -1110,7 +1110,7 @@ class OsiToSlayerConverter:
         return [
             f"{name}.{c}" for name, cols in sides for c in cols
             if relationship_key_error(dataset=rel.from_dataset, target=rel.to, key=c, side=name,
-                              fields=self._models[name].fields) is not None
+                              fields=self._datasets[name].fields) is not None
         ]
 
     # ---- Ossie metrics -> SLayer metrics ----
@@ -1144,7 +1144,7 @@ class OsiToSlayerConverter:
             if home is not None and qual and _is_source_qualifier(qual[0]):
                 return self._source_field_ref(leaf, home=home, helpers=helpers, metric=metric)
             owner = _ref_owner(col, qual=qual, home=home, doc_datasets=doc_datasets)
-            declared = [c.name for c in self._models[owner].fields if not c.hidden]
+            declared = [c.name for c in self._datasets[owner].fields if not c.hidden]
             return exp.column(_match_name(leaf, declared), table=owner if home is None else None)
         return tree.transform(canonical, copy=False)
 
@@ -1166,7 +1166,7 @@ class OsiToSlayerConverter:
 
     def _source_field(self, leaf: exp.Identifier, *, home: str) -> DatasetField:
         """The one source column of ``home`` that ``leaf`` names, as written or (unquoted) folded by the database."""
-        if any(c.name.casefold() == "source" for c in self._models[home].fields if not c.hidden):
+        if any(c.name.casefold() == "source" for c in self._datasets[home].fields if not c.hidden):
             raise LookupError(f"the field 'source' of {home!r} takes precedence over the source qualifier")
         found = self._source_fields(home, leaf)
         if not leaf.quoted:
@@ -1186,7 +1186,7 @@ class OsiToSlayerConverter:
         live_names = self._live_names(home)
         exact = exp.to_identifier(next(live_exact_name(n, dialect=self._dialect) for n, c in live_names if c is source),
                                   quoted=True)
-        index = PhysicalIndex(self._models[home].fields, dialect=self._target, live=[n for n, _ in live_names])
+        index = PhysicalIndex(self._datasets[home].fields, dialect=self._target, live=[n for n, _ in live_names])
         if (problem := index.problem(exact)) is not None:
             raise LookupError(f"source column {leaf.name!r} cannot be read: {problem}")
         return index.reader(exact)
@@ -1214,7 +1214,7 @@ class OsiToSlayerConverter:
         if home is None:
             return self._convert_metric(metric, tree=tree, home=home, doc_datasets=doc_datasets)
         # Helpers stay only when the metric converts.
-        fields = self._models[home].fields
+        fields = self._datasets[home].fields
         fields.extend(helpers.values())
         slayer_metric = self._convert_metric(metric, tree=tree, home=home, doc_datasets=doc_datasets)
         if slayer_metric is None:
@@ -1233,7 +1233,7 @@ class OsiToSlayerConverter:
             return None  # already reported
 
         # Metrics and fields share one namespace on the anchor dataset.
-        anchor_dataset = self._models[anchor]
+        anchor_dataset = self._datasets[anchor]
         if name_taken(metric.name, (m.name for m in anchor_dataset.metrics if m.name)):
             self._unconv(
                 f"Metric {metric.name!r} duplicates an existing metric on "
@@ -1300,7 +1300,7 @@ class OsiToSlayerConverter:
                 pairs = {
                     p.describe(): None
                     for c in doc_datasets for m in sorted(owners)
-                    for p in blocking_pairs(root=self._models[c], target=m, datasets_by_name=self._models)
+                    for p in blocking_pairs(root=self._datasets[c], target=m, datasets_by_name=self._datasets)
                 }
                 self._unconv(
                     f"Metric {metric_name!r} references datasets {sorted(owners)} "
@@ -1326,7 +1326,7 @@ class OsiToSlayerConverter:
 
     def _fact_root(self, doc_datasets: list[str]) -> str | None:
         """The unique dataset that is never a relationship target, or ``None``."""
-        targets = {j.to for name in doc_datasets for j in self._models[name].relationships}
+        targets = {j.to for name in doc_datasets for j in self._datasets[name].relationships}
         non_targets = [n for n in doc_datasets if n not in targets]
         return non_targets[0] if len(non_targets) == 1 else None
 
@@ -1342,7 +1342,7 @@ class OsiToSlayerConverter:
     def _make_is_list(self, owner_of: OwnerOf) -> Callable[[Optional[str], str], bool]:
         def is_list(qualifier: Optional[str], field: str) -> bool:
             owner = owner_of(qualifier, field)
-            col = self._models[owner].get_field(field) if owner is not None else None
+            col = self._datasets[owner].get_field(field) if owner is not None else None
             return col is not None and col.datatype is DataType.ARRAY
         return is_list
 
@@ -1351,7 +1351,7 @@ class OsiToSlayerConverter:
         fanning): prefer no fanning hop, then the fewest total hops, a mentioned candidate, the smallest name."""
         keyed = []
         for c in candidates:
-            routed = shortest_routes(root=self._models[c], datasets_by_name=self._models)
+            routed = shortest_routes(root=self._datasets[c], datasets_by_name=self._datasets)
             if all(m in routed for m in mentioned) and not any(routed[m].fanning for m in to_one):
                 fans = any(routed[m].fanning for m in mentioned)
                 keyed.append((fans, sum(len(routed[m].edges) for m in mentioned), 0 if c in mentioned else 1, c))
@@ -1359,7 +1359,7 @@ class OsiToSlayerConverter:
 
     def _make_ref_of(self, anchor: str) -> Callable[[str, str], Optional[str]]:
         def ref_of(dataset: str, field: str) -> Optional[str]:
-            route = shortest_route(root=self._models[anchor], target=dataset, datasets_by_name=self._models)
+            route = shortest_route(root=self._datasets[anchor], target=dataset, datasets_by_name=self._datasets)
             if route is None:
                 return None
             return ".".join([*route.tokens, field])
@@ -1380,7 +1380,7 @@ class OsiToSlayerConverter:
 
     def _materialize_fields(self, materialized: list[MaterializedField]) -> None:
         for mc in materialized:
-            dataset = self._models.get(mc.owning_dataset)
+            dataset = self._datasets.get(mc.owning_dataset)
             if dataset is None or any(c.name == mc.name for c in dataset.fields):
                 continue
             probed = self._probe_expression_type(dataset=dataset, expr=self._physical_sql(dataset, mc.sql))
@@ -1422,8 +1422,8 @@ class OsiToSlayerConverter:
         built = _build_meta(ctx=rel.ai_context, extensions=rel.nonportable_extensions)
         relationships: list[tuple[SlayerDataset, DatasetRelationship]] = []
         for declaration in payload.declarations:
-            dataset, relationship = self._models.get(declaration.dataset), declaration.relationship
-            target = self._models.get(relationship.to)
+            dataset, relationship = self._datasets.get(declaration.dataset), declaration.relationship
+            target = self._datasets.get(relationship.to)
             problem = None
             if dataset is None or target is None:
                 problem = f"joins {declaration.dataset!r} to {relationship.to!r}, which are not both imported"
@@ -1450,7 +1450,7 @@ class OsiToSlayerConverter:
     def _restore_dataset_attributes(self) -> None:
         """Dataset attributes Ossie has no place for, and the SLayer-only fields, from each dataset payload."""
         for name, (payload, _) in self._dataset_payloads.items():
-            dataset = self._models.get(name)
+            dataset = self._datasets.get(name)
             if dataset is None:
                 continue
             dataset.hidden = payload.hidden
@@ -1492,14 +1492,14 @@ class OsiToSlayerConverter:
             self._fall_back(item, error=errors[id(item)])
 
     def _add_metric(self, item: _PendingMetric) -> str | None:
-        dataset = self._models.get(item.dataset)
+        dataset = self._datasets.get(item.dataset)
         if dataset is None:
             return f"its dataset {item.dataset!r} is not imported"
         if item.metric.name and self._dataset_has_name(item.dataset, item.metric.name):
             return f"its name collides on {item.dataset!r}"
         dataset.metrics.append(item.metric)
         try:
-            bind_dataset_expression(item.metric.expression, dataset=dataset, datasets=list(self._models.values()),
+            bind_dataset_expression(item.metric.expression, dataset=dataset, datasets=list(self._datasets.values()),
                                dialect=self._target)
         except Exception as exc:  # noqa: BLE001 — any binding failure keeps it pending
             dataset.metrics.remove(item.metric)
@@ -1520,7 +1520,7 @@ class OsiToSlayerConverter:
     def _restore_fields(self) -> None:
         """Field attributes; the value/filter split only where the field's fingerprint matches."""
         for (name, field), (payload, matched) in self._field_payloads.items():
-            dataset = self._models.get(name)
+            dataset = self._datasets.get(name)
             slayer_field = dataset.get_field(field) if dataset is not None else None
             if dataset is None or slayer_field is None:
                 continue
@@ -1545,7 +1545,7 @@ class OsiToSlayerConverter:
     def _restore_sources(self) -> None:
         """Table/SQL with row filters in place; saved queries handed back for the engine to validate."""
         for name, (payload, matched) in self._dataset_payloads.items():
-            dataset = self._models.get(name)
+            dataset = self._datasets.get(name)
             if dataset is None:
                 continue
             if not matched:

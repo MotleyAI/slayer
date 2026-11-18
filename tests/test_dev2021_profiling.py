@@ -102,7 +102,7 @@ async def _profile(run: _Run, monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str
     outcome = await ensure_samples_fresh(dataset=model, fields=targets, engine=run.engine, storage=run.engine.storage,
                                          force=True)
     assert outcome.errors == []
-    return {c.name: c.sampled for c in outcome.columns}, log
+    return {c.name: c.sampled for c in outcome.fields}, log
 
 
 async def test_min_max_over_every_column_kind(run: _Run, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -836,7 +836,7 @@ class InspectService:
         outcome = await ensure_samples_fresh(
             dataset=dataset, fields=[col], engine=self._engine, storage=self._storage,
         )
-        refreshed = outcome.columns[0]
+        refreshed = outcome.fields[0]
         if refreshed is col:
             return dataset
         return dataset.model_copy(update={

@@ -231,7 +231,7 @@ class SavedQueryRun(BaseModel):
 
 def _read_dataset_collisions(*, reads: StatementReads, bundle: ResolvedSourceBundle) -> List[NameCollisionWarning]:
     """A ``NameCollisionWarning`` per case collision of each dataset the statement reads."""
-    read = {m for m, _ in (*reads.columns, *reads.metrics, *reads.aggregations)}
+    read = {m for m, _ in (*reads.fields, *reads.metrics, *reads.aggregations)}
     datasets = {**bundle.datasets_by_name, **({bundle.population.name: bundle.population} if bundle.population else {})}
     variants = [w for m in datasets.values() if m.name in read or m is bundle.population for w in spine_variant_warnings(m)]
     return [*(w for name in sorted(read) if name in datasets for w in name_collision_warnings(datasets[name])), *variants]
@@ -465,10 +465,10 @@ def _collect_broadcast_warnings(
                     seen.add(dim)
     return [
         BroadcastGrainWarningPayload(
-            metric=measure, location=location, association_unsupported=unsupported,
+            metric=metric, location=location, association_unsupported=unsupported,
             dimensions=[BroadcastDimension(dimension=d, reason=r) for d, r in dims],
         )
-        for (location, measure, unsupported), dims in dims_by_key.items()
+        for (location, metric, unsupported), dims in dims_by_key.items()
     ]
 
 
@@ -3118,7 +3118,7 @@ class SlayerQueryEngine:
         failures = DocumentLoadFailures()
         loaded = await self._preload_relationship_targets(dataset, failures=failures)
         notices.extend(saved_date_only_notices(dataset, datasets_by_name=loaded))
-        _validate_join_keys(dataset=dataset, loaded=loaded)
+        _validate_relationship_keys(dataset=dataset, loaded=loaded)
         ds = await self.storage.get_datasource(dataset.data_source) if dataset.data_source else None
         check_placeholders(mode_a_texts(dataset), dialect=dialect_for_ds_type(ds.type if ds else None))
         await self._validate_mode_a_relationship_paths(dataset, loaded=loaded)
@@ -3445,7 +3445,7 @@ def _physical_keys(*, dataset: SlayerDataset, keys: List[str]) -> List[exp.Ident
     return [key_identifier(by_name[k].physical_name, quoted=by_name[k].physical_quoted) for k in keys]
 
 
-def _validate_join_keys(
+def _validate_relationship_keys(
     *, dataset: SlayerDataset, loaded: Dict[str, Optional[SlayerDataset]],
 ) -> None:
     """Every relationship's keys name declared base fields on both sides (source re-checked for a populated query-backed dataset)."""

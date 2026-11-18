@@ -474,7 +474,7 @@ class _DatasetReadCache:
 
     def __init__(self, inner: "StorageBackend") -> None:
         self._inner = inner
-        self._models: Dict[tuple, Optional[SlayerDataset]] = {}
+        self._datasets: Dict[tuple, Optional[SlayerDataset]] = {}
 
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
@@ -487,10 +487,10 @@ class _DatasetReadCache:
         self, name: str, data_source: Optional[str] = None
     ) -> Optional[SlayerDataset]:
         key = (name, data_source)
-        if key not in self._models:
+        if key not in self._datasets:
             dataset = await self._inner.get_dataset(name, data_source=data_source)
-            self._models[key] = dataset
+            self._datasets[key] = dataset
             if dataset is not None:
                 # a hint-less read also answers the concrete-datasource key
-                self._models.setdefault((name, dataset.data_source), dataset)
-        return self._models[key]
+                self._datasets.setdefault((name, dataset.data_source), dataset)
+        return self._datasets[key]

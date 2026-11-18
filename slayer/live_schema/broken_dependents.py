@@ -64,7 +64,7 @@ def _dependents(*, datasets: list[SlayerDataset], retyped: dict[str, list[str]])
     """Each definition a delete of a re-typed field cascades to (the field itself excluded), once."""
     by_name = {m.name: m for m in datasets}
     out: dict[tuple[str, str, str], _Dependent] = {}
-    for seed in ((m, c) for m, columns in retyped.items() for c in columns):
+    for seed in ((m, c) for m, fields in retyped.items() for c in fields):
         for entry in schema_drift.field_dependents(datasets=datasets, dataset=by_name[seed[0]], field=seed[1]):
             for owner, kind, name in _entry_dependents(entry, by_name=by_name, seed=seed):
                 dep = out.setdefault((owner, kind, name), _Dependent(dataset=owner, kind=kind, name=name))

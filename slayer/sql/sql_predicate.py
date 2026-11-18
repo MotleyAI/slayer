@@ -29,7 +29,7 @@ import slayer.core.enums
 class ParsedFilter(BaseModel):
     """A validated SQL-mode predicate ready for SQL generation."""
     sql: str = Field(description="SQL WHERE condition, e.g. \"status = 'completed'\"")
-    columns: list[str] = Field(description="Field names referenced in the filter")
+    fields: list[str] = Field(description="Field names referenced in the filter")
 
 
 _STRING_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
@@ -109,10 +109,10 @@ def parse_sql_predicate(expression: str) -> ParsedFilter:
     full dialect-aware SQL parsing happens at generation time.
 
     The ``ParsedFilter.sql`` field is the original ``expression`` unchanged;
-    ``columns`` is a best-effort regex extraction of field-shaped
+    ``fields`` is a best-effort regex extraction of field-shaped
     identifiers, used only for validation (see :func:`_bare_field_refs`).
     """
     if has_window_function(expression):
         raise ValueError(f"Filter '{expression}' {WINDOW_IN_FILTER_ERROR}")
     _reject_dsl_constructs(expression)
-    return ParsedFilter(sql=expression, columns=_bare_field_refs(expression))
+    return ParsedFilter(sql=expression, fields=_bare_field_refs(expression))

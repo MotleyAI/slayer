@@ -1005,7 +1005,7 @@ class SlayerDataset(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_join_keys(self) -> "SlayerDataset":
+    def _validate_relationship_keys(self) -> "SlayerDataset":
         # An unexpanded query-backed dataset has no fields yet; checked once populated.
         if not self.awaits_fields:
             _check_relationship_keys(dataset_name=self.name, fields=self.fields, relationships=self.relationships)

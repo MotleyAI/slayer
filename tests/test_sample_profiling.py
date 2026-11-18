@@ -222,10 +222,10 @@ async def test_owner_returns_input_columns_in_order(env) -> None:
     cols = _cols(model, "status", "id", "amount")
     outcome = await ensure_samples_fresh(dataset=model, fields=cols, engine=engine, storage=storage)
     assert isinstance(outcome, ProfileOutcome)
-    assert [c.name for c in outcome.columns] == ["status", "id", "amount"]
-    assert outcome.columns[0].sampled_values == ["paid", "cancelled", "refunded"]
-    assert outcome.columns[1] == cols[1]
-    assert outcome.columns[2].sampled == "5.0 .. 99.0"
+    assert [c.name for c in outcome.fields] == ["status", "id", "amount"]
+    assert outcome.fields[0].sampled_values == ["paid", "cancelled", "refunded"]
+    assert outcome.fields[1] == cols[1]
+    assert outcome.fields[2].sampled == "5.0 .. 99.0"
     assert outcome.errors == []
 
 
@@ -239,7 +239,7 @@ async def test_hidden_identifier_and_opaque_columns_are_never_profiled(env, monk
     cols = _cols(model, "id", "secret", "blob")
     outcome = await ensure_samples_fresh(dataset=model, fields=cols, engine=engine, storage=storage)
     assert log == []
-    assert outcome.columns == cols
+    assert outcome.fields == cols
 
 
 async def test_numeric_columns_share_one_batched_query(env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -355,7 +355,7 @@ async def test_all_null_numeric_is_cached(env: tuple[SlayerQueryEngine, StorageB
     outcome = await ensure_samples_fresh(
         dataset=model, fields=_cols(model, "empty_num"), engine=engine, storage=storage,
     )
-    assert outcome.columns[0].sampled == "all NULL"
+    assert outcome.fields[0].sampled == "all NULL"
     stored = await _stored(storage, column="empty_num")
     assert stored.sampled == "all NULL"
     log = _record(engine=engine, monkeypatch=monkeypatch)
@@ -405,7 +405,7 @@ async def test_model_whose_every_query_fails(env, monkeypatch: pytest.MonkeyPatc
     assert len(_probes(log)) == 1
     assert log[1] is _probes(log)[0]
     assert persists == []
-    assert all(_triple(c) == (None, None, None) for c in outcome.columns)
+    assert all(_triple(c) == (None, None, None) for c in outcome.fields)
     assert len(outcome.errors) == 1
     assert "ghost" in outcome.errors[0]
 
@@ -774,7 +774,7 @@ async def test_persist_failure_keeps_fresh_value(env: tuple[SlayerQueryEngine, S
     [status] = _cols(model, "status")
     with caplog.at_level(logging.WARNING):
         outcome = await ensure_samples_fresh(dataset=model, fields=[status], engine=engine, storage=storage)
-    assert outcome.columns[0].sampled_values == ["paid", "cancelled", "refunded"]
+    assert outcome.fields[0].sampled_values == ["paid", "cancelled", "refunded"]
     warnings = _profiling_warnings(caplog)
     assert len(warnings) == 1
     assert all(part in warnings[0].getMessage() for part in (DS, "orders", "status", "disk on fire"))
@@ -803,7 +803,7 @@ async def test_persist_failure_on_one_column_only(env: tuple[SlayerQueryEngine, 
     assert len(_profiling_warnings(caplog)) == 1
     assert len(outcome.errors) == 1
     assert "amount" in outcome.errors[0]
-    assert next(c for c in outcome.columns if c.name == "amount").sampled == "5.0 .. 99.0"
+    assert next(c for c in outcome.fields if c.name == "amount").sampled == "5.0 .. 99.0"
     assert (await _stored(storage, column="status")).sampled_values is not None
 
 
@@ -865,9 +865,9 @@ async def test_policy_engine_ignores_persisted_samples(env: tuple[Any, StorageBa
     log = _record(engine=engine, monkeypatch=monkeypatch)
     outcome = await _profile(engine=engine, storage=storage, dataset=model)
     assert len(_categorical(log)) == 2
-    status = next(c for c in outcome.columns if c.name == "status")
+    status = next(c for c in outcome.fields if c.name == "status")
     assert _triple(status) == ("paid", ["paid"], 1)
-    assert next(c for c in outcome.columns if c.name == "amount").sampled == "10.0 .. 20.0"
+    assert next(c for c in outcome.fields if c.name == "amount").sampled == "10.0 .. 20.0"
     assert persists == []
     assert (await _stored(storage, column="status")).sampled_values == ["STORED"]
 
@@ -881,7 +881,7 @@ async def test_policy_engine_reuses_its_own_samples(env, monkeypatch: pytest.Mon
     clock.now += TTL - 1
     outcome = await _profile(engine=engine, storage=storage, dataset=model)
     assert log == []
-    assert next(c for c in outcome.columns if c.name == "status").sampled_values == ["paid"]
+    assert next(c for c in outcome.fields if c.name == "status").sampled_values == ["paid"]
     clock.now += 2
     await _profile(engine=engine, storage=storage, dataset=model)
     assert log
@@ -897,7 +897,7 @@ async def test_policy_model_failure_still_returns_scoped_samples(env, monkeypatc
     log = _record(engine=engine, monkeypatch=monkeypatch)
     outcome = await _profile(engine=engine, storage=storage, dataset=model)
     assert log == []
-    assert next(c for c in outcome.columns if c.name == "status").sampled_values == ["paid"]
+    assert next(c for c in outcome.fields if c.name == "status").sampled_values == ["paid"]
 
 
 async def test_policy_engines_do_not_share_samples(env) -> None:
@@ -905,7 +905,7 @@ async def test_policy_engines_do_not_share_samples(env) -> None:
     model = await _save(storage, _orders())
     await _profile(engine=_policy_engine(storage, org="a"), storage=storage, dataset=model)
     outcome = await _profile(engine=_policy_engine(storage, org="b"), storage=storage, dataset=model)
-    assert next(c for c in outcome.columns if c.name == "status").sampled_values == ["cancelled", "refunded"]
+    assert next(c for c in outcome.fields if c.name == "status").sampled_values == ["cancelled", "refunded"]
 
 
 async def test_policy_failure_never_returns_persisted_samples(env: tuple[Any, StorageBackend]) -> None:
@@ -915,7 +915,7 @@ async def test_policy_failure_never_returns_persisted_samples(env: tuple[Any, St
     model = await storage.get_dataset("ghost", data_source=DS)
     assert model is not None
     outcome = await _profile(engine=_policy_engine(storage), storage=storage, dataset=model)
-    assert _triple(next(c for c in outcome.columns if c.name == "status")) == (None, None, None)
+    assert _triple(next(c for c in outcome.fields if c.name == "status")) == (None, None, None)
 
 
 async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env: tuple[Any, StorageBackend]) -> None:
@@ -935,7 +935,7 @@ async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env:
     for _ in range(2):  # second call serves the failure cache
         outcome = await _profile(engine=engine, storage=storage, dataset=model)
         for name in ("id", "secret", "bad"):
-            assert next(c for c in outcome.columns if c.name == name).sampled is None, name
+            assert next(c for c in outcome.fields if c.name == name).sampled is None, name
 
 
 async def test_inspect_model_under_policy_renders_scoped_samples(env: tuple[Any, StorageBackend]) -> None:

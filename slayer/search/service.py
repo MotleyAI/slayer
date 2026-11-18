@@ -599,7 +599,7 @@ class SearchService:
             engine=self._engine, storage=self._storage,
         )
         scoped = self._engine.policy is not None
-        for (idx, hit, col), fresh in zip(hits, outcome.columns, strict=True):
+        for (idx, hit, col), fresh in zip(hits, outcome.fields, strict=True):
             if fresh is col and not scoped:
                 continue
             update: dict[str, Any] = {"description": fresh.description}

@@ -21,7 +21,7 @@ RelationshipRead = tuple[str, str, str | None, frozenset[tuple[str, str]]]
 class StatementReads(BaseModel):
     """Per-dataset ``(dataset, name)`` reads; ``fields`` is closed over derived definitions and crossed relationship keys."""
 
-    columns: set[tuple[str, str]] = Field(default_factory=set)
+    fields: set[tuple[str, str]] = Field(default_factory=set)
     relationships: set[RelationshipRead] = Field(default_factory=set)
     metrics: set[tuple[str, str]] = Field(default_factory=set)
     aggregations: set[tuple[str, str]] = Field(default_factory=set)
@@ -45,7 +45,7 @@ def statement_reads(
             for key in walk_value_keys(root_key):
                 _add_key(local, key=key, root=key_root, datasets=datasets)
         _close_fields(local, datasets=datasets)
-        reads.columns |= local.columns
+        reads.fields |= local.fields
         reads.relationships |= local.relationships
         reads.aggregations |= local.aggregations
     return reads
@@ -56,7 +56,7 @@ def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerDataset, datas
         _add_path(reads, path=key.path, root=root, datasets=datasets)
         terminal = resolved_terminal(root=root, path=key.path, datasets_by_name=datasets)
         if terminal is not None and not isinstance(key, StarKey):
-            reads.columns.add((terminal.name, key.field_name if isinstance(key, FieldSqlKey) else key.leaf))
+            reads.fields.add((terminal.name, key.field_name if isinstance(key, FieldSqlKey) else key.leaf))
     elif isinstance(key, AggregateKey):
         owner = aggregation_owner(root=root, source=key.source, datasets_by_name=datasets)
         definition = aggregation_definition(owner=owner, agg=key.agg) if owner is not None else None
@@ -75,13 +75,13 @@ def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerDatas
         pairs = [(s, t) if forward else (t, s) for s, t in edge.join_pairs]
         target = edge.to if forward else edge.source_dataset
         reads.relationships.add((edge.declaring_dataset, target, edge.name, frozenset(pairs)))
-        reads.columns.update((edge.declaring_dataset, s) for s, _ in pairs)
-        reads.columns.update((target, t) for _, t in pairs)
+        reads.fields.update((edge.declaring_dataset, s) for s, _ in pairs)
+        reads.fields.update((target, t) for _, t in pairs)
 
 
 def _close_fields(reads: StatementReads, *, datasets: dict[str, SlayerDataset]) -> None:
     """Add every field a read derived field's definition reads, transitively."""
-    pending = list(reads.columns)
+    pending = list(reads.fields)
     while pending:
         dataset_name, field_name = pending.pop()
         host = datasets.get(dataset_name)
@@ -89,6 +89,6 @@ def _close_fields(reads: StatementReads, *, datasets: dict[str, SlayerDataset]) 
         if host is None or field is None:
             continue
         for read in definition_reads(field=field, host=host, reachable=datasets):
-            if read not in reads.columns:
-                reads.columns.add(read)
+            if read not in reads.fields:
+                reads.fields.add(read)
                 pending.append(read)

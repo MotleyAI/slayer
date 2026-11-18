@@ -35,7 +35,7 @@ async def _sample(
     outcome = await ensure_samples_fresh(
         dataset=dataset, fields=[column], engine=engine, storage=storage, force=force,
     )
-    return outcome.columns[0]
+    return outcome.fields[0]
 
 
 def _count_queries(*, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> list:

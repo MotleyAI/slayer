@@ -97,10 +97,10 @@ class ValueRegistry:
         source_field_names: Optional[FrozenSet[str]] = None,
         host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> None:
-        self._source_columns: FrozenSet[str] = (
+        self._source_fields: FrozenSet[str] = (
             source_field_names or frozenset()
         )
-        self._host_model_name = host_dataset_name
+        self._host_dataset_name = host_dataset_name
         self._slots: Dict[SlotId, ValueSlot] = {}
         self._by_key: Dict[ValueKey, SlotId] = {}
         self._declared_names: Dict[str, SlotId] = {}
@@ -128,7 +128,7 @@ class ValueRegistry:
         """``rename it, e.g. to '<free name>'`` — free of source fields and every other name in the query."""
         own = Counter(n for n in (declared_name, public_name, canonical_alias) if n)
         taken = (
-            self._source_columns
+            self._source_fields
             | (self._taken_names - self._reserved.keys())
             | (self._reserved - own).keys()
         )
@@ -183,14 +183,14 @@ class ValueRegistry:
         )
         collides = (
             public_name is not None
-            and public_name in self._source_columns
+            and public_name in self._source_fields
             and not is_self_named_dimension
             and not is_unnamed_star_agg
             and not is_pathed_projection
         )
         check_metric_name_collision(
             name=public_name if collides else None,
-            dataset=self._host_model_name,
+            dataset=self._host_dataset_name,
             suggestion=self._collision_suggestion(
                 declared_name=declared_name, public_name=public_name, canonical_alias=canonical_alias,
             ) if collides else None,
@@ -199,9 +199,9 @@ class ValueRegistry:
             expression=declared_name,
             canonical=canonical_alias if (
                 canonical_alias is not None
-                and canonical_alias in self._source_columns
+                and canonical_alias in self._source_fields
             ) else None,
-            dataset=self._host_model_name,
+            dataset=self._host_dataset_name,
         )
 
     def intern(

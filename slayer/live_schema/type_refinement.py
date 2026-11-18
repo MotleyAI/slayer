@@ -70,14 +70,14 @@ def has_refineable_fields(d: dict) -> bool:
     sql_table = d.get("sql_table")
     if not isinstance(sql_table, str) or not sql_table:
         return False
-    columns = d.get("fields")
-    if not isinstance(columns, list) or not columns:
+    fields = d.get("fields")
+    if not isinstance(fields, list) or not fields:
         return False
     return any(
         isinstance(c, dict)
         and c.get("datatype") == DataType.DOUBLE.value
         and _field_is_base(c.get("sql"))
-        for c in columns
+        for c in fields
     )
 
 

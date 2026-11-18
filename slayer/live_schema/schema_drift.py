@@ -211,12 +211,12 @@ def touches(reads: StatementReads, entry: Any) -> bool:
     if isinstance(entry, WholeDatasetDelete):
         return entry.cause == "schema_drift"
     if isinstance(entry, RetypeFinding):
-        return (entry.dataset_name, entry.field) in reads.columns
+        return (entry.dataset_name, entry.field) in reads.fields
     if not isinstance(entry, EditDatasetDelete):
         return False
     dataset, remove = entry.dataset_name, entry.remove
     return bool(entry.remove_filters) or any((
-        any((dataset, c) in reads.columns for c in remove.fields),
+        any((dataset, c) in reads.fields for c in remove.fields),
         any((dataset, m) in reads.metrics for m in remove.metrics),
         any((dataset, a) in reads.aggregations for a in remove.aggregations),
         any(_reads_edge(reads.relationships, dataset=dataset, edge=e) for e in remove.relationship_edges),
@@ -474,18 +474,18 @@ def _diff_sql_table_relationships(
     """Per-relationship diff of a sql_table-mode dataset against live FK columns and dataset availability."""
     dropped: list[DatasetRelationship] = []
     reasons: list[DeleteReason] = []
-    for join in dataset.relationships:
-        local_cols = [pair[0] for pair in join.join_pairs]
+    for relationship in dataset.relationships:
+        local_cols = [pair[0] for pair in relationship.join_pairs]
         missing_locals = [
             lc for lc in local_cols
             if (col := dataset.get_field(lc)) is None
             or physical_column_sql(sql=col.sql, name=col.name) not in live_table.columns
         ]
         if missing_locals:
-            dropped.append(join)
+            dropped.append(relationship)
             reasons.append(
                 DeleteReason(
-                    target=f"relationship:{edge_reference(dataset=dataset, relationship=join)}",
+                    target=f"relationship:{edge_reference(dataset=dataset, relationship=relationship)}",
                     reason=(
                         f"Local FK column(s) {missing_locals} missing from "
                         f"live table"
@@ -493,13 +493,13 @@ def _diff_sql_table_relationships(
                 )
             )
             continue
-        if join.to not in available_datasets_in_ds:
-            dropped.append(join)
+        if relationship.to not in available_datasets_in_ds:
+            dropped.append(relationship)
             reasons.append(
                 DeleteReason(
-                    target=f"relationship:{edge_reference(dataset=dataset, relationship=join)}",
+                    target=f"relationship:{edge_reference(dataset=dataset, relationship=relationship)}",
                     reason=(
-                        f"Relationship target {join.to!r} not present in "
+                        f"Relationship target {relationship.to!r} not present in "
                         f"datasource {dataset.data_source!r}"
                     ),
                 )
@@ -533,18 +533,18 @@ def diff_sql_table_dataset(
         )
 
     dropped_cols, col_reasons = _diff_sql_table_columns(dataset=dataset, live_table=live_table)
-    dropped_joins, join_reasons = _diff_sql_table_relationships(
+    dropped_relationships, relationship_reasons = _diff_sql_table_relationships(
         dataset=dataset,
         live_table=live_table,
         available_datasets_in_ds=available_datasets_in_ds,
     )
 
-    if not dropped_cols and not dropped_joins:
+    if not dropped_cols and not dropped_relationships:
         return None, set()
-    reasons = col_reasons + join_reasons
+    reasons = col_reasons + relationship_reasons
     remove = RemoveSpec(fields=dropped_cols)
-    for join in dropped_joins:
-        remove.add_relationship(dataset=dataset, relationship=join)
+    for relationship in dropped_relationships:
+        remove.add_relationship(dataset=dataset, relationship=relationship)
 
     return (
         EditDatasetDelete(
@@ -700,7 +700,7 @@ def _filter_refs(filter_str: str) -> list[str]:
         pf = parse_sql_predicate(filter_str)
     except Exception:
         return []
-    return list(pf.columns)
+    return list(pf.fields)
 
 
 def _filter_refs_dsl(filter_str: str) -> list[str]:
@@ -1008,12 +1008,12 @@ def _check_stage_for_whole_drop(
                 f"{base_name!r} which is being whole-dropped"
             ),
         )
-    for join_target in _stage_relationship_targets(stage, scope=scope):
-        if join_target in whole_dropped_datasets:
+    for relationship_target in _stage_relationship_targets(stage, scope=scope):
+        if relationship_target in whole_dropped_datasets:
             return DeleteReason(
                 target=f"dataset:{qb_name}",
                 reason=(
-                    f"source_queries stage relates to {join_target!r} "
+                    f"source_queries stage relates to {relationship_target!r} "
                     f"which is being whole-dropped"
                 ),
             )
@@ -1261,12 +1261,12 @@ def _cascade_metrics(*, dataset: SlayerDataset, state: _CascadeState) -> bool:
 def _cascade_relationships(*, dataset: SlayerDataset, state: _CascadeState) -> bool:
     """Rules 3a + 3b: local FK field dropped here, or foreign field dropped on the target."""
     changed = False
-    for join in dataset.relationships:
-        if RelationshipEdgeRef.of(join) in state.dropped_relationships.get(dataset.name, []):
+    for relationship in dataset.relationships:
+        if RelationshipEdgeRef.of(relationship) in state.dropped_relationships.get(dataset.name, []):
             continue
         # Raw dropped_cols: a dropped local PK key invalidates the relationship too.
         local_missing = [
-            pair[0] for pair in join.join_pairs
+            pair[0] for pair in relationship.join_pairs
             if pair[0] in state.dropped_cols.get(dataset.name, set())
         ]
         if local_missing:
@@ -1274,16 +1274,16 @@ def _cascade_relationships(*, dataset: SlayerDataset, state: _CascadeState) -> b
                 edit_entries=state.edit_entries,
                 dropped_relationships=state.dropped_relationships,
                 dataset=dataset,
-                relationship=join,
+                relationship=relationship,
                 reason=f"Local FK field(s) {local_missing} dropped from this dataset",
             ) or changed
             continue
-        tgt = state.datasets_by_name.get(join.to)
+        tgt = state.datasets_by_name.get(relationship.to)
         if tgt is None or tgt.data_source != dataset.data_source:
             continue
         # Raw dropped_cols, not cascadable: a target PK drop still invalidates the relationship.
         foreign_missing = [
-            pair[1] for pair in join.join_pairs
+            pair[1] for pair in relationship.join_pairs
             if pair[1] in state.dropped_cols.get(tgt.name, set())
         ]
         if not foreign_missing:
@@ -1292,10 +1292,10 @@ def _cascade_relationships(*, dataset: SlayerDataset, state: _CascadeState) -> b
             edit_entries=state.edit_entries,
             dropped_relationships=state.dropped_relationships,
             dataset=dataset,
-            relationship=join,
+            relationship=relationship,
             reason=(
                 f"Foreign field(s) {foreign_missing} dropped on target "
-                f"dataset {join.to!r}"
+                f"dataset {relationship.to!r}"
             ),
         ):
             changed = True
@@ -1407,10 +1407,10 @@ def _removed_relationship_refs(*, dataset: SlayerDataset | None, remove: RemoveS
     """Exact references of every relationship ``remove`` drops; a reference-only entry resolves on ``dataset``."""
     refs = list(remove.relationship_edges)
     for ref in remove.relationships:
-        joins = [] if dataset is None else (
+        relationships = [] if dataset is None else (
             [j for j in dataset.relationships if j.name == ref] or [j for j in dataset.relationships if j.to == ref]
         )
-        refs.extend(r for r in map(RelationshipEdgeRef.of, joins) if r not in refs)
+        refs.extend(r for r in map(RelationshipEdgeRef.of, relationships) if r not in refs)
     return refs
 
 

@@ -468,7 +468,7 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
         # Materially-different columns, so the production path treats them as refreshed.
         refreshed_calls.extend((dataset.name, c.name) for c in fields)
         return ProfileOutcome(
-            columns=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
+            fields=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
         )
 
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
@@ -493,7 +493,7 @@ async def test_verbose_plus_lazy_column_refresh_regenerates_text(
 
     async def fake_refresh(*, dataset, fields, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
         return ProfileOutcome(
-            columns=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
+            fields=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
         )
 
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)

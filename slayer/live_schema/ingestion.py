@@ -216,7 +216,7 @@ async def _generate_relationships(
         default_schema=resolved_default,
         dialect=dialect_of(client),
     )
-    joins = []
+    relationships = []
     seen_signatures: set[tuple] = set()
     for ref_table, pairs in groups:
         # Dataset names strip `__`, so the live name is not always the dataset name.
@@ -241,7 +241,7 @@ async def _generate_relationships(
                 key_fields=target_cols, unique_key_sets=_key_sets(await keys_of(ref_table))
             ),
         )
-        joins.append(
+        relationships.append(
             DatasetRelationship(
                 to=target_name,
                 join_pairs=[[_logical_field_name(s), _logical_field_name(t)]
@@ -250,7 +250,7 @@ async def _generate_relationships(
             )
         )
 
-    return joins
+    return relationships
 
 
 async def _safe_get_table_comment(client: SqlClient, table_name: str, ref: SchemaRef | None) -> str | None:
@@ -1409,11 +1409,11 @@ def _additive_merge_existing(
     }
     # The primary key is gap-filled whole or not at all; a key the dataset has is never changed.
     fill_key = _live_key_lands_whole(persisted=persisted, fresh=fresh, live_name=live_name)
-    columns = _merge_persisted_fields(
+    field_merge = _merge_persisted_fields(
         persisted=persisted, fresh=fresh, live_name=live_name, sqlite_widen_enabled=sqlite_widen_enabled,
         fill_key=fill_key,
     )
-    merged_columns = columns.fields
+    merged_fields = field_merge.fields
 
     matched = persisted_names | set(live_name.values())
     new_cols = _case_free_new_fields(
@@ -1421,16 +1421,16 @@ def _additive_merge_existing(
             c.model_copy(update={"primary_key": False}) if c.primary_key and not fill_key else c
             for c in fresh.fields if c.name not in matched and _spelling(c) not in matched
         ],
-        taken=[*(c.name for c in merged_columns), *(m.name for m in persisted.metrics if m.name)],
+        taken=[*(c.name for c in merged_fields), *(m.name for m in persisted.metrics if m.name)],
         dataset=persisted.name,
     )
-    merged_columns.extend(new_cols)
-    new_column_names = [c.name for c in new_cols]
+    merged_fields.extend(new_cols)
+    new_field_names = [c.name for c in new_cols]
 
-    merged_joins, joins_metadata_changed = _merge_stored_relationships(
+    merged_relationships, relationships_metadata_changed = _merge_stored_relationships(
         persisted=persisted, fresh=fresh
     )
-    metadata_changed = columns.metadata_changed or joins_metadata_changed
+    metadata_changed = field_merge.metadata_changed or relationships_metadata_changed
 
     kind_changed = (
         fresh.source_kind is not None
@@ -1440,16 +1440,16 @@ def _additive_merge_existing(
     dataset_described = bool(fresh.description) and not persisted.description
 
     if not (
-        new_column_names
-        or columns.widened
+        new_field_names
+        or field_merge.widened
         or kind_changed
         or metadata_changed
-        or columns.described
+        or field_merge.described
         or dataset_described
     ):
         return AdditiveMergeResult(merged=persisted)
 
-    update: dict[str, Any] = {"fields": merged_columns, "relationships": merged_joins}
+    update: dict[str, Any] = {"fields": merged_fields, "relationships": merged_relationships}
     if kind_changed:
         update["source_kind"] = fresh.source_kind
     if dataset_described:
@@ -1457,11 +1457,11 @@ def _additive_merge_existing(
 
     return AdditiveMergeResult(
         merged=persisted.model_copy(update=update),
-        new_fields=new_column_names,
-        widened_fields=columns.widened,
+        new_fields=new_field_names,
+        widened_fields=field_merge.widened,
         kind_changed=kind_changed,
         metadata_changed=metadata_changed,
-        described_fields=columns.described,
+        described_fields=field_merge.described,
         dataset_described=dataset_described,
     )
 
@@ -1658,7 +1658,7 @@ async def _adopt_stored_sanitized_names(
     adopted: dict[str, "SlayerDataset"] = {}
     for name, fresh in fresh_by_name.items():
         new_name = rename_map.get(name, name)
-        joins = [
+        relationships = [
             j.model_copy(update={"to": rename_map[j.to]})
             if j.to in rename_map else j
             for j in fresh.relationships
@@ -1666,8 +1666,8 @@ async def _adopt_stored_sanitized_names(
         updates: dict = {}
         if new_name != name:
             updates["name"] = new_name
-        if joins != fresh.relationships:
-            updates["relationships"] = joins
+        if relationships != fresh.relationships:
+            updates["relationships"] = relationships
         adopted[new_name] = fresh.model_copy(update=updates) if updates else fresh
     return adopted, rename_map
 

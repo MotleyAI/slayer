@@ -182,7 +182,7 @@ async def test_static_readers_cover_the_planned_statement(payload: Any) -> None:
 
     keys = _keys(by_name, reads)
     physical = {
-        (m, c) for m, c in reads.columns
+        (m, c) for m, c in reads.fields
         if m in by_name and by_name[m].sql_table and by_name[m].get_field(c) is not None and (m, c) not in keys
     }
     undetected = {
@@ -199,7 +199,7 @@ async def test_a_stage_extension_reaches_the_stored_model_beside_a_root_of_anoth
     async with shop("sqlite", respelled_dataset(_datasets(), name="customers", spelling="Customers")) as engine:
         touched, reads = await _planned(engine, stages)
     assert "Customers" in touched
-    assert ("Customers", "tier") in reads.columns
+    assert ("Customers", "tier") in reads.fields
 
 
 @pytest.mark.parametrize("data_source", [DS, ""], ids=["own-datasource", "no-datasource"])
@@ -246,7 +246,7 @@ async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery
         touched, reads = await _planned(engine, stages)
         resp = await engine.execute(stages)
     assert {"orders", "customers"} <= touched
-    assert ("customers", "name") in reads.columns
+    assert ("customers", "name") in reads.fields
     assert {row[column] for row in resp.data} - {None} <= {"Ann", "Bob", "Cid", "Dee", "Eve"}
 
 
@@ -266,5 +266,5 @@ async def test_a_stored_derived_column_closes_over_its_own_definition_beside_ano
         *customers().fields, DatasetField(name="label", sql="upper(name)", datatype=DataType.TEXT)]})
     async with shop("sqlite", [labelled if m.name == "customers" else m for m in _datasets()] + [_LABELS]) as engine:
         _, reads = await _planned(engine, stages)
-    assert {("customers", "label"), ("customers", "name")} <= reads.columns
-    assert ("customers", "city") not in reads.columns
+    assert {("customers", "label"), ("customers", "name")} <= reads.fields
+    assert ("customers", "city") not in reads.fields

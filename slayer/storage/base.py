@@ -1142,7 +1142,7 @@ class StorageBackend(ABC):
                 name=name, data=data, data_source=data_source,
             )
             await self._canonicalize_relationship_key_spellings(data=data, data_source=data_source)
-            await self._declare_join_keys(name=name, data=data, data_source=data_source)
+            await self._declare_relationship_keys(name=name, data=data, data_source=data_source)
             await self._repair_source_query_filters(name=name, data=data, data_source=data_source)
             data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
             # Collapse stored exact-inverse mirror pairs.
@@ -1195,7 +1195,7 @@ class StorageBackend(ABC):
                 target_fields=peer.get("fields") if isinstance(peer, dict) else None,
             )
 
-    async def _declare_join_keys(self, *, name: str, data: dict, data_source: str) -> None:
+    async def _declare_relationship_keys(self, *, name: str, data: dict, data_source: str) -> None:
         """Declare each relationship key naming no field of this table- or SQL-backed document as its hidden base field:
         source keys from its own relationships, target keys from its siblings' relationships into it. Typed like the opposite key."""
         fields = data.get("fields")

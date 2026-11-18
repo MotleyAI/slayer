@@ -57,7 +57,7 @@ _NO_SAMPLE = _Sample()
 class ProfileOutcome(BaseModel):
     """The input fields (refreshed where profiled, in input order) plus error strings."""
 
-    columns: list[DatasetField]
+    fields: list[DatasetField]
     errors: list[str] = Field(default_factory=list)
 
 
@@ -395,15 +395,15 @@ async def ensure_samples_fresh(
         ]
         if targets and state.live(table=state.failures, key=dataset_key, now=now) is not None:
             logger.debug("sample profiling: %s.%s skipped (cached dataset failure)", dataset.data_source, dataset.name)
-            return ProfileOutcome(columns=result)
+            return ProfileOutcome(fields=result)
     if not targets:
-        return ProfileOutcome(columns=result)
+        return ProfileOutcome(fields=result)
     run = _Run(
         dataset=dataset, engine=engine, storage=storage, state=state,
         dataset_key=dataset_key, result=result, pending=len(targets),
     )
     await run.run(targets)
-    return ProfileOutcome(columns=run.result, errors=run.errors)
+    return ProfileOutcome(fields=run.result, errors=run.errors)
 
 
 async def refresh_table_backed_dataset_sampled(

@@ -235,7 +235,7 @@ class TestQueryTimeAttribution:
         query_engine._sql_clients[client_cache_key(_DS)] = _live(bq_connection, layout, schemas=schemas)
         await query_engine._maybe_raise_schema_drift(
             err=_UNRELATED, datasource=_DS, read_set={"contractors"},
-            reads=StatementReads(columns={("contractors", "id"), ("contractors", "name")}),
+            reads=StatementReads(fields={("contractors", "id"), ("contractors", "name")}),
         )
 
     async def test_a_dropped_column_on_a_bare_model_is_attributed(
@@ -243,7 +243,7 @@ class TestQueryTimeAttribution:
     ) -> None:
         await query_engine.storage.save_dataset(_dataset("contractors", sql_table="contractors", columns=_WITH_SKILLS))
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
-        reads = StatementReads(columns={("contractors", "skills")})
+        reads = StatementReads(fields={("contractors", "skills")})
         query_engine._sql_clients[client_cache_key(_DS)] = _live(bq_connection, layout, schemas=schemas)
         with pytest.raises(SchemaDriftError) as exc:
             await query_engine._maybe_raise_schema_drift(

@@ -275,7 +275,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # by the os.stat check on the next read; a stale entry is never served
         # because it is evicted on every write (and on an external delete), and
         # the miss path verifies the file did not change under it (stable-read).
-        self._model_cache: dict[str, tuple[StatKey, SlayerDataset]] = {}
+        self._dataset_cache: dict[str, tuple[StatKey, SlayerDataset]] = {}
         self._datasource_cache: dict[
             str, tuple[StatKey, DatasourceConfig]
         ] = {}
@@ -353,7 +353,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     async def _write_raw_dataset_dict(self, *, name: str, data_source: str, data: dict) -> None:
         path = self._dataset_path(data_source, name)
-        self._model_cache.pop(path, None)
+        self._dataset_cache.pop(path, None)
         _atomic_write_yaml(path=path, data=data)
         self._forget_raw(data_source=data_source, name=name)
 
@@ -398,7 +398,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         os.makedirs(target_dir, exist_ok=True)
         path = os.path.join(target_dir, f"{dataset.name}.yaml")
         data = without_none(dataset.model_dump(mode="json"))
-        self._model_cache.pop(path, None)  # Evict before the write
+        self._dataset_cache.pop(path, None)  # Evict before the write
         _atomic_write_yaml(path=path, data=data)
 
     async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
@@ -425,21 +425,21 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         data_source, name = target
         path = self._dataset_path(data_source, name)  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerDataset Pydantic validators sanitize the save path
         if not self._dataset_entry_exists(data_source=data_source, name=name):
-            self._model_cache.pop(path, None)  # Evict on external delete
+            self._dataset_cache.pop(path, None)  # Evict on external delete
             return None
         try:
             key_before = stat_key(path)
         except FileNotFoundError:  # deleted between the existence check and the stat
-            self._model_cache.pop(path, None)
+            self._dataset_cache.pop(path, None)
             return None
-        cached = self._model_cache.get(path)
+        cached = self._dataset_cache.get(path)
         if cached is not None and cached[0] == key_before:
             return cached[1].model_copy(deep=True)
         try:
             with open(path) as f:  # NOSONAR(S2083,S8707,S7493) — path from _model_path, which validates both components; sync I/O by design
                 text = f.read()
         except FileNotFoundError:  # deleted between the stat and the open
-            self._model_cache.pop(path, None)
+            self._dataset_cache.pop(path, None)
             return None
         with stored_document_boundary(kind="dataset", name=name, data_source=data_source):
             try:
@@ -458,13 +458,13 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # reads the now-current file and caches it normally.
         admit = _cache_admit(path=path, key_before=key_before)
         if admit is not None:
-            self._model_cache[path] = (admit, dataset)
+            self._dataset_cache[path] = (admit, dataset)
         return dataset.model_copy(deep=True)
 
     async def _delete_dataset_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        self._model_cache.pop(self._dataset_path(data_source, name), None)
+        self._dataset_cache.pop(self._dataset_path(data_source, name), None)
         # Exact match — os.remove would otherwise hit a case-variant sibling.
         if not self._dataset_entry_exists(data_source=data_source, name=name):
             return False
@@ -482,7 +482,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         distinct_count: int | None,
     ) -> None:
         path = self._dataset_path(data_source, dataset_name)
-        self._model_cache.pop(path, None)  # Evict before the write
+        self._dataset_cache.pop(path, None)  # Evict before the write
         if not self._dataset_entry_exists(data_source=data_source, name=dataset_name):
             raise ValueError(
                 f"update_field_sampled: dataset {dataset_name!r} in datasource "

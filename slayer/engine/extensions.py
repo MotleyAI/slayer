@@ -425,7 +425,7 @@ def apply_query_extensions(
 
     datasets, restrictions = extend_datasets(
         query, universe, where=where, on_conflict=conflict,
-        lookup=lambda name, models: _extended(name, datasets=models, bundle=bundle, where=where),
+        lookup=lambda name, datasets_in: _extended(name, datasets=datasets_in, bundle=bundle, where=where),
         reserved_names=_reserved_names(universe, bundle),
         stored_edge_names=[
             *bundle.datasource_edge_names,

@@ -607,7 +607,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             dataset=dataset, fields=list(dataset.fields), engine=engine, storage=storage,
         )
         sampled_by_name = {
-            c.name: c for c in outcome.columns
+            c.name: c for c in outcome.fields
             if not c.hidden and not is_identifier(field=c, fields=dataset.fields)
         }
 

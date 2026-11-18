@@ -23,18 +23,17 @@
 
 ## 3. Phase 1: rename (commits, all before phase 2)
 
-- [ ] 3.1 Write `rename-map.yaml` in this change folder from the regenerated list, with the flags it is run with in a header comment: `--docs`, `--with` for duck-typed stand-ins, `--keep` for upgrade fixtures and older-version stored documents. Dry-run it clean, batching it if memory runs out, then apply it once. Verify the gate in 3.6.
+- [x] 3.1 Write `rename-map.yaml` in this change folder from the regenerated list, with the flags it is run with in a header comment: `--docs`, `--with` for duck-typed stand-ins, `--keep` for upgrade fixtures and older-version stored documents. Dry-run it clean, batching it if memory runs out, then apply it once. Verify the gate in 3.6.
 - [x] 3.2 Rename the modules listed in the issue, except `core/formula.py` and `engine/join_safety.py` (its stub is repointed), with `dr-refactor rename` on a `from pkg import mod` import of each (`move-module` only moves a module between packages, keeping its basename). Leave each old path as a `raise_moved(…, removal="3.0")` stub. Verify the moved-module tripwire test covers each one.
-- [ ] 3.3 Respell what the map cannot express with a throwaway pass that is not committed:
+- [x] 3.3 Respell what the map cannot express with a throwaway pass that is not committed:
   - dict keys and YAML and JSON fixtures (excluding upgrade fixtures and older-version stored documents);
   - MCP tool names, REST routes and CLI commands and flags;
-  - help topics `01_models` → `01_datasets` and `06_joins` → `06_relationships`;
-  - messages, tool descriptions, help text, `docs/` and `examples/`.
+  - help topics `01_models` → `01_datasets` and `06_joins` → `06_relationships`.
 
-  Re-execute the edited notebooks. Verify that a word-boundary sweep for the old words finds hits only inside the carve-outs.
+  Prose (messages, tool descriptions, help text, docstrings, comments, `docs/`, `examples/` and notebooks) is DEV-2347's.
 - [x] 3.4 Respell the literal identifiers in `openspec/specs/` by a scripted direct edit (design decision 18). Show the owner the substitution table and the diff before committing.
 - [x] 3.5 Apply the three approved arc42 edits verbatim (design decisions 4–6), extend `compatibility.touches` in `architecture/index.yaml` (design decision 19), and run `la-arch-diagrams`. Verify `la-arch-check` passes.
-- [ ] 3.6 Commit phase 1. Verify that ruff, `la-typecheck` (no new errors) and `la-arch-check` pass. Old-spelling tests may still fail; phase 2 fixes them.
+- [x] 3.6 Commit phase 1. Verify that ruff, `la-typecheck` (no new errors) and `la-arch-check` pass. Old-spelling tests may still fail; phase 2 fixes them.
 
 ## 4. Phase 2: translate old to new
 
@@ -64,7 +63,7 @@
 
 ## 6. Gate
 
-- [ ] 6.1 Run the local test scope (`la-affected-tests --base main`, plus goldens, fixtures and conftests this change reaches) and fix every failure.
-- [ ] 6.2 Verify that ruff, `la-typecheck` (no new errors, baseline not rewritten), `la-arch-check` and LikeC4 validation pass.
-- [ ] 6.3 Run a final word-boundary sweep for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `tests/`, `docs/` and `examples/`. Every hit is inside a carve-out, an upgrade path, a back-compat test, the engine A/B corpus under `tests/perf/compare/` (also fed to the pinned PyPI engine, so it keeps the old spelling until that pin moves past this release), or (in `tests/` only) a test function name, test class name or test-local variable.
-- [ ] 6.4 Post a comment on DEV-1607 noting that its Ossie payload becomes version 3 and that it keeps the Ossie datatype values (design decision 20).
+- [x] 6.1 Run the local test scope (`la-affected-tests --base main`, plus goldens, fixtures and conftests this change reaches) and fix every failure.
+- [x] 6.2 Verify that ruff, `la-typecheck` (no new errors, baseline not rewritten), `la-arch-check` and LikeC4 validation pass.
+- [x] 6.3 Run a final word-boundary sweep of identifiers for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `docs/` and `examples/`. Every hit is inside a carve-out, an upgrade path or a back-compat test. Prose, and identifiers in `tests/`, are DEV-2347's.
+- [x] 6.4 Post a comment on DEV-1607 noting that its Ossie payload becomes version 3 and that it keeps the Ossie datatype values (design decision 20).

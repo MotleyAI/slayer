@@ -205,7 +205,7 @@ class TestListPathsUseTheEngineClient:
             engine.close()
         assert guard.attempts == []
         assert outcome.errors == []
-        assert outcome.columns[0].sampled_values == ["go", "sql"]
+        assert outcome.fields[0].sampled_values == ["go", "sql"]
         assert any("skills" in sql for sql in factory.all_statements())
 
     async def test_sql_mode_cursor_typing(self, tmp_path: Path) -> None:

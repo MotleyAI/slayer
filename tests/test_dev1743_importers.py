@@ -239,8 +239,8 @@ def test_osi_walk_join_alias_does_not_split_legacy_dunder_chain(
     make strict (slayer/osi/converter.py ``_walk_join_alias``).
     """
     conv = OsiToSlayerConverter(documents=[], data_source=DS)
-    conv._models = {m.name: m for m in chain_datasets()}  # orders → customers → regions
-    orders = conv._models["orders"]
+    conv._datasets = {m.name: m for m in chain_datasets()}  # orders → customers → regions
+    orders = conv._datasets["orders"]
 
     resolved = conv._walk_join_alias(host=orders, alias="customers__regions")
     assert resolved is None, (

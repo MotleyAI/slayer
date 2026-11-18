@@ -72,7 +72,7 @@ async def _sampled(*, dataset: SlayerDataset, engine, names: tuple[str, ...] | N
     """Profile ``model`` (or just ``names``) through the owner; ``{column: sampled}``."""
     cols = [c for c in dataset.fields if names is None or c.name in names]
     outcome = await ensure_samples_fresh(dataset=dataset, fields=cols, engine=engine, storage=engine.storage)
-    return {c.name: c.sampled for c in outcome.columns}
+    return {c.name: c.sampled for c in outcome.fields}
 
 
 class TestAggregationGate:

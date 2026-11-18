@@ -43,7 +43,7 @@ async def _profile(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> dict
     outcome = await ensure_samples_fresh(
         dataset=dataset, fields=list(dataset.fields), engine=engine, storage=engine.storage,
     )
-    return {c.name: c for c in outcome.columns}
+    return {c.name: c for c in outcome.fields}
 
 
 @pytest.fixture
