@@ -48,6 +48,7 @@ PINNED: dict[tuple[str, str], str] = {
     ("slayer/core/query.py", "An extension object in `population`"): "3.0",
     **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
     ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
+    ("slayer/core/vocabulary.py", ""): "3.0",
 }
 
 

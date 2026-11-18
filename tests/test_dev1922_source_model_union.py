@@ -339,9 +339,9 @@ class TestTimeDimensionColumnAlias:
         assert via_key == via_kw
         assert via_kw.field == "created_at"
 
-    def test_dimension_wins_when_both_keys_are_present(self) -> None:
-        td = TimeDimension.model_validate({"field": "a", "column": "b", "granularity": "month"})
-        assert td.field == "a"
+    def test_both_keys_are_refused(self) -> None:
+        with pytest.raises(ValidationError, match="Both `field` and its pre-2.0 spelling `column` are given"):
+            TimeDimension.model_validate({"field": "a", "column": "b", "granularity": "month"})
 
     def test_schema_advertises_dimension_only(self) -> None:
         props = SlayerQuery.model_json_schema()["$defs"]["TimeDimension"]["properties"]

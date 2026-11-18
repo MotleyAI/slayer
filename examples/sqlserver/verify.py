@@ -12,7 +12,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from verify_common import (
+from verify_common import (  # ALLOW(import-not-top): sys.path bootstrap for the shared verify_common helper
     run_common_checks,
     check_rollup,
     check_stddev_var,

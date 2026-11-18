@@ -181,9 +181,13 @@ def _legacy_payload(entity: dict[str, Any]) -> dict[str, Any]:
     return json.loads(entry["data"])
 
 
-async def test_legacy_payloads_reexport_unchanged(env) -> None:
+def _without_fingerprint(data: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in data.items() if k != "fingerprint"}
+
+
+async def test_legacy_payloads_reexport_as_version_2(env) -> None:
     legacy = yaml.safe_load(LEGACY_FIXTURE.read_text(encoding="utf-8"))
     imported, _ = await reimport(env, legacy)
     document = (await export(imported)).document
-    assert [(e["name"], payload(e)) for e in entities(document)] == [
-        (e["name"], _legacy_payload(e)) for e in entities(legacy)]
+    assert [(e["name"], _without_fingerprint(payload(e))) for e in entities(document)] == [
+        (e["name"], _without_fingerprint(ext._version_2(_legacy_payload(e)))) for e in entities(legacy)]

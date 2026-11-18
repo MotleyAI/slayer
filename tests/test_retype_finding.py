@@ -439,7 +439,14 @@ class TestSqliteProbe:
 
 
 _REINGEST_REMEDY = "re-ingest datasource 'ds' (`slayer ingest`) to re-type it"
-_SET_TYPE_REMEDY = "set the column's type to INT"
+_LEGACY_SET_TYPE_REMEDY = "set the column's type to INT"
+_SET_TYPE_REMEDY = "set the field's type to INT"
+#: The remedy each legacy text is rendered as now.
+_CURRENT_REMEDY = {_REINGEST_REMEDY: _REINGEST_REMEDY, _LEGACY_SET_TYPE_REMEDY: _SET_TYPE_REMEDY}
+
+
+def _summary(*, subject: str, live_type: str, live_db_type: str, remedy: str) -> str:
+    return f"{subject} 'm.c' is stored as TEXT but its live column is {live_db_type} ({live_type}); {remedy}."
 
 
 def _legacy_payload(*, live_type: str, live_db_type: str, remedy: str) -> dict[str, Any]:
@@ -447,21 +454,23 @@ def _legacy_payload(*, live_type: str, live_db_type: str, remedy: str) -> dict[s
     return {
         "finding": "retype", "model_name": "m", "data_source": "ds", "column": "c", "stored_type": "TEXT",
         "live_type": live_type, "live_db_type": live_db_type, "remedy": remedy,
-        "summary": f"Column 'm.c' is stored as TEXT but its live column is {live_db_type} ({live_type}); {remedy}.",
+        "summary": _summary(subject="Column", live_type=live_type, live_db_type=live_db_type, remedy=remedy),
     }
 
 
 class TestSerializedFinding:
     @pytest.mark.parametrize(("live_type", "live_db_type", "remedy", "kind"), [
         ("ARRAY", "VARCHAR[]", _REINGEST_REMEDY, "reingest"),
-        ("INT", "INTEGER", _SET_TYPE_REMEDY, "set_type"),
+        ("INT", "INTEGER", _LEGACY_SET_TYPE_REMEDY, "set_type"),
     ])
     def test_a_finding_without_a_remedy_kind_loads(self, live_type: str, live_db_type: str, remedy: str,
                                                    kind: str) -> None:
         payload = _legacy_payload(live_type=live_type, live_db_type=live_db_type, remedy=remedy)
         loaded = schema_drift.RetypeFinding.model_validate(payload)
         assert loaded.remedy_kind == kind
-        assert (loaded.remedy, loaded.summary) == (payload["remedy"], payload["summary"])
+        current = _CURRENT_REMEDY[remedy]
+        assert (loaded.remedy, loaded.summary) == (
+            current, _summary(subject="Field", live_type=live_type, live_db_type=live_db_type, remedy=current))
 
     def test_an_unrecognized_remedy_text_is_refused(self) -> None:
         payload = _legacy_payload(live_type="INT", live_db_type="INTEGER", remedy="drop the column")

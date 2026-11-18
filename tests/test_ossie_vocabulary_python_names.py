@@ -120,7 +120,7 @@ ENGINE_METHODS = {
     "detect_join_cardinality": "detect_relationship_cardinality", "edit_model_remove": "edit_dataset_remove",
     "expand_query_backed_model": "expand_query_backed_dataset", "recommend_root_model": "recommend_population",
     "recommend_root_model_sync": "recommend_population_sync", "validate_models": "validate_datasets",
-    "validate_sql_model_source": "validate_sql_dataset_source", "virtual_model": "virtual_dataset",
+    "validate_sql_model_source": "validate_sql_dataset_source",
 }
 CLIENT_METHODS = {
     "create_model": "create_dataset", "get_model": "get_dataset", "get_model_sync": "get_dataset_sync",
@@ -491,8 +491,8 @@ class TestAttributes:
     def test_an_old_field_name_is_accepted_as_input(self, case: str, via: str) -> None:
         c = ATTRIBUTES[case]
         obj = c.make()
-        data = obj.model_dump(exclude={"version"})  # a versioned document is stored input, converted silently
-        data[c.old] = data.pop(c.new)
+        data = obj.model_dump(exclude={"version"}, exclude_none=True)  # a versioned document is stored, converted silently
+        data[c.old] = data.pop(c.new, None)
         with recorded() as caught:
             built = type(obj)(**data) if via == "keywords" else type(obj).model_validate(data)
         assert built.model_dump() == obj.model_dump()
@@ -504,10 +504,10 @@ class TestAttributes:
     def test_storyline_policy_calls_keep_working(self) -> None:
         mod = importlib.import_module("slayer.core.policy")
         with recorded() as caught:
-            rule = getattr(mod, "JoinFilterRule")(**{"target_table": "t", "join_path": ("a",)})
+            rule = getattr(mod, "JoinFilterRule")(**{"target_table": "u", "join_path": ("t.id=u.t_id",)})
             joined = getattr(mod, "JoinFilterRuleset")(**{"table": "t", "column": "c", "value": 1, "joins": (rule,)})
             single = getattr(mod, "ColumnFilterRuleset")(**{"column": "region", "value": "EU"})
-        assert rule == JoinFilterRule(target_table="t", join_path=("a",))
+        assert rule == JoinFilterRule(target_table="u", join_path=("t.id=u.t_id",))
         assert joined == JoinFilterRuleset(table="t", column="c", value=1, joins=(rule,))
         assert single == ColumnFilterRuleset(column="region", value="EU")
         assert deprecations(caught) == []
