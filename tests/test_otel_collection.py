@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import sqlite3
 from typing import Any
 
 import pytest
@@ -14,6 +13,7 @@ from slayer import otel
 from slayer.core import probes
 from slayer.core.models import DatasourceConfig
 from slayer.database import client as client_module
+from slayer.storage.sqlite_conn import transaction
 from slayer.otel import adapter
 from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
@@ -268,7 +268,8 @@ def test_direct_synchronous_execution_is_a_database_span(
     otel_env: OtelCapture, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database = tmp_path / "x.db"
-    sqlite3.connect(database).close()
+    with transaction(database):  # creates the empty database file
+        pass
     client = client_module.SlayerSQLClient(DatasourceConfig(name="shop", type="sqlite", database=str(database)))
     monkeypatch.setattr(client, "_async_url", lambda: None)  # a driver with no async twin
     try:
