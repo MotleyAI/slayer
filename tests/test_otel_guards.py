@@ -9,7 +9,7 @@ import time
 import pytest
 
 from slayer import otel
-from slayer.core import stages
+from slayer.core import probes
 from slayer.otel import exporters, recorder
 from tests._otel_helpers import OtelCapture
 from tests._usage_reporting_helpers import run_python
@@ -96,7 +96,7 @@ def test_no_slayer_module_imports_otel_when_off() -> None:
 def test_start_does_nothing_when_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_OTEL", "off")
     otel.start()
-    assert (otel.is_active(), stages._listeners) == (False, ())
+    assert (otel.is_active(), probes._listeners) == (False, ())
 
 
 def test_sdk_disabled_wins_over_slayer_otel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -211,7 +211,7 @@ def test_instrument_twice_installs_one_listener() -> None:
     try:
         capture.instrument()
         capture.instrument()
-        assert len(stages._listeners) == 1
+        assert len(probes._listeners) == 1
     finally:
         capture.close()
 
@@ -221,7 +221,7 @@ def test_uninstrument_removes_the_listener() -> None:
     try:
         capture.instrument()
         otel.uninstrument()
-        assert (otel.is_active(), stages._listeners) == (False, ())
+        assert (otel.is_active(), probes._listeners) == (False, ())
     finally:
         capture.close()
 

@@ -3,12 +3,32 @@ structured payloads. Live in ``slayer.core`` so schemas reference them without e
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Annotated, List, Literal, Optional, Union
 
+import pydantic
 from pydantic import BaseModel, Field, model_validator
+
+# Frames under these directories are never the caller a warning names.
+_INTERNAL_DIRS = (
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep,
+    os.path.abspath(pydantic.__path__[0]) + os.sep,
+)
+
+
+def outside_stacklevel() -> int:
+    """``stacklevel``, counted from this function's caller, of the first frame outside SLayer and pydantic."""
+    frame = sys._getframe(1)
+    level = 1
+    while frame.f_back is not None and os.path.abspath(frame.f_code.co_filename).startswith(_INTERNAL_DIRS):
+        frame = frame.f_back
+        level += 1
+    return level
+
 
 _caller_announces: ContextVar[bool] = ContextVar("slayer_caller_announces", default=False)
 

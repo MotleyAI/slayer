@@ -369,6 +369,20 @@ def test_test_reports_an_endpoint_without_a_scheme(clean_env: pytest.MonkeyPatch
     assert (code, report.count("not a valid URL")) == (1, 3)
 
 
+def test_test_sends_endpoint_credentials_as_basic_auth(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", backend.url.removesuffix("/i/v0/e/").replace("://", "://ops:pw@"))
+    report, code = control.test()
+    sent = {request.headers.get("Authorization") for request in backend.wait_for(count=4)}
+    assert (code, sent) == (0, {"Basic b3BzOnB3"}), report
+
+
+def test_test_reports_an_unsendable_header_without_its_value(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", RefusedEndpoint().url.removesuffix("/i/v0/e/"))
+    clean_env.setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer%20hidden%0Avalue")
+    report, code = control.test()
+    assert (code, report.count("not sendable"), "hidden" in report) == (1, 3, False), report
+
+
 def test_test_command_exits_with_one_on_failure(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", RefusedEndpoint().url.removesuffix("/i/v0/e/"))
     result = cli(["otel", "test"])

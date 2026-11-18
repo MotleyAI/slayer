@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 
-from slayer.core import stages
+from slayer.core import probes
 from slayer.database.engine_factory import EngineCacheKey
 
 # Marker alias prefix for refresh-key scan projections. Also lets tests
@@ -178,7 +178,7 @@ class QueryCache:
 
     # ---- lock-guarded dict ops --------------------------------------------
 
-    @stages.staged(name="query.cache.get", result=lambda entry: {"cache.hit": entry is not None})
+    @probes.probe(name="query.cache.get", result=lambda entry: {"cache.hit": entry is not None})
     async def get(self, key: str) -> _CacheEntry | None:
         """Return the live entry, or ``None``. TTL-expired entries are
         deleted and reported as a miss (re-execution re-populates them)."""
@@ -192,7 +192,7 @@ class QueryCache:
                     return None
             return entry
 
-    @stages.staged(name="query.cache.put")
+    @probes.probe(name="query.cache.put")
     async def put(self, key: str, entry: _CacheEntry) -> None:
         async with self._lock:
             self._entries[key] = entry

@@ -51,6 +51,7 @@ from slayer.core.query import SlayerQuery, mode_a_texts
 from slayer.core.syntax import parse_expr
 from slayer.core.warnings import (
     DeprecatedSpellingWarning,
+    outside_stacklevel,
     LibraryNameShadowWarning,
     SlayerLibraryNameShadowWarning,
     SlayerNameCollisionWarning,
@@ -461,7 +462,7 @@ def warn_library_shadows(model: SlayerModel) -> None:
         if shadows_library_function(agg):
             warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
                 model=model.name, aggregation=agg.name, function=agg.name,
-            )), stacklevel=3)
+            )), stacklevel=outside_stacklevel())
 
 
 def without_none(value: Any) -> Any:
@@ -631,7 +632,7 @@ class StorageBackend(ABC):
             if (where, tuple(group)) not in held:
                 raise CaseCollisionError(names=group, namespace=f"model {model.name!r}'s {where}")
         for payload in [*name_collision_warnings(model), *spine_variant_warnings(model)]:
-            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
+            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=outside_stacklevel())
 
     async def _validate_mode_a_placeholders(self, model: SlayerModel) -> None:
         ds = await self.get_datasource(model.data_source) if model.data_source else None

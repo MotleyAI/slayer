@@ -10,12 +10,13 @@ switch, so no saved setting can contradict them, and telemetry has no single rep
 
 from __future__ import annotations
 
+import base64
 import importlib.metadata
 import os
 import ssl
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from slayer import __version__
 from slayer.otel import settings
@@ -92,10 +93,11 @@ def _probe(*, url: str, headers: dict[str, str], tls: settings.TlsFiles) -> tupl
     """POST an empty OTLP request: valid protobuf, so it checks reachability, credentials and path only."""
     if urlsplit(url).scheme not in ("http", "https"):
         return False, "not a valid URL: the endpoint needs http:// or https://"
-    request = urllib.request.Request(
-        url, data=b"", method="POST", headers={**headers, "Content-Type": "application/x-protobuf"},
-    )
+    url, headers = _with_url_credentials(url=url, headers=headers)
     try:
+        request = urllib.request.Request(
+            url, data=b"", method="POST", headers={**headers, "Content-Type": "application/x-protobuf"},
+        )
         # The TLS files apply to HTTPS only, as in the exporter: a stale CA path must not fail an HTTP probe.
         handlers: list[urllib.request.BaseHandler] = [_NoRedirect()]
         if request.type == "https":
@@ -109,6 +111,21 @@ def _probe(*, url: str, headers: dict[str, str], tls: settings.TlsFiles) -> tupl
     except OSError as error:
         reason = getattr(error, "reason", error)
         return False, f"cannot connect: {reason}"
+    except ValueError:
+        # Not the error text: it quotes the offending URL or header value.
+        return False, "not sendable: the endpoint or a header value is malformed"
+
+
+def _with_url_credentials(*, url: str, headers: dict[str, str]) -> tuple[str, dict[str, str]]:
+    """As the exporter's HTTP client does: a URL's user info becomes Basic auth, replacing any Authorization header."""
+    parts = urlsplit(url)
+    if parts.username is None and parts.password is None:
+        return url, headers
+    login = f"{unquote(parts.username or '')}:{unquote(parts.password or '')}"
+    credentials = {name: value for name, value in headers.items() if name.lower() != "authorization"}
+    credentials["Authorization"] = "Basic " + base64.b64encode(login.encode("latin-1")).decode("ascii")
+    host = parts.netloc.rpartition("@")[2]
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment)), credentials
 
 
 def _tls_context(tls: settings.TlsFiles) -> ssl.SSLContext:

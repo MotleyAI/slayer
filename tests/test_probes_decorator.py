@@ -1,41 +1,47 @@
-"""core.stages.staged: a decorated function behaves as before; the stage only adds what a listener reads."""
+"""core.probes.probe: a decorated function behaves as before; the probe only adds what a listener reads."""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
-from slayer.core import stages
+from slayer.core import probes
+from slayer.database import engine_factory
+from slayer.engine.query_engine import SlayerQueryEngine
+from tests._compat_helpers import future_warnings, recorded
+from tests._gateway_harness import orders_model, seed_shop, shop_datasource, shop_storage
 
 
 class _Recorder:
     def __init__(self) -> None:
-        self.ended: list[tuple[stages.Stage, BaseException | None]] = []
+        self.ended: list[tuple[probes.Probe, BaseException | None]] = []
 
-    def on_start(self, stage: stages.Stage) -> None:
+    def on_start(self, probe: probes.Probe) -> None:
         return None
 
-    def on_end(self, stage: stages.Stage, *, error: BaseException | None) -> None:
-        self.ended.append((stage, error))
+    def on_end(self, probe: probes.Probe, *, error: BaseException | None) -> None:
+        self.ended.append((probe, error))
 
-    def last(self) -> stages.Stage:
+    def last(self) -> probes.Probe:
         return self.ended[-1][0]
 
 
 @pytest.fixture
 def recorder() -> Iterator[_Recorder]:
     listener = _Recorder()
-    stages.add_listener(listener)
+    probes.add_listener(listener)
     try:
         yield listener
     finally:
-        stages.remove_listener(listener)
+        probes.remove_listener(listener)
 
 
-@stages.staged(
+@probes.probe(
     name="db.execute",
     attributes={"surface": "cli"},
     params={"datasource.name": "datasource"},
@@ -45,28 +51,28 @@ def _sync_execute(sql: str, *, datasource: str, limit: int = 10) -> list[int]:
     return list(range(min(limit, 3)))
 
 
-@stages.staged(name="query", params={"query.dry_run": "dry_run"}, result=lambda rows: {"rows": len(rows)})
+@probes.probe(name="query", params={"query.dry_run": "dry_run"}, result=lambda rows: {"rows": len(rows)})
 async def _async_execute(*, dry_run: bool = False) -> list[int]:
     await asyncio.sleep(0)
     return [] if dry_run else [1, 2]
 
 
-@stages.staged(name="query", extract=lambda bound: {"operation": bound.arguments["request"]["op"]})
+@probes.probe(name="query", extract=lambda bound: {"operation": bound.arguments["request"]["op"]})
 def _extracting(request: dict) -> str:
     return request["op"]
 
 
-@stages.staged(name="query", extract=lambda bound: {"operation": bound.arguments["missing"]})
+@probes.probe(name="query", extract=lambda bound: {"operation": bound.arguments["missing"]})
 def _bad_extract(value: int) -> int:
     return value
 
 
-@stages.staged(name="query", result=lambda value: {"rows": len(value)})
+@probes.probe(name="query", result=lambda value: {"rows": len(value)})
 def _bad_result(value: int) -> int:
     return value
 
 
-@stages.staged(name="query")
+@probes.probe(name="query")
 def _failing() -> None:
     raise LookupError("no such model")
 
@@ -98,15 +104,47 @@ def test_an_error_still_raises_with_a_listener(recorder: _Recorder) -> None:
     assert isinstance(recorder.ended[-1][1], LookupError)
 
 
+_LEGACY_FILTER_QUERY = {
+    "source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}], "filters": ["status == 'paid'"],
+}
+
+
+@pytest.mark.parametrize("listening", [False, True])
+async def test_a_warning_through_a_probed_query_names_the_callers_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, listening: bool,
+) -> None:
+    # The autouse reparse-law guard is test code, so it would be the first frame outside SLayer.
+    probed = inspect.unwrap(SlayerQueryEngine.execute, stop=lambda fn: fn.__code__.co_filename == probes.__file__)
+    assert probed.__code__.co_filename == probes.__file__
+    monkeypatch.setattr(SlayerQueryEngine, "execute", probed)
+    db = str(tmp_path / "shop.db")
+    seed_shop(db)
+    datasource = shop_datasource(db)
+    engine = SlayerQueryEngine(
+        storage=await shop_storage(str(tmp_path / "store"), datasource=datasource, models=[orders_model()]),
+    )
+    listener = _Recorder()
+    if listening:
+        probes.add_listener(listener)
+    try:
+        with recorded() as caught:
+            line = sys._getframe().f_lineno + 1
+            await engine.execute(_LEGACY_FILTER_QUERY)
+    finally:
+        probes.remove_listener(listener)
+        engine_factory.invalidate_engine(datasource)
+    assert {(w.filename, w.lineno) for w in future_warnings(caught)} == {(__file__, line)}
+
+
 # --- attributes ----------------------------------------------------------------------
 
 
-def test_params_fixed_attributes_and_result_reach_the_stage(recorder: _Recorder) -> None:
+def test_params_fixed_attributes_and_result_reach_the_probe(recorder: _Recorder) -> None:
     _sync_execute("select 1", datasource="shop", limit=2)
     assert recorder.last().attributes == {"surface": "cli", "datasource.name": "shop", "db.response.returned_rows": 2}
 
 
-def test_async_params_and_result_reach_the_stage(recorder: _Recorder) -> None:
+def test_async_params_and_result_reach_the_probe(recorder: _Recorder) -> None:
     asyncio.run(_async_execute(dry_run=True))
     assert recorder.last().attributes == {"query.dry_run": True, "rows": 0}
 
@@ -128,7 +166,7 @@ def test_a_failing_result_hook_leaves_the_value_unchanged(recorder: _Recorder) -
 
 
 def test_an_unknown_parameter_fails_at_decoration() -> None:
-    decorate = stages.staged(name="query", params={"rows": "no_such_param"})
+    decorate = probes.probe(name="query", params={"rows": "no_such_param"})
     with pytest.raises(TypeError, match="no_such_param"):
         decorate(lambda value: value)
 
@@ -143,6 +181,6 @@ async def _async_generator():  # noqa: ANN202 - the async generator type is not 
 
 @pytest.mark.parametrize("fn", [_generator, _async_generator])
 def test_a_generator_is_refused(fn) -> None:
-    decorate = stages.staged(name="query")
+    decorate = probes.probe(name="query")
     with pytest.raises(TypeError, match="generator"):
         decorate(fn)

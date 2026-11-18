@@ -745,6 +745,14 @@ def test_query_v2_to_v3_names_an_inline_model_without_its_contents(caplog) -> No
     assert not [t for t in texts if secret in t], texts
 
 
+def test_query_v2_to_v3_logs_the_query_name_as_an_argument(caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
+    with pytest.warns(DeprecationWarning):
+        mig.migrate("SlayerQuery", {"version": 2, "name": "private_query", "source_model": "orders", "dry_run": True})
+    (record,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert ("private_query" in str(record.msg), "private_query" in record.getMessage()) == (False, True)
+
+
 def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
     """A v2 query without dry_run/explain migrates silently."""
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")

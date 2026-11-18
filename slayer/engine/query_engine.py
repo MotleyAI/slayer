@@ -25,7 +25,7 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
-from slayer.core import stages
+from slayer.core import probes
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
@@ -91,6 +91,7 @@ from slayer.core.scope import StageDisplay, StageSchema, collect_stale_spellings
 from slayer.core.legacy_spellings import collect_legacy_spellings, emit_deprecations
 from slayer.core.warnings import (
     AnySlayerWarning,
+    outside_stacklevel,
     AssociatedWarningPayload,
     DegenerateReaggregationWarningPayload,
     BroadcastDimension,
@@ -619,27 +620,27 @@ def _emit_python_warnings(response) -> None:
                 BroadcastGrainWarning(
                     measure=w.measure, reason=reason, association_unsupported=w.association_unsupported,
                 ),
-                stacklevel=3,
+                stacklevel=outside_stacklevel(),
             )
         elif isinstance(w, AssociatedWarningPayload):
             _warnings_module.warn(
                 AssociatedGrainWarning(
                     measure=w.measure, dimensions=", ".join(w.dimensions),
                 ),
-                stacklevel=3,
+                stacklevel=outside_stacklevel(),
             )
         elif isinstance(w, WholePeriodsNonNestingWarningPayload):
-            _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=3)
+            _warnings_module.warn(SlayerWholePeriodsWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, WholeListWarning):
-            _warnings_module.warn(SlayerWholeListWarning(w), stacklevel=3)
+            _warnings_module.warn(SlayerWholeListWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, UnrelatedDatasetWarningPayload):
-            _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=3)
+            _warnings_module.warn(SlayerUnrelatedDatasetWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, LibraryNameShadowWarning):
-            _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=3)
+            _warnings_module.warn(SlayerLibraryNameShadowWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, NameCollisionWarning):
-            _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=3)
+            _warnings_module.warn(SlayerNameCollisionWarning(w), stacklevel=outside_stacklevel())
         elif isinstance(w, DateOnlyMidnightWarning):
-            _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=3)
+            _warnings_module.warn(SlayerDateOnlyMidnightWarning(w), stacklevel=outside_stacklevel())
 
 
 class SlayerResponse(BaseModel):
@@ -851,7 +852,7 @@ class SlayerQueryEngine:
     def clear_cache(self) -> None:
         self._cache.clear()
 
-    @stages.staged(name="query.policy")
+    @probes.probe(name="query.policy")
     async def _apply_policy(
         self, *, statement: Expr, dialect: str, datasource: DatasourceConfig
     ) -> Expr:
@@ -1024,7 +1025,7 @@ class SlayerQueryEngine:
             self._sql_clients.clear()
             self._drift_snapshots.clear()
 
-    @stages.staged(
+    @probes.probe(
         name="query",
         params={"query.dry_run": "dry_run", "query.explain": "explain"},
         result=lambda response: {"query.rows": len(response.data)},
@@ -1069,7 +1070,7 @@ class SlayerQueryEngine:
         _emit_python_warnings(response)
         return response
 
-    @stages.staged(name="query.normalize")
+    @probes.probe(name="query.normalize")
     async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str | SavedQueryRun",
@@ -1174,7 +1175,7 @@ class SlayerQueryEngine:
             main_query = main_query.model_copy(update={"variables": merged})
         return main_query, named_queries
 
-    @stages.staged(
+    @probes.probe(
         name="query.prepare",
         result=lambda prepared: {"datasource.name": prepared.datasource.name,
                                  "datasource.type": prepared.datasource.type or ""},
@@ -1675,7 +1676,7 @@ class SlayerQueryEngine:
             await cache_obj.put(key, entry)
         return response
 
-    @stages.staged(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
+    @probes.probe(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
     async def _run_data_query(
         self, *, prepared: _Prepared, client: SqlClient
     ) -> ExecutionResult:

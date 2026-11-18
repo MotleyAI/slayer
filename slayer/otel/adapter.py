@@ -1,11 +1,11 @@
-"""core.stages listener: each stage becomes an OTel span, plus duration and count metrics.
+"""core.probes listener: each probe becomes an OTel span, plus duration and count metrics.
 
 The one place where names gain the ``slayer.`` namespace. OTel standard keys (semantic
 conventions) pass through unchanged. Content leaves only with ``SLAYER_OTEL_CAPTURE_CONTENT=on``:
 ``db.query.text`` and the ``exception`` event with its message and stack trace. Both can hold SQL,
 filter values and row-level-security values.
-The listener reads stages and never writes to them, except to copy a query's datasource up
-from its preparation stage.
+The listener reads probes and never writes to them, except to copy a query's datasource up
+from its preparation probe.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from opentelemetry import metrics, trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from slayer import __version__
-from slayer.core import stages
+import slayer.core.probes as probes
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +88,11 @@ _DB_LABEL_KEYS = frozenset({
 _SERVER_SURFACES = frozenset({"flight", "pg"})
 _INGEST_CHANGES = ("added", "updated", "skipped")
 
-Attributes = Mapping[str, stages.AttributeValue]
+Attributes = Mapping[str, probes.AttributeValue]
 
 
-class OtelStageListener:
-    """Mirrors each stage as a span and records the metrics derived from stage ends."""
+class OtelProbeListener:
+    """Mirrors each probe as a span and records the metrics derived from probe ends."""
 
     def __init__(
         self,
@@ -119,37 +119,37 @@ class OtelStageListener:
         self._drift = meter.create_counter(f"{PREFIX}ingest.drift.entries", unit="{entry}")
         self._open: dict[int, tuple[trace.Span, Any]] = {}
 
-    def on_start(self, stage: stages.Stage) -> None:
-        attributes = {**stage.attributes, **_derived(stage, error=None)}
+    def on_start(self, probe: probes.Probe) -> None:
+        attributes = {**probe.attributes, **_derived(probe, error=None)}
         span = self._tracer.start_span(
-            PREFIX + stage.name, kind=_kind(stage), attributes=self._exported(attributes), start_time=stage.start_ns,
+            PREFIX + probe.name, kind=_kind(probe), attributes=self._exported(attributes), start_time=probe.start_ns,
         )
-        self._open[id(stage)] = (span, otel_context.attach(trace.set_span_in_context(span)))
+        self._open[id(probe)] = (span, otel_context.attach(trace.set_span_in_context(span)))
 
-    def on_end(self, stage: stages.Stage, *, error: BaseException | None) -> None:
-        opened = self._open.pop(id(stage), None)
+    def on_end(self, probe: probes.Probe, *, error: BaseException | None) -> None:
+        opened = self._open.pop(id(probe), None)
         if opened is None:
             return
         span, token = opened
         try:
-            attributes = self._finish_span(span, stage=stage, error=error)
+            attributes = self._finish_span(span, probe=probe, error=error)
         finally:
-            # A span or context failure must not leave this stage current for the caller.
+            # A span or context failure must not leave this probe current for the caller.
             try:
-                span.end(end_time=stage.start_ns + int(stage.duration_s * 1e9))
+                span.end(end_time=probe.start_ns + int(probe.duration_s * 1e9))
             finally:
                 otel_context.detach(token)
-        self._record_metrics(stage, attributes=attributes)
+        self._record_metrics(probe, attributes=attributes)
 
-    def _finish_span(self, span: trace.Span, *, stage: stages.Stage, error: BaseException | None) -> Attributes:
+    def _finish_span(self, span: trace.Span, *, probe: probes.Probe, error: BaseException | None) -> Attributes:
         if error is not None:
             span.set_status(Status(StatusCode.ERROR))
             if self.capture_content:
                 self._record_exception(span, error=error)
-        _lift_datasource(stage)
-        attributes = {**stage.attributes, **_derived(stage, error=error)}
+        _lift_datasource(probe)
+        attributes = {**probe.attributes, **_derived(probe, error=error)}
         span.set_attributes(self._exported(attributes))
-        for event in stage.events:
+        for event in probe.events:
             span.add_event(PREFIX + event.name, attributes=self._exported(event.attributes), timestamp=event.time_ns)
         return attributes
 
@@ -164,30 +164,30 @@ class OtelStageListener:
         """A content key leaves only with ``SLAYER_OTEL_CAPTURE_CONTENT``; every other key leaves."""
         return key not in _CONTENT_KEYS or self.capture_content
 
-    def _exported(self, attributes: Attributes) -> dict[str, stages.AttributeValue]:
+    def _exported(self, attributes: Attributes) -> dict[str, probes.AttributeValue]:
         return {exported_name(key): value for key, value in attributes.items() if self._allowed(key)}
 
-    def _record_metrics(self, stage: stages.Stage, *, attributes: Attributes) -> None:
+    def _record_metrics(self, probe: probes.Probe, *, attributes: Attributes) -> None:
         labels = _labels(attributes, keys=_LABEL_KEYS)
-        self._record_durations(stage, attributes=attributes, labels=labels)
-        self._record_counts(stage, attributes=attributes, labels=labels)
+        self._record_durations(probe, attributes=attributes, labels=labels)
+        self._record_counts(probe, attributes=attributes, labels=labels)
 
-    def _record_durations(self, stage: stages.Stage, *, attributes: Attributes, labels: Attributes) -> None:
-        if stage.name == "db.execute":
-            self._db_duration.record(stage.duration_s, attributes=_labels(attributes, keys=_DB_LABEL_KEYS))
-        duration = self._durations.get(stage.name)
+    def _record_durations(self, probe: probes.Probe, *, attributes: Attributes, labels: Attributes) -> None:
+        if probe.name == "db.execute":
+            self._db_duration.record(probe.duration_s, attributes=_labels(attributes, keys=_DB_LABEL_KEYS))
+        duration = self._durations.get(probe.name)
         if duration is not None:
-            duration.record(stage.duration_s, attributes=labels)
+            duration.record(probe.duration_s, attributes=labels)
 
-    def _record_counts(self, stage: stages.Stage, *, attributes: Attributes, labels: Attributes) -> None:
-        retries = sum(1 for event in stage.events if event.name == "db.retry")
+    def _record_counts(self, probe: probes.Probe, *, attributes: Attributes, labels: Attributes) -> None:
+        retries = sum(1 for event in probe.events if event.name == "db.retry")
         if retries:
             self._retries.add(retries, attributes=labels)
-        if stage.name == "query.cache.get" and CACHE_HIT in attributes:
+        if probe.name == "query.cache.get" and CACHE_HIT in attributes:
             self._cache.add(1, attributes={**labels, exported_name(CACHE_HIT): attributes[CACHE_HIT]})
-        if stage.name == "ingest":
+        if probe.name == "ingest":
             self._record_ingest(attributes=attributes, labels=labels)
-        drift = attributes.get("ingest.drift.entries") if stage.name == "ingest.drift" else None
+        drift = attributes.get("ingest.drift.entries") if probe.name == "ingest.drift" else None
         if isinstance(drift, int) and drift:
             self._drift.add(drift, attributes=labels)
 
@@ -203,34 +203,34 @@ def exported_name(key: str) -> str:
     return key if key in STANDARD_KEYS else PREFIX + key
 
 
-def _labels(attributes: Attributes, *, keys: frozenset[str]) -> dict[str, stages.AttributeValue]:
+def _labels(attributes: Attributes, *, keys: frozenset[str]) -> dict[str, probes.AttributeValue]:
     return {exported_name(key): value for key, value in attributes.items() if key in keys}
 
 
-def _derived(stage: stages.Stage, *, error: BaseException | None) -> dict[str, stages.AttributeValue]:
-    """Export-only attributes: ``error.type``, and the standard ``db.system.name`` on database stages."""
-    derived: dict[str, stages.AttributeValue] = {}
+def _derived(probe: probes.Probe, *, error: BaseException | None) -> dict[str, probes.AttributeValue]:
+    """Export-only attributes: ``error.type``, and the standard ``db.system.name`` on database probes."""
+    derived: dict[str, probes.AttributeValue] = {}
     if error is not None:
         derived[ERROR_TYPE] = type(error).__qualname__
-    datasource_type = stage.attributes.get("datasource.type")
-    if stage.name.startswith("db.") and datasource_type:
+    datasource_type = probe.attributes.get("datasource.type")
+    if probe.name.startswith("db.") and datasource_type:
         derived[DB_SYSTEM] = DB_SYSTEMS.get(str(datasource_type), "other_sql")
     return derived
 
 
-def _lift_datasource(stage: stages.Stage) -> None:
+def _lift_datasource(probe: probes.Probe) -> None:
     """A query's datasource is known only after preparation: copy it onto the enclosing query.
 
-    This is the one write to a stage, so that ``slayer.query`` spans and metrics carry the datasource.
+    This is the one write to a probe, so that ``slayer.query`` spans and metrics carry the datasource.
     """
-    parent = stage.parent
-    if stage.name == "query.prepare" and parent is not None and parent.name == "query":
-        parent.set({key: value for key, value in stage.attributes.items() if key.startswith("datasource.")})
+    parent = probe.parent
+    if probe.name == "query.prepare" and parent is not None and parent.name == "query":
+        parent.set({key: value for key, value in probe.attributes.items() if key.startswith("datasource.")})
 
 
-def _kind(stage: stages.Stage) -> SpanKind:
-    if stage.name.startswith("db."):
+def _kind(probe: probes.Probe) -> SpanKind:
+    if probe.name.startswith("db."):
         return SpanKind.CLIENT
-    if stage.name == "request" and stage.attributes.get("surface") in _SERVER_SURFACES:
+    if probe.name == "request" and probe.attributes.get("surface") in _SERVER_SURFACES:
         return SpanKind.SERVER
     return SpanKind.INTERNAL

@@ -6,8 +6,8 @@ OpenTelemetry (OTel) is the vendor-neutral standard for traces, metrics and logs
 
 ## What Changes
 
-- A new dependency-free module, `slayer/core/stages.py`, marks the orchestration points of SLayer as named stages, through the `@staged` decorator and the `stage()` context manager. A stage with no listener takes a fast path that adds about 0.1 µs. `core.timing` and `SLAYER_PROFILE_TIMING` do not change.
-- A new package, `slayer.otel`, turns stages into OTel spans and metrics. It is installed by the new `otel` extra (`opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`, version 1.45 or later), which `all` includes.
+- A new dependency-free module, `slayer/core/probes.py`, marks the orchestration points of SLayer as named probes, through the `@probe` decorator and the `scope()` context manager. A probe with no listener takes a fast path that adds about 0.1 µs. `core.timing` and `SLAYER_PROFILE_TIMING` do not change.
+- A new package, `slayer.otel`, turns probes into OTel spans and metrics. It is installed by the new `otel` extra (`opentelemetry-api`, `opentelemetry-sdk`, `opentelemetry-exporter-otlp-proto-http`, version 1.45 or later), which `all` includes.
 - Processes started by the `slayer` command turn OTel on with `SLAYER_OTEL=on` and configure it from the standard `OTEL_*` variables. `OTEL_SDK_DISABLED=true` keeps it off. A tracer provider that already exists, for example from `opentelemetry-instrument`, is kept.
 - Library callers turn it on with `otel.instrument()`, which uses the caller's providers and never configures any.
 - Every surface opens one `slayer.request` span: the CLI (`query`, `ingest`), REST, MCP, Flight SQL and the Postgres facade. Queries, database calls, the result cache and ingest runs open child spans.
@@ -32,7 +32,7 @@ None. `usage-reporting/collection` already requires one fixed usage key per leaf
 
 ## Impact
 
-- New code: `slayer/core/stages.py`, `slayer/otel/` (`settings`, `recorder`, `adapter`, `exporters`, `logs`, `middleware`, `control`).
+- New code: `slayer/core/probes.py`, `slayer/otel/` (`settings`, `recorder`, `adapter`, `exporters`, `logs`, `middleware`, `control`).
 - Hook points, with added lines only:
   - `slayer/cli.py`: start, shutdown, the `otel` commands, and the `query` and `ingest` requests.
   - `slayer/api/server.py`, `slayer/mcp/server.py`, `slayer/flight/handlers.py`, `slayer/pg_facade/connection.py`: one request per call.
@@ -41,7 +41,7 @@ None. `usage-reporting/collection` already requires one fixed usage key per leaf
   - `slayer/live_schema/ingestion.py`, `slayer/live_schema/schema_drift.py`: ingest phases.
   - `slayer/usage_reporting/payload.py`: the usage vocabulary.
 - Packaging: the `otel` extra in `pyproject.toml`, and `poetry.lock`. The base install gains no dependency.
-- Architecture: a new node `otel` in `architecture/model.c4` that claims `slayer.otel`, with the edges `protocols -> otel`, `surfaces -> otel` and `otel -> core`. The arc42 diagram blocks are regenerated. This needs maintainer sign-off.
+- Architecture: a new node `otel` in `architecture/model.c4` that claims `slayer.otel`, a nested element `core.probes`, and the edges `protocols -> otel`, `surfaces -> otel` and `otel -> core.probes`. The `otel` spec group is cross-cutting in `architecture/index.yaml`. A new `architecture/python.otel.arc42.md` states the node's principles, and the arc42 diagram blocks are regenerated.
 - Docs: `docs/reference/opentelemetry.md` (in the `zensical.toml` nav), a README section, and `examples/otel` (SLayer, Postgres and OpenObserve under Docker Compose).
-- Tests: `tests/test_stages*.py`, `tests/test_otel_*.py`, `tests/_otel_helpers.py`, `tests/perf/test_otel_bench.py`. An autouse fixture keeps OTel off for the rest of the suite.
+- Tests: `tests/test_probes*.py`, `tests/test_otel_*.py`, `tests/_otel_helpers.py`, `tests/perf/test_otel_bench.py`. An autouse fixture keeps OTel off for the rest of the suite.
 - Results, generated SQL, errors and warnings do not change, with OTel on or off.

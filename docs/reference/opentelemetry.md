@@ -248,8 +248,8 @@ SLayer supports two values of the standard variables only partly:
 
 ## Performance
 
-- Off: each stage costs about 0.1 µs, and a query has about 10 stages. This is far below the normal variation of a query's time.
-- On: each stage costs about 9 µs, measured with the OTel SDK. A query on a local database takes a few milliseconds, so this adds a few percent. For a query on a remote warehouse, the cost is too small to see.
+- Off: each probe costs about 0.1 µs, and a query has about 10 probes. This is far below the normal variation of a query's time.
+- On: each probe costs about 9 µs, measured with the OTel SDK. A query on a local database takes a few milliseconds, so this adds a few percent. For a query on a remote warehouse, the cost is too small to see.
 - No network call happens during a request. Three background threads, one per signal, send the data.
 - At exit, SLayer waits at most 1 second to send what remains, when SLayer configured OTel itself. Each signal flushes on its own thread, so a slow trace backend does not hold back metrics and logs. If the backend does not answer in time, that last batch is lost, and the command still exits on time. Under `opentelemetry-instrument`, the export timeout decides this wait.
 

@@ -1,11 +1,11 @@
-"""The REST request scope: one ``request`` stage per HTTP request outside the MCP mount."""
+"""The REST request scope: one ``request`` probe per HTTP request outside the MCP mount."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
-from slayer.core import stages
+import slayer.core.probes as probes
 
 Scope = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
@@ -24,7 +24,7 @@ class RequestMiddleware:
         if scope["type"] != "http" or path == self.mounted or path.startswith(f"{self.mounted}/"):
             await self.app(scope, receive, send)
             return
-        with stages.stage(name="request", attributes={"surface": "rest"}) as request:
+        with probes.scope(name="request", attributes={"surface": "rest"}) as request:
             try:
                 await self.app(scope, receive, send)
             finally:

@@ -13,7 +13,7 @@ from sqlglot.optimizer.qualify import qualify
 from sqlglot.schema import MappingSchema
 
 from slayer.async_utils import run_sync
-from slayer.core import stages
+from slayer.core import probes
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
@@ -808,7 +808,7 @@ def _resolve_scanned_collisions(
 # --- Main ingestion ---
 
 
-def _ingest_stage_attributes(bound: Any) -> dict[str, str]:
+def _ingest_probe_attributes(bound: Any) -> dict[str, str]:
     datasource = bound.arguments["datasource"]
     return {"datasource.name": datasource.name, "datasource.type": datasource.type or ""}
 
@@ -920,7 +920,7 @@ async def _scan_listing(*, client: SqlClient, ref: SchemaRef, include_views: boo
         return []
 
 
-@stages.staged(name="ingest.scan.schema", params={"datasource.name": "data_source"})
+@probes.probe(name="ingest.scan.schema", params={"datasource.name": "data_source"})
 async def _scan_one_schema(
     *,
     client: SqlClient,
@@ -1863,7 +1863,7 @@ def _addition_fields(*, merge: _TableMerge, final: SlayerModel, plan: FkEdgePlan
     }
 
 
-@stages.staged(name="ingest.merge", extract=_ingest_stage_attributes)
+@probes.probe(name="ingest.merge", extract=_ingest_probe_attributes)
 async def _run_additive_pass(
     *,
     fresh_by_name: dict[str, SlayerModel],
@@ -1919,7 +1919,7 @@ async def _run_additive_pass(
     return additions, errors, merge_skipped, broken
 
 
-@stages.staged(name="ingest", extract=_ingest_stage_attributes, result=_ingest_outcome)
+@probes.probe(name="ingest", extract=_ingest_probe_attributes, result=_ingest_outcome)
 async def ingest_datasource_idempotent(
     *,
     datasource: DatasourceConfig,
@@ -2514,7 +2514,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
     return warnings
 
 
-@stages.staged(name="ingest.embeddings", params={"datasource.name": "datasource_name"})
+@probes.probe(name="ingest.embeddings", params={"datasource.name": "datasource_name"})
 async def _refresh_datasource_embeddings(
     *, datasource_name: str, storage: StorageBackend, failures: DocumentLoadFailures | None = None,
 ) -> list[tuple[str, str]]:

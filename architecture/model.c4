@@ -23,6 +23,7 @@ model {
       query = node 'Query'
       models = node 'Models'
       syntax = node 'Syntax'
+      probes = node 'Probes'
     }
     sql = node 'SQL generation' {
       metadata {
@@ -102,7 +103,6 @@ model {
     otel = node 'OpenTelemetry' {
       metadata {
         package 'slayer.otel'
-        specs ['otel']
       }
     }
     surfaces = bucket 'User-facing surfaces' {
@@ -200,6 +200,6 @@ model {
     usage_reporting.features -> sql
     protocols -> otel
     surfaces -> otel
-    otel -> core
+    otel -> core.probes
   }
 }

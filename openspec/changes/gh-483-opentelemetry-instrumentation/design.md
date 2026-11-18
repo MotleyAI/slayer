@@ -31,13 +31,13 @@ The query path starts at `SlayerQueryEngine.execute`. It normalizes the input, p
 
 ## Decisions
 
-1. **A new `core.stages` module, not an extension of `core.timing`.** `core.stages` holds the `@staged` decorator, the `stage()` context manager, `current()` and a listener protocol. It imports nothing outside the standard library and Pydantic, so `core` stays a leaf node. A change to `core.timing` instead changes existing code and the profile output for no gain. A later change can merge the two.
+1. **A new `core.probes` module, not an extension of `core.timing`.** `core.probes` holds the `@probe` decorator, the `scope()` context manager, `current()` and a listener protocol. It is not named for stages, because a stage is a step of a multi-stage query. It imports nothing outside the standard library and Pydantic, so `core` stays a leaf node. A change to `core.timing` instead changes existing code and the profile output for no gain. A later change can merge the two.
 
-2. **Decorators place the stages.** A decorator adds one line and re-indents nothing. A reviewer reads each file as the same code plus marked stages. Upstream changes rarely conflict with an added decorator line. The decorator refuses generator functions and unknown parameter names at import time. The one statement inside a function body is the retry event in the database client. A retry is a point in time, not a call.
+2. **Decorators place the probes.** A decorator adds one line and re-indents nothing. A reviewer reads each file as the same code plus marked probes. Upstream changes rarely conflict with an added decorator line. The decorator refuses generator functions and unknown parameter names at import time. The one statement inside a function body is the retry event in the database client. A retry is a point in time, not a call.
 
-3. **The fast path costs about 0.1 µs per stage.** With no listener, a stage takes no timestamp, binds no arguments and allocates nothing. A query opens about 10 stages, so OTel off adds about 1 µs per query. The fastest query in `tests/perf` takes 1.9 ms, and its run-to-run noise is 9%. With OTel on, a stage costs about 9 µs through the SDK. The measurements are in `tests/perf/test_otel_bench.py`.
+3. **The fast path costs about 0.1 µs per probe.** With no listener, a probe takes no timestamp, binds no arguments and allocates nothing. A query opens about 10 probes, so OTel off adds about 1 µs per query. The fastest query in `tests/perf` takes 1.9 ms, and its run-to-run noise is 9%. With OTel on, a probe costs about 9 µs through the SDK. The measurements are in `tests/perf/test_otel_bench.py`.
 
-4. **Short names in code, the `slayer.` prefix on export.** Code names a stage `ingest.scan.schema` and an attribute `datasource.name`. The OTel adapter exports them as `slayer.ingest.scan.schema` and `slayer.datasource.name`. Keys that OTel standardizes keep their standard name: `error.type`, `db.*`, `server.*`, `mcp.*` and `gen_ai.*`. This follows the OTel naming rules for library-specific names.
+4. **Short names in code, the `slayer.` prefix on export.** Code names a probe `ingest.scan.schema` and an attribute `datasource.name`. The OTel adapter exports them as `slayer.ingest.scan.schema` and `slayer.datasource.name`. Keys that OTel standardizes keep their standard name: `error.type`, `db.*`, `server.*`, `mcp.*` and `gen_ai.*`. This follows the OTel naming rules for library-specific names.
 
 5. **Standard conventions where they exist.** Database spans have kind `CLIENT` and carry `db.system.name`, `db.namespace`, `server.address`, `server.port` and `db.response.returned_rows`. Database time goes to the standard histogram `db.client.operation.duration`, with its recommended buckets. A datasource type without a standard `db.system.name` value is exported as `other_sql`. MCP requests carry `mcp.method.name`, `gen_ai.operation.name` and `gen_ai.tool.name`, although those conventions still have Development status.
 
@@ -53,7 +53,8 @@ The query path starts at `SlayerQueryEngine.execute`. It normalizes the input, p
 
 11. **OTLP over HTTP with protobuf only.** It needs no gRPC dependency and works through HTTP proxies. `slayer otel status` lists every unsupported value of the standard variables, for example `grpc` or `console`. The `console` exporter writes to stdout and breaks command output such as `slayer query --format json`.
 
-12. **A new architecture node `otel`.** It claims `slayer.otel`. `surfaces` and `protocols` import it to open request stages. It imports only `core`. No other node imports it, so the engine, the database client and ingestion know only `core.stages`.
+12. **A new architecture node `otel`.** It claims `slayer.otel`. `surfaces` and `protocols` import it to open request probes. It imports only `core.probes`, a nested element of `core`, and the arrow `otel -> core.probes` enforces that. No other node imports it, so the engine, the database client and ingestion know only `core.probes`. The `otel` spec is cross-cutting: it touches `otel`, `core.probes`, `engine`, `database`, `live_schema`, `surfaces` and `protocols`, where the probes sit. `python.otel.arc42.md` states the node's principles.
+13. **Warnings keep their location.** A decorator adds a stack frame, so a warning that names its caller's line walks to the first frame outside SLayer instead of counting frames.
 
 ## Risks / Trade-offs
 
@@ -61,7 +62,7 @@ The query path starts at `SlayerQueryEngine.execute`. It normalizes the input, p
 - [The MCP and GenAI conventions can be renamed] → The names sit in one table in `slayer/otel/adapter.py`.
 - [One extra frame per decorated function in tracebacks] → Error types and messages do not change.
 - [A slow backend can lose the final batch at exit] → The docs state the 1-second bound. Metrics are cumulative, so a failed export loses no counts.
-- [Worker threads that SLayer starts do not inherit the trace context] → Their stages start new traces. A later change can copy the context.
+- [Worker threads that SLayer starts do not inherit the trace context] → Their probes start new traces. A later change can copy the context.
 
 ## Migration Plan
 
@@ -69,7 +70,5 @@ No migration. OTel is off by default, and no stored format changes. To roll back
 
 ## Open Questions
 
-- Is `SLAYER_OTEL=on|off` the right name for the switch, next to `SLAYER_USAGE_REPORTING`?
-- Do the maintainers want their own `python.otel.arc42.md` page for the new node?
 - Can a later change replace SQL text in WARNING log lines with a statement fingerprint, so that full log records are safe to export?
 - Can usage reporting and `slayer.otel` share one request scope in a later change?

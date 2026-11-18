@@ -35,6 +35,7 @@ from slayer.core.join_search import unreachable_target
 from slayer.core.join_walker import OrientedJoin, provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import Column, SlayerModel
 from slayer.core.syntax import drop_root_hop
+from slayer.core.warnings import outside_stacklevel
 from slayer.engine.elaborate_env import validate_model_filter
 from slayer.engine.cardinality.join_safety import provably_fans
 from slayer.sql.column_expansion import (
@@ -455,7 +456,7 @@ def warn_broken_dependents(
         for label, reference, broken in _broken_references(host=others[name], before=before, after=after):
             warnings.warn(
                 f"Saving model {model.name!r}: {label} on model {name!r} references {reference!r}, which {broken}.",
-                UserWarning, stacklevel=3,
+                UserWarning, stacklevel=outside_stacklevel(),
             )
 
 

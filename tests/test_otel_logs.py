@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from unittest import mock
 
 import pytest
-from opentelemetry.sdk._logs import LoggerProvider
+from opentelemetry.sdk._logs import Logger, LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import OperationalError
@@ -191,7 +191,8 @@ def test_an_unknown_level_leaves_the_level_alone(monkeypatch: pytest.MonkeyPatch
 
 def test_a_failing_emit_never_reaches_the_caller(templates: _Exported) -> None:
     handler = next(h for h in templates.handlers if isinstance(h, logs.TemplateLogHandler))
-    broken = mock.Mock(**{"emit.side_effect": RuntimeError("SDK bug")})
-    with mock.patch.object(handler.logger_provider, "get_logger", return_value=broken):
+    broken = mock.create_autospec(Logger, instance=True, spec_set=True)
+    broken.emit.side_effect = RuntimeError("SDK bug")
+    with mock.patch.object(handler.logger_provider, "get_logger", autospec=True, return_value=broken):
         logging.getLogger("slayer.pg_facade").warning(_TEMPLATE, SENT, "detail")
     assert broken.emit.called

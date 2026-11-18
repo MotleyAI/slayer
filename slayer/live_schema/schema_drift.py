@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validat
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
-from slayer.core import stages
+from slayer.core import probes
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -2342,7 +2342,7 @@ async def _collect_sql_diffs(
     return out
 
 
-@stages.staged(
+@probes.probe(
     name="ingest.drift",
     extract=lambda bound: {"datasource.name": bound.arguments["datasource"].name},
     result=lambda entries: {"ingest.drift.entries": len(entries)},

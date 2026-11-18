@@ -8,7 +8,7 @@ from collections.abc import Iterator
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from slayer.core import stages
+from slayer.core import probes
 from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
 from tests._usage_reporting_helpers import SENT, assert_no_sentinel
@@ -62,8 +62,8 @@ def test_nothing_derived_from_a_failing_query_leaves(otel_env: OtelCapture) -> N
 
 
 def test_a_sensitive_key_is_dropped_from_events_too(otel_env: OtelCapture) -> None:
-    with stages.stage(name="db.execute"):
-        stages.current().add_event(name="db.retry", attributes={"db.query.text": f"select '{SENT}'", "attempt": 1})
+    with probes.scope(name="db.execute"):
+        probes.current().add_event(name="db.retry", attributes={"db.query.text": f"select '{SENT}'", "attempt": 1})
     events = otel_env.span("slayer.db.execute").events
     assert ([event.name for event in events], "db.query.text" in dict(events[0].attributes or {})) == (
         ["slayer.db.retry"], False,
@@ -100,7 +100,7 @@ def _raise_statement_error() -> None:
 
 
 def test_content_capture_keeps_the_failed_statement_complete(capturing: OtelCapture) -> None:
-    with pytest.raises(OperationalError), stages.stage(name="db.execute"):
+    with pytest.raises(OperationalError), probes.scope(name="db.execute"):
         _raise_statement_error()
     message = str(dict(capturing.span("slayer.db.execute").events[0].attributes or {})["exception.message"])
     assert (_FAILED_SQL in message, "param-value" in message) == (True, True)
@@ -116,7 +116,7 @@ def _raise_unprintable() -> None:
 
 
 def test_an_unprintable_exception_still_records_error_type_and_metrics(capturing: OtelCapture) -> None:
-    with pytest.raises(_Unprintable), stages.stage(name="query"):
+    with pytest.raises(_Unprintable), probes.scope(name="query"):
         _raise_unprintable()
     durations = capturing.metric("slayer.query.duration")
     assert (capturing.attributes("slayer.query")["error.type"], [p.attributes.get("error.type") for p in durations]) == (

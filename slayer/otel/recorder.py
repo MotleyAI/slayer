@@ -11,11 +11,11 @@ import time
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
-from slayer.core import stages
+import slayer.core.probes as probes
 from slayer.otel import settings
 
 if TYPE_CHECKING:
-    from slayer.otel.adapter import OtelStageListener
+    from slayer.otel.adapter import OtelProbeListener
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 # The longest the host process waits at shutdown for a final export, as usage reporting does.
 SHUTDOWN_WAIT_SECONDS = 1.0
 
-_listener: OtelStageListener | None = None
+_listener: OtelProbeListener | None = None
 _owned: list[Any] = []
 _log_handlers: list[logging.Handler] = []
 
@@ -76,22 +76,22 @@ def start() -> None:
 
 
 def instrument(*, tracer_provider: Any = None, meter_provider: Any = None, capture_content: bool = False) -> None:
-    """Install the stage listener; the providers default to the global ones. Never configures providers."""
+    """Install the probe listener; the providers default to the global ones. Never configures providers."""
     global _listener
     if _listener is not None:
         return
-    from slayer.otel.adapter import OtelStageListener  # ALLOW(import-not-top): optional extra
+    from slayer.otel.adapter import OtelProbeListener  # ALLOW(import-not-top): optional extra
 
-    _listener = OtelStageListener(
+    _listener = OtelProbeListener(
         tracer_provider=tracer_provider, meter_provider=meter_provider, capture_content=capture_content,
     )
-    stages.add_listener(_listener)
+    probes.add_listener(_listener)
 
 
 def uninstrument() -> None:
     global _listener
     if _listener is not None:
-        stages.remove_listener(_listener)
+        probes.remove_listener(_listener)
         _listener = None
 
 
@@ -142,8 +142,8 @@ def request(
     surface: str,
     token: str | None = None,
     params: Mapping[str, str] | None = None,
-    extract: Callable[[inspect.BoundArguments], stages.Attributes] | None = None,
+    extract: Callable[[inspect.BoundArguments], probes.Attributes] | None = None,
 ) -> Callable[[F], F]:
-    """Mark a surface's handler as one ``request`` stage, as ``usage_reporting.counting`` counts it."""
-    attributes: dict[str, stages.AttributeValue] = {"surface": surface, "operation": token or "other"}
-    return stages.staged(name="request", attributes=attributes, params=params, extract=extract)
+    """Mark a surface's handler as one ``request`` probe, as ``usage_reporting.counting`` counts it."""
+    attributes: dict[str, probes.AttributeValue] = {"surface": surface, "operation": token or "other"}
+    return probes.probe(name="request", attributes=attributes, params=params, extract=extract)

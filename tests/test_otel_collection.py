@@ -9,7 +9,7 @@ import pytest
 from opentelemetry.trace import SpanKind, StatusCode
 
 from slayer import otel
-from slayer.core import stages
+from slayer.core import probes
 from slayer.otel import adapter
 from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
@@ -180,7 +180,7 @@ _SYSTEMS = [
 
 @pytest.mark.parametrize(("datasource_type", "system"), _SYSTEMS)
 def test_db_system_name_uses_the_standard_values(otel_env: OtelCapture, datasource_type: str, system: str) -> None:
-    with stages.stage(name="db.execute", attributes={"datasource.type": datasource_type}):
+    with probes.scope(name="db.execute", attributes={"datasource.type": datasource_type}):
         pass
     assert otel_env.attributes("slayer.db.execute")["db.system.name"] == system
 
@@ -200,17 +200,17 @@ _KINDS = [
 
 
 @pytest.mark.parametrize(("name", "attributes", "kind"), _KINDS)
-def test_span_kind_follows_the_stage(
+def test_span_kind_follows_the_probe(
     otel_env: OtelCapture, name: str, attributes: dict[str, str], kind: SpanKind,
 ) -> None:
-    with stages.stage(name=name, attributes=attributes):
+    with probes.scope(name=name, attributes=attributes):
         pass
     assert otel_env.span(f"slayer.{name}").kind == kind
 
 
 def test_a_retry_is_a_span_event_and_a_counter(otel_env: OtelCapture) -> None:
-    with stages.stage(name="db.execute", attributes={"datasource.name": "shop"}):
-        stages.current().add_event(name="db.retry", attributes={"db.attempt": 2, "error.type": "OperationalError"})
+    with probes.scope(name="db.execute", attributes={"datasource.name": "shop"}):
+        probes.current().add_event(name="db.retry", attributes={"db.attempt": 2, "error.type": "OperationalError"})
     events = [(event.name, dict(event.attributes or {})) for event in otel_env.span("slayer.db.execute").events]
     (point,) = otel_env.metric("slayer.db.retries")
     assert (events, point.value) == (
@@ -219,15 +219,15 @@ def test_a_retry_is_a_span_event_and_a_counter(otel_env: OtelCapture) -> None:
 
 
 def test_drift_entries_are_counted(otel_env: OtelCapture) -> None:
-    with stages.stage(name="ingest.drift", attributes={"datasource.name": "shop"}):
-        stages.current().set({"ingest.drift.entries": 3})
+    with probes.scope(name="ingest.drift", attributes={"datasource.name": "shop"}):
+        probes.current().set({"ingest.drift.entries": 3})
     (point,) = otel_env.metric("slayer.ingest.drift.entries")
     assert (point.value, point.attributes) == (3, {"slayer.datasource.name": "shop"})
 
 
 def test_spans_nest_under_the_callers_span(otel_env: OtelCapture) -> None:
     tracer = otel_env.tracer_provider.get_tracer("host")
-    with tracer.start_as_current_span("host.handler"), stages.stage(name="query"):
+    with tracer.start_as_current_span("host.handler"), probes.scope(name="query"):
         pass
     assert otel_env.parent_name("slayer.query") == "host.handler"
 

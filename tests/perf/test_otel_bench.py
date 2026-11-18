@@ -1,4 +1,4 @@
-"""The cost of a ``@staged`` function: with no listener (OTel off), and with the OTel listener on.
+"""The cost of a ``@probe`` function: with no listener (OTel off), and with the OTel listener on.
 
 Run with: poetry run pytest tests/perf/test_otel_bench.py --benchmark-only
 """
@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, Sp
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
 from slayer import otel
-from slayer.core import stages
+from slayer.core import probes
 from tests._otel_helpers import sdk_enabled
 
 
@@ -23,7 +23,7 @@ def _plain(value: int, *, name: str) -> int:
     return value
 
 
-@stages.staged(name="db.execute", params={"datasource.name": "name"}, result=lambda value: {"rows": value})
+@probes.probe(name="db.execute", params={"datasource.name": "name"}, result=lambda value: {"rows": value})
 def _decorated(value: int, *, name: str) -> int:
     return value
 
@@ -51,7 +51,7 @@ def listening() -> Iterator[None]:
         meter_provider.shutdown()
 
 
-_CALLS: dict[str, Callable[..., int]] = {"plain": _plain, "staged": _decorated}
+_CALLS: dict[str, Callable[..., int]] = {"plain": _plain, "probed": _decorated}
 
 
 @pytest.mark.benchmark(group="otel-off")

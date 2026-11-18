@@ -601,6 +601,15 @@ slayer usage-reporting disable   # persist off; delete the install ID and unsent
 slayer usage-reporting enable    # persist on
 ```
 
+### `slayer otel`
+
+Inspect and check the [OpenTelemetry](opentelemetry.md) setup.
+
+```bash
+slayer otel status   # on/off, the rule that decided it, where each signal goes (no network call)
+slayer otel test     # send one empty OTLP request per signal and one test span; exit 1 if any check fails
+```
+
 ## Conceptual help
 
 SLayer's conceptual help ships as a predefined set of **help memories** (`memory:help.intro` … `memory:help.queries`): read one with `inspect` (compact never shortens a `help.*` memory), or find the relevant one with `search`.

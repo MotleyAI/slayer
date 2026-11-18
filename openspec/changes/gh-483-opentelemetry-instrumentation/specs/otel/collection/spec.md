@@ -4,7 +4,7 @@
 Each call on a surface SHALL open one span named `slayer.request`. It SHALL carry `slayer.surface` (`cli`, `rest`, `mcp`, `flight` or `pg`) and `slayer.operation`. The operation SHALL come from the fixed vocabulary that usage reporting uses, never from argument values. Flight SQL and the Postgres facade SHALL use `query`. Their request spans SHALL have kind `SERVER`, and other request spans kind `INTERNAL`.
 
 #### Scenario: Span kinds
-- **WHEN** request stages run for the surfaces `pg`, `flight` and `cli`
+- **WHEN** request probes run for the surfaces `pg`, `flight` and `cli`
 - **THEN** their spans have the kinds `SERVER`, `SERVER` and `INTERNAL`
 
 ### Requirement: Which CLI, Flight and Postgres calls open a request span
@@ -76,7 +76,7 @@ If a span is current at the call into SLayer, SLayer's top-level span SHALL be i
 An attribute that an OTel semantic convention defines SHALL keep its standard name: `error.type`, `db.*`, `server.*`, `mcp.*` and `gen_ai.*`. The standard metric `db.client.operation.duration` and the standard `exception` event SHALL also keep their names. Every other span, attribute, event and metric name SHALL start with `slayer.`.
 
 #### Scenario: Exported names
-- **WHEN** a stage sets `query.rows`, `error.type` and `db.system.name`
+- **WHEN** a probe sets `query.rows`, `error.type` and `db.system.name`
 - **THEN** they are exported as `slayer.query.rows`, `error.type` and `db.system.name`
 
 ### Requirement: Database spans follow the OTel database conventions
@@ -91,7 +91,7 @@ Database spans SHALL have kind `CLIENT`. If these values are known, they SHALL c
 - **THEN** the `slayer.db.execute` span has kind `CLIENT`, `db.system.name=sqlite` and `db.response.returned_rows=2`
 
 ### Requirement: Errors are reported by class
-A stage that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded.
+A probe that raises SHALL set its span status to `ERROR` and SHALL set `error.type` to the exception class name. The exception SHALL propagate unchanged. Without the content capture, no exception message, exception event or stack trace SHALL be recorded.
 
 #### Scenario: Unknown model
 - **WHEN** a query names a model that does not exist

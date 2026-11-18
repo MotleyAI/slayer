@@ -166,7 +166,7 @@ def _otel_off_by_default() -> Iterator[None]:
 
 @pytest.fixture
 def otel_env() -> Iterator["OtelCapture"]:
-    """The stage listener on private in-memory providers; removed again after the test."""
+    """The probe listener on private in-memory providers; removed again after the test."""
     from tests._otel_helpers import OtelCapture  # ALLOW(import-not-top): optional extra
 
     capture = OtelCapture.build()
