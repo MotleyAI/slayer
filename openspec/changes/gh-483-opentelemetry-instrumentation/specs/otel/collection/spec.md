@@ -127,7 +127,7 @@ Metric labels SHALL come only from the datasource name and type, the surface and
 - **THEN** no metric point has the label `db.query.text`
 
 ### Requirement: Content needs the content capture
-Content capture is `SLAYER_OTEL_CAPTURE_CONTENT=on` for the `slayer` command, or `otel.instrument(capture_content=True)` for a library caller. Without it, no span, event, metric or log record SHALL carry SQL text, exception text or a value derived from query input. With it, database spans SHALL carry the executed SQL as `db.query.text`, including `slayer.db.explain` spans. A failed span SHALL record its exception as an `exception` event with its message and stack trace.
+Content capture is `SLAYER_OTEL_CAPTURE_CONTENT=on` for the `slayer` command, or `otel.instrument(capture_content=True)` for a library caller. Without it, no span, event, metric or log record SHALL carry SQL text, exception text or a value from the query, such as a filter literal. Counts, such as `db.response.returned_rows`, are not content. With it, database spans, `slayer.db.explain` included, SHALL carry `db.query.text`, and a failed span SHALL record an `exception` event.
 
 #### Scenario: Default keeps content in the process
 - **WHEN** a query with the filter `region = '<sentinel>'` runs without the content capture
@@ -143,7 +143,7 @@ Content capture is `SLAYER_OTEL_CAPTURE_CONTENT=on` for the `slayer` command, or
 
 #### Scenario: A failed statement keeps its text
 - **WHEN** a statement fails with `SLAYER_OTEL_CAPTURE_CONTENT=on`
-- **THEN** the `exception.message` is the message that the driver and SQLAlchemy render, which includes the statement. SQLAlchemy can shorten long parameter values.
+- **THEN** the `exception.message` is the message that the driver and SQLAlchemy render. It can include the statement, and SQLAlchemy can shorten long parameter values.
 
 ### Requirement: Only the slayer logger is exported
 When SLayer configures OTel itself, it SHALL attach one log handler to the `slayer` logger only. Records from other loggers SHALL NOT be exported. An export error SHALL never reach the code that logged.

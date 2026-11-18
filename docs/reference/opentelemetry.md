@@ -89,7 +89,7 @@ Content capture: off (SLAYER_OTEL_CAPTURE_CONTENT)
 Log level: Python logging (OTEL_PYTHON_LOG_LEVEL not set)
 ```
 
-`slayer otel test` checks the connection to your backend. It sends one empty OTLP request to each signal's endpoint, then one span named `slayer.otel.test`. If an endpoint fails, the command exits with code 1, so you can use it in scripts and health checks. Two cases send fewer requests and still exit 0: with `OTEL_SDK_DISABLED=true` the command sends nothing, and a signal whose exporter is `none` is skipped, so `OTEL_TRACES_EXPORTER=none` also skips the test span. A health check that must reach the backend needs both settings unset.
+`slayer otel test` checks the connection to your backend. It sends one empty OTLP request to each signal's endpoint, then one span named `slayer.otel.test`. If an endpoint fails, the command exits with code 1, so you can use it in scripts and health checks. Two cases send fewer requests and still exit 0: with `OTEL_SDK_DISABLED=true` the command sends nothing, and a signal whose exporter is `none` is skipped, so `OTEL_TRACES_EXPORTER=none` also skips the test span. Exit code 0 alone does not prove that the backend works. With an exporter value that SLayer does not support, such as `console`, a signal is not probed either. Without the `otel` extra, the probes can pass, but no test span is sent. For a health check, look for `ok` on each signal you need, and for `Test span: sent` if the span matters.
 
 ```text
 $ slayer otel test
