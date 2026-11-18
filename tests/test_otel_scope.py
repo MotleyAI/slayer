@@ -67,18 +67,19 @@ def test_the_mcp_mount_opens_no_rest_request(otel_env: OtelCapture, storage: YAM
 async def test_an_mcp_tool_call_follows_the_otel_mcp_conventions(otel_env: OtelCapture, tmp_path: Path) -> None:
     server = create_mcp_server(storage=await build_refine_storage(str(tmp_path)), _seed_help=False)
     await server.call_tool(name="query", arguments={"query": _QUERY, "format": "json"})
+    request = _request(otel_env)
     attributes = otel_env.attributes("slayer.request")
     assert (
-        attributes["slayer.operation"], attributes["mcp.method.name"],
-        attributes["gen_ai.operation.name"], attributes["gen_ai.tool.name"],
-    ) == ("query", "tools/call", "execute_tool", "query")
+        request, attributes["mcp.method.name"], attributes["gen_ai.operation.name"], attributes["gen_ai.tool.name"],
+    ) == (("mcp", "query"), "tools/call", "execute_tool", "query")
 
 
 async def test_an_unknown_mcp_tool_is_named_other(otel_env: OtelCapture, tmp_path: Path) -> None:
     server = create_mcp_server(storage=await build_refine_storage(str(tmp_path)), _seed_help=False)
     with pytest.raises((ToolError, ValueError)):
         await server.call_tool(name="zqxj_tool", arguments={})
-    assert otel_env.attributes("slayer.request")["gen_ai.tool.name"] == "other"
+    request = _request(otel_env)
+    assert (request, otel_env.attributes("slayer.request")["gen_ai.tool.name"]) == (("mcp", "other"), "other")
 
 
 # --- CLI -----------------------------------------------------------------------------

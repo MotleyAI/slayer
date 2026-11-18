@@ -66,7 +66,10 @@ def _create_providers(configured: Configured) -> None:
     if settings.exports("traces"):
         tracer_provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     readers = [PeriodicExportingMetricReader(OTLPMetricExporter())] if settings.exports("metrics") else []
+    configured.owned.extend(readers)  # already running; until the provider exists, nothing else can close them
     meter_provider = MeterProvider(resource=resource, metric_readers=readers, shutdown_on_exit=False)
+    for reader in readers:
+        configured.owned.remove(reader)  # the provider closes them from here on
     configured.owned.append(meter_provider)
     configured.meter_provider = meter_provider
     if settings.exports("logs"):

@@ -213,6 +213,26 @@ def test_a_scope_takes_its_listeners_when_entered() -> None:
     assert (first.calls, second.calls) == ([], [("start", "query", None), ("end", "query", None)])
 
 
+class _EqualRecorder(_Recorder):
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _EqualRecorder)
+
+    __hash__ = object.__hash__
+
+
+def test_two_equal_listeners_are_both_registered() -> None:
+    first, second = _EqualRecorder(), _EqualRecorder()
+    probes.add_listener(first)
+    probes.add_listener(second)
+    try:
+        with probes.scope(name="query"):
+            pass
+    finally:
+        probes.remove_listener(first)
+        probes.remove_listener(second)
+    assert (len(first.calls), len(second.calls)) == (2, 2)
+
+
 # --- concurrency ---------------------------------------------------------------------
 
 

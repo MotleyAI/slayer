@@ -64,7 +64,7 @@ _current: ContextVar[Probe | None] = ContextVar("slayer_probe_current", default=
 
 def add_listener(listener: ProbeListener) -> None:
     global _listeners
-    if listener not in _listeners:
+    if not any(item is listener for item in _listeners):  # identity, as remove_listener uses
         _listeners = (*_listeners, listener)
 
 

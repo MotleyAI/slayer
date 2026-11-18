@@ -30,6 +30,17 @@ _listener: OtelProbeListener | None = None
 _owned: list[Any] = []
 _log_handlers: list[logging.Handler] = []
 _lingering: list[threading.Thread] = []  # shutdowns that outlived their bound
+# One lifecycle change at a time, so the listener, providers and handlers stay in step; re-entrant for start().
+_lifecycle = threading.RLock()
+
+
+def _locked(fn: Callable[P, R]) -> Callable[P, R]:
+    @functools.wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        with _lifecycle:
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def _silent(fn: Callable[P, R]) -> Callable[P, R | None]:
@@ -49,6 +60,7 @@ def is_active() -> bool:
 
 
 @_silent
+@_locked
 def start() -> None:
     """Activate in a process started by the ``slayer`` CLI, if ``SLAYER_OTEL=on``."""
     global _owned, _log_handlers
@@ -79,6 +91,7 @@ def start() -> None:
     _owned = configured.owned
 
 
+@_locked
 def instrument(*, tracer_provider: Any = None, meter_provider: Any = None, capture_content: bool = False) -> None:
     """Install the probe listener; the providers default to the global ones. Never configures providers."""
     global _listener
@@ -92,6 +105,7 @@ def instrument(*, tracer_provider: Any = None, meter_provider: Any = None, captu
     probes.add_listener(_listener)
 
 
+@_locked
 def uninstrument() -> None:
     global _listener
     if _listener is not None:
@@ -105,6 +119,7 @@ def shutdown() -> None:
     reset()
 
 
+@_locked
 def reset() -> None:
     """Like :func:`shutdown`, but errors propagate: remove the listener, then close the owned providers."""
     global _owned

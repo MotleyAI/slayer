@@ -8548,7 +8548,7 @@ files = [
 
 [extras]
 advanced-search = ["ladybug", "litellm", "numpy"]
-all = ["clickhouse-sqlalchemy", "dbt-core", "httpx", "ladybug", "litellm", "numpy", "opentelemetry-api", "opentelemetry-exporter-otlp-proto-http", "opentelemetry-sdk", "pandas", "protobuf", "psycopg", "pyarrow", "pymysql", "pyodbc", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino"]
+all = ["clickhouse-sqlalchemy", "dbt-core", "httpx", "ladybug", "litellm", "numpy", "opentelemetry-api", "opentelemetry-exporter-otlp-proto-http", "opentelemetry-sdk", "pandas", "protobuf", "psycopg", "pyarrow", "pymysql", "pyodbc", "requests", "snowflake-connector-python", "snowflake-sqlalchemy", "sqlalchemy-bigquery", "trino"]
 bigquery = ["sqlalchemy-bigquery"]
 clickhouse = ["clickhouse-sqlalchemy"]
 client = ["httpx", "pandas"]
@@ -8556,7 +8556,7 @@ dbt = ["dbt-core"]
 embedding-search = ["litellm", "numpy"]
 flight = ["protobuf", "pyarrow"]
 mysql = ["pymysql"]
-otel = ["opentelemetry-api", "opentelemetry-exporter-otlp-proto-http", "opentelemetry-sdk"]
+otel = ["opentelemetry-api", "opentelemetry-exporter-otlp-proto-http", "opentelemetry-sdk", "requests"]
 postgres = ["psycopg"]
 snowflake = ["snowflake-connector-python", "snowflake-sqlalchemy"]
 sqlserver = ["pyodbc"]
@@ -8565,4 +8565,4 @@ trino = ["trino"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "17b333284742a4fa4970151dee0096319415033222c75ceb63e66263aa66c164"
+content-hash = "696cae74d238132fb88e097d83ec713a468b3b1badbe17314204cad1a13a7573"

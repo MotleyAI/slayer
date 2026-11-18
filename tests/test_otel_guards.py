@@ -6,12 +6,13 @@ import logging
 import os
 import threading
 import time
+from typing import Any
 
 import pytest
 
 from slayer import otel
 from slayer.core import probes
-from slayer.otel import exporters, logs, recorder
+from slayer.otel import adapter, exporters, logs, recorder
 from tests._otel_helpers import OtelCapture
 from tests._usage_reporting_helpers import run_python
 
@@ -197,6 +198,33 @@ def test_exporter_log_text_stays_hidden_while_a_shutdown_is_still_running(monkey
     assert hidden
 
 
+class _Reader:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.closed = False
+
+    def shutdown(self, *_args: object, **_kwargs: object) -> None:
+        self.closed = True
+
+
+def test_a_failing_meter_provider_closes_its_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    readers: list[_Reader] = []
+
+    def reader(*args: object, **kwargs: object) -> _Reader:
+        readers.append(_Reader())
+        return readers[-1]
+
+    def broken_meter_provider(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("invalid exemplar filter")
+
+    monkeypatch.setattr(exporters, "PeriodicExportingMetricReader", reader)
+    monkeypatch.setattr(exporters, "MeterProvider", broken_meter_provider)
+    configured = exporters.Configured()
+    with pytest.raises(ValueError, match="exemplar"):
+        exporters._create_providers(configured)
+    exporters.shutdown_all(configured.owned)
+    assert [r.closed for r in readers] == [True]
+
+
 def test_providers_stay_private_and_a_second_start_gets_new_ones() -> None:
     env = _env(SLAYER_OTEL="on", OTEL_TRACES_EXPORTER="none", OTEL_METRICS_EXPORTER="none", OTEL_LOGS_EXPORTER="none")
     result = run_python(_PRIVATE_AND_RESTARTABLE, env=env)
@@ -260,6 +288,22 @@ def test_instrument_twice_installs_one_listener() -> None:
         assert len(probes._listeners) == 1
     finally:
         capture.close()
+
+
+def test_concurrent_instrument_installs_one_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Slow(adapter.OtelProbeListener):
+        def __init__(self, *, tracer_provider: Any = None, meter_provider: Any = None, capture_content: bool = False) -> None:
+            time.sleep(0.2)
+            super().__init__(tracer_provider=tracer_provider, meter_provider=meter_provider, capture_content=capture_content)
+
+    monkeypatch.setattr(adapter, "OtelProbeListener", _Slow)
+    threads = [threading.Thread(target=otel.instrument) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    otel.uninstrument()
+    assert [listener for listener in probes._listeners if isinstance(listener, _Slow)] == []
 
 
 def test_uninstrument_removes_the_listener() -> None:
