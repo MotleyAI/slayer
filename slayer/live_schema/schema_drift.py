@@ -279,6 +279,17 @@ class DatasetAddition(BaseModel):
     dataset_described: bool = False
     # Self-heal that added a missing schema qualifier ("reports → openfda_rest.reports").
     sql_table_change: str | None = None
+    # A metadata-only fill (field unique, relationship cardinality) that was saved.
+    metadata_changed: bool = False
+
+    @property
+    def has_changes(self) -> bool:
+        """Whether this pass saved any change to an existing dataset."""
+        return bool(
+            self.new_fields or self.new_relationships or self.named_relationships or self.widened_fields
+            or self.kind_change or self.described_fields or self.dataset_described or self.sql_table_change
+            or self.metadata_changed
+        )
 
 
 class IngestionError(BaseModel):

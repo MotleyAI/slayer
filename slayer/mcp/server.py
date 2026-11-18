@@ -44,6 +44,7 @@ from slayer.live_schema.ingestion import (
     _get_schemas,
     _hidden_internal_line,
     _unhide_hint,
+    _updated_detail_lines,
     IngestableObject,
     key_read_failure_line,
     key_read_failures_header,
@@ -375,19 +376,6 @@ async def _empty_ingest_message(*, schema_name: str, client: SqlClient) -> str:
     )
 
 
-def _addition_has_changes(a: DatasetAddition) -> bool:
-    """True when a non-created addition carries any change worth rendering."""
-    return bool(
-        a.new_fields
-        or a.new_relationships
-        or getattr(a, "named_relationships", None)
-        or getattr(a, "widened_fields", None)
-        or getattr(a, "kind_change", None)
-        or getattr(a, "described_fields", None)
-        or getattr(a, "dataset_described", False)
-    )
-
-
 def _render_new_datasets_section(new_datasets: list[DatasetAddition]) -> list[str]:
     if not new_datasets:
         return []
@@ -402,36 +390,12 @@ def _render_new_datasets_section(new_datasets: list[DatasetAddition]) -> list[st
     return lines
 
 
-def _addition_update_details(a: DatasetAddition) -> list[str]:
-    """Detail fragments for one non-created addition, in CLI-renderer order."""
-    details = []
-    if a.new_fields:
-        details.append(f"+fields: {', '.join(a.new_fields)}")
-    if a.new_relationships:
-        details.append(f"+relationships: {', '.join(a.new_relationships)}")
-    named = getattr(a, "named_relationships", []) or []
-    if named:
-        details.append(f"named relationships: {', '.join(named)}")
-    widened = getattr(a, "widened_fields", []) or []
-    if widened:
-        details.append(f"widened: {', '.join(widened)}")
-    kind_change = getattr(a, "kind_change", None)
-    if kind_change:
-        details.append(f"source_kind: {kind_change}")
-    described = getattr(a, "described_fields", []) or []
-    if described:
-        details.append(f"+descriptions: {', '.join(described)}")
-    if getattr(a, "dataset_described", False):
-        details.append("+dataset description")
-    return details
-
-
 def _render_updated_section(updated: list[DatasetAddition]) -> list[str]:
     if not updated:
         return []
     lines = [f"Updated {len(updated)} existing dataset(s):"]
     for a in updated:
-        lines.append(f"- {a.dataset_name} ({'; '.join(_addition_update_details(a))})")
+        lines.append(f"- {a.dataset_name} ({'; '.join(_updated_detail_lines(a))})")
     return lines
 
 
@@ -546,9 +510,9 @@ async def _render_ingest_result(
         return "Datasource already in sync — no additive changes."
 
     new_datasets = [a for a in additions if a.created]
-    updated = [a for a in additions if not a.created and _addition_has_changes(a)]
+    updated = [a for a in additions if not a.created and a.has_changes]
     unchanged = [
-        a for a in additions if not a.created and not _addition_has_changes(a)
+        a for a in additions if not a.created and not a.has_changes
     ]
 
     lines: list[str] = []

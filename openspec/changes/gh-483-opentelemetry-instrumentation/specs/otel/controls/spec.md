@@ -116,7 +116,11 @@ If any endpoint fails, it SHALL exit 1. A signal whose exporter is `none` SHALL 
 - **THEN** the command sends no second request, prints a hint about the redirect, and exits 1
 
 ### Requirement: slayer otel test sends one test span
-If every endpoint accepts and traces are exported, `slayer otel test` SHALL send one span named `slayer.otel.test`, whatever the configured sampler. If the backend rejects the span, it SHALL exit 1. Otherwise it SHALL exit 0.
+If every endpoint accepts and traces are exported, `slayer otel test` SHALL send one span named `slayer.otel.test`, whatever the configured sampler. If the backend rejects the span, it SHALL exit 1. Otherwise it SHALL exit 0. Without the `otel` extra, it SHALL send no test span, say so, and exit 0.
+
+#### Scenario: Extra not installed
+- **WHEN** the OTel packages cannot be imported and every endpoint accepts
+- **THEN** the command reports that the test span was not sent because the extra is missing, and exits 0
 
 #### Scenario: Traces not exported
 - **WHEN** `OTEL_TRACES_EXPORTER=none` is set and the other endpoints accept

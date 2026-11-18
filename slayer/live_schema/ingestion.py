@@ -820,20 +820,12 @@ def _ingest_outcome(result: "schema_drift.IdempotentIngestResult") -> dict[str, 
     return {
         "ingest.objects": len(result.objects),
         "ingest.datasets.added": added,
-        # The pass also lists unchanged datasets; count only the ones with a reported change.
-        "ingest.datasets.updated": sum(1 for a in result.additions if not a.created and _reports_change(a)),
+        # The pass also lists unchanged datasets; count only the ones it changed.
+        "ingest.datasets.updated": sum(1 for a in result.additions if not a.created and a.has_changes),
         "ingest.datasets.skipped": len(result.skipped),
         "ingest.drift.entries": len(result.to_delete),
         "ingest.errors": len(result.errors),
     }
-
-
-def _reports_change(addition: "schema_drift.DatasetAddition") -> bool:
-    return bool(
-        addition.new_fields or addition.new_relationships or addition.named_relationships or addition.widened_fields
-        or addition.described_fields or addition.dataset_described or addition.kind_change
-        or addition.sql_table_change
-    )
 
 
 async def _build_one_dataset(
@@ -1860,6 +1852,7 @@ def _addition_fields(*, merge: _TableMerge, final: SlayerDataset, plan: FkEdgePl
         "kind_change": merge.kind_change,
         "described_fields": merge.merge.described_fields,
         "dataset_described": merge.merge.dataset_described,
+        "metadata_changed": merge.merge.metadata_changed,
         "sql_table_change": merge.sql_table_change,
     }
 
@@ -2140,6 +2133,7 @@ def _updated_detail_lines(addition: "schema_drift.DatasetAddition") -> list[str]
         if getattr(addition, "kind_change", None) else None,
         f"+descriptions: {', '.join(described)}" if described else None,
         "+dataset description" if getattr(addition, "dataset_described", False) else None,
+        "+key metadata" if getattr(addition, "metadata_changed", False) else None,
     ]
     return [e for e in entries if e]
 

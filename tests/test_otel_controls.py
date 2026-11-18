@@ -287,6 +287,17 @@ def test_test_explains_a_rejection(backend: CaptureServer, status: int, hint: st
     assert (code, hint in report, control.TEST_SPAN in report) == (1, True, False)
 
 
+def test_test_without_the_extra_sends_no_span_and_passes(
+    backend: CaptureServer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control, "_extra_installed", lambda: False)
+    report, code = control.test()
+    paths = sorted(request.path for request in backend.wait_for(count=3))
+    assert (code, paths, "not sent, the otel extra is not installed" in report) == (
+        0, ["/v1/logs", "/v1/metrics", "/v1/traces"], True,
+    )
+
+
 def test_test_reports_a_refused_connection(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", RefusedEndpoint().url.removesuffix("/i/v0/e/"))
     report, code = control.test()
