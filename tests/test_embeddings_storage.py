@@ -195,7 +195,7 @@ async def test_delete_model_cascades_subtree_embeddings(
         name="orders",
         sql_table="public.orders",
         data_source="dsx",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         metrics=[DatasetMetric(name="rev", expression="sum(id)")],
         aggregations=[Aggregation(name="custom_agg", expression="SUM({x})")],
     )

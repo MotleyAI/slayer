@@ -9,8 +9,8 @@ import warnings
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AssociatedGrainWarning, BroadcastGrainWarning
-from slayer.core.models import DatasetField, DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._cross_model_chain import (
     _extract_cte_body,
@@ -20,9 +20,9 @@ from tests._cross_model_chain import (
 from tests._engine_helpers import _assert_valid_sql
 
 # Derived column on regions: its filter path ends AT the target ``regions``.
-_REGIONS_EXTRA = [DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.DOUBLE)]
+_REGIONS_EXTRA = [DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT)]
 
-_TWO_HOP_AGG = DatasetMetric(expression="sum(customers_v2.regions.population)")
+_TWO_HOP_AGG = QueryMetric(metric="sum(customers_v2.regions.population)")
 
 
 class TestRoutedFilterPathE2E:

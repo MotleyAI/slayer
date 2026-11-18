@@ -95,9 +95,9 @@ async def test_refresh_samples_via_engine_helper(sqlite_table_setup: tuple[Stora
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     ))
     engine = SlayerQueryEngine(storage=storage)
@@ -126,8 +126,8 @@ async def test_edit_model_column_change_recomputes_only_that_column(
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="amount", datatype=DataType.DOUBLE, sampled="OLD AMOUNT"),
-            DatasetField(name="status", datatype=DataType.TEXT, sampled="OLD STATUS"),
+            DatasetField(name="amount", datatype=DataType.FLOAT, sampled="OLD AMOUNT"),
+            DatasetField(name="status", datatype=DataType.STRING, sampled="OLD STATUS"),
         ],
     )
     await storage.save_dataset(model)
@@ -160,8 +160,8 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="amount", datatype=DataType.DOUBLE, sampled="OLD AMOUNT"),
-            DatasetField(name="status", datatype=DataType.TEXT, sampled="OLD STATUS"),
+            DatasetField(name="amount", datatype=DataType.FLOAT, sampled="OLD AMOUNT"),
+            DatasetField(name="status", datatype=DataType.STRING, sampled="OLD STATUS"),
         ],
     )
     await storage.save_dataset(model)
@@ -197,9 +197,9 @@ async def test_inspect_model_writes_back_on_sampled_miss(
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),  # NOSONAR(S125) — sampled=None test annotation
-            DatasetField(name="status", datatype=DataType.TEXT),    # NOSONAR(S125) — sampled=None test annotation
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),  # NOSONAR(S125) — sampled=None test annotation
+            DatasetField(name="status", datatype=DataType.STRING),    # NOSONAR(S125) — sampled=None test annotation
         ],
     ))
     mcp = create_mcp_server(storage=storage)
@@ -227,7 +227,7 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="amount", datatype=DataType.DOUBLE, sampled="cached value"),
+            DatasetField(name="amount", datatype=DataType.FLOAT, sampled="cached value"),
         ],
     ))
     profile_call_count = {"n": 0}

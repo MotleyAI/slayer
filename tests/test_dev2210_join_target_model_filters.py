@@ -65,7 +65,7 @@ class TestJoinTargetReadsFilteredRows:
 
     async def test_pushdown_under_aggregation(self, engine):
         resp = await _run(engine, population="orders", dimensions=["status"],
-                          metrics=[{"expression": "count(*)", "name": "n"}], filter=["late_returns.id is null"])
+                          metrics=[{"metric": "count(*)", "alias": "n"}], filter=["late_returns.id is null"])
         assert {r["orders.status"]: int(r["orders.n"]) for r in resp.data} == {"done": 2, "open": 1}
 
     async def test_stage_source(self, engine):
@@ -106,12 +106,12 @@ class TestJoinTargetReadsFilteredRows:
 
 class TestUnrelatedDatasetReadsFilteredRows:
     async def test_filtered_model_as_the_unrelated_side(self, engine):
-        resp = await _run(engine, population="carriers", metrics=[{"expression": "count(done_orders.id)", "name": "n"}])
+        resp = await _run(engine, population="carriers", metrics=[{"metric": "count(done_orders.id)", "alias": "n"}])
         assert [int(r["carriers.n"]) for r in resp.data] == [3]
 
     async def test_filtered_model_as_the_population_side(self, engine):
         resp = await _run(engine, population="done_orders", metrics=[
-            {"expression": "count(*)", "name": "n"}, {"expression": "count(carriers.id)", "name": "s"},
+            {"metric": "count(*)", "alias": "n"}, {"metric": "count(carriers.id)", "alias": "s"},
         ])
         assert [(int(r["done_orders.n"]), int(r["done_orders.s"])) for r in resp.data] == [(3, 2)]
 
@@ -121,22 +121,22 @@ class TestFilteredRoot:
         assert await _ids(engine, source="done_orders") == {1, 2, 3}
 
     async def test_measure(self, engine):
-        resp = await _run(engine, population="done_orders", metrics=[{"expression": "sum(amount)", "name": "s"}])
+        resp = await _run(engine, population="done_orders", metrics=[{"metric": "sum(amount)", "alias": "s"}])
         assert [int(r["done_orders.s"]) for r in resp.data] == [600]
 
     async def test_isolated_aggregate(self, engine):
-        resp = await _run(engine, population="done_orders", metrics=[{"expression": "count(returns.*)", "name": "n"}])
+        resp = await _run(engine, population="done_orders", metrics=[{"metric": "count(returns.*)", "alias": "n"}])
         assert [int(r["done_orders.n"]) for r in resp.data] == [3]
 
     async def test_aggregate_across_a_fanning_path_associates(self, engine):
-        resp = await _run(engine, population="done_orders", metrics=[{"expression": "count(shipments.id)", "name": "n"}])
+        resp = await _run(engine, population="done_orders", metrics=[{"metric": "count(shipments.id)", "alias": "n"}])
         assert [int(r["done_orders.n"]) for r in resp.data] == [2]
 
     async def test_windowed_aggregate(self, engine):
         resp = await _run(
             engine, population="done_orders",
             time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
-            metrics=[{"expression": "sum(amount, window='366d')", "name": "w"}],
+            metrics=[{"metric": "sum(amount, window='366d')", "alias": "w"}],
         )
         assert {k: int(v) for (k, (v,)) in _per_month(resp, "w").items()} == {
             "2024-01": 100, "2024-02": 300, "2024-03": 600,
@@ -146,7 +146,7 @@ class TestFilteredRoot:
         resp = await _run(
             engine, population="done_orders",
             time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
-            metrics=[{"expression": "sum(amount)", "name": "s"}, {"expression": "time_shift(sum(amount), -1)", "name": "p"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}, {"metric": "time_shift(sum(amount), -1)", "alias": "p"}],
         )
         got = {k: tuple(None if x is None else int(x) for x in v) for k, v in _per_month(resp, "s", "p").items()}
         assert got == {"2024-01": (100, None), "2024-02": (200, 100), "2024-03": (300, 200)}
@@ -155,7 +155,7 @@ class TestFilteredRoot:
         resp = await _run(
             engine, population="done_orders",
             time_dimensions=[{"field": "ordered_at", "granularity": "month", "date_range": ["2024-02-01", "2024-02-29"]}],
-            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}],
         )
         assert {k: int(v) for (k, (v,)) in _per_month(resp, "s").items()} == {"2024-02": 200}
 
@@ -163,7 +163,7 @@ class TestFilteredRoot:
         resp = await _run(
             engine, population="done_orders", dimensions=["id"],
             time_dimensions=[{"field": "time_spine.timestamp", "granularity": "month", "date_range": JAN_MAR}],
-            metrics=[{"expression": "count(*)", "name": "n"}],
+            metrics=[{"metric": "count(*)", "alias": "n"}],
         )
         cells = {(int(r["done_orders.id"]), _month(r["time_spine.timestamp"])): int(r["done_orders.n"])
                  for r in resp.data}
@@ -180,21 +180,21 @@ class TestListParentReadsFilteredRows:
 
     async def test_element_count(self, team_a):
         resp = await team_a.execute(SlayerQuery.model_validate({
-            "population": "contractors", "metrics": [{"expression": "count(skills.*)", "name": "n"}],
+            "population": "contractors", "metrics": [{"metric": "count(skills.*)", "alias": "n"}],
         }))
         assert [int(r["contractors.n"]) for r in resp.data] == [4]
 
     async def test_element_values(self, team_a):
         resp = await team_a.execute(SlayerQuery.model_validate({
             "population": "contractors", "dimensions": ["skills.value"],
-            "metrics": [{"expression": "count(skills.*)", "name": "n"}],
+            "metrics": [{"metric": "count(skills.*)", "alias": "n"}],
         }))
         assert {r["contractors.skills.value"]: int(r["contractors.n"]) for r in resp.data} == {"go": 2, "sql": 2}
 
 
 class TestAssociation:
     async def test_unproven_hop_counts_each_row_once(self, engine):
-        resp = await _run(engine, population="ups_orders", metrics=[{"expression": "count(*)", "name": "n"}])
+        resp = await _run(engine, population="ups_orders", metrics=[{"metric": "count(*)", "alias": "n"}])
         assert [int(r["ups_orders.n"]) for r in resp.data] == [2]
 
     async def test_join_target_across_unproven_hop_never_multiplies(self, engine):

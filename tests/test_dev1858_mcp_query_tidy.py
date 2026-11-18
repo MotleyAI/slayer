@@ -75,10 +75,10 @@ async def orders_server(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT, label="Order Status"),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING, label="Order Status"),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
@@ -86,7 +86,7 @@ async def orders_server(tmp_path):
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })],
     ))
     return create_mcp_server(storage=storage)
@@ -157,7 +157,7 @@ class TestQueryDispatch:
             orders_server,
             query={
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "dimensions": ["status"],
             },
             format="json",
@@ -173,12 +173,12 @@ class TestQueryDispatch:
                 {
                     "name": "monthly",
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                     "time_dimensions": [
                         {"field": "created_at", "granularity": "month"},
                     ],
                 },
-                {"population": "monthly", "metrics": [{"expression": "count(*)"}]},
+                {"population": "monthly", "metrics": [{"metric": "count(*)"}]},
             ],
             dry_run=True,
         )
@@ -217,7 +217,7 @@ class TestQueryDispatch:
             query={
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "order": [{"field": "count(*)", "direction": "desc"}],
                 "limit": 1,
             },
@@ -268,8 +268,8 @@ _BROADCAST_QUERY = {
     "population": "orders",
     "dimensions": ["status"],
     "metrics": [
-        {"expression": "sum(amount)", "name": "m"},
-        {"expression": "sum(customers.spend)", "name": "cm"},
+        {"metric": "sum(amount)", "alias": "m"},
+        {"metric": "sum(customers.spend)", "alias": "cm"},
     ],
 }
 
@@ -310,7 +310,7 @@ class TestExecutionWrappers:
             orders_server,
             query={
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "filter": ["status == '{s}'"],
                 "variables": {"s": "pending"},
             },
@@ -327,7 +327,7 @@ class TestExecutionWrappers:
             query={
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             },
             dry_run=True,
         )
@@ -340,7 +340,7 @@ class TestExecutionWrappers:
     async def test_explain_returns_sql_and_plan(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
             explain=True,
         )
         assert "SQL:" in out
@@ -349,7 +349,7 @@ class TestExecutionWrappers:
     async def test_show_sql_prefixes_results(self, orders_server) -> None:
         out = await _call(
             orders_server,
-            query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
             show_sql=True,
         )
         assert out.startswith("SQL:")
@@ -361,7 +361,7 @@ class TestExecutionWrappers:
         with pytest.raises(ToolError) as ei:
             await _call(
                 orders_server,
-                query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
+                query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
                 format="xml",
             )
         message = str(ei.value)
@@ -375,7 +375,7 @@ class TestExecutionWrappers:
             query={
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             },
             format="JSON",
         )
@@ -436,4 +436,4 @@ class TestRunByNameRefine:
     async def test_conflict_surfaces_as_error(self, refine_server) -> None:
         with pytest.raises(ToolError, match="revenue"):
             await _call(refine_server, query="monthly_revenue",
-                        refine={"metrics": [{"expression": "count(*)", "name": "revenue"}]})
+                        refine={"metrics": [{"metric": "count(*)", "alias": "revenue"}]})

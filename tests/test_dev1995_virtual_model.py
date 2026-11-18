@@ -174,14 +174,14 @@ class TestSpellingInvariantAssociation:
             self, null_engine, formula):
         """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every measure spelling."""
         resp = await null_engine.execute(q(_orders_assoc(
-            metrics=[{"expression": formula, "name": "c"}])))
+            metrics=[{"metric": formula, "alias": "c"}])))
         _assert_cells(cells(resp, "orders.status", "orders.c"), SPEND_BY_STATUS)
 
     async def test_customers_rooted_twin_agrees(self, null_engine):
         resp = await null_engine.execute(q({
             "population": "customers", "to_many_handling": "associate",
             "dimensions": ["orders.status"],
-            "metrics": [{"expression": "sum(spend)", "name": "c"}]}))
+            "metrics": [{"metric": "sum(spend)", "alias": "c"}]}))
         _assert_cells(cells(resp, "customers.orders.status", "customers.c"),
                       SPEND_BY_STATUS)
 

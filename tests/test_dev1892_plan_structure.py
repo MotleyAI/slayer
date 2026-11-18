@@ -19,11 +19,12 @@ from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import assoc_q, dev1840_datasets
 from tests._dev1847_fixtures import (
     INNER_CR,
     INNER_CRP,
-    DatasetMetric,
     dev1847_datasets,
     gen,
     make_exec_engine,
@@ -61,7 +62,7 @@ class TestKernelCarriesPickedParams:
     def test_reaggregation_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
             query=sales_q(dimensions=["region"],
-                          metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]),
+                          metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]),
             bundle=_sales_bundle())
         [attach] = _association_attaches(planned)
         names = [p.name for p in attach.kernel.picked_params]
@@ -69,9 +70,9 @@ class TestKernelCarriesPickedParams:
 
     def test_association_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[DatasetMetric(
-                expression="weighted_avg(customers.spend, weight=customers.spend)",
-                name="w")]),
+            query=assoc_q(dimensions=["status"], metrics=[QueryMetric(
+                metric="weighted_avg(customers.spend, weight=customers.spend)",
+                alias="w")]),
             bundle=_orders_bundle())
         [attach] = _association_attaches(planned)
         names = [p.name for p in attach.kernel.picked_params]
@@ -85,7 +86,7 @@ class TestCombinedConsumerExemption:
         combined-consumer partition-key error (the exemption covers kwargs)."""
         planned = plan_query(
             query=sales_q(dimensions=["region"],
-                          metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]),
+                          metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
 
@@ -97,7 +98,7 @@ class TestCombinedConsumerExemption:
             "partition_by=[region, product]))")
         planned = plan_query(
             query=sales_q(dimensions=["product"],
-                          metrics=[DatasetMetric(expression=formula, name="d")]),
+                          metrics=[QueryMetric(metric=formula, alias="d")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
 
@@ -106,7 +107,7 @@ class TestEmittedShape:
     async def test_operand_carrier_is_one_producer_and_scope_closed(self) -> None:
         sql = await gen(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]))
+            metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         # value (amount:sum) and weight (id:count) ride ONE operand carrier.
         ctes = re.findall(r"(_cm_\w+) AS \(", sql)
         carriers = [n for n in ctes if "weighted_avg" not in n]
@@ -117,7 +118,7 @@ class TestEmittedShape:
     async def test_no_placeholder_leak(self, dialect) -> None:
         sql = await gen(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]), dialect=dialect)
+            metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]), dialect=dialect)
         assert "__regroup__" not in sql, sql
 
 
@@ -127,11 +128,11 @@ class TestCardinalityInvariant:
     ) -> None:
         base = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
         withw = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
-                      DatasetMetric(expression=_WAVG_REAGG, name="w")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+                      QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
         b = {k: v["sales.tot"] for k, v in region_key(withw).items()}
         assert set(a) == set(b)

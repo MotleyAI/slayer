@@ -80,7 +80,7 @@ def _table(catalog: FacadeCatalog, name: str) -> FacadeTable:
 
 
 def _facade_edges(table: FacadeTable) -> set[tuple]:
-    return {(j.name, j.to, str(j.join_pairs)) for j in table.relationships}
+    return {(j.name, j.to, str(j.column_pairs)) for j in table.relationships}
 
 
 class TestFacadeCatalogExposesBothOrientations:
@@ -102,8 +102,8 @@ class TestFacadeCatalogExposesBothOrientations:
 def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="name", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="name", datatype=DataType.STRING)],
     )
 
 

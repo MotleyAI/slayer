@@ -23,23 +23,23 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _dataset_where_text, _engine_generate
 
 
 def _make_planets_dataset(*, with_window_column: bool = False) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-        DatasetField(name="mass", sql="mass", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
+        DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
     ]
     if with_window_column:
         columns.append(
             DatasetField(
                 name="rn",
                 sql="row_number() over (order by mass desc)",
-                datatype=DataType.INT,
+                datatype=DataType.INTEGER,
             )
         )
     return SlayerDataset(
@@ -63,7 +63,7 @@ class TestSqlModeAcceptance:
             name="active_amount",
             sql="amount",
             filter="json_extract(metadata, '$.active') = 1",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         )
         assert col.filter is not None
         assert "json_extract" in col.filter.lower()
@@ -73,7 +73,7 @@ class TestSqlModeAcceptance:
             name="amt",
             sql="amount",
             filter="coalesce(a, b) IS NULL",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         )
         assert col.filter is not None
         assert "coalesce" in col.filter.lower()
@@ -84,7 +84,7 @@ class TestSqlModeAcceptance:
             name="amt",
             sql="amount",
             filter="CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         )
         assert col.filter is not None
         assert "CASE" in col.filter.upper()
@@ -95,7 +95,7 @@ class TestSqlModeAcceptance:
             sql_table="t",
             data_source="test",
             filters=["json_extract(metadata, '$.active') = 1"],
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "json_extract" in model.filters[0].lower()
 
@@ -105,7 +105,7 @@ class TestSqlModeAcceptance:
             sql_table="t",
             data_source="test",
             filters=["lower(status) = 'active'"],
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert model.filters == ["lower(status) = 'active'"]
 
@@ -115,7 +115,7 @@ class TestSqlModeAcceptance:
             sql_table="t",
             data_source="test",
             filters=["customers__regions.name = 'US'"],
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "customers__regions.name" in model.filters[0]
 
@@ -125,7 +125,7 @@ class TestSqlModeAcceptance:
             sql_table="t",
             data_source="test",
             filters=["status IN ('a', 'b', 'c')"],
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "IN" in model.filters[0].upper()
 
@@ -135,7 +135,7 @@ class TestSqlModeAcceptance:
             sql_table="t",
             data_source="test",
             filters=["deleted_at IS NULL"],
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         assert "IS NULL" in model.filters[0].upper()
 
@@ -156,13 +156,13 @@ class TestSqlModeRuntime:
             data_source="test",
             filters=["json_extract(metadata, '$.active') = 1"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="m",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         # This once raised "Unknown filter function 'json_extract'" at enrichment
         # time; it renders — the Mode A model filter survives into the WHERE of
@@ -178,19 +178,19 @@ class TestSqlModeRuntime:
             sql_table="t",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="active_amount",
                     sql="amount",
                     filter="lower(status) = 'active'",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
             population="m",
-            metrics=[DatasetMetric(expression="sum(active_amount)")],
+            metrics=[QueryMetric(metric="sum(active_amount)")],
         )
         sql = await _engine_generate(query=query, dataset=model)
         # The Column.filter goes onto the measure as a CASE WHEN wrapper
@@ -210,17 +210,17 @@ class TestSqlModeRuntime:
         regions = SlayerDataset(
             name="regions", sql_table="r", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
         customers = SlayerDataset(
             name="customers", sql_table="c", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         model = SlayerDataset(
             name="m",
@@ -228,14 +228,14 @@ class TestSqlModeRuntime:
             data_source="test",
             filters=["customers.regions.name = 'EU'"],
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         query = SlayerQuery(
             population="m",
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         sql = await _engine_generate(
             query=query, dataset=model, extra_datasets=[customers, regions],
@@ -258,7 +258,7 @@ class TestSqlModeRejection:
                 name="x",
                 sql="amount",
                 filter="revenue:sum > 100",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             )
 
     def test_column_filter_rejects_transform_call(self) -> None:
@@ -267,11 +267,11 @@ class TestSqlModeRejection:
                 name="x",
                 sql="amount",
                 filter="cumsum(amount) > 0",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             )
 
     def test_model_filter_rejects_aggregation_colon(self) -> None:
-        columns = [DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)]
+        columns = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)aggregat|colon|measure|DSL"):
             SlayerDataset(
                 name="m",
@@ -282,7 +282,7 @@ class TestSqlModeRejection:
             )
 
     def test_model_filter_rejects_transform_call(self) -> None:
-        columns = [DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)]
+        columns = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)transform|cumsum|DSL"):
             SlayerDataset(
                 name="m",
@@ -294,7 +294,7 @@ class TestSqlModeRejection:
 
     def test_model_filter_rejects_raw_over(self) -> None:
         """Raw OVER (...) in a model filter is rejected (existing behavior preserved)."""
-        columns = [DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)]
+        columns = [DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)]
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
             SlayerDataset(
                 name="m",
@@ -310,7 +310,7 @@ class TestSqlModeRejection:
                 name="x",
                 sql="amount",
                 filter="row_number() over (order by mass) <= 3",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             )
 
 
@@ -383,8 +383,8 @@ class TestDslModeRejection:
             sql_table="t",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="data", sql="data", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="data", sql="data", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
@@ -405,7 +405,7 @@ class TestDslModeRejection:
             name="orders",
             sql_table="t",
             data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         query = SlayerQuery(
             population="orders",
@@ -431,7 +431,7 @@ class TestDslModeRejection:
             name="m",
             sql_table="t",
             data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
             metrics=[DatasetMetric(name="bad", expression="json_extract(data, '$.x')")],
         )
         query = SlayerQuery(
@@ -458,7 +458,7 @@ class TestStrictResolution:
             name="m",
             sql_table="t",
             data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         query = SlayerQuery(
             population="m",
@@ -478,7 +478,7 @@ class TestStrictResolution:
             name="m",
             sql_table="t",
             data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         for typo in ("made_up_sum", "typo_count_distinct", "foo_avg"):
             query = SlayerQuery(
@@ -502,7 +502,7 @@ class TestStrictResolution:
             sql_table="households",
             data_source="test",
             fields=[
-                DatasetField(name="housenum", sql="housenum", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="housenum", sql="housenum", datatype=DataType.INTEGER, primary_key=True),
             ],
             # Note: NO join to ``transportation_assets``.
         )
@@ -532,8 +532,8 @@ class TestStrictResolution:
             sql_table="t",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
@@ -597,9 +597,9 @@ class TestVirtualModelColumnCarveOut:
     """
 
     def test_column_with_double_underscore_name_accepted(self) -> None:
-        col = DatasetField(name="stores__name", datatype=DataType.TEXT)
+        col = DatasetField(name="stores__name", datatype=DataType.STRING)
         assert col.name == "stores__name"
 
     def test_column_with_three_segment_double_underscore_name_accepted(self) -> None:
-        col = DatasetField(name="customers__regions__name", datatype=DataType.TEXT)
+        col = DatasetField(name="customers__regions__name", datatype=DataType.STRING)
         assert col.name == "customers__regions__name"

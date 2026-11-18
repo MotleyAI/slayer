@@ -21,11 +21,11 @@ def integer_orders() -> SlayerDataset:
             "sql_table": "orders",
             "default_time_dimension": "created_at",
             "fields": [
-                {"name": "id", "datatype": "INT", "primary_key": True},
-                {"name": "amount", "datatype": "INT"},
-                {"name": "created_at", "datatype": "TIMESTAMP"},
+                {"name": "id", "datatype": "Integer", "primary_key": True},
+                {"name": "amount", "datatype": "Integer"},
+                {"name": "created_at", "datatype": "DateTime"},
             ],
-            "metrics": [{"name": "as_int", "expression": "sum(amount)", "datatype": "INT"}],
+            "metrics": [{"name": "as_int", "expression": "sum(amount)", "datatype": "Integer"}],
         }
     )
 
@@ -60,7 +60,7 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders: Slaye
         s for s in (*planned.aggregate_slots, *planned.row_slots)
         if s.declared_name == f"amount_{aggregation}"
     )
-    assert slot.type is DataType.INT
+    assert slot.type is DataType.INTEGER
     with duckdb.connect() as connection:
         connection.execute(f"CREATE TABLE orders (id INT, amount {sql_type}, created_at TIMESTAMP)")
         connection.execute(
@@ -74,7 +74,7 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders: Slaye
 
 @pytest.mark.parametrize(
     "measure",
-    [{"expression": "sum(amount)", "datatype": "INT"}, "as_int"],
+    [{"expression": "sum(amount)", "datatype": "Integer"}, "as_int"],
 )
 def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset, measure):
     sql, _ = _sql(dataset=integer_orders, metrics=[measure])
@@ -96,7 +96,7 @@ def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset,
 def test_integer_range_survives_window_and_shift_paths(integer_orders: SlayerDataset, formula, expected):
     sql, _ = _sql(
         dataset=integer_orders,
-        metrics=[{"expression": formula, "name": "total"}],
+        metrics=[{"metric": formula, "alias": "total"}],
         time_dimensions=[{"field": "created_at", "granularity": "day"}],
     )
     with duckdb.connect() as connection:
@@ -111,7 +111,7 @@ def test_integer_range_survives_window_and_shift_paths(integer_orders: SlayerDat
 @pytest.mark.parametrize("explicit", [False, True])
 @pytest.mark.parametrize("reroot", [False, True])
 def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDataset, explicit, reroot):
-    integer_orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    integer_orders.relationships = [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]
     customers = integer_orders.model_copy(
         update={
             "name": "customers",
@@ -122,7 +122,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
     )
     measure = {"expression": "sum(customers.amount)", "name": "total"}
     if explicit:
-        measure["datatype"] = "INT"
+        measure["datatype"] = "Integer"
     sql, _ = _sql(
         dataset=integer_orders,
         referenced_datasets=[customers],
@@ -141,7 +141,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
 def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDataset, explicit):
     measure = {"expression": "sum(amount, partition_by=created_at)", "name": "total"}
     if explicit:
-        measure["datatype"] = "INT"
+        measure["datatype"] = "Integer"
     sql, _ = _sql(dataset=integer_orders, metrics=[measure], dimensions=["id", "created_at"])
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (id INT, amount INT, created_at TIMESTAMP)")
@@ -161,6 +161,6 @@ def test_inferred_integer_sum_preserves_null_and_empty_semantics(integer_orders:
 
 
 def test_query_type_override_wins_over_saved_integer_type(integer_orders: SlayerDataset):
-    sql, planned = _sql(dataset=integer_orders, metrics=[{"expression": "as_int", "datatype": "DOUBLE"}])
-    assert planned.aggregate_slots[0].type is DataType.DOUBLE
+    sql, planned = _sql(dataset=integer_orders, metrics=[{"metric": "as_int", "datatype": "Float"}])
+    assert planned.aggregate_slots[0].type is DataType.FLOAT
     assert "CAST(SUM(orders.amount) AS DOUBLE)" in sql

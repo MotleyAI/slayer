@@ -18,9 +18,10 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     BAND35,
-    DatasetMetric,
     dev1835_models,
     month_td,
     q,
@@ -45,35 +46,35 @@ def _cases() -> dict:
         "mig/bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, window='90d')", name="w"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
             ],
         ),
         "mig/bare_rk": q(
             dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="last(amount)", name="l"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="last(amount)", alias="l"),
             ],
         ),
         "lift/band_x_wm": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="cumsum(sum(amount, window='90d'))", name="x"),
+                QueryMetric(metric="cumsum(sum(amount, window='90d'))", alias="x"),
             ],
         ),
         "dedup/dual_role": q(
             dimensions=["region", RBAND],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
             ],
         ),
     }

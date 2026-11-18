@@ -25,10 +25,10 @@ from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from tests._dev1739_fixtures import customers_dataset, make_exec_engine
 
 REVENUE = {"expression": "sum(amount)", "name": "revenue"}
-REGION_ID = {"name": "region_id", "expression": "customers.region_id"}
+REGION_ID = {"alias": "region_id", "field": "customers.region_id"}
 REGION_NAME = {"name": "region_name", "expression": "customers.regions.name"}
-RID = {"name": "rid", "expression": "customers.region_id"}
-UNNAMED_PATH = {"expression": "customers.region_id"}
+RID = {"alias": "rid", "field": "customers.region_id"}
+UNNAMED_PATH = {"field": "customers.region_id"}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -66,7 +66,7 @@ STAGE_NAMED_TWO_HOP = [
 ]
 STAGE_DOWNSTREAM_AGG = [
     _stage(dimensions=[RID, "customer_id"]),
-    _outer(dimensions=["rid"], metrics=[{"expression": "sum(revenue)", "name": "tot"}]),
+    _outer(dimensions=["rid"], metrics=[{"metric": "sum(revenue)", "alias": "tot"}]),
 ]
 SINGLE_UNNAMED_PATH = {"population": "orders", "dimensions": [UNNAMED_PATH], "metrics": [REVENUE]}
 STAGE_UNNAMED_PATH = [
@@ -92,7 +92,7 @@ STAGE_PLAIN_PATH = [
     _outer(dimensions=["customers__region_id", "revenue"]),
 ]
 STAGE_LOCAL_RENAME = [
-    _stage(dimensions=[{"name": "cust", "expression": "customer_id"}]),
+    _stage(dimensions=[{"alias": "cust", "field": "customer_id"}]),
     _outer(dimensions=["cust", "revenue"]),
 ]
 QUERY_BACKED_OUTER = {"population": "cr", "dimensions": ["region_id", "revenue"]}
@@ -135,7 +135,7 @@ class TestNamedJoinedPathSingleQuery:
         with pytest.raises(NameCollisionError, match="computed dimension name collides"):
             await exec_engine.execute({
                 "population": "orders",
-                "dimensions": [{"name": "region", "expression": "customers.regions.name"}],
+                "dimensions": [{"alias": "region", "field": "customers.regions.name"}],
                 "metrics": [REVENUE],
             })
 

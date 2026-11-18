@@ -59,9 +59,9 @@ def _seed_amounts(db_path: str) -> None:
 def _amounts_dataset() -> SlayerDataset:
     """``n`` / ``big`` are exact numerics read as DOUBLE; ``u`` a UUID read as TEXT, as ingestion types them."""
     return SlayerDataset(name="amounts", sql_table="amounts", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="team", datatype=DataType.TEXT),
-        DatasetField(name="n", datatype=DataType.DOUBLE), DatasetField(name="big", datatype=DataType.DOUBLE),
-        DatasetField(name="u", datatype=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="team", datatype=DataType.STRING),
+        DatasetField(name="n", datatype=DataType.FLOAT), DatasetField(name="big", datatype=DataType.FLOAT),
+        DatasetField(name="u", datatype=DataType.STRING),
     ])
 
 

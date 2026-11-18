@@ -34,7 +34,7 @@ class TestExpressionArgument:
 
     async def test_in_a_computed_dimension_over_a_cast(self, engine) -> None:
         resp = await engine.execute(q(
-            dimensions=[{"expression": "date_trunc('year', CAST(created_txt AS DATE))", "name": "y"}], metrics=[m("count(*)")],
+            dimensions=[{"field": "date_trunc('year', CAST(created_txt AS DATE))", "alias": "y"}], metrics=[m("count(*)")],
         ))
         assert {str(r["orders.y"])[:4]: num(r["orders.v"]) for r in resp.data} == {"2024": 1, "2025": 5}
 
@@ -44,7 +44,7 @@ class TestExpressionArgument:
 
     async def test_in_arithmetic(self, engine) -> None:
         resp = await engine.execute(q(dimensions=[
-            "id", {"expression": f"date_diff('day', date_trunc('month', {EFF}), {EFF})", "name": "d"},
+            "id", {"field": f"date_diff('day', date_trunc('month', {EFF}), {EFF})", "alias": "d"},
         ]))
         assert _by_id(resp, "d") == {1: 6, 2: 1, 3: 9, 4: 2, 5: 0, 6: 19}
 
@@ -60,4 +60,4 @@ class TestNonTemporalArgument:
         query = q(dimensions=["date_trunc('month', upper(status))"], metrics=[m("count(*)")])
         with pytest.raises(TimeDimensionFieldError) as ei:
             await engine.execute(query, dry_run=True)
-        assert "TEXT" in str(ei.value).upper()
+        assert "STRING" in str(ei.value).upper()

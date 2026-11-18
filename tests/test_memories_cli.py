@@ -46,18 +46,18 @@ async def seeded_storage_path():
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
                     DatasetField(
                         name="amount",
                         sql="amount",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                     DatasetField(
                         name="status",
                         sql="status",
-                        datatype=DataType.TEXT,
+                        datatype=DataType.STRING,
                     ),
                 ],
                 metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
@@ -104,7 +104,7 @@ class TestMemorySaveSubcommand:
         query_json = json.dumps(
             {
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             }
         )
         _run_memory(
@@ -129,7 +129,7 @@ class TestMemorySaveSubcommand:
             json.dumps(
                 {
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                 }
             )
         )

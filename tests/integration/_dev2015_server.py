@@ -66,7 +66,7 @@ def server_datasets(*, data_source: str) -> list[SlayerDataset]:
 
 def server_datasets_ts(*, data_source: str) -> list[SlayerDataset]:
     """``orders`` over the TIMESTAMP-axis ``orders_ts`` table, plus ``customers`` and ``returns``."""
-    models = spine_datasets(date_type=DataType.TIMESTAMP)
+    models = spine_datasets(date_type=DataType.DATETIME)
     return [
         _on(x, data_source=data_source, **({"sql_table": "orders_ts"} if x.name == "orders" else {}))
         for x in models if x.name in {"customers", "orders", "returns"}

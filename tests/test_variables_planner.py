@@ -9,9 +9,11 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import (
-    FieldRef,
     ComputedDimension,
     DatasetExtension,
+    FieldRef,
+    QueryDimension,
+    QueryMetric,
     QueryRefinement,
     SlayerQuery,
     TimeDimension,
@@ -288,8 +290,8 @@ class TestApplyVariablesToQuery:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(
-                    expression="sum(amount)", name="rev", label="display_{x}"
+                QueryMetric(
+                    metric="sum(amount)", alias="rev", label="display_{x}"
                 )
             ],
             filter=["status = '{s}'"],
@@ -304,7 +306,7 @@ class TestApplyVariablesToQuery:
     def test_measure_formula_substituted(self) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount) * {x}", name="rev")],
+            metrics=[QueryMetric(metric="sum(amount) * {x}", alias="rev")],
             filter=["status = '{s}'"],
         )
         out = apply_variables_to_query(
@@ -329,8 +331,8 @@ class TestApplyVariablesToQuery:
     def test_other_fields_preserved_after_substitution(self) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=[QueryDimension(field="status")],
             filter=["status = '{s}'"],
             limit=10,
             offset=5,
@@ -380,7 +382,7 @@ class TestFormulaSurfaces:
         assert _template(d) == "amount * {k}"
 
     def test_unchanged_computed_dimension_has_no_template(self) -> None:
-        out = apply_variables_to_query(query=_q(dimensions=[{"expression": "amount * 2"}]), variables={"k": 1})
+        out = apply_variables_to_query(query=_q(dimensions=[{"field": "amount * 2"}]), variables={"k": 1})
         assert out.dimensions is not None
         assert _template(out.dimensions[0]) is None
 
@@ -425,7 +427,7 @@ class TestFormulaSurfaces:
         assert out.metrics[0].expression == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
 
     def test_list_value_renders_tuple_in_dimension(self) -> None:
-        q = _q(dimensions=[{"expression": "region in ({regions})", "name": "ns"}])
+        q = _q(dimensions=[{"field": "region in ({regions})", "alias": "ns"}])
         out = apply_variables_to_query(query=q, variables={"regions": ["North", "South"]})
         assert out.dimensions is not None
         (d,) = out.dimensions
@@ -436,7 +438,7 @@ class TestFormulaSurfaces:
 
     @pytest.mark.parametrize("kw", [
         {"metrics": ["sum(amount) * {? {k} ?}"]},
-        {"dimensions": [{"expression": "amount * {? {k} ?}", "name": "d"}]},
+        {"dimensions": [{"field": "amount * {? {k} ?}", "alias": "d"}]},
     ])
     def test_optional_block_rejected(self, kw) -> None:
         query = _q(**kw)
@@ -468,7 +470,7 @@ class TestRebuild:
         assert out.version == q.version
 
     def test_extensions_preserved(self) -> None:
-        ext = DatasetExtension(source_name="orders", metrics=[DatasetMetric(name="x", expression="sum(amount)")])
+        ext = DatasetExtension(dataset="orders", metrics=[DatasetMetric(name="x", expression="sum(amount)")])
         q = SlayerQuery.model_validate({"population": "orders", "extensions": [ext], "metrics": ["sum(amount) * {k}"]})
         out = apply_variables_to_query(query=q, variables={"k": 2})
         assert out.population == "orders"
@@ -516,8 +518,8 @@ def _dataset_with_metric(expression: str, **kw) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         metrics=[DatasetMetric(name="scaled", expression=expression)],
         **kw,

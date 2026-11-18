@@ -34,11 +34,11 @@ class TestDataTypeShape:
 
     def test_is_aggregation_helper_removed(self) -> None:
         # The helper had no callers outside the enum itself; gone in v5.
-        assert not hasattr(DataType.TEXT, "is_aggregation")
+        assert not hasattr(DataType.STRING, "is_aggregation")
 
     def test_python_type_helper_removed(self) -> None:
         # Was used only in a single test assertion; gone in v5.
-        assert not hasattr(DataType.TEXT, "python_type")
+        assert not hasattr(DataType.STRING, "python_type")
 
 
 class TestDataTypeValuesMatchSqlglot:
@@ -59,11 +59,11 @@ class TestDataTypeIsOpaque:
     not operable on" — consumers must not compare against UNKNOWN directly."""
 
     def test_unknown_is_opaque(self) -> None:
-        assert DataType.UNKNOWN.is_opaque is True
+        assert DataType.OPAQUE.is_opaque is True
 
     @pytest.mark.parametrize(
         "dt",
-        [m for m in DataType if m is not DataType.UNKNOWN],
+        [m for m in DataType if m is not DataType.OPAQUE],
         ids=lambda m: m.name,
     )
     def test_every_other_member_is_not_opaque(self, dt: DataType) -> None:
@@ -72,21 +72,21 @@ class TestDataTypeIsOpaque:
     def test_unknown_has_no_default_aggregations(self) -> None:
         # An opaque column can't be aggregated at all, so it must not appear
         # in the type-default eligibility table.
-        assert DataType.UNKNOWN not in DEFAULT_AGGREGATIONS_BY_TYPE
+        assert DataType.OPAQUE not in DEFAULT_AGGREGATIONS_BY_TYPE
 
 
 class TestDefaultAggregationsByType:
     def test_int_mirrors_double(self) -> None:
-        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT] == DEFAULT_AGGREGATIONS_BY_TYPE[DataType.DOUBLE]
+        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INTEGER] == DEFAULT_AGGREGATIONS_BY_TYPE[DataType.FLOAT]
 
     def test_int_includes_sum_and_avg(self) -> None:
-        assert "sum" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
-        assert "avg" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
+        assert "sum" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INTEGER]
+        assert "avg" in DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INTEGER]
 
     def test_text_set_unchanged(self) -> None:
         # Mirror of the old STRING set, plus DEV-1595's count_distinct_approx
         # (eligible wherever count_distinct is — see DEFAULT_AGGREGATIONS_BY_TYPE).
-        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.TEXT] == frozenset({
+        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.STRING] == frozenset({
             "count", "count_distinct", "count_distinct_approx",
             "first", "last", "min", "max", "collect",
         })

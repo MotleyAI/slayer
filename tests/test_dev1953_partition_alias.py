@@ -17,9 +17,10 @@ from slayer.engine.binding import bind_expr
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     SPEND_BAND_EXPR,
-    DatasetMetric,
     _SALES_ROWS_WIDE,
     dev1847_datasets,
     make_exec_engine,
@@ -200,13 +201,13 @@ class TestBindingSymmetry:
 class TestExecutedPositions:
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], metrics=[DatasetMetric(expression=RANK_UREG, name="r")]))
+            dimensions=[UREG, "city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")]))
         got = {k: v["sales.r"] for k, v in rows_by(resp, "sales.ureg", "sales.city").items()}
         assert got == MEASURE_RANKS
 
     async def test_aggregation_parameter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG], metrics=[DatasetMetric(expression=PARAM_UREG, name="w")]))
+            dimensions=[UREG], metrics=[QueryMetric(metric=PARAM_UREG, alias="w")]))
         got = {k[0]: v["sales.w"] for k, v in rows_by(resp, "sales.ureg").items()}
         approx_map(got=got, want=PARAM_BY_UREG)
 
@@ -234,7 +235,7 @@ class TestExecutedPositions:
 
     async def test_undeclared_name_stays_unknown(self, engine):
         query = sales_q(
-            dimensions=["city"], metrics=[DatasetMetric(expression=RANK_UREG, name="r")])
+            dimensions=["city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")])
         with pytest.raises(UnknownReferenceError, match="ureg"):
             await engine.execute(query)
 
@@ -258,7 +259,7 @@ class TestAttachCarryingKey:
 
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], metrics=[DatasetMetric(expression=RANK_BAND, name="r")]))
+            dimensions=[BAND, "city"], metrics=[QueryMetric(metric=RANK_BAND, alias="r")]))
         got = {k: v["sales.r"]
                for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
         assert got == _band_city_ranks()
@@ -267,7 +268,7 @@ class TestAttachCarryingKey:
     async def test_parameter(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[BAND],
-            metrics=[DatasetMetric(
-                expression=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
+            metrics=[QueryMetric(
+                metric=f"weighted_avg(amount, weight={PARAM_BAND})", alias="w")]))
         approx_map(got={r["sales.spend_band"]: r["sales.w"] for r in resp.data},
                    want=_param_by_band())

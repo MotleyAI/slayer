@@ -46,16 +46,16 @@ def orders_dataset(*, data_source: str = "test", flag_format: Optional[NumberFor
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="ordered_at", datatype=DataType.DATE),
-            DatasetField(name="amount", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.INTEGER),
             DatasetField(name="flag", datatype=DataType.BOOLEAN, format=flag_format),
             DatasetField(name="big_order", datatype=DataType.BOOLEAN, sql="amount > 15"),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -63,10 +63,10 @@ def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="vip", datatype=DataType.BOOLEAN),
-            DatasetField(name="score", datatype=DataType.INT),
+            DatasetField(name="score", datatype=DataType.INTEGER),
         ],
     )
 

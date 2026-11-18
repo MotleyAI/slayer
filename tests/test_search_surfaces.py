@@ -41,8 +41,8 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             data_source="warehouse",
             description="Checkout orders.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount_paid", datatype=DataType.FLOAT,
                        description="Net paid in USD."),
             ],
         ))
@@ -168,7 +168,7 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -249,7 +249,7 @@ def _seed_cli_storage(tmp_path) -> str:
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -365,7 +365,7 @@ def test_rest_post_search_accepts_datasource(tmp_path) -> None:
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
 
     asyncio.run(_seed())

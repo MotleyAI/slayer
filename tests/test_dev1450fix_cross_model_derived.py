@@ -91,13 +91,13 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE, label="Revenue"),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT, label="Revenue"),
                 DatasetField(name="is_active", sql="status = 'active'", datatype=DataType.BOOLEAN),
                 DatasetField(name="big_spender", sql="revenue > 60", datatype=DataType.BOOLEAN),
-                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.DOUBLE),
+                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT),
             ],
             filters=["is_active"],
         )
@@ -108,12 +108,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -127,14 +127,14 @@ async def test_c1_target_derived_model_filter_expands(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
     )
     dry = await engine.execute(
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         }),
         dry_run=True,
     )
@@ -156,7 +156,7 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(customers.revenue)"}],
+        "metrics": [{"metric": "sum(customers.revenue)"}],
         "filter": ["customers.big_spender == 1"],
     })
     dry = await engine.execute(q, dry_run=True)
@@ -180,7 +180,7 @@ async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngin
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(customers.rev_x2)"}],
+        "metrics": [{"metric": "sum(customers.rev_x2)"}],
     })
     dry = await engine.execute(q, dry_run=True)
     assert "orders.customers.rev_x2_sum" in dry.columns, dry.columns
@@ -202,7 +202,7 @@ async def test_cr11_cross_model_agg_over_derived_column_metadata(engine: SlayerQ
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
     )
     # revenue carries label "Revenue"; the cross-model measure inherits it.

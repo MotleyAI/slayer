@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import DatasetExtension
+from slayer.core.query import DatasetExtension, QueryMetric
 from tests._dev1824_fixtures import (
     BAND35,
-    DatasetMetric,
     SlayerQuery,
     make_exec_engine,
     q,
@@ -34,10 +33,10 @@ async def exec_engine(request):
 def _stages(**stage2_kwargs) -> list:
     stage1 = q(
         name="banded",
-        dimensions=["region", {"expression": BAND35, "name": "band"}],
-        metrics=[DatasetMetric(expression="sum(amount)", name="bt")],
+        dimensions=["region", {"field": BAND35, "alias": "band"}],
+        metrics=[QueryMetric(metric="sum(amount)", alias="bt")],
     )
-    stage2 = SlayerQuery(population="banded", extensions=[DatasetExtension(source_name="banded")], **stage2_kwargs)
+    stage2 = SlayerQuery(population="banded", extensions=[DatasetExtension(dataset="banded")], **stage2_kwargs)
     return [stage1, stage2]
 
 
@@ -45,7 +44,7 @@ class TestDownstreamStageConsumesRegroupedDimension:
     async def test_select_order_and_reaggregate_over_band(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
-            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
+            metrics=[QueryMetric(metric="sum(bt)", alias="total")],
             order=[{"field": "band", "direction": "desc"}],
         ))
         # Exact public result keys: upstream stage name + PUBLIC column names.
@@ -60,7 +59,7 @@ class TestDownstreamStageConsumesRegroupedDimension:
         resp = await exec_engine.execute(_stages(
             dimensions=["region"],
             filter=["band == 1"],
-            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
+            metrics=[QueryMetric(metric="sum(bt)", alias="total")],
         ))
         assert resp.columns == ["banded.region", "banded.total"]
         got = {r["banded.region"]: float(r["banded.total"]) for r in resp.data}
@@ -75,7 +74,7 @@ class TestNoInternalNamesLeak:
     async def test_response_surface_is_placeholder_free(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
-            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
+            metrics=[QueryMetric(metric="sum(bt)", alias="total")],
         ))
         assert all("__regroup__" not in c for c in resp.columns)
         for row in resp.data:
@@ -88,7 +87,7 @@ class TestNoInternalNamesLeak:
     ) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
-            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
+            metrics=[QueryMetric(metric="sum(bt)", alias="total")],
         ), dry_run=True)
         assert resp.sql is not None
         assert "__regroup__" not in resp.sql

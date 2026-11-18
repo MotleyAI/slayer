@@ -29,7 +29,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from tests._dev1747_fixtures import (
     cte_body_names,
     dev1747_datasets,
@@ -51,8 +51,8 @@ _CHAIN_QUERY = SlayerQuery(
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"expression": "sum(amount)", "name": "rev"},
-        {"expression": "cumsum(sum(amount))", "name": "cs"},
+        {"metric": "sum(amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(amount))", "alias": "cs"},
     ],
 )
 
@@ -65,9 +65,9 @@ _MULTI_STEP_QUERY = SlayerQuery(
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"expression": "sum(amount)", "name": "rev"},
-        {"expression": "cumsum(sum(amount))", "name": "cs"},
-        {"expression": "change(sum(amount))", "name": "ch"},
+        {"metric": "sum(amount)", "alias": "rev"},
+        {"metric": "cumsum(sum(amount))", "alias": "cs"},
+        {"metric": "change(sum(amount))", "alias": "ch"},
     ],
 )
 
@@ -136,7 +136,7 @@ class TestWithChainAssembly:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="desc")], "limit": 2}))
+            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")], "limit": 2}))
         assert order_by_text(sql), f"chain lost its ORDER BY:\n{sql}"
         assert "LIMIT" in sql.upper() or "TOP" in sql.upper()
 
@@ -229,12 +229,12 @@ class TestChainSemanticsPreserved:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="status"), direction="desc")]}))
+            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="status", direction="desc")]}))
         assert order_by_text(sql)
 
     async def test_post_phase_filter_still_wraps_the_chain(self) -> None:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "filter": ["cs > 5"]}))
+            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "filter": ["cs > 5"]}))
         assert "WHERE" in sql.upper()

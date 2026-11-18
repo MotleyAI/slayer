@@ -31,7 +31,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.search.service import (
     LookupFound,
     LookupHidden,
@@ -55,20 +55,20 @@ def _make_corpus_datasets() -> list[SlayerDataset]:
             data_source="warehouse",
             description="Checkout orders.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
                     name="amount",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     description="Net amount in cents.",
                 ),
                 DatasetField(
                     name="status",
-                    datatype=DataType.TEXT,
+                    datatype=DataType.STRING,
                     description="paid|refunded.",
                 ),
                 DatasetField(
                     name="internal_token",
-                    datatype=DataType.TEXT,
+                    datatype=DataType.STRING,
                     description="Internal payment token.",
                     hidden=True,
                 ),
@@ -94,8 +94,8 @@ def _make_corpus_datasets() -> list[SlayerDataset]:
             data_source="warehouse",
             description="Customer master.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="email", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="email", datatype=DataType.STRING),
             ],
         ),
         SlayerDataset(
@@ -104,8 +104,8 @@ def _make_corpus_datasets() -> list[SlayerDataset]:
             data_source="warehouse",
             description="Internal audit log.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="event", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="event", datatype=DataType.STRING),
             ],
             hidden=True,
         ),
@@ -115,8 +115,8 @@ def _make_corpus_datasets() -> list[SlayerDataset]:
             data_source="other_db",
             description="Product catalog (other ds).",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -374,7 +374,7 @@ async def test_memory_id_in_entities_surfaces_query_bearing_in_example_queries(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         ),
     )
     resp = await service.search(
@@ -441,7 +441,7 @@ async def test_query_arg_entities_also_surface_in_entities_bucket(
 ) -> None:
     q = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="sum(amount)")],
+        metrics=[QueryMetric(metric="sum(amount)")],
     )
     resp = await service.search(
         query=q,
@@ -690,8 +690,8 @@ async def _make_amount_stale(storage: YAMLStorage) -> None:
         data_source="warehouse",
         description="Checkout orders.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     ))
 
@@ -704,7 +704,7 @@ async def test_stale_query_warning_for_named_memory_id_default_cap(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         ),
     )
     # Make `amount` stale — the attached query no longer resolves.
@@ -734,7 +734,7 @@ async def test_stale_query_warning_for_named_memory_id_under_tight_cap(
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         ),
     )
     await _make_amount_stale(storage)

@@ -88,11 +88,11 @@ class TestKeywordOrComparison:
 # --------------------------------------------------------------------------- #
 class TestAggIsReserved:
     @pytest.mark.parametrize("query", [
-        {"metrics": [{"expression": "AGG(amount)", "name": "v"}]},
-        {"metrics": [{"expression": "agg(amount) + 1", "name": "v"}]},
-        {"metrics": [{"expression": "count(*)", "name": "n"}], "filter": ["Agg(amount) > 1"]},
-        {"dimensions": [{"expression": "agg(amount, partition_by=status)", "name": "a"}],
-         "metrics": [{"expression": "count(*)", "name": "n"}]},
+        {"metrics": [{"metric": "AGG(amount)", "alias": "v"}]},
+        {"metrics": [{"metric": "agg(amount) + 1", "alias": "v"}]},
+        {"metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["Agg(amount) > 1"]},
+        {"dimensions": [{"field": "agg(amount, partition_by=status)", "alias": "a"}],
+         "metrics": [{"metric": "count(*)", "alias": "n"}]},
     ], ids=["measure", "arithmetic", "filter", "dimension"])
     async def test_a_call_is_refused(self, engine: SlayerQueryEngine, query: dict) -> None:
         built = q(**query)
@@ -108,10 +108,10 @@ class TestAggIsReserved:
 
     async def test_a_measure_or_column_named_agg_is_legal(self) -> None:
         with_column = orders_dataset().model_copy(update={"fields": [
-            *orders_dataset().fields, DatasetField(name="agg", sql="amount", datatype=DataType.DOUBLE)]})
+            *orders_dataset().fields, DatasetField(name="agg", sql="amount", datatype=DataType.FLOAT)]})
         with_measure = SlayerDataset(name="totals", sql_table="orders", data_source="test",
-                                   fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                                            DatasetField(name="amount", datatype=DataType.DOUBLE)],
+                                   fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                                            DatasetField(name="amount", datatype=DataType.FLOAT)],
                                    metrics=[DatasetMetric(name="agg", expression="sum(amount)")])
         async with dev2215_engine("sqlite", datasets=[with_column, with_measure]) as eng:
             await eng.storage.save_dataset(with_column)

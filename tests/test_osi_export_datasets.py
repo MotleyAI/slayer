@@ -49,7 +49,7 @@ async def test_sql_mode_model_source_is_its_query(env) -> None:
 
 
 async def test_filtered_table_model(env) -> None:
-    active = orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.TIMESTAMP)],
+    active = orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.DATETIME)],
                     joins=[], filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_MEASURES)
     result = await export_datasets(env, active)
     ds_ = dataset(result.document, "active_orders")
@@ -161,22 +161,22 @@ async def test_imported_description_is_stable(env) -> None:
 # ─────────────────────────── datatypes and time role ───────────────────────
 
 _DATATYPES = [
-    pytest.param("status", DataType.TEXT, None, "String", id="text"),
-    pytest.param("quantity", DataType.INT, None, "Integer", id="int"),
-    pytest.param("amount", DataType.DOUBLE, None, "Float", id="double"),
-    pytest.param("o_totalprice", DataType.DOUBLE, "DECIMAL(18,2)", "Decimal", id="decimal"),
-    pytest.param("o_totalprice", DataType.DOUBLE, "NUMERIC(10, 2)", "Decimal", id="numeric"),
+    pytest.param("status", DataType.STRING, None, "String", id="text"),
+    pytest.param("quantity", DataType.INTEGER, None, "Integer", id="int"),
+    pytest.param("amount", DataType.FLOAT, None, "Float", id="double"),
+    pytest.param("o_totalprice", DataType.FLOAT, "DECIMAL(18,2)", "Decimal", id="decimal"),
+    pytest.param("o_totalprice", DataType.FLOAT, "NUMERIC(10, 2)", "Decimal", id="numeric"),
     pytest.param("is_paid", DataType.BOOLEAN, None, "Boolean", id="boolean"),
     pytest.param("ordered_on", DataType.DATE, None, "Date", id="date"),
-    pytest.param("ordered_at", DataType.TIMESTAMP, None, "DateTime", id="timestamp"),
-    pytest.param("ordered_at", DataType.TIMESTAMP, "TIMESTAMP WITH TIME ZONE", "DateTimeTz", id="timestamptz"),
-    pytest.param("ordered_at", DataType.TIMESTAMP, "TIMESTAMPTZ", "DateTimeTz", id="timestamptz-short"),
-    pytest.param("note", DataType.UNKNOWN, "JSON", None, id="unknown"),
+    pytest.param("ordered_at", DataType.DATETIME, None, "DateTime", id="timestamp"),
+    pytest.param("ordered_at", DataType.DATETIME, "TIMESTAMP WITH TIME ZONE", "DateTimeTz", id="timestamptz"),
+    pytest.param("ordered_at", DataType.DATETIME, "TIMESTAMPTZ", "DateTimeTz", id="timestamptz-short"),
+    pytest.param("note", DataType.OPAQUE, "JSON", None, id="unknown"),
 ]
 
 
 def _one_column_orders(column: DatasetField) -> Any:
-    return orders(columns=[col("id", DataType.INT, "o_orderkey", primary_key=True), column], joins=[],
+    return orders(columns=[col("id", DataType.INTEGER, "o_orderkey", primary_key=True), column], joins=[],
                   metrics=[], default_time_dimension=None)
 
 
@@ -191,14 +191,14 @@ async def test_field_datatype(env, physical: str, type_: DataType, db_type: str 
 
 
 async def test_recorded_ossie_datatype_used_when_consistent(env) -> None:
-    column = col("v", DataType.TIMESTAMP, "ordered_at", meta={"osi_datatype": "DateTimeTz"})
+    column = col("v", DataType.DATETIME, "ordered_at", meta={"osi_datatype": "DateTimeTz"})
     v = field(dataset((await export_datasets(env, _one_column_orders(column))).document, "orders"), "v")
     assert v is not None
     assert v["datatype"] == "DateTimeTz"
 
 
 async def test_recorded_ossie_datatype_ignored_when_inconsistent(env) -> None:
-    column = col("v", DataType.INT, "quantity", meta={"osi_datatype": "String"})
+    column = col("v", DataType.INTEGER, "quantity", meta={"osi_datatype": "String"})
     v = field(dataset((await export_datasets(env, _one_column_orders(column))).document, "orders"), "v")
     assert v is not None
     assert v["datatype"] == "Integer"
@@ -236,8 +236,8 @@ async def test_primary_and_unique_keys(env) -> None:
 
 
 async def test_composite_primary_key(env) -> None:
-    model = orders(columns=[col("id", DataType.INT, "o_orderkey", primary_key=True),
-                            col("customer_id", DataType.INT, "o_custkey", primary_key=True), col("amount")],
+    model = orders(columns=[col("id", DataType.INTEGER, "o_orderkey", primary_key=True),
+                            col("customer_id", DataType.INTEGER, "o_custkey", primary_key=True), col("amount")],
                    joins=[], default_time_dimension=None)
     assert dataset((await export_datasets(env, model)).document, "orders")["primary_key"] == ["id", "customer_id"]
 
@@ -250,7 +250,7 @@ async def test_unique_keys_deduplicated(env) -> None:
 
 async def test_key_on_filtered_column_is_reported(env) -> None:
     model = customers(meta={"osi_unique_keys": [["masked_email"]]})
-    model.fields.append(col("masked_email", DataType.TEXT, "email", filter="segment = 'b2b'"))
+    model.fields.append(col("masked_email", DataType.STRING, "email", filter="segment = 'b2b'"))
     result = await export_datasets(env, model)
     cust = dataset(result.document, "customers")
     assert ["masked_email"] not in cust.get("unique_keys", [])
@@ -260,7 +260,7 @@ async def test_key_on_filtered_column_is_reported(env) -> None:
 
 async def test_key_on_slayer_only_column_is_reported(env) -> None:
     model = orders(metrics=BASIC_MEASURES, meta={"osi_unique_keys": [["id", "segment"]]})
-    model.fields.append(col("segment", DataType.TEXT, "customers.segment"))
+    model.fields.append(col("segment", DataType.STRING, "customers.segment"))
     result = await export_datasets(env, customers(), model)
     assert ["id", "segment"] not in dataset(result.document, "orders").get("unique_keys", [])
     assert mentions(result, "segment", severity="dropped")

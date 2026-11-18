@@ -23,7 +23,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError, IllegalWindowInFilterError
 from slayer.core.keys import AggregateKey, StarKey, TransformKey
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, SlayerQuery
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -87,10 +87,10 @@ def test_partition_by_multi_column_parses_and_binds():
     orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
         ],
     )
     bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
@@ -115,8 +115,8 @@ def test_aggregation_eligibility_primary_key_rejected():
     orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
     bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
@@ -135,8 +135,8 @@ def test_aggregation_eligibility_type_default_rejected():
     orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
     bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[])
@@ -163,7 +163,7 @@ async def test_is_null_filter_renders_end_to_end(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["customers.region IS NOT NULL"],
         })
     )
@@ -188,10 +188,10 @@ def test_aggregation_eligibility_allowed_aggregations_whitelist():
     orders = SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(
                 name="amount",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 # Tighter than the default DOUBLE whitelist; reject avg.
                 allowed_aggregations=frozenset({"sum", "max"}),
             ),
@@ -229,12 +229,12 @@ def test_double_star_kwargs_rejected():
 def _cyclic_bundle():
     a = SlayerDataset(
         name="a", data_source="prod", sql_table="a",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
-        relationships=[DatasetRelationship(to="b", join_pairs=[["id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+        relationships=[DatasetRelationship(to="b", from_columns=["id"], to_columns=["id"])],
     )
     b = SlayerDataset(
         name="b", data_source="prod", sql_table="b",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     # ``a`` is also referenced so the walk back to it (over the inverted edge,
     # DEV-1853) resolves and the cycle guard — not a missing-target error — fires.
@@ -301,8 +301,8 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         SlayerDataset(
             name="customers", sql_table="customers", data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -310,12 +310,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         SlayerDataset(
             name="orders", sql_table="orders", data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -330,8 +330,8 @@ async def test_order_by_joined_column_not_in_dimensions(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(amount)"}],
-            "order": [OrderItem(field=FieldRef(name="customers.region"), direction="asc")],
+            "metrics": [{"metric": "sum(amount)"}],
+            "order": [OrderItem(field="customers.region", direction="asc")],
         })
     )
     regions = [r["orders.customers.region"] for r in resp.data]

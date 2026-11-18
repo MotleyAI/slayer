@@ -97,7 +97,7 @@ class TestShiftedAttachShape:
             "time_dimensions": [{"field": "ordered_at", "granularity": "month"},
                                 {"field": "customers.signup_at", "granularity": "month"}],
             "main_time_dimension": "ordered_at",
-            "metrics": [{"expression": "time_shift(sum(amount) / 2, -1)", "name": "t"}]}),
+            "metrics": [{"metric": "time_shift(sum(amount) / 2, -1)", "alias": "t"}]}),
             bundle=_bundle("orders"))
         [attach] = _shifted(pq)
         grain = {s.key for s in pq.row_slots if not s.hidden}

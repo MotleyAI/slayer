@@ -113,7 +113,7 @@ class TestThreading:
     def test_nested_producer_carries_the_group(self):
         """The computed dimension's nested producer receives the pushdown."""
         planned = _plan(q(
-            dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
             metrics=[M],
             filter=["channel = 'app'"],
         ))

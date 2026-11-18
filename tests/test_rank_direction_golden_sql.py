@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1847_fixtures import gen, sales_q
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -18,7 +17,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 def _q(expression: str, dimensions: list[str]) -> SlayerQuery:
-    return sales_q(dimensions=dimensions, metrics=[DatasetMetric(expression=expression, name="r")])
+    return sales_q(dimensions=dimensions, metrics=[QueryMetric(metric=expression, alias="r")])
 
 
 def _cases() -> dict[str, SlayerQuery]:

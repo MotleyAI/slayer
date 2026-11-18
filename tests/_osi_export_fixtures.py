@@ -37,7 +37,7 @@ EXPORT_DDL = [
 ]
 
 
-def col(name: str, type_: DataType = DataType.DOUBLE, sql: str | None = None, **extra: Any) -> DatasetField:
+def col(name: str, type_: DataType = DataType.FLOAT, sql: str | None = None, **extra: Any) -> DatasetField:
     return DatasetField(name=name, sql=sql, datatype=type_, **extra)
 
 
@@ -48,25 +48,25 @@ def slayer_metric(name: str, expression: str, **extra: Any) -> DatasetMetric:
 def to_customers(**extra: Any) -> DatasetRelationship:
     """``orders`` → ``customers`` on ``customer_id = id``, many-to-one unless overridden."""
     extra.setdefault("cardinality", RelationshipCardinality.MANY_TO_ONE)
-    return DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], **extra)
+    return DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], **extra)
 
 
 def orders_columns() -> list[DatasetField]:
     return [
-        col("id", DataType.INT, "o_orderkey", primary_key=True),
-        col("customer_id", DataType.INT, "o_custkey"),
-        col("total_amount", DataType.DOUBLE, "o_totalprice", db_type="DECIMAL(18,2)"),
+        col("id", DataType.INTEGER, "o_orderkey", primary_key=True),
+        col("customer_id", DataType.INTEGER, "o_custkey"),
+        col("total_amount", DataType.FLOAT, "o_totalprice", db_type="DECIMAL(18,2)"),
         col("amount"),
-        col("quantity", DataType.INT),
+        col("quantity", DataType.INTEGER),
         col("price"),
         col("discount"),
-        col("status", DataType.TEXT),
-        col("region", DataType.TEXT),
+        col("status", DataType.STRING),
+        col("region", DataType.STRING),
         col("is_paid", DataType.BOOLEAN),
         col("ordered_on", DataType.DATE),
-        col("ordered_at", DataType.TIMESTAMP),
-        col("order_year", DataType.INT),
-        col("note", DataType.TEXT),
+        col("ordered_at", DataType.DATETIME),
+        col("order_year", DataType.INTEGER),
+        col("note", DataType.STRING),
     ]
 
 
@@ -88,11 +88,11 @@ def customers(*, metrics: list[DatasetMetric] | None = None, joins: list[Dataset
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=DATASOURCE,
         fields=[
-            col("id", DataType.INT, "c_custkey", primary_key=True),
-            col("segment", DataType.TEXT),
+            col("id", DataType.INTEGER, "c_custkey", primary_key=True),
+            col("segment", DataType.STRING),
             col("discount"),
             col("rate"),
-            col("email", DataType.TEXT, unique=True),
+            col("email", DataType.STRING, unique=True),
         ],
         metrics=metrics or [],
         relationships=joins or [],
@@ -105,9 +105,9 @@ def visits(**extra: Any) -> SlayerDataset:
     return SlayerDataset(
         name="visits", sql="SELECT visit_id, status, customer_id FROM visits", data_source=DATASOURCE,
         fields=[
-            col("visit_id", DataType.INT, primary_key=True),
-            col("status", DataType.TEXT),
-            col("customer_id", DataType.INT),
+            col("visit_id", DataType.INTEGER, primary_key=True),
+            col("status", DataType.STRING),
+            col("customer_id", DataType.INTEGER),
         ],
         **extra,
     )
@@ -120,7 +120,7 @@ def monthly_revenue() -> SlayerDataset:
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [{"field": "ordered_on", "granularity": "month"}],
-            "metrics": [{"expression": "sum(amount)", "name": "revenue"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "revenue"}],
             "filter": ["region = '{region}'"],
         })],
         query_variables={"region": "US"},
@@ -154,14 +154,14 @@ def rich_orders() -> SlayerDataset:
         col("net", sql="gross - discount"),
         col("completed_amount", sql="amount", filter="status = 'completed'"),
         col("paid_flag", DataType.BOOLEAN, sql="is_paid", filter="status <> 'test'"),
-        col("segment", DataType.TEXT, sql="customers.segment"),
+        col("segment", DataType.STRING, sql="customers.segment"),
     ]
     return orders(
         columns=columns,
         aggregations=[Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")],
         metrics=[
             *BASIC_MEASURES,
-            slayer_metric("avg_amount", "avg(amount)", label="Average amount", datatype=DataType.DOUBLE,
+            slayer_metric("avg_amount", "avg(amount)", label="Average amount", datatype=DataType.FLOAT,
                     meta={"owner": "finance"}),
             slayer_metric("min_amount", "min(amount)"),
             slayer_metric("max_amount", "max(amount)"),

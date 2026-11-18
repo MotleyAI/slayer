@@ -47,21 +47,21 @@ def _orders() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="revenue_2",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 sql="amount * 2",
             ),
         ],
         relationships=[
             DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
             ),
         ],
     )
@@ -73,18 +73,18 @@ def _customers() -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(
                 name="revenue_doubled",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 sql="revenue * 2",
             ),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
     )
 
@@ -95,8 +95,8 @@ def _regions() -> SlayerDataset:
         data_source="prod",
         sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -386,17 +386,17 @@ def _stage_schema_with_flat_names() -> StageSchema:
         fields=[
             StageField(
                 name="status", sql_alias="status", public_alias="status",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
             StageField(
                 name="robot_details__modelseriesval",
                 sql_alias="robot_details__modelseriesval",
                 public_alias="robot_details.modelseriesval",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
             StageField(
                 name="rev", sql_alias="rev", public_alias="rev",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
@@ -517,7 +517,7 @@ class TestWindowInFilter:
             "fields": list(_orders().fields) + [
                 DatasetField(
                     name="rolling_rank",
-                    datatype=DataType.INT,
+                    datatype=DataType.INTEGER,
                     sql="RANK() OVER (PARTITION BY status ORDER BY amount)",
                 ),
             ],

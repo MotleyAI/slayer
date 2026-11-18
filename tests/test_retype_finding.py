@@ -52,47 +52,47 @@ PG_LIVE = (
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", datatype=DataType.INT, primary_key=True)
+    return DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)
 
 
 # DuckDB models typed as 1.6.0 typed them: info-schema reflection (table-backed), the category probe (sql-mode).
 
 def _legacy() -> SlayerDataset:
     return SlayerDataset(name="legacy", sql_table="kinds", data_source="ds", fields=[
-        _pk(), DatasetField(name="flags", datatype=DataType.TEXT), DatasetField(name="span", datatype=DataType.TEXT),
-        DatasetField(name="doc", datatype=DataType.TEXT), DatasetField(name="flags_upper", sql="upper(flags)", datatype=DataType.TEXT),
+        _pk(), DatasetField(name="flags", datatype=DataType.STRING), DatasetField(name="span", datatype=DataType.STRING),
+        DatasetField(name="doc", datatype=DataType.STRING), DatasetField(name="flags_upper", sql="upper(flags)", datatype=DataType.STRING),
     ], metrics=[DatasetMetric(name="n_flags", expression="count_distinct(flags)")])
 
 
 def _legacy_sql() -> SlayerDataset:
     return SlayerDataset(name="legacy_sql", sql="SELECT id, span, doc, flags, tz FROM kinds", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True), DatasetField(name="span", datatype=DataType.TIMESTAMP),
-        DatasetField(name="doc", datatype=DataType.TEXT), DatasetField(name="flags", datatype=DataType.TEXT),
-        DatasetField(name="tz", datatype=DataType.TIMESTAMP),
+        DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True), DatasetField(name="span", datatype=DataType.DATETIME),
+        DatasetField(name="doc", datatype=DataType.STRING), DatasetField(name="flags", datatype=DataType.STRING),
+        DatasetField(name="tz", datatype=DataType.DATETIME),
     ])
 
 
 def _retyped() -> SlayerDataset:
     return SlayerDataset(name="retyped", sql_table="kinds", data_source="ds", fields=[
-        _pk(), DatasetField(name="code", datatype=DataType.TEXT),
+        _pk(), DatasetField(name="code", datatype=DataType.STRING),
     ], metrics=[DatasetMetric(name="n_codes", expression="count_distinct(code)")])
 
 
 def _listy() -> SlayerDataset:
     return SlayerDataset(name="listy", sql_table="kinds", data_source="ds", fields=[
-        _pk(), DatasetField(name="skills", datatype=DataType.TEXT),
+        _pk(), DatasetField(name="skills", datatype=DataType.STRING),
     ])
 
 
 def _listy_sql() -> SlayerDataset:
     return SlayerDataset(name="listy_sql", sql="SELECT id, skills FROM kinds", data_source="ds", fields=[
-        _pk(), DatasetField(name="skills", datatype=DataType.TEXT),
+        _pk(), DatasetField(name="skills", datatype=DataType.STRING),
     ])
 
 
 def _dropped() -> SlayerDataset:
     return SlayerDataset(name="dropped", sql_table="kinds", data_source="ds", fields=[
-        _pk(), DatasetField(name="kept", datatype=DataType.TEXT), DatasetField(name="gone", datatype=DataType.TEXT),
+        _pk(), DatasetField(name="kept", datatype=DataType.STRING), DatasetField(name="gone", datatype=DataType.STRING),
     ], metrics=[DatasetMetric(name="n_gone", expression="count_distinct(gone)")])
 
 
@@ -148,16 +148,16 @@ async def _save_pg_datasets(storage: YAMLStorage) -> None:
     # As 1.6.0 reflection typed the table (interval TEXT, json UNKNOWN, oid TEXT, money DOUBLE, xml TEXT),
     # plus ``duration`` stored as TIMESTAMP over the interval.
     await storage.save_dataset(SlayerDataset(name="pg_table", sql_table="pgtypes", data_source="pg", fields=[
-        _pk(), DatasetField(name="duration", sql="dur", datatype=DataType.TIMESTAMP), DatasetField(name="dur", datatype=DataType.TEXT),
-        DatasetField(name="payload", datatype=DataType.UNKNOWN), DatasetField(name="ref", datatype=DataType.TEXT),
-        DatasetField(name="amount", datatype=DataType.DOUBLE), DatasetField(name="doc", datatype=DataType.TEXT),
+        _pk(), DatasetField(name="duration", sql="dur", datatype=DataType.DATETIME), DatasetField(name="dur", datatype=DataType.STRING),
+        DatasetField(name="payload", datatype=DataType.OPAQUE), DatasetField(name="ref", datatype=DataType.STRING),
+        DatasetField(name="amount", datatype=DataType.FLOAT), DatasetField(name="doc", datatype=DataType.STRING),
     ]))
     # As the 1.6.0 category probe typed the result (json, xml "string"; interval "time"; oid, money "number").
     await storage.save_dataset(SlayerDataset(
         name="pg_sql", sql="SELECT id, payload, dur, ref, amount, doc FROM pgtypes", data_source="pg", fields=[
-            DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True), DatasetField(name="payload", datatype=DataType.TEXT),
-            DatasetField(name="dur", datatype=DataType.TIMESTAMP), DatasetField(name="ref", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", datatype=DataType.DOUBLE), DatasetField(name="doc", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True), DatasetField(name="payload", datatype=DataType.STRING),
+            DatasetField(name="dur", datatype=DataType.DATETIME), DatasetField(name="ref", datatype=DataType.FLOAT),
+            DatasetField(name="amount", datatype=DataType.FLOAT), DatasetField(name="doc", datatype=DataType.STRING),
         ]))
 
 
@@ -223,7 +223,7 @@ class TestTypedBy160Reflection:
         entries = await _validate(duck.engine(), "ds")
         found = _retypes(entries, "legacy")
         assert set(found) == {"flags"}, entries
-        _assert_live(found["flags"], stored=DataType.TEXT, live=DataType.BOOLEAN, db_type="BIT")
+        _assert_live(found["flags"], stored=DataType.STRING, live=DataType.BOOLEAN, db_type="BIT")
         _assert_set_type_remedy(found["flags"])
         assert found["flags"]["remedy_kind"] == "set_type", found
         assert _removed(entries, "legacy") == set(), entries
@@ -232,15 +232,15 @@ class TestTypedBy160Reflection:
         entries = _dump(await pg.validate_datasets(data_source="pg"))
         found = _retypes(entries, "pg_table")
         assert set(found) == {"duration", "ref"}, entries
-        _assert_live(found["duration"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="interval")
-        _assert_live(found["ref"], stored=DataType.TEXT, live=DataType.INT, db_type="oid")
+        _assert_live(found["duration"], stored=DataType.DATETIME, live=DataType.STRING, db_type="interval")
+        _assert_live(found["ref"], stored=DataType.STRING, live=DataType.INTEGER, db_type="oid")
         assert {c: f["remedy_kind"] for c, f in found.items()} == {"duration": "set_type", "ref": "set_type"}
         assert _removed(entries, "pg_table") == set(), entries
 
     async def test_mysql_year_stored_as_text(self, duck: Duck) -> None:
         """MySQL's ``YEAR`` as HEAD reflects it (1.6.0 stored TEXT), served by a gateway over the DuckDB table."""
         model = SlayerDataset(name="years", sql_table="kinds", data_source="ds", fields=[
-            _pk(), DatasetField(name="kept", datatype=DataType.TEXT)])
+            _pk(), DatasetField(name="kept", datatype=DataType.STRING)])
         await duck.storage.save_dataset(model)
         entries = await _validate(duck.engine(client_factory=_year_gateway), "ds")
         found = _retypes(entries, "years")
@@ -264,9 +264,9 @@ class TestTypedBy160Probe:
         entries = _dump(await pg.validate_datasets(data_source="pg"))
         found = _retypes(entries, "pg_sql")
         assert set(found) == {"payload", "dur", "doc"}, entries
-        _assert_live(found["payload"], stored=DataType.TEXT, live=DataType.UNKNOWN, db_type="json")
-        _assert_live(found["doc"], stored=DataType.TEXT, live=DataType.UNKNOWN, db_type="xml")
-        _assert_live(found["dur"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="interval")
+        _assert_live(found["payload"], stored=DataType.STRING, live=DataType.OPAQUE, db_type="json")
+        _assert_live(found["doc"], stored=DataType.STRING, live=DataType.OPAQUE, db_type="xml")
+        _assert_live(found["dur"], stored=DataType.DATETIME, live=DataType.STRING, db_type="interval")
         assert {f["remedy_kind"] for f in found.values()} == {"set_type"}, found
         assert _removed(entries, "pg_sql") == set(), entries
 
@@ -274,9 +274,9 @@ class TestTypedBy160Probe:
         entries = await _validate(duck.engine(), "ds")
         found = _retypes(entries, "legacy_sql")
         assert set(found) == {"span", "flags", "tz"}, entries
-        _assert_live(found["span"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="INTERVAL")
-        _assert_live(found["flags"], stored=DataType.TEXT, live=DataType.BOOLEAN, db_type="BIT")
-        _assert_live(found["tz"], stored=DataType.TIMESTAMP, live=DataType.TEXT, db_type="TIME WITH TIME ZONE")
+        _assert_live(found["span"], stored=DataType.DATETIME, live=DataType.STRING, db_type="INTERVAL")
+        _assert_live(found["flags"], stored=DataType.STRING, live=DataType.BOOLEAN, db_type="BIT")
+        _assert_live(found["tz"], stored=DataType.DATETIME, live=DataType.STRING, db_type="TIME WITH TIME ZONE")
         assert {f["remedy_kind"] for f in found.values()} == {"set_type"}, found
         assert _removed(entries, "legacy_sql") == set(), entries
 
@@ -285,7 +285,7 @@ class TestScalarAndList:
     async def test_a_genuinely_retyped_column(self, duck: Duck) -> None:
         entries = await _validate(duck.engine(), "ds")
         (finding,) = _retypes(entries, "retyped").values()
-        _assert_live(finding, stored=DataType.TEXT, live=DataType.INT, db_type="INTEGER")
+        _assert_live(finding, stored=DataType.STRING, live=DataType.INTEGER, db_type="INTEGER")
         _assert_set_type_remedy(finding)
         assert finding["remedy_kind"] == "set_type", finding
         assert _removed(entries, "retyped") == set(), entries
@@ -293,7 +293,7 @@ class TestScalarAndList:
     async def test_a_list_keeps_the_reingest_remedy(self, duck: Duck) -> None:
         entries = await _validate(duck.engine(), "ds")
         (finding,) = _retypes(entries, "listy").values()
-        _assert_live(finding, stored=DataType.TEXT, live=DataType.ARRAY, db_type="VARCHAR[]")
+        _assert_live(finding, stored=DataType.STRING, live=DataType.ARRAY, db_type="VARCHAR[]")
         assert "ingest" in finding["remedy"].lower(), finding
         assert finding["remedy_kind"] == "reingest", finding
         assert not any(e.get("finding") == "list_retype" for e in entries), entries
@@ -301,7 +301,7 @@ class TestScalarAndList:
     async def test_a_list_in_an_sql_mode_model_keeps_the_reingest_remedy(self, duck: Duck) -> None:
         entries = await _validate(duck.engine(), "ds")
         (finding,) = _retypes(entries, "listy_sql").values()
-        _assert_live(finding, stored=DataType.TEXT, live=DataType.ARRAY, db_type="VARCHAR[]")
+        _assert_live(finding, stored=DataType.STRING, live=DataType.ARRAY, db_type="VARCHAR[]")
         assert "ingest" in finding["remedy"].lower(), finding
         assert finding["remedy_kind"] == "reingest", finding
         assert _removed(entries, "listy_sql") == set(), entries
@@ -419,8 +419,8 @@ class TestSqliteProbe:
             con.execute("INSERT INTO t VALUES (1, '12', 1.5), (2, '7', 2)")
         ds = DatasourceConfig(name="s", type="sqlite", database=str(db))
         model = SlayerDataset(name="t", sql_table="t", data_source="s", fields=[
-            _pk(), DatasetField(name="code", datatype=DataType.INT), DatasetField(name="amt", datatype=DataType.INT),
-            DatasetField(name="amount", sql='"amt"', datatype=DataType.INT)])
+            _pk(), DatasetField(name="code", datatype=DataType.INTEGER), DatasetField(name="amt", datatype=DataType.INTEGER),
+            DatasetField(name="amount", sql='"amt"', datatype=DataType.INTEGER)])
         findings: list[schema_drift.RetypeFinding] = []
         client = SlayerSQLClient(datasource=ds)
         try:
@@ -430,7 +430,7 @@ class TestSqliteProbe:
             await client.aclose()
             engine_factory.invalidate_engine(ds)
         assert sorted((f.field, f.live_type) for f in findings) == [
-            ("amount", DataType.DOUBLE), ("amt", DataType.DOUBLE), ("code", DataType.TEXT)]
+            ("amount", DataType.FLOAT), ("amt", DataType.FLOAT), ("code", DataType.STRING)]
         for f in findings:
             _assert_remedy_agrees(f.model_dump(mode="json"))
         # ``code`` is a bucket conflict over a live TEXT column, not a probe verdict.
@@ -488,7 +488,7 @@ class TestSerializedFinding:
     def test_a_full_dump_round_trips(self, kind: schema_drift.RemedyKind) -> None:
         model = SlayerDataset(name="m", sql_table="t", data_source="ds", fields=[_pk()])
         finding = schema_drift.RetypeFinding.of(
-            dataset=model, field=DatasetField(name="c", datatype=DataType.TEXT), live_type=DataType.INT,
+            dataset=model, field=DatasetField(name="c", datatype=DataType.STRING), live_type=DataType.INTEGER,
             live_db_type="INTEGER", remedy_kind=kind)
         dumped = finding.model_dump(mode="json")
         assert dumped["remedy_kind"] == kind

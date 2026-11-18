@@ -110,7 +110,7 @@ class TestFreshInput:
         assert any("count_distinct(customers.status)" in w for w in warned)
 
     async def test_a_date_part_method_call_shows_its_functional_spelling(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=[{"expression": "customers.month(updated_at)", "name": "mo"}],
+        query = q(dimensions=[{"field": "customers.month(updated_at)", "alias": "mo"}],
                   metrics=[m("count(*)", "n")])
         with pytest.raises(ValueError, match=re.escape("month(customers.updated_at)")):
             await engine.execute(query)
@@ -158,7 +158,7 @@ async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written
 async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) -> None:
     await storage.save_dataset(orders_dataset())
     saved = SlayerDataset.model_validate({"name": "paid_orders", "data_source": "test", "source_queries": [
-        {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
+        {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
          "filter": ["status == 'paid' and region is not None"]}]})
     await storage.save_dataset(saved)
     loaded = await storage.get_dataset("paid_orders", data_source="test")
@@ -193,7 +193,7 @@ async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageB
 
 async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQueryEngine) -> None:
     saved = SlayerDataset.model_validate({"name": "paid_orders", "source_queries": [
-        {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
+        {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
          "filter": ["status == 'paid' and region is not None"]}]})
     notes: list[Any] = []
     with recorded_warnings():
@@ -214,7 +214,7 @@ async def test_a_rest_model_save_returns_the_spelling_warning(storage: StorageBa
 async def test_an_mcp_model_save_lists_the_spelling_warning(storage: StorageBackend) -> None:
     with recorded_warnings():
         text = await mcp_text(storage, "create_dataset", name="orders", sql_table="orders", data_source="test",
-                              fields=[{"name": "status", "datatype": "TEXT"}, {"name": "amount", "datatype": "DOUBLE"}],
+                              fields=[{"name": "status", "datatype": "String"}, {"name": "amount", "datatype": "Float"}],
                               metrics=[{"name": "paid", "expression": "sum(iif(status == 'paid', amount, 0))"}])
     assert "Warning:" in text
     assert "`=`" in text

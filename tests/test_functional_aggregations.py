@@ -55,14 +55,14 @@ def _orders(**overrides) -> SlayerDataset:
         data_source="test",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
     fields.update(overrides)
@@ -75,8 +75,8 @@ def _customers(**overrides) -> SlayerDataset:
         data_source="test",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="score", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="score", datatype=DataType.FLOAT),
         ],
     )
     fields.update(overrides)
@@ -304,7 +304,7 @@ class TestModeAUnchanged:
             update={
                 "fields": [
                     *model.fields,
-                    DatasetField(name="grand_total", sql="SUM(revenue)", datatype=DataType.DOUBLE),
+                    DatasetField(name="grand_total", sql="SUM(revenue)", datatype=DataType.FLOAT),
                 ]
             }
         )
@@ -393,10 +393,10 @@ async def refs_storage(tmp_path):
             data_source="mydb",
             sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="cost", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="cost", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -464,7 +464,7 @@ class TestCrossSpellingMatching:
     async def test_filter_resolves_to_renamed_measure(self, exec_engine: SlayerQueryEngine, measure, filter_) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["channel"],
-            "metrics": [{"expression": measure, "name": "rev"}], "filter": [filter_],
+            "metrics": [{"metric": measure, "alias": "rev"}], "filter": [filter_],
         }))
         assert resp.columns == ["orders.channel", "orders.rev"]
         assert [(r["orders.channel"], float(r["orders.rev"])) for r in resp.data] == [("web", 165.0)]

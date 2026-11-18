@@ -33,7 +33,7 @@ def _datasets_by_name() -> dict[str, SlayerDataset]:
 
 
 def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=pairs, **kw)
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], **kw)
 
 
 class TestStructuralProof:
@@ -46,8 +46,8 @@ class TestStructuralProof:
         target = SlayerDataset(
             name="codes", data_source="test", sql_table="codes",
             fields=[
-                DatasetField(name="code", datatype=DataType.TEXT, unique=True),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="code", datatype=DataType.STRING, unique=True),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         )
         join = _join("codes", [["c", "code"]])
@@ -59,8 +59,8 @@ class TestStructuralProof:
             name="loss_payment", data_source="test", sql_table="Loss_Payment",
             fields=[
                 DatasetField(name="id", sql="Claim_Amount_Identifier",
-                       datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                       datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         )
         join = _join("loss_payment", [["id", "id"]])
@@ -72,9 +72,9 @@ class TestStructuralProof:
         target = SlayerDataset(
             name="derived", data_source="test", sql_table="derived",
             fields=[
-                DatasetField(name="id", sql="UPPER(code)", datatype=DataType.TEXT,
+                DatasetField(name="id", sql="UPPER(code)", datatype=DataType.STRING,
                        primary_key=True),
-                DatasetField(name="code", datatype=DataType.TEXT),
+                DatasetField(name="code", datatype=DataType.STRING),
             ],
         )
         join = _join("derived", [["c", "code"]])
@@ -239,7 +239,7 @@ class TestMayInlineSeam:
         instead of desugaring onto a host-rooted producer."""
         host = orders_dataset()
         host.fields.append(DatasetField(
-            name="gold_amount", datatype=DataType.DOUBLE, sql="amount",
+            name="gold_amount", datatype=DataType.FLOAT, sql="amount",
             filter="customers.tier = 'gold'",
         ))
         bundle = ResolvedSourceBundle(
@@ -249,8 +249,8 @@ class TestMayInlineSeam:
                                segments_dataset()],
         )
         query = q(
-            dimensions=[{"name": "status"}],
-            metrics=[{"expression": "sum(gold_amount)", "name": "g"}],
+            dimensions=["status"],
+            metrics=[{"metric": "sum(gold_amount)", "alias": "g"}],
         )
         planned = plan_query(query=query, bundle=bundle)
         assert planned.regroup_attach_plans, (

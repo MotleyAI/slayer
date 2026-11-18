@@ -34,9 +34,9 @@ REVENUE = {"expression": "sum(amount)", "name": "revenue"}
 
 def _plain_dataset(name: str) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="region", datatype=DataType.TEXT),
-        DatasetField(name="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region", datatype=DataType.STRING),
+        DatasetField(name="amount", datatype=DataType.FLOAT),
     ])
 
 
@@ -50,17 +50,17 @@ async def storage(tmp_path) -> YAMLStorage:
         for name, query in (
             ("ext_revenue", {
                 "population": "orders",
-                "extensions": [{"source_name": "orders",
+                "extensions": [{"dataset": "orders",
                                 "metrics": [{"expression": "sum(amount * 2)", "name": "dbl"}]}],
-                "metrics": [{"expression": "dbl", "name": "d"}],
+                "metrics": [{"metric": "dbl", "alias": "d"}],
             }),
             ("rollup", [
                 {"name": "rollup", "population": "orders", "dimensions": ["region"], "metrics": [REVENUE]},
-                {"population": "rollup", "metrics": [{"expression": "sum(revenue)", "name": "total"}]},
+                {"population": "rollup", "metrics": [{"metric": "sum(revenue)", "alias": "total"}]},
             ]),
             ("target_totals", {"population": "targets", "dimensions": ["region"], "metrics": [REVENUE]}),
             ("monthly_rollup", {"population": "monthly_revenue",
-                                "metrics": [{"expression": "sum(revenue)", "name": "total"}]}),
+                                "metrics": [{"metric": "sum(revenue)", "alias": "total"}]}),
         ):
             await engine.create_dataset_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
         await engine.save_dataset(SlayerDataset(

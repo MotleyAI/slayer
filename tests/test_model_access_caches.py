@@ -70,7 +70,7 @@ class _NoFingerprintYAML(YAMLStorage):
 
 
 def _table_dataset(name: str) -> SlayerDataset:
-    return SlayerDataset(name=name, sql_table="t", data_source=DS, fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
+    return SlayerDataset(name=name, sql_table="t", data_source=DS, fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
 
 
 class TestGraphCache:

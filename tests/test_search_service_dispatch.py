@@ -42,7 +42,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
         ))
         await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         yield s
 
@@ -140,7 +140,7 @@ async def test_refresh_model_subtree_calls_every_retriever(
     service = SearchService(storage=storage, retrievers=[r1, r2])
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     await service.refresh_dataset_subtree(model)
     assert r1.subtree_calls == [model]
@@ -218,7 +218,7 @@ async def test_refresh_model_subtree_warnings_ordered_and_deduped(
     service = SearchService(storage=storage, retrievers=[r1, r2, r3])
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     warnings = await service.refresh_dataset_subtree(model)
     assert warnings == ["dup", "other"]
@@ -246,7 +246,7 @@ async def test_refresh_model_subtree_exception_isolated(
     service = SearchService(storage=storage, retrievers=[r1, r2])
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     warnings = await service.refresh_dataset_subtree(model)
     assert len(r1.subtree_calls) == 1

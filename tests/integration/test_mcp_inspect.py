@@ -85,13 +85,13 @@ async def env(tmp_path: Path) -> InspectEnv:
         data_source="test_sqlite",
         description="Orders model used in integration tests.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT, label="Status", description="Order state"),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING, label="Status", description="Order state"),
             DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE, description="Revenue per order"),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.INT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="notes", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT, description="Revenue per order"),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="notes", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model)
@@ -153,7 +153,7 @@ class TestGetRowCount:
         ))
         model = SlayerDataset(
             name="t", sql_table="t", data_source="empty_ds",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
@@ -203,8 +203,8 @@ class TestCollectDimProfile:
         model = SlayerDataset(
             name="t", sql_table="t", data_source="hc_ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         )
         await storage.save_dataset(model)
@@ -227,9 +227,9 @@ class TestCollectDimProfile:
         model = SlayerDataset(
             name="t", sql_table="t", data_source="empty_ds2",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         )
         await storage.save_dataset(model)
@@ -373,8 +373,8 @@ class TestMeasureTypeInference:
         """amount (REAL) infers as DOUBLE and quantity (INTEGER) as INT."""
         engine = env["engine"]
         types = await engine.get_result_column_types(dataset_name="orders")
-        assert types["amount"].type == DataType.DOUBLE
-        assert types["quantity"].type == DataType.INT
+        assert types["amount"].type == DataType.FLOAT
+        assert types["quantity"].type == DataType.INTEGER
 
     async def test_string_measure_inferred(self, tmp_path) -> None:
         """A TEXT column infers as TEXT."""
@@ -389,18 +389,18 @@ class TestMeasureTypeInference:
         ))
         model = SlayerDataset(
             name="t", sql_table="t", data_source="types_ds",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
 
-                DatasetField(name="label", sql="label", datatype=DataType.TEXT),
-                DatasetField(name="price", sql="price", datatype=DataType.DOUBLE),
+                DatasetField(name="label", sql="label", datatype=DataType.STRING),
+                DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
             ],
         )
         await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
 
         types = await engine.get_result_column_types(dataset_name="t")
-        assert types["label"].type == DataType.TEXT
-        assert types["price"].type == DataType.DOUBLE
+        assert types["label"].type == DataType.STRING
+        assert types["price"].type == DataType.FLOAT
 
     async def test_type_appears_in_model_inspect(self, env: InspectEnv) -> None:
         """The model inspect columns table includes a type column with declared types."""
@@ -441,8 +441,8 @@ class TestMeasureTypeInference:
         ))
         model = SlayerDataset(
             name="t", sql_table="t", data_source="null_ds",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-DatasetField(name="val", sql="val", datatype=DataType.DOUBLE)
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+DatasetField(name="val", sql="val", datatype=DataType.FLOAT)
             ],
         )
         await storage.save_dataset(model)
@@ -464,20 +464,20 @@ class TestStringAggregationRejection:
     async def _run(self, env: InspectEnv, expression: str) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": expression}],
+            "metrics": [{"metric": expression}],
         })
         await env["engine"].execute(query=q)
 
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
     async def test_numeric_only_aggregations_rejected_on_string(self, env: InspectEnv, agg: str) -> None:
-        with pytest.raises(ValueError, match="is not applicable to TEXT column"):
+        with pytest.raises(ValueError, match="is not applicable to String column"):
             await self._run(env, f"{agg}(status)")
 
     async def test_min_max_allowed_on_string(self, env: InspectEnv) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "min(status)"}, {"expression": "max(status)"}],
+            "metrics": [{"metric": "min(status)"}, {"metric": "max(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
@@ -486,7 +486,7 @@ class TestStringAggregationRejection:
         """count/count_distinct always work regardless of type."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(status)"}, {"expression": "count_distinct(status)"}],
+            "metrics": [{"metric": "count(status)"}, {"metric": "count_distinct(status)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -495,7 +495,7 @@ class TestStringAggregationRejection:
         """avg/sum on the numeric `amount` measure must still work."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}, {"expression": "avg(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}, {"metric": "avg(amount)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -509,7 +509,7 @@ class TestPrimaryKeyAggregationRule:
         """`:sum` on a numeric primary-key column is rejected at enrichment."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(id)"}],
+            "metrics": [{"metric": "sum(id)"}],
         })
         with pytest.raises(ValueError, match="primary-key column"):
             await env["engine"].execute(query=q)
@@ -518,7 +518,7 @@ class TestPrimaryKeyAggregationRule:
         """`:count` on a primary-key column is always allowed."""
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(id)"}],
+            "metrics": [{"metric": "count(id)"}],
         })
         result = await env["engine"].execute(query=q)
         assert result.data
@@ -657,8 +657,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
         model = SlayerDataset(
             name="t", sql_table="t", data_source="nulls_ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="notes", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="notes", datatype=DataType.STRING),
             ],
         )
         await storage.save_dataset(model)
@@ -701,8 +701,8 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_dataset(SlayerDataset(
             name="many_values", sql_table="many_values", data_source="mv_ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="kind", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="kind", datatype=DataType.STRING),
             ],
         ))
         server = create_mcp_server(storage=storage)
@@ -811,9 +811,9 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await storage.save_datasource(DatasourceConfig(
             name="wide_ds", type="sqlite", database=str(db_path),
         ))
-        cols = [DatasetField(name="id", datatype=DataType.INT, primary_key=True)]
+        cols = [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)]
         cols.extend(
-            DatasetField(name=f"c{i}", datatype=DataType.TEXT) for i in range(col_count)
+            DatasetField(name=f"c{i}", datatype=DataType.STRING) for i in range(col_count)
         )
         await storage.save_dataset(SlayerDataset(
             name="wide", sql_table="wide", data_source="wide_ds",
@@ -868,8 +868,8 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         await storage.save_dataset(SlayerDataset(
             name="t", sql_table="t", data_source="nulls_ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="notes", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="notes", datatype=DataType.STRING),
             ],
         ))
 

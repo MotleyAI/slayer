@@ -23,8 +23,8 @@ from collections.abc import Iterator
 import pytest
 
 from slayer.core.errors import MemoryNotFoundError
-from slayer.core.models import DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -46,7 +46,7 @@ def storage(request: pytest.FixtureRequest) -> Iterator[StorageBackend]:
 def sample_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)")],
+        metrics=[QueryMetric(metric="count(*)")],
     )
 
 

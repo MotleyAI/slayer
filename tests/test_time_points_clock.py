@@ -24,7 +24,7 @@ def _recent_dataset() -> SlayerDataset:
         source_queries=[SlayerQuery.model_validate({
             "population": "ev", "dimensions": ["id"],
             "time_dimensions": [{"field": "ts", "granularity": "day"}],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "filter": ["ts >= 'last 3 months'"],
         })],
     )
@@ -34,11 +34,11 @@ def _stages() -> list[SlayerQuery | dict]:
     inner = SlayerQuery.model_validate({
         "name": "inner", "population": "recent",
         "time_dimensions": [{"field": "ts", "granularity": "month", "date_range": [None, "last month"]}],
-        "metrics": [{"expression": "sum(rev)", "name": "r"}],
+        "metrics": [{"metric": "sum(rev)", "alias": "r"}],
         "filter": ["ts < 'this month'"],
     })
     outer = SlayerQuery.model_validate({
-        "population": "inner", "metrics": [{"expression": "sum(r)", "name": "total"}],
+        "population": "inner", "metrics": [{"metric": "sum(r)", "alias": "total"}],
         "filter": ["ts >= 'last 3 months'"],
     })
     return [inner, outer]
@@ -68,7 +68,7 @@ async def test_dry_run_reads_the_clock_once() -> None:
 async def test_new_day_yields_new_sql() -> None:
     clock = PinnedClock(NOW)
     query = SlayerQuery.model_validate({
-        "population": "ev", "metrics": [{"expression": "count(*)", "name": "n"}],
+        "population": "ev", "metrics": [{"metric": "count(*)", "alias": "n"}],
         "filter": ["ts >= 'last 7 days'"],
     })
     async with tp_engine("sqlite", clock=clock) as engine:
@@ -104,7 +104,7 @@ async def test_same_day_relative_query_is_served_from_cache(monkeypatch: pytest.
     monkeypatch.setattr(SlayerSQLClient, "execute", spy)
     clock = PinnedClock(NOW)
     query = SlayerQuery.model_validate({
-        "population": "ev", "metrics": [{"expression": "count(*)", "name": "n"}], "filter": ["ts >= 'last 7 days'"],
+        "population": "ev", "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["ts >= 'last 7 days'"],
     })
     async with tp_engine("sqlite", clock=clock) as engine:
         first = await engine.execute(query, cache=True)
@@ -121,7 +121,7 @@ async def test_default_clock_is_host_local_now() -> None:
         dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV, CUSTOMERS]), datasets=all_datasets(),
     ) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "metrics": [{"expression": "count(*)", "name": "n"}],
+            "population": "ev", "metrics": [{"metric": "count(*)", "alias": "n"}],
             "filter": ["ts = 'today'"],
         }), dry_run=True)
     assert resp.sql is not None

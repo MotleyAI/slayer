@@ -51,10 +51,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.yaml_storage import YAMLStorage
@@ -68,42 +67,42 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _stores(*, extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="region_id", sql="region_id", datatype=DataType.INT),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
+        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
+        DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
     ]
     cols += extra or []
     return SlayerDataset(
         name="stores", sql_table="stores", data_source="test", fields=cols,
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
 def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-        DatasetField(name="status_up", sql="upper(status)", datatype=DataType.TEXT),
-        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="store_id", sql="store_id", datatype=DataType.INT),
-        DatasetField(name="order_total", sql="order_total", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+        DatasetField(name="status_up", sql="upper(status)", datatype=DataType.STRING),
+        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
+        DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.DATETIME),
+        DatasetField(name="store_id", sql="store_id", datatype=DataType.INTEGER),
+        DatasetField(name="order_total", sql="order_total", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="ordered_at", fields=cols,
-        relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
+        relationships=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
         filters=filters or [],
     )
 
@@ -208,12 +207,12 @@ def _qoq_query(*, metric_expression: str, metric_name: str) -> SlayerQuery:
             field="ordered_at",
             granularity=TimeGranularity.QUARTER,
         )],
-        dimensions=[FieldRef(name="stores.name")],
+        dimensions=[QueryDimension(field="stores.name")],
         metrics=[
-            DatasetMetric(expression="sum(order_total)"),
-            DatasetMetric(expression=metric_expression, name=metric_name),
+            QueryMetric(metric="sum(order_total)"),
+            QueryMetric(metric=metric_expression, alias=metric_name),
         ],
-        order=[OrderItem(field=FieldRef(name="ordered_at"), direction="asc")],
+        order=[OrderItem(field="ordered_at", direction="asc")],
     )
 
 
@@ -251,10 +250,10 @@ class TestShiftedCtePartitionShape:
                 field="ordered_at",
                 granularity=TimeGranularity.QUARTER,
             )],
-            dimensions=[FieldRef(name="stores.regions.name")],
+            dimensions=[QueryDimension(field="stores.regions.name")],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -280,10 +279,10 @@ class TestShiftedCtePartitionShape:
                 field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[FieldRef(name="status_up")],
+            dimensions=[QueryDimension(field="status_up")],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -304,7 +303,7 @@ class TestShiftedCtePartitionShape:
         shifted CTE: the join is pulled AND the expanded expression is grouped.
         Today: silently skipped → broadcast across tiers (scope_closed passes)."""
         stores = _stores(extra=[
-            DatasetField(name="tier", sql="upper(name)", datatype=DataType.TEXT),
+            DatasetField(name="tier", sql="upper(name)", datatype=DataType.STRING),
         ])
         query = SlayerQuery(
             population="orders",
@@ -312,10 +311,10 @@ class TestShiftedCtePartitionShape:
                 field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[FieldRef(name="stores.tier")],
+            dimensions=[QueryDimension(field="stores.tier")],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[stores, _regions()])
@@ -345,8 +344,8 @@ class TestShiftedCtePartitionShape:
             ],
             main_time_dimension="ordered_at",
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -373,12 +372,12 @@ class TestShiftedCtePartitionShape:
                 field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[FieldRef(name="stores.name")],
+            dimensions=[QueryDimension(field="stores.name")],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(
-                    expression="time_shift(sum(order_total), -1, partition_by=stores.name)",
-                    name="prev",
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(
+                    metric="time_shift(sum(order_total), -1, partition_by=stores.name)",
+                    alias="prev",
                 ),
             ],
         )
@@ -398,8 +397,8 @@ class TestShiftedCtePartitionShape:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -431,8 +430,8 @@ class TestShiftedCteJoinedFilter:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
             filter=["stores.name = 'North'"],
         )
@@ -459,8 +458,8 @@ class TestShiftedCteJoinedFilter:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, model, extra_datasets=[_stores(), _regions()])
@@ -507,10 +506,10 @@ class TestShiftedCteNullSafeJoinBack:
                 field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), dialect=dialect)
@@ -542,10 +541,10 @@ class TestLocalOnlyTimeShiftUnchanged:
                 field="ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -581,8 +580,8 @@ class TestJoinedSecondaryTimeDimension:
             ],
             main_time_dimension="ordered_at",
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -699,10 +698,10 @@ async def secondary_td_engine() -> AsyncIterator[SlayerQueryEngine]:
             name="orders", sql_table="orders", data_source="test",
             default_time_dimension="ordered_at",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="delivery_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="order_total", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+                DatasetField(name="delivery_at", datatype=DataType.DATETIME),
+                DatasetField(name="order_total", datatype=DataType.FLOAT),
             ],
         ))
         yield SlayerQueryEngine(storage=storage)
@@ -784,8 +783,8 @@ class TestSecondaryTimeDimensionExecution:
             ],
             main_time_dimension="ordered_at",
             metrics=[
-                DatasetMetric(expression="sum(order_total)"),
-                DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
+                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
             ],
         )
         resp = await secondary_td_engine.execute(query)

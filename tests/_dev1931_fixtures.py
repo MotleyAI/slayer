@@ -68,26 +68,26 @@ def ambiguous_owner_datasets() -> List[SlayerDataset]:
     never re-anchor at ``r`` where ``ag`` is cleanly reachable."""
     r = SlayerDataset(
         name="r", data_source="test", sql_table="r",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="o_id", datatype=DataType.INT),
-                 DatasetField(name="ag_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to="o", join_pairs=[["o_id", "id"]]),
-               DatasetRelationship(to="ag", join_pairs=[["ag_id", "id"]])])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="o_id", datatype=DataType.INTEGER),
+                 DatasetField(name="ag_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="o", from_columns=["o_id"], to_columns=["id"]),
+               DatasetRelationship(to="ag", from_columns=["ag_id"], to_columns=["id"])])
     o = SlayerDataset(
         name="o", data_source="test", sql_table="o",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="a1", datatype=DataType.INT),
-                 DatasetField(name="a2", datatype=DataType.INT),
-                 DatasetField(name="val", datatype=DataType.DOUBLE)],
-        relationships=[DatasetRelationship(to="ag", join_pairs=[["a1", "id"]]),
-               DatasetRelationship(to="ag", join_pairs=[["a2", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="a1", datatype=DataType.INTEGER),
+                 DatasetField(name="a2", datatype=DataType.INTEGER),
+                 DatasetField(name="val", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="ag", from_columns=["a1"], to_columns=["id"]),
+               DatasetRelationship(to="ag", from_columns=["a2"], to_columns=["id"])],
         aggregations=[Aggregation(
             name="wscore", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="ag.score")])])
     ag = SlayerDataset(
         name="ag", data_source="test", sql_table="ag",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="score", datatype=DataType.DOUBLE)])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="score", datatype=DataType.FLOAT)])
     return [r, o, ag]
 
 

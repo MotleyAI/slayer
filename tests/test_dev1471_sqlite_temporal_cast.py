@@ -28,7 +28,7 @@ _ROWS = [
     (5, 102, 50.0, "N", "2025-05-05", "2025-05-06"),
 ]
 
-_LAST_TOUCH = DatasetField(name="last_touch", sql="coalesce(shipped_at, created_at)", datatype=DataType.TIMESTAMP)
+_LAST_TOUCH = DatasetField(name="last_touch", sql="coalesce(shipped_at, created_at)", datatype=DataType.DATETIME)
 
 
 def _norm(sql: str) -> str:
@@ -52,7 +52,7 @@ async def test_temporal_max_returns_full_date(backend: str) -> None:
         eng = await _engine(backend, tmp)
         resp = await eng.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "max(created_at)"}],
+            "metrics": [{"metric": "max(created_at)"}],
         }))
         got = {r["orders.customer_id"]: date_str(r["orders.created_at_max"]) for r in resp.data}
         assert got == {100: "2025-03-20", 101: "2025-02-25", 102: "2025-05-05"}
@@ -65,7 +65,7 @@ async def test_partitioned_temporal_aggregate_returns_full_date(backend: str) ->
         eng = await _engine(backend, tmp)
         resp = await eng.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "max(created_at, partition_by=customer_id)"}],
+            "metrics": [{"metric": "max(created_at, partition_by=customer_id)"}],
         }))
         key = "orders.created_at_max_partition_by_customer_id"
         got = {r["orders.customer_id"]: date_str(r[key]) for r in resp.data}
@@ -79,7 +79,7 @@ async def test_derived_temporal_column_returns_full_date(backend: str) -> None:
         eng = await _engine(backend, tmp, extra_columns=[_LAST_TOUCH])
         resp = await eng.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "max(last_touch)"}],
+            "metrics": [{"metric": "max(last_touch)"}],
         }))
         got = {r["orders.customer_id"]: date_str(r["orders.last_touch_max"]) for r in resp.data}
         assert got == {100: "2025-03-22", 101: "2025-02-25", 102: "2025-05-06"}
@@ -90,7 +90,7 @@ async def test_sqlite_sql_has_no_temporal_cast() -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "max(created_at)"}],
+            "metrics": [{"metric": "max(created_at)"}],
         }),
         dataset=orders_dataset(), dialect="sqlite",
     )
@@ -105,7 +105,7 @@ async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "max(last_touch)"}],
+            "metrics": [{"metric": "max(last_touch)"}],
         }),
         dataset=orders_dataset(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
     )
@@ -147,7 +147,7 @@ async def test_other_dialects_keep_their_casts(dialect: str) -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "max(created_at)"}],
+            "metrics": [{"metric": "max(created_at)"}],
         }),
         dataset=orders_dataset(), dialect=dialect,
     )

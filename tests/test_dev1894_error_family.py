@@ -32,8 +32,7 @@ from slayer.core.errors import (
     UnsafeRelationshipInputError,
     WindowDurationError,
 )
-from slayer.core.models import DatasetMetric
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.core.window_duration import parse_window_duration
 from slayer.mcp.server import create_mcp_server
 from slayer.memories.service import MemoryService
@@ -192,7 +191,7 @@ class TestRawRowsConstruction:
 
     def test_measures_fail_with_the_stable_format(self) -> None:
         exc = self._underlying(
-            dimensions=[FieldRef(name="status")], metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="status")], metrics=[QueryMetric(metric="count(*)")],
         )
         assert isinstance(exc, DistinctDimensionValuesError)
         assert isinstance(exc, QueryTypeError)

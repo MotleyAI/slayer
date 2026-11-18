@@ -64,7 +64,7 @@ class TestPredicateInEveryPosition:
 
     @pytest.mark.parametrize(("pred", "expected"), PREDICATES, ids=PRED_IDS)
     async def test_dimension(self, engine: SlayerQueryEngine, pred: str, expected: frozenset[int]) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"expression": pred, "name": "p"}]))
+        resp = await engine.execute(q(dimensions=["id", {"field": pred, "alias": "p"}]))
         assert {int(r["orders.id"]) for r in resp.data if r["orders.p"]} == expected
 
     @pytest.mark.parametrize(("pred", "expected"), PREDICATES, ids=PRED_IDS)
@@ -79,7 +79,7 @@ class TestPredicateInEveryPosition:
 class TestValueInEveryPosition:
     @pytest.mark.parametrize(("expr", "values"), VALUES, ids=VALUE_IDS)
     async def test_dimension(self, engine: SlayerQueryEngine, expr: str, values: dict[int, Any]) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "x"}]))
+        resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "x"}]))
         assert {int(k): _norm(v) for k, v in by_key(resp, "id", "x").items()} == _expected(values)
 
     @pytest.mark.parametrize(("expr", "values"), VALUES, ids=VALUE_IDS)
@@ -103,7 +103,7 @@ class TestValueInEveryPosition:
 
     @pytest.mark.parametrize(("expr", "values"), DATE_VALUES, ids=[v for v, _ in DATE_VALUES])
     async def test_interval_dimension(self, engine: SlayerQueryEngine, expr: str, values: dict[int, str]) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "x"}]))
+        resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "x"}]))
         assert {int(k): day(v) for k, v in by_key(resp, "id", "x").items()} == values
 
 
@@ -160,7 +160,7 @@ class TestExpressionGrammarScenarios:
         assert 5 in rest
 
     async def test_concatenation_dimension(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=[{"expression": "status || '-' || region", "name": "tag"}],
+        resp = await engine.execute(q(dimensions=[{"field": "status || '-' || region", "alias": "tag"}],
                                       metrics=[m("count(*)")]))
         assert by_key(resp, "tag") == {"paid-EU": 2, "Pending-US": 1, "paid-US": 1, None: 1}
 
@@ -241,12 +241,12 @@ class TestEmission:
     @pytest.mark.parametrize("dialect", TIER1)
     @pytest.mark.parametrize("pred", PRED_IDS)
     async def test_predicate_emits(self, dialect: str, pred: str) -> None:
-        await emit(q(dimensions=["id", {"expression": pred, "name": "p"}], filter=[pred]), dialect=dialect)
+        await emit(q(dimensions=["id", {"field": pred, "alias": "p"}], filter=[pred]), dialect=dialect)
 
     @pytest.mark.parametrize("dialect", TIER1)
     @pytest.mark.parametrize("expr", VALUE_IDS + [v for v, _ in DATE_VALUES])
     async def test_value_emits(self, dialect: str, expr: str) -> None:
-        await emit(q(dimensions=["id", {"expression": expr, "name": "x"}], metrics=[m(f"max({expr})")]),
+        await emit(q(dimensions=["id", {"field": expr, "alias": "x"}], metrics=[m(f"max({expr})")]),
                    dialect=dialect)
 
     @pytest.mark.parametrize("dialect", TIER1)

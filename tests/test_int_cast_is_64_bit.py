@@ -26,8 +26,8 @@ _QUERY = SlayerQuery.model_validate({"population": "t", "dimensions": ["big"], "
 
 def _dataset(sql: str, *, data_source: str = "ds") -> SlayerDataset:
     return SlayerDataset(name="t", sql_table="t", data_source=data_source, fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="big", sql=sql, datatype=DataType.INT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="big", sql=sql, datatype=DataType.INTEGER),
     ])
 
 

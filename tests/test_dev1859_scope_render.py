@@ -17,11 +17,11 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryDimension, QueryMetric
+
 from tests._dev1847_fixtures import (
     DatasetField,
-    FieldRef,
     DataType,
-    DatasetMetric,
     SlayerQuery,
     corders_dataset,
     customers_dataset,
@@ -46,17 +46,17 @@ def _derived_ref_datasets():
     sales, regions, customers, corders = (
         sales_dataset(), regions_dataset(), customers_dataset(), corders_dataset())
     customers.fields.append(
-        DatasetField(name="rid1", datatype=DataType.DOUBLE, sql="region_id * 1"))
+        DatasetField(name="rid1", datatype=DataType.FLOAT, sql="region_id * 1"))
     corders.fields.append(
-        DatasetField(name="cust_rid", datatype=DataType.DOUBLE, sql="customers.rid1"))
+        DatasetField(name="cust_rid", datatype=DataType.FLOAT, sql="customers.rid1"))
     return [corders, customers, regions, sales]
 
 
 class TestJoinEmittedOnce:
     async def test_cross_model_constituent_producer_emitted_once(self):
         sql = await gen(SlayerQuery(
-            population="customers", dimensions=[FieldRef(name="region_id")],
-            metrics=[DatasetMetric(expression=_CROSS_MIXED, name="xm")]))
+            population="customers", dimensions=[QueryDimension(field="region_id")],
+            metrics=[QueryMetric(metric=_CROSS_MIXED, alias="xm")]))
         producers = [n for n in re.findall(r"(_cm_\w+) AS \(", sql)
                      if "amount" in n]
         assert len(producers) == 1, sql
@@ -72,9 +72,9 @@ class TestJoinEmittedOnce:
         sql = await _engine_generate(
             query=SlayerQuery(
                 population="corders",
-                metrics=[DatasetMetric(
-                    expression="sum(amount * avg(cust_rid, partition_by=customer_id))",
-                    name="m")]),
+                metrics=[QueryMetric(
+                    metric="sum(amount * avg(cust_rid, partition_by=customer_id))",
+                    alias="m")]),
             dataset=models[0], extra_datasets=models[1:],
             dialect="postgres", validate=False)
         assert _join_count_to(sql, "customers") == 1, sql

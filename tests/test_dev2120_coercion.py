@@ -29,7 +29,7 @@ async def engine(request):
 
 
 def _metric(expression: str, **kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": expression, "name": "v"}], **kw})
+    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": expression, "alias": "v"}], **kw})
 
 
 def _where(sql: str, *, dialect: str) -> exp.Where:

@@ -29,12 +29,12 @@ from slayer.pg_facade.protocol import (
 @pytest.mark.parametrize(
     "dt_,oid",
     [
-        (DataType.TEXT, OID_TEXT),
-        (DataType.INT, OID_INT8),
-        (DataType.DOUBLE, OID_FLOAT8),
+        (DataType.STRING, OID_TEXT),
+        (DataType.INTEGER, OID_INT8),
+        (DataType.FLOAT, OID_FLOAT8),
         (DataType.BOOLEAN, OID_BOOL),
         (DataType.DATE, OID_DATE),
-        (DataType.TIMESTAMP, OID_TIMESTAMP),
+        (DataType.DATETIME, OID_TIMESTAMP),
     ],
 )
 def test_datatype_to_oid(dt_, oid) -> None:
@@ -52,7 +52,7 @@ def test_query_result_oid_overridden_by_cast() -> None:
     orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="delivered_at", datatype=DataType.DATE),
         ],
     )

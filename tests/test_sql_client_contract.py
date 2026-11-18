@@ -48,7 +48,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 
 
 class Shop(BaseModel):
@@ -215,26 +215,26 @@ class TestTypedFailures:
 _INT = NumberFormat(type=NumberFormatType.INTEGER)
 _FLOAT = NumberFormat(type=NumberFormatType.FLOAT)
 _DUCKDB_KINDS = {
-    "id": (DataType.INT, _INT, None),
-    "qty": (DataType.INT, _INT, None),
-    "price": (DataType.DOUBLE, _FLOAT, "DECIMAL(12,2)"),
-    "ratio": (DataType.DOUBLE, _FLOAT, None),
-    "label": (DataType.TEXT, None, None),
-    "created_at": (DataType.TIMESTAMP, None, None),
+    "id": (DataType.INTEGER, _INT, None),
+    "qty": (DataType.INTEGER, _INT, None),
+    "price": (DataType.FLOAT, _FLOAT, "DECIMAL(12,2)"),
+    "ratio": (DataType.FLOAT, _FLOAT, None),
+    "label": (DataType.STRING, None, None),
+    "created_at": (DataType.DATETIME, None, None),
     "flag": (DataType.BOOLEAN, None, None),
-    "uid": (DataType.TEXT, None, None),
-    "doc": (DataType.TEXT, None, "JSON"),
+    "uid": (DataType.STRING, None, None),
+    "doc": (DataType.STRING, None, "JSON"),
 }
 _SQLITE_KINDS = {
-    "id": (DataType.INT, _INT, None),
-    "qty": (DataType.INT, _INT, None),
-    "price": (DataType.DOUBLE, _FLOAT, "NUMERIC(12, 2)"),
-    "ratio": (DataType.DOUBLE, _FLOAT, None),
-    "label": (DataType.TEXT, None, None),
-    "created_at": (DataType.TIMESTAMP, None, None),
+    "id": (DataType.INTEGER, _INT, None),
+    "qty": (DataType.INTEGER, _INT, None),
+    "price": (DataType.FLOAT, _FLOAT, "NUMERIC(12, 2)"),
+    "ratio": (DataType.FLOAT, _FLOAT, None),
+    "label": (DataType.STRING, None, None),
+    "created_at": (DataType.DATETIME, None, None),
     "flag": (DataType.BOOLEAN, None, None),
-    "uid": (DataType.DOUBLE, _FLOAT, "NUMERIC"),
-    "payload": (DataType.TEXT, None, None),
+    "uid": (DataType.FLOAT, _FLOAT, "NUMERIC"),
+    "payload": (DataType.STRING, None, None),
 }
 
 

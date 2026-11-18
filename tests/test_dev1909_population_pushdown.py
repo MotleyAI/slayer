@@ -28,7 +28,7 @@ from slayer.core.errors import (
     SlayerError,
 )
 from slayer.core.models import DatasetField, DataType
-from slayer.core.query import TimeDimension
+from slayer.core.query import QueryMetric, TimeDimension
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
@@ -207,8 +207,8 @@ class TestMultiMeasureProducerNamesEveryMeasure:
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
             metrics=[
-                DatasetMetric(expression="sum(spend, partition_by=tier)", name="ptsum"),
-                DatasetMetric(expression="max(spend, partition_by=tier)", name="ptmax"),
+                QueryMetric(metric="sum(spend, partition_by=tier)", alias="ptsum"),
+                QueryMetric(metric="max(spend, partition_by=tier)", alias="ptmax"),
             ],
             filter=[OK]))
         named = {i.metric for i in pushed_filter_infos(resp)}

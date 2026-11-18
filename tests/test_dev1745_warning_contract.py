@@ -31,7 +31,7 @@ from slayer.engine.plan import plan_query
 from slayer.mcp.server import create_mcp_server
 from slayer.sql.generator import SQLGenerator
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -44,8 +44,8 @@ def _warehouses() -> SlayerDataset:
     return SlayerDataset(
         name="warehouses", data_source="test", sql_table="warehouses",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="code", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.STRING),
         ],
     )
 
@@ -54,8 +54,8 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
         ],
     )
 
@@ -64,8 +64,8 @@ def _shippers() -> SlayerDataset:
     return SlayerDataset(
         name="shippers", data_source="test", sql_table="shippers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="cost", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="cost", datatype=DataType.FLOAT),
         ],
     )
 
@@ -74,17 +74,17 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="shipper_id", datatype=DataType.INT),
-            DatasetField(name="warehouse_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="shipper_id", datatype=DataType.INTEGER),
+            DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="shippers", join_pairs=[["shipper_id", "id"]]),
-            DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="shippers", from_columns=["shipper_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
     )
 
@@ -96,8 +96,8 @@ PUSHED_FILTER = "customers.revenue > 0 or warehouses.code == 'X'"
 def _query(*, extra_filters: list | None = None) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [{"expression": "status", "name": "status"}],
-        "metrics": [{"expression": "sum(customers.revenue)"}],
+        "dimensions": [{"field": "status", "alias": "status"}],
+        "metrics": [{"metric": "sum(customers.revenue)"}],
         "filter": [PUSHED_FILTER, *(extra_filters or [])],
     })
 
@@ -146,10 +146,10 @@ def _two_plan_query() -> SlayerQuery:
     entry per (location, measure, text), never one per consumer."""
     return SlayerQuery(
         population="orders",
-        dimensions=[ComputedDimension(expression="status", name="status")],
+        dimensions=[QueryDimension(field="status", alias="status")],
         metrics=[
-            {"expression": "sum(customers.revenue)"},
-            {"expression": "sum(shippers.cost)"},
+            {"metric": "sum(customers.revenue)"},
+            {"metric": "sum(shippers.cost)"},
         ],
         filter=["customers.revenue > 0 or shippers.cost > 0"],
     )
@@ -218,8 +218,8 @@ class TestExecuteEntryPoint:
             engine = await _engine(d)
             clean = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"expression": "status", "name": "status"}],
-                "metrics": [{"expression": "sum(amount)", "name": "m0"}],
+                "dimensions": [{"field": "status", "alias": "status"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
             })
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -269,14 +269,14 @@ class TestEmissionIsBoundaryNotRender:
         inner = SlayerQuery.model_validate({
             "name": "s1",
             "population": "orders",
-            "dimensions": [{"expression": "status", "name": "status"}],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
         outer = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "status", "name": "status"}],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
         with tempfile.TemporaryDirectory() as d:
@@ -294,15 +294,15 @@ class TestEmissionIsBoundaryNotRender:
         entry's location must name the stage that pushed the filter, not
         whichever stage sits at the same input index."""
         # Input order [a, b, root]; topo order [b, a, root] — a reads from b.
-        stage_a = SlayerQuery.model_validate({"name": "a", "population": "b", "metrics": [{"expression": "count(*)"}]})
+        stage_a = SlayerQuery.model_validate({"name": "a", "population": "b", "metrics": [{"metric": "count(*)"}]})
         stage_b = SlayerQuery.model_validate({
             "name": "b",
             "population": "orders",
-            "dimensions": [{"expression": "status", "name": "status"}],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
             "filter": [PUSHED_FILTER],
         })
-        root = SlayerQuery.model_validate({"population": "a", "metrics": [{"expression": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "a", "metrics": [{"metric": "count(*)"}]})
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine(d)
             resp = await engine.execute(
@@ -394,8 +394,8 @@ class TestInternalFailuresRaise:
             engine = await _engine(d)
             bad = SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"expression": "status", "name": "status"}],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "dimensions": [{"field": "status", "alias": "status"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
                 "filter": ["no_such_column == 'X'"],
             })
             with pytest.raises(SlayerError):
@@ -457,7 +457,7 @@ class TestMcpEntryPoint:
                 "query": {
                     "population": "orders",
                     "dimensions": ["status"],
-                    "metrics": [{"expression": "sum(customers.revenue)"}],
+                    "metrics": [{"metric": "sum(customers.revenue)"}],
                     "filter": [PUSHED_FILTER],
                 },
                 "dry_run": True,

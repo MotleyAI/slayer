@@ -32,10 +32,10 @@ def _orders_dataset() -> SlayerDataset:
         data_source="jaffle",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             DatasetField(name="order_date", datatype=DataType.DATE),
             DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
         ],
@@ -48,8 +48,8 @@ def _customers_dataset() -> SlayerDataset:
         data_source="jaffle",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -426,25 +426,25 @@ def test_classifier_does_not_raise_on_unexpected_shapes(column_type_index):
 def test_column_type_index_includes_pg_catalog_tables(column_type_index):
     """The index must surface pg_catalog tables so the classifier resolves
     `pg_catalog.X.Y` refs."""
-    assert column_type_index.get(("pg_catalog", "pg_description", "objsubid")) == DataType.INT
-    assert column_type_index.get(("pg_catalog", "pg_description", "description")) == DataType.TEXT
+    assert column_type_index.get(("pg_catalog", "pg_description", "objsubid")) == DataType.INTEGER
+    assert column_type_index.get(("pg_catalog", "pg_description", "description")) == DataType.STRING
 
 
 def test_column_type_index_includes_information_schema_tables(column_type_index):
     """`_is_columns` builder maps to SQL-visible `information_schema.columns`.
     Codex finding #4: the index key must use the SQL-visible name, not the
     builder-internal `_is_columns`."""
-    assert column_type_index.get(("information_schema", "columns", "ordinal_position")) == DataType.INT
-    assert column_type_index.get(("information_schema", "columns", "column_name")) == DataType.TEXT
+    assert column_type_index.get(("information_schema", "columns", "ordinal_position")) == DataType.INTEGER
+    assert column_type_index.get(("information_schema", "columns", "column_name")) == DataType.STRING
     # The internal builder name must NOT be a key.
     assert ("information_schema", "_is_columns", "ordinal_position") not in column_type_index
 
 
 def test_column_type_index_includes_user_models_under_public(column_type_index):
-    assert column_type_index.get(("public", "orders", "id")) == DataType.INT
-    assert column_type_index.get(("public", "orders", "status")) == DataType.TEXT
+    assert column_type_index.get(("public", "orders", "id")) == DataType.INTEGER
+    assert column_type_index.get(("public", "orders", "status")) == DataType.STRING
     assert column_type_index.get(("public", "orders", "is_paid")) == DataType.BOOLEAN
-    assert column_type_index.get(("public", "orders", "ordered_at")) == DataType.TIMESTAMP
+    assert column_type_index.get(("public", "orders", "ordered_at")) == DataType.DATETIME
 
 
 # --- Parenthesised parameters (Codex CX-1) ---------------------------------
@@ -551,15 +551,15 @@ def test_case_distinct_collision_keeps_first_and_warns(caplog):
         data_source="jaffle",
         sql_table="case_distinct",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="ID", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="ID", datatype=DataType.STRING),
         ],
     )
     catalog = build_catalog(datasets_by_datasource={PUBLIC_SCHEMA: [model]})
     with caplog.at_level(logging.WARNING, logger="slayer.pg_facade.connection"):
         idx = _build_column_type_index(catalog=catalog, datasource="jaffle")
     # First-writer-wins: `id` INT is inserted first.
-    assert idx.get(("public", "case_distinct", "id")) == DataType.INT
+    assert idx.get(("public", "case_distinct", "id")) == DataType.INTEGER
     # The collision was warned about.
     assert any(
         "case-distinct collision" in rec.message for rec in caplog.records

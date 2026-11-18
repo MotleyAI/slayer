@@ -29,15 +29,15 @@ def _norm(s: str) -> str:
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)
+    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.DOUBLE)
+    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.TEXT)
+    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
 
 
 async def _save_chain(
@@ -54,11 +54,11 @@ async def _save_chain(
     await storage.save_dataset(SlayerDataset(
         name="Consumer", sql_table="Consumer", data_source="test",
         fields=[_pk(), _t("name"), _t("email"),
-                 DatasetField(name="signup_at", sql="signup_at", datatype=DataType.TIMESTAMP)],
+                 DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME)],
     ))
     customer_joins = (
         [] if drop_customer_consumer
-        else [DatasetRelationship(to="Consumer", join_pairs=[["consumerId", "id"]])]
+        else [DatasetRelationship(to="Consumer", from_columns=["consumerId"], to_columns=["id"])]
     )
     await storage.save_dataset(SlayerDataset(
         name="Customer", sql_table="Customer", data_source="test",
@@ -67,15 +67,15 @@ async def _save_chain(
     await storage.save_dataset(SlayerDataset(
         name="Subscription", sql_table="Subscription", data_source="test",
         fields=[_pk(), _d("customerId")],
-        relationships=[DatasetRelationship(to="Customer", join_pairs=[["customerId", "id"]])],
+        relationships=[DatasetRelationship(to="Customer", from_columns=["customerId"], to_columns=["id"])],
     ))
-    invoice_joins = [DatasetRelationship(to="Subscription", join_pairs=[["subscriptionId", "id"]])]
+    invoice_joins = [DatasetRelationship(to="Subscription", from_columns=["subscriptionId"], to_columns=["id"])]
     if direct_customer:
-        invoice_joins.append(DatasetRelationship(to="Customer", join_pairs=[["customerId", "id"]]))
+        invoice_joins.append(DatasetRelationship(to="Customer", from_columns=["customerId"], to_columns=["id"]))
     invoice = SlayerDataset(
         name="Invoice", sql_table="Invoice", data_source="test",
         fields=[_pk(), _d("subscriptionId"), _d("customerId"), _d("amount"), _t("status"),
-                 DatasetField(name="issued_at", sql="issued_at", datatype=DataType.TIMESTAMP)],
+                 DatasetField(name="issued_at", sql="issued_at", datatype=DataType.DATETIME)],
         relationships=invoice_joins,
     )
     await storage.save_dataset(invoice)
@@ -130,7 +130,7 @@ class TestValidPathBindsAllJoins:
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
             "population": "Invoice",
-            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
             "time_dimensions": [{
                 "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
@@ -199,7 +199,7 @@ class TestShortFormRoutingAndBrokenChains:
         engine = await _engine(tmp_path)
         q = SlayerQuery.model_validate({
             "population": "Invoice",
-            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
             "time_dimensions": [{
                 "field": "Customer.Consumer.signup_at",
                 "granularity": "month",
@@ -233,19 +233,19 @@ class TestDiagnosticsPreserved:
         await storage.save_dataset(SlayerDataset(
             name="B", sql_table="B", data_source="test",
             fields=[_pk(), _d("a_id"), _t("label")],
-            relationships=[DatasetRelationship(to="A", join_pairs=[["a_id", "id"]],
+            relationships=[DatasetRelationship(to="A", from_columns=["a_id"], to_columns=["id"],
                              name="to_a")],
         ))
         await storage.save_dataset(SlayerDataset(
             name="A", sql_table="A", data_source="test",
             fields=[_pk(), _d("b_id"), _d("amount")],
-            relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]],
+            relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"],
                              name="to_b")],
         ))
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "A",
-            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
             "dimensions": ["to_b.to_a.amount"],
         })
         with pytest.raises(ValueError) as ei:
@@ -266,7 +266,7 @@ class TestInternalEnrichmentsUnaffected:
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["status"],
-            "metrics": [{"expression": "count(Subscription.Customer.Consumer.email)", "name": "c"}],
+            "metrics": [{"metric": "count(Subscription.Customer.Consumer.email)", "alias": "c"}],
         }))
         sqlglot.parse_one(sql, dialect="postgres")
 
@@ -284,12 +284,12 @@ class TestDownstreamStageScope:
             "name": "s1",
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)

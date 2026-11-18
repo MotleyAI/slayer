@@ -114,7 +114,7 @@ def test_trino_explain_statements() -> None:
 ])
 def test_literal_count_is_quoted(dialect, count: int, unit: TimeGranularity, expected: str) -> None:
     node = dialect.build_date_add(
-        expr=exp.column("d"), count=exp.Literal.number(count), unit=unit, operand=DataType.TIMESTAMP,
+        expr=exp.column("d"), count=exp.Literal.number(count), unit=unit, operand=DataType.DATETIME,
     )
     assert _sql(dialect, node) == expected
 
@@ -123,7 +123,7 @@ def test_literal_count_is_quoted(dialect, count: int, unit: TimeGranularity, exp
 @pytest.mark.parametrize("count,expected", [(2, "d + (2 * INTERVAL '7' DAY)"), (-3, "d - (3 * INTERVAL '7' DAY)")])
 def test_week_count_is_day_multiple(dialect, count: int, expected: str) -> None:
     node = dialect.build_date_add(
-        expr=exp.column("d"), count=exp.Literal.number(count), unit=TG.WEEK, operand=DataType.TIMESTAMP,
+        expr=exp.column("d"), count=exp.Literal.number(count), unit=TG.WEEK, operand=DataType.DATETIME,
     )
     assert _sql(dialect, node) == expected
 
@@ -136,7 +136,7 @@ def test_week_count_is_day_multiple(dialect, count: int, expected: str) -> None:
 ])
 def test_computed_count_multiplies_quoted_unit(dialect, unit: TimeGranularity, expected: str) -> None:
     node = dialect.build_date_add(
-        expr=exp.column("d"), count=exp.column("n"), unit=unit, operand=DataType.TIMESTAMP,
+        expr=exp.column("d"), count=exp.column("n"), unit=unit, operand=DataType.DATETIME,
     )
     assert _sql(dialect, node) == expected
 
@@ -197,7 +197,7 @@ def test_iso_calendar_parts(dialect, part: DatePart, field: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _diff(dialect, unit: TimeGranularity, operand: DataType = DataType.TIMESTAMP) -> str:
+def _diff(dialect, unit: TimeGranularity, operand: DataType = DataType.DATETIME) -> str:
     node = dialect.build_date_diff(unit=unit, start=exp.column("a"), end=exp.column("b"), operand=operand)
     return _sql(dialect, node).upper()
 
@@ -304,13 +304,13 @@ _DATE_QUERY = SlayerQuery.model_validate({
     "population": "dt",
     "dimensions": [
         "id",
-        {"expression": "date_add(d1, 1, 'month')", "name": "a"},
-        {"expression": "date_add(d1, 2, 'hour')", "name": "b"},
-        {"expression": "date_add(t1, n, 'day')", "name": "c"},
-        {"expression": "date_diff('day', d1, d2)", "name": "e"},
-        {"expression": "date_diff('second', t1, t2)", "name": "f"},
-        {"expression": "date_part('iso_year', d1)", "name": "g"},
-        {"expression": "date_part('day_of_week', t1)", "name": "h"},
+        {"field": "date_add(d1, 1, 'month')", "alias": "a"},
+        {"field": "date_add(d1, 2, 'hour')", "alias": "b"},
+        {"field": "date_add(t1, n, 'day')", "alias": "c"},
+        {"field": "date_diff('day', d1, d2)", "alias": "e"},
+        {"field": "date_diff('second', t1, t2)", "alias": "f"},
+        {"field": "date_part('iso_year', d1)", "alias": "g"},
+        {"field": "date_part('day_of_week', t1)", "alias": "h"},
     ],
 })
 

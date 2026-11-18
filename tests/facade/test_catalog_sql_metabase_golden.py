@@ -46,18 +46,18 @@ def _demo_catalog() -> FacadeCatalog:
         name="orders", data_source="jaffle", sql_table="orders",
         description="Demo orders table",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="total", datatype=DataType.DOUBLE, description="Order total"),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="total", datatype=DataType.FLOAT, description="Order total"),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
     customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="email", datatype=DataType.TEXT, description="Customer email"),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="email", datatype=DataType.STRING, description="Customer email"),
         ],
     )
     return build_catalog_grouped_by_schema(
@@ -71,7 +71,7 @@ def _seven_table_demo_catalog() -> FacadeCatalog:
         SlayerDataset(
             name=tn, data_source="jaffle", sql_table=tn,
             description=f"jaffle {tn}",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         for tn in ("customers", "orders", "products", "stores", "supplies",
                    "items", "tweets")

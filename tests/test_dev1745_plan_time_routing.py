@@ -37,8 +37,8 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.STRING),
         ],
     )
 
@@ -47,16 +47,16 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="eu_amount", sql="amount",
-                   filter="customers.tier = 'eu'", datatype=DataType.DOUBLE),
+                   filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
@@ -71,8 +71,8 @@ def _bundle() -> ResolvedSourceBundle:
 def _outer_where_query() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [{"expression": "status", "name": "status"}],
-        "metrics": [{"expression": "sum(eu_amount)", "name": "eu"}],
+        "dimensions": [{"field": "status", "alias": "status"}],
+        "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
         "filter": ["sum(eu_amount) > 100"],
     })
 
@@ -99,8 +99,8 @@ class TestPlanCarriesOuterWhereRouting:
     def test_routing_is_empty_without_an_isolated_aggregate(self) -> None:
         plain = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "status", "name": "status"}],
-            "metrics": [{"expression": "sum(amount)", "name": "a"}],
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "a"}],
             "filter": ["sum(amount) > 100"],
         })
         planned = plan_query(query=plain, bundle=_bundle())
@@ -180,7 +180,7 @@ class TestFrameBoundColumnsStayPlanSide:
                 "field": "created_at",
                 "granularity": TimeGranularity.MONTH,
                 "date_range": ["2024-01-01", "2024-12-31"],
-            }], "metrics": [{"expression": "sum(amount)", "name": "a"}]})
+            }], "metrics": [{"metric": "sum(amount)", "alias": "a"}]})
 
     def test_plan_carries_frame_bound_columns(self) -> None:
         """A DECLARED field, checked the same way as masks.

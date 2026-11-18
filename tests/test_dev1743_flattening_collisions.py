@@ -52,8 +52,8 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers_t",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
 
@@ -62,13 +62,13 @@ def _host_with_flat_collider() -> SlayerDataset:
     return SlayerDataset(
         name="hostm", data_source=DS, sql_table="hostm_t",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="cust_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="cust_id", datatype=DataType.INTEGER),
             # Literal flat column that collides with the joined dim's flattened
             # alias (C11 carve-out). Legal to declare today (D5).
-            DatasetField(name="customers__region", datatype=DataType.TEXT),
+            DatasetField(name="customers__region", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["cust_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["cust_id"], to_columns=["id"])],
     )
 
 
@@ -128,9 +128,9 @@ class TestSameNameCollisionGuardLive:
             name="orders", data_source=DS, sql_table="orders_t",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
         )
 
@@ -141,8 +141,8 @@ class TestSameNameCollisionGuardLive:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "cumsum(sum(amount))", "name": "dup"},
-                {"expression": "cumsum(sum(amount))", "name": "dup"},
+                {"metric": "cumsum(sum(amount))", "alias": "dup"},
+                {"metric": "cumsum(sum(amount))", "alias": "dup"},
             ],
             time_dimensions=[
                 {"field": {"name": "created_at"}, "granularity": "month"},
@@ -228,12 +228,12 @@ class TestComputedDimFlattenCollision:
         return SlayerDataset(
             name="hostm", data_source=DS, sql_table="hostm_t",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="cust_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="cust_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["cust_id", "id"]])],
+                             from_columns=["cust_id"], to_columns=["id"])],
         )
 
     @pytest.mark.asyncio
@@ -243,8 +243,8 @@ class TestComputedDimFlattenCollision:
         must raise the clear D5 message, not a generic duplicate-name error."""
         query = SlayerQuery.model_validate({"population": "hostm", "dimensions": [
                 "customers.region",
-                {"expression": "amount", "name": "customers__region"},
-            ], "metrics": [{"expression": "sum(amount)"}]})
+                {"field": "amount", "alias": "customers__region"},
+            ], "metrics": [{"metric": "sum(amount)"}]})
         host = self._host()
         extras = [_customers()]
         with pytest.raises(ValueError, match=r"flatten to the same downstream name"):

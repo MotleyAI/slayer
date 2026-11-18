@@ -132,7 +132,7 @@ QUERY_POSITIONS = [
                  [{"column": "rank(sum(amount), direction='desc')"}], id="order-expression"),
     pytest.param("order", [{"amount:sum": "desc"}], [{"sum(amount)": "desc"}], id="order-shorthand"),
     pytest.param("source_model", {"source_name": "orders", "measures": [{"name": "m", "formula": "amount:sum"}]},
-                 {"source_name": "orders", "metrics": [{"name": "m", "expression": "sum(amount)"}]},
+                 {"dataset": "orders", "metrics": [{"name": "m", "expression": "sum(amount)"}]},
                  id="model-extension-measure"),
 ]
 

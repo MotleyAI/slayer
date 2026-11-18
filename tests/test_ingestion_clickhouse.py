@@ -56,7 +56,7 @@ class TestClickHouseIntTypes:
     )
     def test_int_maps_to_number_not_float(self, sa_type_cls):
         sa_type = sa_type_cls()
-        assert _sa_type_to_data_type(sa_type) is DataType.INT
+        assert _sa_type_to_data_type(sa_type) is DataType.INTEGER
         assert _sa_type_is_float(sa_type) is False
 
 
@@ -64,7 +64,7 @@ class TestClickHouseFloatTypes:
     @pytest.mark.parametrize("sa_type_cls", [ch_types.Float32, ch_types.Float64])
     def test_float_maps_to_number_and_is_float(self, sa_type_cls):
         sa_type = sa_type_cls()
-        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
+        assert _sa_type_to_data_type(sa_type) is DataType.FLOAT
         assert _sa_type_is_float(sa_type) is True
 
 
@@ -78,17 +78,17 @@ class TestClickHouseDecimalScaleAware:
     )
     def test_decimal_scale_decides_float(self, scale, expect_float):
         sa_type = ch_types.Decimal(10, scale)
-        expected = DataType.DOUBLE if expect_float else DataType.INT
+        expected = DataType.FLOAT if expect_float else DataType.INTEGER
         assert _sa_type_to_data_type(sa_type) is expected
         assert _sa_type_is_float(sa_type) is expect_float
 
 
 class TestClickHouseDateTimeTypes:
     def test_datetime_maps_to_timestamp(self):
-        assert _sa_type_to_data_type(ch_types.DateTime()) is DataType.TIMESTAMP
+        assert _sa_type_to_data_type(ch_types.DateTime()) is DataType.DATETIME
 
     def test_datetime64_maps_to_timestamp(self):
-        assert _sa_type_to_data_type(ch_types.DateTime64(3)) is DataType.TIMESTAMP
+        assert _sa_type_to_data_type(ch_types.DateTime64(3)) is DataType.DATETIME
 
     def test_date_maps_to_date(self):
         assert _sa_type_to_data_type(ch_types.Date()) is DataType.DATE
@@ -100,53 +100,53 @@ class TestClickHouseDateTimeTypes:
 class TestClickHouseUuid:
     def test_uuid_maps_to_text_without_warning(self, caplog):
         with caplog.at_level(logging.WARNING, logger="slayer.sql.dialects.reflection"):
-            assert _sa_type_to_data_type(ch_types.UUID()) is DataType.TEXT
-            assert _sa_type_to_data_type(ch_types.Nullable(ch_types.UUID())) is DataType.TEXT
+            assert _sa_type_to_data_type(ch_types.UUID()) is DataType.STRING
+            assert _sa_type_to_data_type(ch_types.Nullable(ch_types.UUID())) is DataType.STRING
         assert "Unrecognized SQLAlchemy type" not in caplog.text
 
 
 class TestClickHouseNullableUnwrap:
     def test_nullable_int(self):
         sa_type = ch_types.Nullable(ch_types.Int32())
-        assert _sa_type_to_data_type(sa_type) is DataType.INT
+        assert _sa_type_to_data_type(sa_type) is DataType.INTEGER
         assert _sa_type_is_float(sa_type) is False
 
     def test_nullable_float(self):
         sa_type = ch_types.Nullable(ch_types.Float64())
-        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
+        assert _sa_type_to_data_type(sa_type) is DataType.FLOAT
         assert _sa_type_is_float(sa_type) is True
 
     def test_nullable_decimal_float(self):
         sa_type = ch_types.Nullable(ch_types.Decimal(10, 2))
-        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
+        assert _sa_type_to_data_type(sa_type) is DataType.FLOAT
         assert _sa_type_is_float(sa_type) is True
 
     def test_nullable_decimal_integer(self):
         sa_type = ch_types.Nullable(ch_types.Decimal(10, 0))
         # scale=0 narrows to INT.
-        assert _sa_type_to_data_type(sa_type) is DataType.INT
+        assert _sa_type_to_data_type(sa_type) is DataType.INTEGER
         assert _sa_type_is_float(sa_type) is False
 
 
 class TestClickHouseLowCardinalityUnwrap:
     def test_low_cardinality_string(self):
         sa_type = ch_types.LowCardinality(ch_types.String())
-        assert _sa_type_to_data_type(sa_type) is DataType.TEXT
+        assert _sa_type_to_data_type(sa_type) is DataType.STRING
 
     def test_low_cardinality_int(self):
         sa_type = ch_types.LowCardinality(ch_types.Int32())
-        assert _sa_type_to_data_type(sa_type) is DataType.INT
+        assert _sa_type_to_data_type(sa_type) is DataType.INTEGER
         assert _sa_type_is_float(sa_type) is False
 
 
 class TestClickHouseNestedWrappers:
     def test_low_cardinality_nullable_string(self):
         sa_type = ch_types.LowCardinality(ch_types.Nullable(ch_types.String()))
-        assert _sa_type_to_data_type(sa_type) is DataType.TEXT
+        assert _sa_type_to_data_type(sa_type) is DataType.STRING
 
     def test_nullable_low_cardinality_int(self):
         sa_type = ch_types.Nullable(ch_types.LowCardinality(ch_types.Int32()))
-        assert _sa_type_to_data_type(sa_type) is DataType.INT
+        assert _sa_type_to_data_type(sa_type) is DataType.INTEGER
         assert _sa_type_is_float(sa_type) is False
 
 
@@ -238,16 +238,16 @@ class TestWrappedDbTypeCapture:
                 ch_types.Nullable(ch_types.Decimal(10, 4))
             )},
         ])
-        assert by_name["amount"].type is DataType.DOUBLE
+        assert by_name["amount"].type is DataType.FLOAT
         assert by_name["amount"].db_type == "Decimal(18, 2)"
-        assert by_name["rate"].type is DataType.DOUBLE
+        assert by_name["rate"].type is DataType.FLOAT
         assert by_name["rate"].db_type == "Decimal(10, 4)"
 
     async def test_wrapped_opaque_stores_unwrapped_string(self):
         by_name = await _introspect_columns([
             {"name": "payload", "type": ch_types.Nullable(sa.JSON())},
         ])
-        assert by_name["payload"].type is DataType.UNKNOWN
+        assert by_name["payload"].type is DataType.OPAQUE
         assert by_name["payload"].db_type == "JSON"
 
 
@@ -273,7 +273,7 @@ class TestUnmappedTypeWarning:
                 # Unrecognized types stay TEXT: most unmapped types are
                 # comparable. Only the known non-comparable ones are opaque.
                 result = _sa_type_to_data_type(_FakeUnknownType())
-                assert result is DataType.TEXT
+                assert result is DataType.STRING
 
         relevant = [
             r for r in caplog.records if "FAKEUNKNOWNTYPE" in r.getMessage().upper()

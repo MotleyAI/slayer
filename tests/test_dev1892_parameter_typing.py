@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     DatasetMetric,
     assoc_q,
@@ -77,9 +79,9 @@ class TestAssociationColumnParameter:
         is picked once per distinct customer (never join-multiplied)."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="weighted_avg(customers.spend, weight=customers.spend)",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric="weighted_avg(customers.spend, weight=customers.spend)",
+                alias="w")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}  # grain unchanged
         for status, expected in ASSOC_WAVG_SPEND_BY_STATUS.items():
@@ -108,9 +110,9 @@ class TestAssociationColumnParameter:
         per SQL SUM semantics."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="weighted_avg(customers.spend, weight=customers.regions.pop)",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric="weighted_avg(customers.spend, weight=customers.regions.pop)",
+                alias="w")]))
         by = status_key(resp)
         for status, expected in ASSOC_WAVG_POP_BY_STATUS.items():
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
@@ -121,11 +123,11 @@ class TestAssociationColumnParameter:
         explicitly (``wsum(weight=customers.spend)``)."""
         default = await assoc_coldef_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wsum(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum(customers.spend)", alias="w")]))
         explicit = await assoc_coldef_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="wsum(customers.spend, weight=customers.spend)", name="w")]))
+            metrics=[QueryMetric(
+                metric="wsum(customers.spend, weight=customers.spend)", alias="w")]))
         by, ex = status_key(default), status_key(explicit)
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
@@ -137,8 +139,8 @@ class TestAssociationColumnParameter:
         distinct population's [min, max]."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="percentile(customers.spend, p=0.5)", name="p")]))
+            metrics=[QueryMetric(
+                metric="percentile(customers.spend, p=0.5)", alias="p")]))
         by = status_key(resp)
         bounds = {"ok": (30.0, 150.0), "new": (40.0, 150.0)}
         for status, (lo, hi) in bounds.items():
@@ -149,13 +151,13 @@ class TestAssociationColumnParameter:
         neither the row set nor the sibling plain measure."""
         base = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")]))
         withw = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m"),
-                      DatasetMetric(
-                          expression="weighted_avg(customers.spend, weight=customers.spend)",
-                          name="w")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="m"),
+                      QueryMetric(
+                          metric="weighted_avg(customers.spend, weight=customers.spend)",
+                          alias="w")]))
         a, b = status_key(base), status_key(withw)
         assert set(a) == set(b)
         for k in a:
@@ -169,7 +171,7 @@ class TestReaggregationOperandParameter:
         unweighted average where the weights differ."""
         resp = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]))
+            metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         vals = _region_vals(resp, "sales.w")
         for region, expected in WAVG_CITY_BY_REGION.items():
             if expected is None:
@@ -185,7 +187,7 @@ class TestReaggregationOperandParameter:
         stage-2-weighted_avg ``source_queries`` model, region by region."""
         reagg = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]))
+            metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         manual = await reagg_engine.execute("wavg_city_by_region")
         got = _region_vals(reagg, "sales.w")
         man_r = next(c for c in manual.columns if c.endswith(".region"))
@@ -202,10 +204,10 @@ class TestReaggregationOperandParameter:
         grain key — weight ``customers.region_id`` read once per customer cell,
         distinguishable from the unweighted global average."""
         resp = await reagg_engine.execute(chain_q(
-            metrics=[DatasetMetric(
-                expression=("weighted_avg(sum(amount, partition_by=customer_id), "
+            metrics=[QueryMetric(
+                metric=("weighted_avg(sum(amount, partition_by=customer_id), "
                          "weight=customers.region_id)"),
-                name="w")]))
+                alias="w")]))
         got = float(resp.data[0]["corders.w"])
         assert got == pytest.approx(CORDERS_GLOBAL_WAVG)
         assert got != pytest.approx(CORDERS_GLOBAL_UNWEIGHTED)
@@ -215,9 +217,9 @@ class TestReaggregationOperandParameter:
         weighted value broadcasts identically across ``product``."""
         resp = await reagg_engine.execute(sales_q(
             dimensions=["region", "product"],
-            metrics=[DatasetMetric(
-                expression=f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT}, partition_by=region)",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric=f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT}, partition_by=region)",
+                alias="w")]))
         by = rows_by(resp, "sales.region", "sales.product")
         for key, row in by.items():
             expected = WAVG_CITY_BY_REGION[key[0]]
@@ -232,14 +234,14 @@ class TestReaggregationOperandParameter:
         region."""
         kw = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression=f"wavg({INNER_CR}, weight=count(id, partition_by=[city, region]))",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric=f"wavg({INNER_CR}, weight=count(id, partition_by=[city, region]))",
+                alias="w")]))
         pos = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression=f"wavg({INNER_CR}, count(id, partition_by=[city, region]))",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric=f"wavg({INNER_CR}, count(id, partition_by=[city, region]))",
+                alias="w")]))
         kw_v, pos_v = _region_vals(kw, "sales.w"), _region_vals(pos, "sales.w")
         assert set(kw_v) == set(pos_v)
         for region in kw_v:
@@ -254,10 +256,10 @@ class TestReaggregationOperandParameter:
         degenerate warning; Void's NULL-total cell stays NULL."""
         resp = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression=("weighted_avg(sum(amount, partition_by=region), "
+            metrics=[QueryMetric(
+                metric=("weighted_avg(sum(amount, partition_by=region), "
                          "weight=count(id, partition_by=region))"),
-                name="w")]))
+                alias="w")]))
         vals = _region_vals(resp, "sales.w")
         for region, total in DEGENERATE_WAVG_BY_REGION.items():
             if total is None:
@@ -275,10 +277,10 @@ class TestWeightedValueAsConsumer:
         sibling equals its unfiltered value."""
         full = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
         pruned = await reagg_engine.execute(sales_q(
             dimensions=["region"], filter=[f"{_WAVG_REAGG} > 50"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
         kept = {k[0] for k in region_key(pruned)}
         assert kept == {"South", "East"}
         full_tot = _region_vals(full, "sales.tot")
@@ -292,7 +294,7 @@ class TestAssociateModeNoSpuriousWarnings:
         exact under associate — no associated-cell warning."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(
-                expression="weighted_avg(customers.spend, weight=customers.spend)",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric="weighted_avg(customers.spend, weight=customers.spend)",
+                alias="w")]))
         assert associated_warnings(resp) == []

@@ -83,9 +83,9 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -98,13 +98,13 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="sku", sql="sku", datatype=DataType.TEXT),
+                    DatasetField(name="sku", sql="sku", datatype=DataType.STRING),
                     DatasetField(
                         name="description",
                         sql="description",
-                        datatype=DataType.TEXT,
+                        datatype=DataType.STRING,
                     ),
                 ],
             )
@@ -118,20 +118,20 @@ def duckdb_drift_env(tmp_path):
                 data_source="dduckdb",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                    DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
                     DatasetField(
                         name="customer_id",
                         sql="customer_id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                 ],
                 relationships=[
                     DatasetRelationship(
                         to="customers",
-                        join_pairs=[["customer_id", "id"]],
+                        from_columns=["customer_id"], to_columns=["id"],
                     ),
                 ],
             )
@@ -168,10 +168,10 @@ async def test_sql_model_typed_columns_do_not_report_false_drift(
                 "'ok'::VARCHAR AS label"
             ),
             fields=[
-                DatasetField(name="qty", datatype=DataType.INT),
+                DatasetField(name="qty", datatype=DataType.INTEGER),
                 DatasetField(name="active", datatype=DataType.BOOLEAN),
-                DatasetField(name="occurred_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="occurred_at", datatype=DataType.DATETIME),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         )
     )

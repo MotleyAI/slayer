@@ -108,7 +108,7 @@ async def test_tantivy_matches_datasource_description_only_term() -> None:
             sql_table="orders",
             data_source="warehouse",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             ],
         ))
         response = await SearchService(storage=s).search(

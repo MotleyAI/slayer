@@ -179,12 +179,12 @@ class TestLiveGenerator:
 # --------------------------------------------------------------------------- #
 def _stats_datasets() -> list[SlayerDataset]:
     orders = orders_dataset()
-    orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    orders.relationships = [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
         ],
     )
     return [orders, customers]
@@ -205,17 +205,17 @@ _SEAMS = {
     ),
     "windowed_producer": q(
         time_dimensions=month_td(),
-        metrics=[{"expression": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}],
+        metrics=[{"metric": "covar_samp(amount, other=qty, window='90d')", "alias": "cv"}],
     ),
     "cross_model_combined": q(
         dimensions=["status"],
-        metrics=[{"expression": "sum(amount) / count(customers.id)", "name": "r"}],
+        metrics=[{"metric": "sum(amount) / count(customers.id)", "alias": "r"}],
     ),
     "multi_stage": [
         {"name": "s1", "population": "orders", "dimensions": ["status"],
          "time_dimensions": month_td(),
-         "metrics": [{"expression": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}]},
-        {"population": "s1", "dimensions": ["status"], "metrics": [{"expression": "max(cv)", "name": "m"}]},
+         "metrics": [{"metric": "covar_samp(amount, other=qty, window='90d')", "alias": "cv"}]},
+        {"population": "s1", "dimensions": ["status"], "metrics": [{"metric": "max(cv)", "alias": "m"}]},
     ],
 }
 
@@ -236,8 +236,8 @@ async def test_query_backed_expansion_composes_without_a_statement_render(ds_typ
     _, sql = await _expand(
         ds_type=ds_type,
         columns=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
         dimensions=["status"],
     )

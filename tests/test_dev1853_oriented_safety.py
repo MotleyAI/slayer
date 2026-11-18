@@ -28,7 +28,7 @@ def _pair(*, declare, cardinality, customers_id_pk):
     if declare == "forward":
         orders = _dataset("orders", order_cols, [
             DatasetRelationship(to="customers",
-                      join_pairs=[["customer_id", "id"]],
+                      from_columns=["customer_id"], to_columns=["id"],
                       cardinality=cardinality),
         ])
         customers = _dataset("customers", customer_cols)
@@ -36,7 +36,7 @@ def _pair(*, declare, cardinality, customers_id_pk):
         orders = _dataset("orders", order_cols)
         customers = _dataset("customers", customer_cols, [
             DatasetRelationship(to="orders",
-                      join_pairs=[["id", "customer_id"]],
+                      from_columns=["id"], to_columns=["customer_id"],
                       cardinality=invert_cardinality(cardinality)),
         ])
     return {"orders": orders, "customers": customers}
@@ -107,9 +107,9 @@ class TestSafeReachableBidirectional:
         customers = _dataset(
             "customers",
             [DatasetField(name="id", primary_key=True), DatasetField(name="region_id")],
-            [DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
+            [DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
                        cardinality=RelationshipCardinality.ONE_TO_MANY),
-             DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+             DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         regions = _dataset("regions", [DatasetField(name="id", primary_key=True)])
         models = {"orders": orders, "customers": customers, "regions": regions}
@@ -122,7 +122,7 @@ class TestSafeReachableBidirectional:
         orders = _dataset(
             "orders",
             [DatasetField(name="id", primary_key=True), DatasetField(name="bill_id")],
-            [DatasetRelationship(to="customers", join_pairs=[["bill_id", "id"]],
+            [DatasetRelationship(to="customers", from_columns=["bill_id"], to_columns=["id"],
                        cardinality=RelationshipCardinality.MANY_TO_ONE,
                        name="billing_customer")],
         )

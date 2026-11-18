@@ -118,15 +118,15 @@ CUSTOMERS = TableSpec(
 
 def _ev_columns() -> list[DatasetField]:
     return [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="ts", datatype=DataType.DATETIME),
         DatasetField(name="d", datatype=DataType.DATE),
-        DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="code", datatype=DataType.TEXT),
-        DatasetField(name="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="customer_id", datatype=DataType.INT),
+        DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+        DatasetField(name="code", datatype=DataType.STRING),
+        DatasetField(name="amount", datatype=DataType.FLOAT),
+        DatasetField(name="customer_id", datatype=DataType.INTEGER),
         DatasetField(name="raw_ts"),  # untyped
-        DatasetField(name="ts_copy", sql="ts", datatype=DataType.TIMESTAMP),  # derived
+        DatasetField(name="ts_copy", sql="ts", datatype=DataType.DATETIME),  # derived
     ]
 
 
@@ -134,7 +134,7 @@ def ev_dataset(*, name: str = "ev", table: str = "ev") -> SlayerDataset:
     return SlayerDataset(
         name=name, sql_table=table, data_source="test", default_time_dimension="ts",
         fields=_ev_columns(),
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -142,8 +142,8 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -151,7 +151,7 @@ def customers_dataset() -> SlayerDataset:
 def mixed_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="mixed", sql_table="mixed", data_source="test",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="ts", datatype=DataType.TIMESTAMP)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="ts", datatype=DataType.DATETIME)],
     )
 
 
@@ -162,7 +162,7 @@ def daily_stage_dataset() -> SlayerDataset:
         source_queries=[SlayerQuery.model_validate({
             "population": "ev",
             "time_dimensions": [{"field": "ts", "granularity": "day"}],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })],
     )
 

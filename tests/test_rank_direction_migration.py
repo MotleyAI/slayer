@@ -175,7 +175,7 @@ def _query_dict(version: Any = 4) -> dict:
     k = keys_for(entity="SlayerQuery", version=version or mig.CURRENT_VERSIONS["SlayerQuery"])
     data: dict = {
         k.population: "sales",
-        "dimensions": ["region", {"expression": "rank(sum(amount, partition_by=region))", "name": "rk"}],
+        "dimensions": ["region", {"field": "rank(sum(amount, partition_by=region))", "alias": "rk"}],
         k.query_metrics: [
             "rank(sum(amount)) + 1",
             {k.expression: "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", "name": "top"},
@@ -430,7 +430,7 @@ def served_storage():
 def test_rest_fresh_payload_fails(served_storage):
     client = TestClient(create_app(storage=served_storage))
     resp = client.post("/query", json={"population": "sales", "dimensions": ["region"],
-                                       "metrics": [{"expression": BARE}]})
+                                       "metrics": [{"metric": BARE}]})
     assert 400 <= resp.status_code < 500
     assert "direction='desc'" in resp.text
     assert "direction='asc'" in resp.text

@@ -27,6 +27,8 @@ from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import type_and_split_filters
 from slayer.ir.source_bundle import resolve_scope
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1838_fixtures import (
     DatasetMetric,
     SPEND_BAND,
@@ -159,11 +161,11 @@ async def test_keyless_dual_role_error_shape_matches_local() -> None:
     same wording, differing only in the offending key and the available dims."""
     local_query = q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        metrics=[DatasetMetric(expression=LOCAL_AGG, name="rt")],
+        metrics=[QueryMetric(metric=LOCAL_AGG, alias="rt")],
     )
     cm_query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[DatasetMetric(expression=CM_AGG, name="rt")],
+        metrics=[QueryMetric(metric=CM_AGG, alias="rt")],
     )
     with pytest.raises(ValueError) as local_ei:
         await gen(local_query)
@@ -182,7 +184,7 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
     )
     resp = await engine.execute(query)
     got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
@@ -206,7 +208,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         filter=[f"{CM_AGG} > 100"],
     )
     resp = await engine.execute(query)
@@ -227,7 +229,7 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     )
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         filter=[f"{CM_AGG} > 100"],
     )
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
@@ -247,7 +249,7 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         order=[{"field": "sband", "direction": "asc"}],
     )
     resp = await engine.execute(query)
@@ -266,7 +268,7 @@ async def test_keyless_filter_over_own_local_aggregate_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         filter=[f"{LOCAL_AGG} > 25"],
     ))
     got = {r["orders.cband"]: r["orders.m"] for r in resp.data}
@@ -279,7 +281,7 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         order=[{"field": "cband", "direction": "asc"}],
     ))
     rows = [(r["orders.cband"], r["orders.m"]) for r in resp.data]

@@ -281,7 +281,7 @@ def _self_building_backend() -> SelfBuildingBackend:
     backend = SelfBuildingBackend()
     backend.datasources["shop"] = _valid()
     model = SlayerDataset.model_validate({"name": "orders", "data_source": "shop", "sql_table": "orders",
-                                        "fields": [{"name": "id", "datatype": "INT", "primary_key": True}]})
+                                        "fields": [{"name": "id", "datatype": "Integer", "primary_key": True}]})
     backend.raw_models[("shop", "orders")] = model.model_dump(mode="json", exclude_none=True)
     memory = Memory.model_validate({"id": "1", "learning": "note", "entities": ["shop.orders"]})
     backend.memories["1"] = memory.model_dump(mode="json")

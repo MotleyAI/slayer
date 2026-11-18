@@ -258,8 +258,8 @@ _MISSING = [
     pytest.param({"dimensions": ["region"], "metrics": [_m("sum(amount)", "a")],
                   "order": [{"field": "rank(sum(amount))", "direction": "asc"}]},
                  "rank", id="order"),
-    pytest.param({"dimensions": ["region", {"expression": "rank(sum(amount, partition_by=region))",
-                                            "name": "rk"}],
+    pytest.param({"dimensions": ["region", {"field": "rank(sum(amount, partition_by=region))",
+                                            "alias": "rk"}],
                   "metrics": [_m("sum(amount)", "a")]}, "rank", id="computed-dimension"),
     pytest.param({"dimensions": ["region"],
                   "metrics": [_m("weighted_avg(amount, weight=rank(sum(amount, "

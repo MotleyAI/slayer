@@ -38,18 +38,18 @@ def _catalog() -> FacadeCatalog:
     customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="email", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="email", datatype=DataType.STRING),
         ],
     )
     orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="total", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="total", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
     return build_catalog(datasets_by_datasource={"jaffle": [customers, orders]})
@@ -137,13 +137,13 @@ def test_qualified_table_exact_match_wins_over_public_alias() -> None:
     a different schema's same-named table)."""
     public_orders = SlayerDataset(
         name="orders", data_source="public", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="public_only_col", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="public_only_col", datatype=DataType.STRING)],
     )
     jaffle_orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="jaffle_only_col", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="jaffle_only_col", datatype=DataType.STRING)],
     )
     catalog = build_catalog(datasets_by_datasource={
         "public": [public_orders], "jaffle": [jaffle_orders],
@@ -252,7 +252,7 @@ def test_translate_accepts_lazy_catalog_executor_factory() -> None:
     class _RecordingExecutor:
         def execute(self, *, parsed, sql):
             return RowBatch(
-                columns=[FacadeColumn(name="x", type=DataType.INT)],
+                columns=[FacadeColumn(name="x", type=DataType.INTEGER)],
                 rows=[{"x": 1}],
             )
 

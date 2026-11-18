@@ -66,9 +66,9 @@ def region_events_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="region_events", data_source="test", sql_table="region_events",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="value", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="value", datatype=DataType.FLOAT),
         ],
     )
 
@@ -87,15 +87,15 @@ def dev1900_datasets() -> List[SlayerDataset]:
     models = dev1840_datasets()
     regions = _regions(models)
     regions.relationships.append(DatasetRelationship(
-        to="region_events", join_pairs=[["id", "region_id"]],
+        to="region_events", from_columns=["id"], to_columns=["region_id"],
         cardinality=RelationshipCardinality.ONE_TO_MANY,
     ))
     regions.fields.append(
-        DatasetField(name="bad_pop", datatype=DataType.DOUBLE, sql="pop + region_events.value"))
+        DatasetField(name="bad_pop", datatype=DataType.FLOAT, sql="pop + region_events.value"))
     regions.fields.append(
-        DatasetField(name="bad_pop2", datatype=DataType.DOUBLE, sql="bad_pop * 2"))
+        DatasetField(name="bad_pop2", datatype=DataType.FLOAT, sql="bad_pop * 2"))
     regions.fields.append(
-        DatasetField(name="derived_pop", datatype=DataType.DOUBLE, sql="pop * 2"))
+        DatasetField(name="derived_pop", datatype=DataType.FLOAT, sql="pop * 2"))
     # A region-owned aggregation whose weight defaults to the BARE owner-local
     # derived column bad_pop (which crosses the fanning hop) — the bare-default
     # counterpart to customers' dotted wsumx.
@@ -114,7 +114,7 @@ def dev1900_datasets() -> List[SlayerDataset]:
         name="wgood", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.derived_pop")]))
     cust.fields.append(DatasetField(
-        name="bad_pop_spend", datatype=DataType.DOUBLE, sql="spend",
+        name="bad_pop_spend", datatype=DataType.FLOAT, sql="spend",
         filter="regions.bad_pop > 0"))
 
     models.append(region_events_dataset())
@@ -143,9 +143,9 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
     models = dev1900_datasets()
     regions = _regions(models)
     regions.fields.append(
-        DatasetField(name="unparseable", datatype=DataType.DOUBLE, sql=")((( bad"))
+        DatasetField(name="unparseable", datatype=DataType.FLOAT, sql=")((( bad"))
     regions.fields.append(
-        DatasetField(name="cyc", datatype=DataType.DOUBLE, sql="cyc + 1"))
+        DatasetField(name="cyc", datatype=DataType.FLOAT, sql="cyc + 1"))
     customers = _customers(models)
     customers.aggregations.append(Aggregation(
         name="wunparse", expression="SUM({value} * {weight})",
@@ -157,7 +157,7 @@ def unparseable_derived_datasets() -> List[SlayerDataset]:
         name="wexpr_unparse", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql=")((( bad")]))
     customers.fields.append(DatasetField(
-        name="flagged_spend", datatype=DataType.DOUBLE, sql="spend",
+        name="flagged_spend", datatype=DataType.FLOAT, sql="spend",
         filter="regions.unparseable > 0"))
     return models
 

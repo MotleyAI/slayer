@@ -222,7 +222,7 @@ def _probe(client: SlayerSQLClient) -> tuple[dict[str, ResultColumnType], list[w
 
 
 def _numeric_x(types: dict[str, ResultColumnType]) -> bool:
-    return list(types) == ["x"] and types["x"].type in (DataType.INT, DataType.DOUBLE)
+    return list(types) == ["x"] and types["x"].type in (DataType.INTEGER, DataType.FLOAT)
 
 
 @pytest.mark.parametrize(

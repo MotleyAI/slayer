@@ -44,23 +44,23 @@ def _norm(s: str) -> str:
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)
+    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.DOUBLE)
+    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.TEXT)
+    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
 
 
 def _ts(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.TIMESTAMP)
+    return DatasetField(name=name, sql=name, datatype=DataType.DATETIME)
 
 
 def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=pairs, **kw)
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], **kw)
 
 
 # Topology 1: linear chain Invoice → Subscription → Customer → Consumer
@@ -74,10 +74,10 @@ def _chain_datasets(
         name="Consumer", sql_table="Consumer", data_source="test",
         fields=[
             _pk(), _t("name"), _t("email"), _ts("signup_at"), _d("amount"),
-            DatasetField(name="geo", sql="geo", datatype=DataType.UNKNOWN),
+            DatasetField(name="geo", sql="geo", datatype=DataType.OPAQUE),
         ],
         metrics=[DatasetMetric(
-            name="aov", expression="sum(amount) / count(*)", datatype=DataType.DOUBLE
+            name="aov", expression="sum(amount) / count(*)", datatype=DataType.FLOAT
         )],
     )
     customer_joins = (
@@ -426,7 +426,7 @@ class TestAdjacentParallelParity:
         target = SlayerDataset(
             name="Target", sql_table="Target", data_source="test",
             fields=[_pk(), _t("grp"), _t("label"), _d("amount")],
-            metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)", datatype=DataType.DOUBLE)],
+            metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)", datatype=DataType.FLOAT)],
         )
         root = SlayerDataset(
             name="Root", sql_table="Root", data_source="test",
@@ -453,7 +453,7 @@ class TestAdjacentParallelParity:
     async def test_saved_measure_stays_ambiguous_hop(self, tmp_path) -> None:
         """Parity: a short-form saved measure fails closed too, not routed via the safe edge."""
         engine = await self._engine(tmp_path)
-        q = _root_q(metrics=[{"expression": "Target.aov"}])
+        q = _root_q(metrics=[{"metric": "Target.aov"}])
         with pytest.raises(AmbiguousRelationshipPathError):
             await _cols_sql(engine, q)
 
@@ -544,13 +544,13 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         short = _q(
             dimensions=["status"],
-            metrics=[{"expression": "sum(Consumer.amount)", "name": "s"},
-                      {"expression": "count(Consumer.*)", "name": "c"}],
+            metrics=[{"metric": "sum(Consumer.amount)", "alias": "s"},
+                      {"metric": "count(Consumer.*)", "alias": "c"}],
         )
         full = _q(
             dimensions=["status"],
-            metrics=[{"expression": "sum(Subscription.Customer.Consumer.amount)", "name": "s"},
-                      {"expression": "count(Subscription.Customer.Consumer.*)", "name": "c"}],
+            metrics=[{"metric": "sum(Subscription.Customer.Consumer.amount)", "alias": "s"},
+                      {"metric": "count(Subscription.Customer.Consumer.*)", "alias": "c"}],
         )
         await _assert_equiv(engine, short, full)
         # Both aggregates bind to the routed terminal, not the root — the SUM reads
@@ -590,12 +590,12 @@ class TestUniformSurfaces:
     async def test_short_form_main_time_dimension(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         short = _q(
-            metrics=[{"expression": "cumsum(sum(amount))", "name": "c"}],
+            metrics=[{"metric": "cumsum(sum(amount))", "alias": "c"}],
             time_dimensions=[{"field": "Consumer.signup_at", "granularity": "month"}],
             main_time_dimension="Consumer.signup_at",
         )
         full = _q(
-            metrics=[{"expression": "cumsum(sum(amount))", "name": "c"}],
+            metrics=[{"metric": "cumsum(sum(amount))", "alias": "c"}],
             time_dimensions=[{
                 "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
@@ -622,15 +622,15 @@ class TestTypeAndOpaque:
         short = await self._virtual_columns(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         }))
         full = await self._virtual_columns(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         }))
         assert short == full
-        assert DataType.TEXT in short.values()
+        assert DataType.STRING in short.values()
 
     async def test_opaque_routed_dimension_rejected(self, tmp_path) -> None:
         """A routed dimension onto an opaque (UNKNOWN) column is rejected for
@@ -647,9 +647,9 @@ class TestSavedMeasureRouting:
     async def test_routed_saved_measure_keeps_type_and_full_name(self, tmp_path) -> None:
         """Unnamed ``Consumer.aov`` ≡ its full-path form (same key, same type); surfaced key is the full routed path."""
         engine = await _chain_engine(tmp_path)
-        short = _q(dimensions=["status"], metrics=[{"expression": "Consumer.aov"}])
+        short = _q(dimensions=["status"], metrics=[{"metric": "Consumer.aov"}])
         full = _q(dimensions=["status"],
-                  metrics=[{"expression": "Subscription.Customer.Consumer.aov"}])
+                  metrics=[{"metric": "Subscription.Customer.Consumer.aov"}])
         await _assert_equiv(engine, short, full)
         cols, _ = await _cols_sql(engine, short)
         assert any(
@@ -661,23 +661,23 @@ class TestSavedMeasureRouting:
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice", "dimensions": ["status"],
-            "metrics": [{"expression": "Consumer.aov"}],
+            "metrics": [{"metric": "Consumer.aov"}],
         })])
         saved = await engine.save_dataset(qb)
         measure_cols = [c for c in saved.fields if c.name != "status"]
         assert len(measure_cols) == 1
-        assert measure_cols[0].datatype == DataType.DOUBLE
+        assert measure_cols[0].datatype == DataType.FLOAT
 
     async def test_routed_short_form_round_trips_through_storage(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })])
         await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"expression": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -689,11 +689,11 @@ class TestSavedMeasureRouting:
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice", "dimensions": ["status"],
-            "metrics": [{"expression": "Consumer.aov", "name": "a"}],
+            "metrics": [{"metric": "Consumer.aov", "alias": "a"}],
         })])
         await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"expression": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -730,12 +730,12 @@ class TestScoping:
             "name": "s1",
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -789,7 +789,7 @@ class TestSchemaDriftRouting:
         return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })])
 
     def _drops(self, datasets: list[SlayerDataset]):

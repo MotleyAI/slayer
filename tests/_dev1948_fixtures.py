@@ -53,9 +53,9 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
     )
 
@@ -65,13 +65,13 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -122,7 +122,7 @@ async def make_dev1948_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 def stage_x() -> SlayerQuery:
     return _query(
         name="x", population="customers", dimensions=["id", "tier"],
-        metrics=[{"expression": "sum(spend)", "name": "total_spend"}],
+        metrics=[{"metric": "sum(spend)", "alias": "total_spend"}],
     )
 
 
@@ -130,30 +130,30 @@ def stage_c() -> SlayerQuery:
     """Grain ``{id}`` so a join on ``id`` is provably to-one; ``tr`` carries the tier."""
     return _query(
         name="c", population="x", dimensions=["id"],
-        metrics=[{"expression": "sum(total_spend)", "name": "cspend"},
-                  {"expression": "max(tier)", "name": "tr"}],
+        metrics=[{"metric": "sum(total_spend)", "alias": "cspend"},
+                  {"metric": "max(tier)", "alias": "tr"}],
     )
 
 
 def orders_joined(*targets: str) -> Dict[str, Any]:
     """Query kwargs: ``orders`` extended with a ``customer_id = <target>.id`` join per target."""
     return {"population": "orders", "extensions": [DatasetExtension.model_validate({
-        "source_name": "orders",
-        "relationships": [{"to": t, "join_pairs": [["customer_id", "id"]]} for t in targets],
+        "dataset": "orders",
+        "relationships": [{"to": t, "from_columns": ["customer_id"], "to_columns": ["id"]} for t in targets],
     })]}
 
 
 def stage_b() -> SlayerQuery:
     return _query(
         name="b", **orders_joined("c"), dimensions=["c.tr"],
-        metrics=[{"expression": "sum(amount)", "name": "amt"}],
+        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
 
 
 def root_over_b() -> SlayerQuery:
     return _query(
         population="b", dimensions=["c__tr"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     )
 
 
@@ -166,10 +166,10 @@ def inline_orders(*, joins: List[DatasetRelationship]) -> SlayerDataset:
     return SlayerDataset(
         name="orders_inline", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         relationships=joins,
     )
@@ -180,9 +180,9 @@ def inline_join_list() -> List[SlayerQuery]:
     b = _query(
         name="b",
         population=inline_orders(
-            joins=[DatasetRelationship(to="c", join_pairs=[["customer_id", "id"]])]),
+            joins=[DatasetRelationship(to="c", from_columns=["customer_id"], to_columns=["id"])]),
         dimensions=["c.tr"],
-        metrics=[{"expression": "sum(amount)", "name": "amt"}],
+        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
     return [stage_x(), stage_c(), b, root_over_b()]
 
@@ -191,7 +191,7 @@ def stage_o() -> SlayerQuery:
     """Per-customer order totals."""
     return _query(
         name="o", population="orders", dimensions=["customer_id"],
-        metrics=[{"expression": "sum(amount)", "name": "amt_c"}],
+        metrics=[{"metric": "sum(amount)", "alias": "amt_c"}],
     )
 
 
@@ -201,17 +201,17 @@ def three_reads_list() -> List[SlayerQuery]:
         name="p",
         population="c",
         extensions=[DatasetExtension.model_validate({
-            "source_name": "c",
+            "dataset": "c",
             "relationships": [
-                {"to": "x", "join_pairs": [["id", "id"]]},
-                {"to": "o", "join_pairs": [["id", "customer_id"]]},
+                {"to": "x", "from_columns": ["id"], "to_columns": ["id"]},
+                {"to": "o", "from_columns": ["id"], "to_columns": ["customer_id"]},
             ],
         })],
         dimensions=["id", "x.tier", "o.amt_c"],
     )
     root = _query(
         population="p", dimensions=["x__tier"],
-        metrics=[{"expression": "sum(o__amt_c)", "name": "total"}],
+        metrics=[{"metric": "sum(o__amt_c)", "alias": "total"}],
     )
     return [stage_x(), stage_c(), stage_o(), p, root]
 
@@ -221,11 +221,11 @@ def semi_join_list() -> List[SlayerQuery]:
     b = _query(
         name="b", **orders_joined("c"), dimensions=["status"],
         filter=["c.cspend > 50"],
-        metrics=[{"expression": "sum(amount)", "name": "amt"}],
+        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
     root = _query(
         population="b", dimensions=["status"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     )
     return [stage_x(), stage_c(), b, root]
 
@@ -234,11 +234,11 @@ def producer_at_sibling_list() -> List[SlayerQuery]:
     """``s`` sources sibling ``c`` and carries a regroup producer over it."""
     s = _query(
         name="s", population="c", dimensions=["id", "tr"],
-        metrics=[{"expression": "sum(cspend, partition_by=[tr])", "name": "tier_total"}],
+        metrics=[{"metric": "sum(cspend, partition_by=[tr])", "alias": "tier_total"}],
     )
     root = _query(
         population="s", dimensions=["tr"],
-        metrics=[{"expression": "max(tier_total)", "name": "total"}],
+        metrics=[{"metric": "max(tier_total)", "alias": "total"}],
     )
     return [stage_x(), stage_c(), s, root]
 
@@ -247,7 +247,7 @@ def root_producer_list() -> List[SlayerQuery]:
     """The root itself carries a regroup producer over sibling ``c``."""
     root = _query(
         population="c", dimensions=["id", "tr"],
-        metrics=[{"expression": "sum(cspend, partition_by=[tr])", "name": "tier_total"}],
+        metrics=[{"metric": "sum(cspend, partition_by=[tr])", "alias": "tier_total"}],
     )
     return [stage_x(), stage_c(), root]
 
@@ -257,11 +257,11 @@ def shared_producer_list() -> List[SlayerQuery]:
     def stage(name: str) -> SlayerQuery:
         return _query(
             name=name, population="orders", dimensions=["status", "customer_id"],
-            metrics=[{"expression": "sum(amount, partition_by=[status])", "name": "st"}],
+            metrics=[{"metric": "sum(amount, partition_by=[status])", "alias": "st"}],
         )
     root = _query(
         population="s2", dimensions=["status"],
-        metrics=[{"expression": "max(st)", "name": "total"}],
+        metrics=[{"metric": "max(st)", "alias": "total"}],
     )
     return [stage("s1"), stage("s2"), root]
 
@@ -278,7 +278,7 @@ def pop_check_list() -> List[SlayerQuery]:
         )
     root = _query(
         population="s3", dimensions=["status"],
-        metrics=[{"expression": "max(st)", "name": "total"}],
+        metrics=[{"metric": "max(st)", "alias": "total"}],
     )
     return [stage("s1", [p]), stage("s2", [q]), stage("s3", [p, q]), root]
 
@@ -287,15 +287,15 @@ def stored_join_collision_list() -> List[SlayerQuery]:
     """A sibling named ``customers`` beside ``orders``' stored join to model ``customers``."""
     sibling = _query(
         name="customers", population="orders", dimensions=["status"],
-        metrics=[{"expression": "sum(amount)", "name": "a"}],
+        metrics=[{"metric": "sum(amount)", "alias": "a"}],
     )
     b = _query(
         name="b", population="orders", dimensions=["customers.tier"],
-        metrics=[{"expression": "sum(amount)", "name": "amt"}],
+        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
     root = _query(
         population="b", dimensions=["customers__tier"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     )
     return [sibling, b, root]
 

@@ -128,24 +128,24 @@ def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="city", datatype=DataType.TEXT),
-            DatasetField(name="product", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.INT),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="refunded_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="created_txt", datatype=DataType.TEXT),
-            DatasetField(name="eff", datatype=DataType.TIMESTAMP, sql="COALESCE(shipped_at, created_at)"),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="product", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+            DatasetField(name="refunded_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_txt", datatype=DataType.STRING),
+            DatasetField(name="eff", datatype=DataType.DATETIME, sql="COALESCE(shipped_at, created_at)"),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="regions", join_pairs=[["region", "code"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="regions", from_columns=["region"], to_columns=["code"]),
         ],
     )
 
@@ -154,14 +154,14 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="signup_ts", datatype=DataType.TIMESTAMP),
-            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="discount", datatype=DataType.DOUBLE),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="signup_ts", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
     )
 
@@ -171,12 +171,12 @@ def accounts_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="accounts", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="signup_ts", datatype=DataType.TIMESTAMP),
-            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="signup_ts", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
+        relationships=[DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
                          cardinality=RelationshipCardinality.ONE_TO_MANY)],
     )
 
@@ -185,11 +185,11 @@ def balances_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="balances", sql_table="balances", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
-            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -198,9 +198,9 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="code", datatype=DataType.TEXT),
-            DatasetField(name="manager", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="manager", datatype=DataType.STRING),
         ],
     )
 
@@ -212,7 +212,7 @@ def monthly_dataset() -> SlayerDataset:
         source_queries=[SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["refunded_at"],
             "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })],
     )
 

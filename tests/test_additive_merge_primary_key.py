@@ -10,7 +10,7 @@ from slayer.live_schema.ingestion import _additive_merge_existing
 def _dataset(*, keys: set[str], columns: tuple[tuple[str, str | None], ...]) -> SlayerDataset:
     return SlayerDataset(
         name="supplies", sql_table="supplies", data_source="ds",
-        fields=[DatasetField(name=name, sql=sql, datatype=DataType.TEXT, primary_key=name in keys) for name, sql in columns],
+        fields=[DatasetField(name=name, sql=sql, datatype=DataType.STRING, primary_key=name in keys) for name, sql in columns],
     )
 
 
@@ -54,7 +54,7 @@ def test_renamed_live_column_takes_its_key_and_comment():
     """A live ``_count`` is the model column ``count_col``."""
     def counts(*, key: bool, description: str | None) -> SlayerDataset:
         return SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-            DatasetField(name="count_col", sql="_count", datatype=DataType.INT, primary_key=key, description=description),
+            DatasetField(name="count_col", sql="_count", datatype=DataType.INTEGER, primary_key=key, description=description),
         ])
 
     result = _additive_merge_existing(
@@ -69,10 +69,10 @@ def test_renamed_live_column_takes_its_key_and_comment():
 
 def test_computed_column_named_like_the_key_takes_no_key_metadata():
     stored = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-        DatasetField(name="id", sql="id + 1", datatype=DataType.INT),
+        DatasetField(name="id", sql="id + 1", datatype=DataType.INTEGER),
     ])
     fresh = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True, unique=True),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True, unique=True),
     ])
     column = _additive_merge_existing(persisted=stored, fresh=fresh).merged.get_field("id")
     assert column is not None
@@ -91,8 +91,8 @@ def test_key_metadata_follows_the_physical_column():
     """A stored ``id`` reading physical ``sku`` describes ``sku``, not the live ``id``."""
     stored = _dataset(keys=set(), columns=(("id", "sku"), ("sku", None)))
     fresh = SlayerDataset(name="supplies", sql_table="supplies", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.TEXT, primary_key=True, unique=True),
-        DatasetField(name="sku", datatype=DataType.TEXT, primary_key=True),
+        DatasetField(name="id", datatype=DataType.STRING, primary_key=True, unique=True),
+        DatasetField(name="sku", datatype=DataType.STRING, primary_key=True),
     ])
     merged = _additive_merge_existing(persisted=stored, fresh=fresh).merged
     assert _keys(merged) == set()

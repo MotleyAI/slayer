@@ -37,10 +37,10 @@ from tests._deprecated_input_helpers import (
     strict,
 )
 
-STAGE_A = {"name": "a", "population": "orders", "dimensions": ["status"], "metrics": [{"expression": "count(*)", "name": "n"}]}
-STAGE_B = {"name": "b", "population": "a", "metrics": [{"expression": "sum(n)", "name": "total"}]}
-ROOT_ON_A = {"population": "a", "metrics": [{"expression": "sum(n)", "name": "grand"}]}
-ROOT_ON_B = {"population": "b", "metrics": [{"expression": "sum(total)", "name": "grand"}]}
+STAGE_A = {"name": "a", "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]}
+STAGE_B = {"name": "b", "population": "a", "metrics": [{"metric": "sum(n)", "alias": "total"}]}
+ROOT_ON_A = {"population": "a", "metrics": [{"metric": "sum(n)", "alias": "grand"}]}
+ROOT_ON_B = {"population": "b", "metrics": [{"metric": "sum(total)", "alias": "grand"}]}
 
 #: (stages, deprecated_input warnings the run reports)
 STAGED = {

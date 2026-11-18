@@ -125,13 +125,13 @@ async def test_inner_join_restored(env) -> None:
 
 
 async def test_one_to_many_declaration_restored(env) -> None:
-    to_orders = DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
+    to_orders = DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
                           cardinality=RelationshipCardinality.ONE_TO_MANY)
     result = await export_datasets(env, customers(joins=[to_orders]), orders(metrics=BASIC_MEASURES, joins=[]))
     models = by_name(convert_document(env, result.document))
     join = _join(models["customers"], "orders")
     assert join.cardinality is RelationshipCardinality.ONE_TO_MANY
-    assert join.join_pairs == [["id", "customer_id"]]
+    assert join.column_pairs == [("id", "customer_id")]
     assert models["orders"].relationships == []
 
 

@@ -14,8 +14,7 @@ from sqlglot import exp
 
 from slayer.core.errors import SlayerError
 from slayer.core.keys import AggregateKey
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
 from slayer.storage.yaml_storage import YAMLStorage
@@ -65,26 +64,26 @@ async def engine(request):
 
 
 async def _value(engine, expression: str) -> float:
-    resp = await engine.execute(orders_q(metrics=[{"expression": expression, "name": "w"}]))
+    resp = await engine.execute(orders_q(metrics=[{"metric": expression, "alias": "w"}]))
     return float(resp.data[0]["orders.w"])
 
 
 async def _by(engine, expression: str, *, dim: str, **kw) -> dict:
     resp = await engine.execute(orders_q(
-        dimensions=[dim], metrics=[{"expression": expression, "name": "w"}], **kw))
+        dimensions=[dim], metrics=[{"metric": expression, "alias": "w"}], **kw))
     return {r[f"orders.{dim}"]: float(r["orders.w"]) for r in resp.data}
 
 
 async def _by_month(engine, expression: str) -> dict:
     resp = await engine.execute(orders_q(
-        time_dimensions=TD, metrics=[{"expression": expression, "name": "w"}]))
+        time_dimensions=TD, metrics=[{"metric": expression, "alias": "w"}]))
     return {month_key(r["orders.customers.signup_at"]): float(r["orders.w"])
             for r in resp.data if r["orders.customers.signup_at"] is not None}
 
 
 def _home_path(expression: str) -> tuple:
     elab = elaborate_query(
-        query=orders_q(metrics=[{"expression": expression, "name": "m"}]), bundle=bundle1901())
+        query=orders_q(metrics=[{"metric": expression, "alias": "m"}]), bundle=bundle1901())
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
@@ -145,7 +144,7 @@ class TestDefaultInFilterAndOrder:
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_filter_position(self, engine, agg: str) -> None:
         threshold = (WCS_BY_STATUS["ok"] + WCS_BY_STATUS["new"]) / 2
-        query = orders_q(dimensions=["status"], metrics=[{"expression": "sum(amount)", "name": "s"}],
+        query = orders_q(dimensions=["status"], metrics=[{"metric": "sum(amount)", "alias": "s"}],
                          filter=[f"{agg}(amount) > {threshold}"])
         resp = await engine.execute(query)
         assert {r["orders.status"]: float(r["orders.s"]) for r in resp.data} \
@@ -156,7 +155,7 @@ class TestDefaultInFilterAndOrder:
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_order_key(self, engine, agg: str) -> None:
-        query = orders_q(dimensions=["status"], metrics=[{"expression": "sum(amount)", "name": "s"}],
+        query = orders_q(dimensions=["status"], metrics=[{"metric": "sum(amount)", "alias": "s"}],
                          order=[{"field": f"{agg}(amount)", "direction": "asc"}])
         resp = await engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == sorted(
@@ -234,7 +233,7 @@ async def _gen(expression: str, *, source_dataset: str = "orders") -> str:
     models = sorted(dev1901_datasets(), key=lambda m: m.name != source_dataset)
     return await _engine_generate(
         query=SlayerQuery(population=source_dataset,
-                          metrics=[DatasetMetric(expression=expression, name="w")]),
+                          metrics=[QueryMetric(metric=expression, alias="w")]),
         dataset=models[0], extra_datasets=models[1:], dialect="sqlite", validate=False)
 
 
@@ -257,8 +256,8 @@ class TestDefaultAndTwinOneProducer:
     """``weight`` defaults to ``customers.hr.pop``: default and twin share one producer."""
 
     QUERY = {"population": "orders", "dimensions": ["customers.hr.rname"],
-             "metrics": [{"expression": "wpop(amount)", "name": "a"},
-                          {"expression": "wpop(amount, weight=customers.hr.pop)", "name": "b"}]}
+             "metrics": [{"metric": "wpop(amount)", "alias": "a"},
+                          {"metric": "wpop(amount, weight=customers.hr.pop)", "alias": "b"}]}
 
     async def test_both_names_one_value(self, engine1954) -> None:
         resp = await engine1954.execute(SlayerQuery.model_validate(self.QUERY))

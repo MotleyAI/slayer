@@ -28,30 +28,30 @@ class TestUserScope:
         assert [d.name for d in stages[-1].dimensions or []] == ["status"]
 
     def test_extension_base_is_respelled(self) -> None:
-        root = query(population="x", extensions=[{"source_name": "x", "metrics": [m("sum(a * 2)", "t")]}],
+        root = query(population="x", extensions=[{"dataset": "x", "metrics": [m("sum(a * 2)", "t")]}],
                      metrics=["t"])
         stages, _ = localize_stages([_x(), root])
         assert stages[-1].population == USER_X
         (spec,) = stages[-1].extensions or []
         assert isinstance(spec, DatasetExtension)
-        assert spec.source_name == USER_X
+        assert spec.dataset == USER_X
 
     def test_extension_join_target_is_respelled(self) -> None:
-        root = query(population="customers", extensions=[{"source_name": "customers", "relationships": [
-            {"to": "x", "join_pairs": [["id", "customer_id"]]}]}], metrics=[m("sum(x.a)", "t")])
+        root = query(population="customers", extensions=[{"dataset": "customers", "relationships": [
+            {"to": "x", "from_columns": ["id"], "to_columns": ["customer_id"]}]}], metrics=[m("sum(x.a)", "t")])
         stages, _ = localize_stages([_x(), root])
         (spec,) = stages[-1].extensions or []
         assert isinstance(spec, DatasetExtension)
         assert [(j.to, j.name) for j in spec.relationships or []] == [(USER_X, None)]
 
     def test_a_model_name_that_is_not_a_stage_is_untouched(self) -> None:
-        root = query(population="orders", extensions=[{"source_name": "orders", "relationships": [
-            {"to": "customers", "join_pairs": [["customer_id", "id"]]}]}],
+        root = query(population="orders", extensions=[{"dataset": "orders", "relationships": [
+            {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
             metrics=[m("sum(amount)", "t")])
         stages, displays = localize_stages([_x(), root])
         (spec,) = stages[-1].extensions or []
         assert isinstance(spec, DatasetExtension)
-        assert spec.source_name == "orders"
+        assert spec.dataset == "orders"
         assert [j.to for j in spec.relationships or []] == ["customers"]
         assert list(displays) == [USER_X]
 

@@ -176,7 +176,7 @@ def test_sum_boolean_wraps_case_when() -> None:
     assert "CASEWHEN" in norm
     assert "THEN1ELSE0END" in norm
     assert "IS_PAID" in col.sql.upper()
-    assert col.datatype == DataType.INT
+    assert col.datatype == DataType.INTEGER
 
 
 # ───────────────────────── Part 3.3 — offset_window -> time_shift ─────────────────────────
@@ -1328,7 +1328,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
     m = _metric(result, "us_paid_orders")
     assert re.fullmatch(r"sum\(\w+\)", m.expression)
     col = _column_for(result, m.expression)
-    assert col.datatype == DataType.INT
+    assert col.datatype == DataType.INTEGER
     norm = (col.sql or "").upper().replace(" ", "")
     assert "CASEWHEN" in norm
     assert "THEN1ELSE0END" in norm

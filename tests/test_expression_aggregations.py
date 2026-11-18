@@ -30,10 +30,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, TimeDimension
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -56,32 +55,32 @@ def _orders(**overrides) -> SlayerDataset:
         sql_table="orders",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="cost", datatype=DataType.DOUBLE),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="tax", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="cost", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="tax", datatype=DataType.FLOAT),
             DatasetField(
                 name="quantity",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 allowed_aggregations=["min", "max"],
             ),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="email", datatype=DataType.TEXT),
-            DatasetField(name="net", sql="amount - tax", datatype=DataType.DOUBLE),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="email", datatype=DataType.STRING),
+            DatasetField(name="net", sql="amount - tax", datatype=DataType.FLOAT),
             DatasetField(
                 name="ok_amount",
                 sql="amount",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 filter="status = 'ok'",
             ),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
         aggregations=[Aggregation(name="my_agg", expression="AVG({value})")],
     )
@@ -95,8 +94,8 @@ def _customers() -> SlayerDataset:
         data_source="test",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="discount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -242,12 +241,12 @@ class TestExpressionSql:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount - cost)"}],
+            "metrics": [{"metric": "sum(amount - cost)"}],
         })
         root = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": ["status"],
-            "metrics": [{"expression": "max(amount_cost_sum)"}],
+            "metrics": [{"metric": "max(amount_cost_sum)"}],
         })
         model = _orders()
         with tempfile.TemporaryDirectory() as d:
@@ -267,14 +266,14 @@ class TestExpressionSql:
                 dimensions=[
                     "region",
                     {
-                        "expression": (
+                        "field": (
                             "CASE WHEN sum(amount - cost, partition_by=region) > 0 "
                             "THEN 1 ELSE 0 END"
                         ),
-                        "name": "profitable",
+                        "alias": "profitable",
                     },
                 ],
-                metrics=[DatasetMetric(expression="sum(amount)", name="t")],
+                metrics=[QueryMetric(metric="sum(amount)", alias="t")],
             )
         )
         assert re.search(r"SUM\s*\(.*?amount.*?-.*?cost.*?\)", _norm(resp.sql)), resp.sql
@@ -284,13 +283,13 @@ class TestExpressionSql:
             dimensions=[
                 "region",
                 {
-                    "expression": (
+                    "field": (
                         "CASE WHEN sum(amount - cost) > 0 THEN 1 ELSE 0 END"
                     ),
-                    "name": "profitable",
+                    "alias": "profitable",
                 },
             ],
-            metrics=[DatasetMetric(expression="sum(amount)", name="t")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
         )
         with pytest.raises(ValueError, match="partition_by"):
             await _dry(q)
@@ -313,7 +312,7 @@ class TestExpressionNaming:
 
     async def test_rename_override(self) -> None:
         resp = await _dry(
-            _q(metrics=[{"expression": "sum(amount - cost)", "name": "profit"}])
+            _q(metrics=[{"metric": "sum(amount - cost)", "alias": "profit"}])
         )
         assert "orders.profit" in resp.columns
         assert "orders.amount_cost_sum" not in resp.columns

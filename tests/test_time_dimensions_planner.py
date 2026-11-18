@@ -57,12 +57,12 @@ def _orders_dataset() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="reviewed_at", datatype=DataType.DATE),
-            DatasetField(name="status", datatype=DataType.TEXT),  # non-temporal
+            DatasetField(name="status", datatype=DataType.STRING),  # non-temporal
         ],
     )
 
@@ -73,9 +73,9 @@ def _customers_dataset() -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="signed_up_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="signed_up_at", datatype=DataType.DATETIME),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -86,13 +86,13 @@ def _orders_with_customers_join() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -103,13 +103,13 @@ def _customers_with_regions_join() -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="signed_up_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="signed_up_at", datatype=DataType.DATETIME),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
     )
 
@@ -120,9 +120,9 @@ def _regions_dataset() -> SlayerDataset:
         data_source="prod",
         sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="opened_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="opened_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -141,12 +141,12 @@ def _orders_with_derived_temporal() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="created_day",
                 sql="date_trunc('day', created_at)",
-                datatype=DataType.TIMESTAMP,
+                datatype=DataType.DATETIME,
             ),
         ],
     )
@@ -223,7 +223,7 @@ class TestBindTimeDimension:
         # The temporal-column rule moved from the binder to the checker (P9).
         with pytest.raises(TimeDimensionFieldError, match="temporal"):
             check_time_dimension_field(
-                name="status", field_type=DataType.TEXT,
+                name="status", field_type=DataType.STRING,
                 requested_granularity=TimeGranularity.MONTH,
             )
 
@@ -593,7 +593,7 @@ class TestStagePlannerTimeDimensions:
                     field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"expression": "sum(amount)"}]})
+            ], "metrics": [{"metric": "sum(amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert len(planned.projection) == 2
         assert any(isinstance(s.key, TimeTruncKey) for s in planned.row_slots)
@@ -607,7 +607,7 @@ class TestStagePlannerTimeDimensions:
                     field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"expression": "sum(amount)"}]})
+            ], "metrics": [{"metric": "sum(amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert planned.stage_schema is not None
         cols = planned.stage_schema.fields

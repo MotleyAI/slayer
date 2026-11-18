@@ -37,7 +37,7 @@ from slayer.core.keys import (
     ValueKey,
 )
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.cardinality.relationship_safety import grain_determines
 
 from tests import _dev1840_fixtures as f40
@@ -147,13 +147,13 @@ def _no_grain_warnings(resp) -> None:
 def _sales_variant() -> SlayerDataset:
     s = sales_dataset()
     extra_cols = [
-        DatasetField(name="city_upper", datatype=DataType.TEXT, sql="UPPER(city)"),
-        DatasetField(name="city_len", datatype=DataType.INT, sql="LENGTH(city)"),
-        DatasetField(name="prod_flag", datatype=DataType.INT,
+        DatasetField(name="city_upper", datatype=DataType.STRING, sql="UPPER(city)"),
+        DatasetField(name="city_len", datatype=DataType.INTEGER, sql="LENGTH(city)"),
+        DatasetField(name="prod_flag", datatype=DataType.INTEGER,
                sql="CASE WHEN product = 'P' THEN 1 ELSE 0 END"),
-        DatasetField(name="bad", datatype=DataType.INT, sql="amount +* )"),
-        DatasetField(name="city_q", datatype=DataType.TEXT, sql="city", filter="product = 'Q'"),
-        DatasetField(name="city_n", datatype=DataType.TEXT, sql="city", filter="region = 'North'"),
+        DatasetField(name="bad", datatype=DataType.INTEGER, sql="amount +* )"),
+        DatasetField(name="city_q", datatype=DataType.STRING, sql="city", filter="product = 'Q'"),
+        DatasetField(name="city_n", datatype=DataType.STRING, sql="city", filter="region = 'North'"),
     ]
     wavg = "SUM({value} * {weight}) / SUM({weight})"
     extra_aggs = [
@@ -299,9 +299,9 @@ class TestAttachedParameterGrain:
     async def test_expression_grained_parameter(self, variant_engine, grain):
         resp = await variant_engine.execute(chain_q(
             dimensions=[_dim("customers.region_id * 10", "rid10")],
-            metrics=[DatasetMetric(
-                expression=f"wsum(customers.region_id, weight=sum(amount, partition_by={grain}))",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric=f"wsum(customers.region_id, weight=sum(amount, partition_by={grain}))",
+                alias="w")]))
         _assert_cells(
             _cells(resp, ["corders.rid10"], "corders.w", norm=[int]), RID10_WSUM)
 
@@ -371,8 +371,8 @@ class TestDiagnosticNaming:
     def _joined(self, mode: str = "broadcast") -> SlayerQuery:
         return chain_q(
             dimensions=["customers.regions.name"], to_many_handling=mode,
-            metrics=[DatasetMetric(expression="avg(sum(amount, partition_by=amount))",
-                                   name="a")])
+            metrics=[QueryMetric(metric="avg(sum(amount, partition_by=amount))",
+                                   alias="a")])
 
     async def test_joined_dimension_broadcast_named_dotted(self, exec_engine):
         resp = await exec_engine.execute(self._joined())
@@ -407,7 +407,7 @@ class TestDiagnosticNaming:
 
     async def test_unnamed_expression_never_internal_alias(self, exec_engine):
         resp = await exec_engine.execute(
-            _acr(dimensions=["region", {"expression": "product == 'P'"}],
+            _acr(dimensions=["region", {"field": "product == 'P'"}],
                  to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
@@ -417,7 +417,7 @@ class TestDiagnosticNaming:
     async def test_degenerate_warning_grains_dotted(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            metrics=[DatasetMetric(expression="avg(sum(amount))", name="a")]))
+            metrics=[QueryMetric(metric="avg(sum(amount))", alias="a")]))
         (w,) = degenerate_warnings(resp)
         msg = w.human_message()
         assert "customers.regions.name" in msg
@@ -426,9 +426,9 @@ class TestDiagnosticNaming:
     async def test_parameter_grain_listing_dotted(self, exec_engine):
         query = chain_q(
             dimensions=["customers.regions.name"],
-            metrics=[DatasetMetric(
-                expression="weighted_avg(sum(amount, partition_by=customers.regions.name), "
-                        "weight=id)", name="w")])
+            metrics=[QueryMetric(
+                metric="weighted_avg(sum(amount, partition_by=customers.regions.name), "
+                        "weight=id)", alias="w")])
         with pytest.raises(ParameterGrainError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)
@@ -440,8 +440,8 @@ class TestBroadcastReasons:
     async def test_undetermined_to_one_column_names_it(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            metrics=[DatasetMetric(expression="avg(sum(amount, partition_by=amount))",
-                                   name="a")],
+            metrics=[QueryMetric(metric="avg(sum(amount, partition_by=amount))",
+                                   alias="a")],
             to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
@@ -452,8 +452,8 @@ class TestBroadcastReasons:
         resp = await fanning_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
             "dimensions": ["tier", _dim("last_status == 'ok'", "lok")],
-            "metrics": [{"expression": "avg(sum(spend, partition_by=[tier, region_id]))",
-                          "name": "a"}],
+            "metrics": [{"metric": "avg(sum(spend, partition_by=[tier, region_id]))",
+                          "alias": "a"}],
             "to_many_handling": "broadcast"}))
         (w,) = broadcast_warnings(resp)
         (d,) = w.dimensions
@@ -521,8 +521,8 @@ class TestDerivedColumnSpelling:
     async def test_derived_parameter_executes(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=f"weighted_avg({INNER_CR}, weight=city_len)",
-                                   name="w")]))
+            metrics=[QueryMetric(metric=f"weighted_avg({INNER_CR}, weight=city_len)",
+                                   alias="w")]))
         _assert_cells(
             _cells(resp, ["sales.region"], "sales.w"),
             {(r,): v for r, v in CITY_LEN_WAVG.items()})
@@ -536,8 +536,8 @@ class TestDerivedColumnSpelling:
     async def test_undetermined_derived_parameter_refuses(self, variant_engine):
         query = sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression=f"weighted_avg({INNER_CR}, weight=prod_flag)", name="w")])
+            metrics=[QueryMetric(
+                metric=f"weighted_avg({INNER_CR}, weight=prod_flag)", alias="w")])
         with pytest.raises(ParameterGrainError):
             await variant_engine.execute(query)
 
@@ -668,7 +668,7 @@ DISPLAY_CASES: List[Tuple[ValueKey, List[str]]] = [
      ["city", " in ", "'Alpha'", "'Beta'"]),
     (SqlFragmentKey(template="LENGTH({r0}) + {r1}", refs=(CITY, FieldKey(leaf="quantity"))),
      ["LENGTH(city) + quantity"]),
-    (CastKey(source=CITY, type_text="INT", data_type=DataType.INT), ["CAST(city AS INT)"]),
+    (CastKey(source=CITY, type_text="INT", data_type=DataType.INTEGER), ["CAST(city AS INT)"]),
     (ArrayLiteralKey(values=(_lit("Alpha"), _lit("Beta"))), ["['Alpha', 'Beta']"]),
     (ListSetKey(source=FieldKey(leaf="tags")), ["tags"]),
 ]

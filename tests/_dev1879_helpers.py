@@ -29,18 +29,18 @@ def mart_dataset(
         sql_table="mart",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="target_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="logo_churn", datatype=DataType.DOUBLE),
-            DatasetField(name="logo_bop", datatype=DataType.DOUBLE),
-            DatasetField(name="cmrr_eop", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="target_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="logo_churn", datatype=DataType.FLOAT),
+            DatasetField(name="logo_bop", datatype=DataType.FLOAT),
+            DatasetField(name="cmrr_eop", datatype=DataType.FLOAT),
             *extra_columns,
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="targets", join_pairs=[["target_id", "id"]]),
+            DatasetRelationship(to="targets", from_columns=["target_id"], to_columns=["id"]),
         ],
         metrics=list(metrics),
     )
@@ -52,8 +52,8 @@ def targets_dataset() -> SlayerDataset:
         data_source="test",
         sql_table="targets",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="goal", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="goal", datatype=DataType.FLOAT),
         ],
     )
 

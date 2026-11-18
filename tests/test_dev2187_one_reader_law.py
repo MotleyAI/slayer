@@ -44,11 +44,11 @@ SPINE_MONTHS = [{"field": "time_spine.timestamp", "granularity": "month",
 # A Mode-B surface holding the boolean text ``t``.
 SURFACES: dict[str, Callable[[str], dict[str, Any]]] = {
     "filter": lambda t: {"filter": [t], "metrics": ["count(*)"]},
-    "measure": lambda t: {"metrics": [{"expression": f"sum(iif({t}, amount, 0))", "name": "m"}]},
+    "measure": lambda t: {"metrics": [{"metric": f"sum(iif({t}, amount, 0))", "alias": "m"}]},
     "computed-dimension": lambda t: {
-        "dimensions": [{"expression": f"iif({t}, 'y', 'n')", "name": "flag"}], "metrics": ["count(*)"]},
+        "dimensions": [{"field": f"iif({t}, 'y', 'n')", "alias": "flag"}], "metrics": ["count(*)"]},
     "time-dimension": lambda t: {
-        "time_dimensions": [{"field": f"iif({t}, created_at, shipped_at)", "granularity": "month", "name": "d"}],
+        "time_dimensions": [{"field": f"iif({t}, created_at, shipped_at)", "granularity": "month", "alias": "d"}],
         "metrics": ["count(*)"]},
     "order": lambda t: {"dimensions": ["note"], "metrics": ["count(*)"], "order": [{"field": f"iif({t}, 0, 1)"}]},
 }
@@ -69,7 +69,7 @@ async def test_a_literal_naming_the_root_filters_on_its_text(engine: SlayerQuery
 
 
 async def test_a_literal_naming_the_root_inside_a_measure(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(metrics=[{"expression": "sum(iif(note = 'see orders.x', amount, 0))", "name": "m"}]))
+    resp = await engine.execute(_orders(metrics=[{"metric": "sum(iif(note = 'see orders.x', amount, 0))", "alias": "m"}]))
     assert float(resp.data[0]["orders.m"]) == 10.0
 
 
@@ -86,7 +86,7 @@ async def test_a_literal_naming_the_root_inside_an_order_expression(engine: Slay
 QUOTED_ROOT_SURFACES = {
     "filter": {"filter": ['"orders.x" = 1'], "metrics": ["count(*)"]},
     "measure": {"metrics": ['sum("orders.x")']},
-    "computed-dimension": {"dimensions": [{"expression": '"orders.x" + 1', "name": "q"}], "metrics": ["count(*)"]},
+    "computed-dimension": {"dimensions": [{"field": '"orders.x" + 1', "alias": "q"}], "metrics": ["count(*)"]},
     "order": {"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": '"orders.x" + 1'}]},
 }
 
@@ -115,7 +115,7 @@ async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngin
 
 
 MAIN_TIME = {"time_dimensions": ["date_trunc('month', created_at)", "date_trunc('month', shipped_at)"],
-             "metrics": [{"expression": "change(count(*))", "name": "c"}]}
+             "metrics": [{"metric": "change(count(*))", "alias": "c"}]}
 
 
 async def test_a_quoted_main_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
@@ -135,9 +135,9 @@ async def test_a_quoted_main_time_dimension_naming_the_root_is_one_identifier(en
 # --------------------------------------------------------------------------- #
 SPINE_LITERAL = {
     "filter": {"filter": ["note = 'time_spine.x'"]},
-    "computed-dimension": {"dimensions": [{"expression": "iif(note = 'time_spine.x', 'y', 'n')", "name": "flag"}]},
+    "computed-dimension": {"dimensions": [{"field": "iif(note = 'time_spine.x', 'y', 'n')", "alias": "flag"}]},
     "time-dimension": {"time_dimensions": [
-        _month(), {"field": "iif(note = 'time_spine.x', created_at, shipped_at)", "granularity": "year", "name": "y"},
+        _month(), {"field": "iif(note = 'time_spine.x', created_at, shipped_at)", "granularity": "year", "alias": "y"},
     ]},
 }
 
@@ -188,10 +188,10 @@ def spliced(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 SPLICE_LITERAL: dict[str, Callable[[str], dict[str, Any]]] = {
     "filter": lambda lit: {"metrics": ["count(orders.id)"], "filter": [f"orders.note <> '{lit}'"]},
-    "measure": lambda lit: {"metrics": [{"expression": f"sum(iif(orders.note = '{lit}', 1, 0))", "name": "m"}]},
+    "measure": lambda lit: {"metrics": [{"metric": f"sum(iif(orders.note = '{lit}', 1, 0))", "alias": "m"}]},
     "computed-dimension": lambda lit: {
         "metrics": ["count(orders.id)"],
-        "dimensions": [{"expression": f"iif(orders.note = '{lit}', 'y', 'n')", "name": "flag"}]},
+        "dimensions": [{"field": f"iif(orders.note = '{lit}', 'y', 'n')", "alias": "flag"}]},
 }
 
 

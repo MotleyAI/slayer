@@ -77,10 +77,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, ComputedDimension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
@@ -314,12 +313,12 @@ def _sqlserver_env_storage(sqlserver_container, tmp_path_factory):
             sql_table="orders",
             data_source="testmssql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="avg_amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         customers_model = SlayerDataset(
@@ -327,9 +326,9 @@ def _sqlserver_env_storage(sqlserver_container, tmp_path_factory):
             sql_table="customers",
             data_source="testmssql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
         run_sync(storage.save_dataset(orders_model))
@@ -348,7 +347,7 @@ def sqlserver_env(_sqlserver_env_storage) -> SlayerQueryEngine:
 @pytest.mark.integration
 class TestSQLServerQueries:
     async def test_count_all(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
@@ -360,24 +359,24 @@ class TestSQLServerQueries:
         assert orders is not None
         await sqlserver_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
             *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.DOUBLE),
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
-            dimensions=[FieldRef(name="rx")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="rx")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await sqlserver_env.execute(query=query)
         by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(total)"}]})
         result = await sqlserver_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_avg_measure(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "avg(avg_amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(avg_amount)"}]})
         result = await sqlserver_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -385,8 +384,8 @@ class TestSQLServerQueries:
     async def test_group_by_status(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
         })
         result = await sqlserver_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
@@ -397,7 +396,7 @@ class TestSQLServerQueries:
     async def test_filter_equals(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status == 'completed'"],
         })
         result = await sqlserver_env.execute(query=query)
@@ -406,7 +405,7 @@ class TestSQLServerQueries:
     async def test_filter_gt(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["total > 100"],
         })
         result = await sqlserver_env.execute(query=query)
@@ -415,9 +414,9 @@ class TestSQLServerQueries:
     async def test_order_by_desc(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
-            "order": [{"field": {"name": "count"}, "direction": "desc"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
+            "order": [{"field": "count", "direction": "desc"}],
         })
         result = await sqlserver_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
@@ -425,8 +424,8 @@ class TestSQLServerQueries:
     async def test_limit(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
             "limit": 2,
         })
         result = await sqlserver_env.execute(query=query)
@@ -435,8 +434,8 @@ class TestSQLServerQueries:
     async def test_multiple_measures(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}, {"expression": "sum(total)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}, {"metric": "sum(total)"}],
+            "dimensions": ["status"],
         })
         result = await sqlserver_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
@@ -447,7 +446,7 @@ class TestSQLServerQueries:
         """SQL Server 2022 supports DATETRUNC."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
         })
         result = await sqlserver_env.execute(query=query)
@@ -456,7 +455,7 @@ class TestSQLServerQueries:
     async def test_time_dimension_with_date_range(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{
                 "field": {"name": "created_at"},
                 "granularity": "month",
@@ -470,7 +469,7 @@ class TestSQLServerQueries:
     async def test_composite_filter(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status == 'completed' or status == 'pending'"],
         })
         result = await sqlserver_env.execute(query=query)
@@ -484,10 +483,10 @@ class TestSQLServerQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="time_shift(sum(total), -1, 'month')", name="prev_month"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev_month"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 1
@@ -501,10 +500,10 @@ class TestSQLServerQueries:
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="consecutive_periods(sum(total) > 200)", name="positive_run"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="consecutive_periods(sum(total) > 200)", alias="positive_run"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await sqlserver_env.execute(query=query)
         assert [r["orders.positive_run"] for r in result.data] == [1, 0, 1]
@@ -523,10 +522,10 @@ class TestSQLServerQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="change(sum(total))", name="amount_change"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="change(sum(total))", alias="amount_change"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 1
@@ -540,10 +539,10 @@ class TestSQLServerQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="change_pct(sum(total))", name="pct"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="change_pct(sum(total))", alias="pct"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 1
@@ -557,11 +556,11 @@ class TestSQLServerQueries:
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="time_shift(sum(total), -1, 'month')", name="prev"),
-                DatasetMetric(expression="time_shift(sum(total), 1, 'month')", name="next"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev"),
+                QueryMetric(metric="time_shift(sum(total), 1, 'month')", alias="next"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await sqlserver_env.execute(query=query)
         assert result.row_count == 1
@@ -621,21 +620,21 @@ def sqlserver_cross_dataset_env(sqlserver_container):
         name="orders", sql_table="orders", data_source="testmssql",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testmssql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="avg_score", sql="score", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -650,8 +649,8 @@ class TestCrossModelAndMultistageSQLServer:
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="avg(customers.avg_score)")],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="avg(customers.avg_score)")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await sqlserver_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
@@ -663,9 +662,9 @@ class TestCrossModelAndMultistageSQLServer:
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
+            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
         )
-        outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
+        outer = SlayerQuery(population="monthly", metrics=[QueryMetric(metric="count(*)")])
         result = await sqlserver_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
@@ -675,20 +674,20 @@ class TestCrossModelAndMultistageSQLServer:
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
+            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
         )
         saved = await sqlserver_cross_dataset_env.create_dataset_from_query(query=source, name="ss_monthly")
         assert saved.source_queries is not None
         result = await sqlserver_cross_dataset_env.execute(
-            query=SlayerQuery(population="ss_monthly", metrics=[DatasetMetric(expression="count(*)")])
+            query=SlayerQuery(population="ss_monthly", metrics=[QueryMetric(metric="count(*)")])
         )
         assert result.data[0]["ss_monthly._count"] == 3
 
     async def test_sql_dimension(self, sqlserver_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", alias="tier")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await sqlserver_cross_dataset_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
@@ -805,8 +804,8 @@ class TestRollupIngestionSQLServer:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
         by_name = {r["orders.customers.name"]: r["orders._count"] for r in result.data}
@@ -824,8 +823,8 @@ class TestRollupIngestionSQLServer:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}, {"expression": "sum(amount)"}],
-            "dimensions": [{"name": "customers.regions.name"}],
+            "metrics": [{"metric": "count(*)"}, {"metric": "sum(amount)"}],
+            "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
         by_region = {r["orders.customers.regions.name"]: r for r in result.data}
@@ -856,8 +855,8 @@ class TestRollupIngestionSQLServer:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.regions.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
         by_region = {r["orders.customers.regions.name"]: r["orders._count"] for r in result.data}
@@ -872,7 +871,7 @@ class TestRollupIngestionSQLServer:
         for m in models:
             await storage.save_dataset(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
         result = await engine.execute(query=query)
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
@@ -887,8 +886,8 @@ class TestRollupIngestionSQLServer:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
         assert "LEFT JOIN" in result.sql
@@ -905,8 +904,8 @@ class TestRollupIngestionSQLServer:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.regions.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
         assert "customers" in result.sql
@@ -919,8 +918,8 @@ class TestRollupIngestionSQLServer:
         assert "customers" in join_targets
         assert "regions" not in join_targets
         for j in orders.relationships:
-            assert len(j.join_pairs) >= 1
-            for pair in j.join_pairs:
+            assert len(j.column_pairs) >= 1
+            for pair in j.column_pairs:
                 assert len(pair) == 2
 
     def test_regions_has_no_joins(self, sqlserver_ingest_env: tuple[list[SlayerDataset], DatasourceConfig, None]) -> None:
@@ -938,7 +937,7 @@ class TestRollupIngestionSQLServer:
         assert len(loaded.relationships) == len(orders.relationships)
         for orig, loaded_j in zip(orders.relationships, loaded.relationships):
             assert orig.to == loaded_j.to
-            assert orig.join_pairs == loaded_j.join_pairs
+            assert orig.column_pairs == loaded_j.column_pairs
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +948,7 @@ class TestRollupIngestionSQLServer:
 @pytest.mark.integration
 class TestSQLServerMedianPercentileRaises:
     async def test_median_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "median(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(total)"}]})
         with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
             await sqlserver_env.execute(query=query)
 
@@ -957,8 +956,8 @@ class TestSQLServerMedianPercentileRaises:
         """Grouped median goes through the same TsqlDialect.build_median hook."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "median(total)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "median(total)"}],
+            "dimensions": ["status"],
         })
         with pytest.raises(NotImplementedError, match="(?i)median.*t-sql"):
             await sqlserver_env.execute(query=query)
@@ -966,7 +965,7 @@ class TestSQLServerMedianPercentileRaises:
     async def test_percentile_raises(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "percentile(total, p=0.5)"}],
+            "metrics": [{"metric": "percentile(total, p=0.5)"}],
         })
         with pytest.raises(NotImplementedError, match="(?i)percentile.*t-sql"):
             await sqlserver_env.execute(query=query)
@@ -985,7 +984,7 @@ class TestSQLServerStatAggregations:
     name set (VAR / VARP / STDEV)."""
 
     async def test_stddev_samp_native_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "stddev_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "stddev_samp(total)"}]})
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -1003,7 +1002,7 @@ class TestSQLServerStatAggregations:
     async def test_stddev_pop_native_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "stddev_pop(total)"}],
+            "metrics": [{"metric": "stddev_pop(total)"}],
         })
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1020,7 +1019,7 @@ class TestSQLServerStatAggregations:
 
     async def test_var_samp_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:
         """T-SQL: var_samp must emit ``VAR(`` not ``VAR_SAMP(``."""
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "var_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(total)"}]})
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
@@ -1040,7 +1039,7 @@ class TestSQLServerStatAggregations:
     async def test_var_pop_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"expression": "var_pop(total)"}],
+            metrics=[{"metric": "var_pop(total)"}],
         )
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1060,7 +1059,7 @@ class TestSQLServerStatAggregations:
         VAR_SAMP / STDDEV_SAMP). Pin numeric + SQL shape."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "corr(total, other=customer_id)"}],
+            "metrics": [{"metric": "corr(total, other=customer_id)"}],
         })
         result = await sqlserver_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1084,7 +1083,7 @@ class TestSQLServerStatAggregations:
     async def test_covar_samp_variance_decomposition_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "covar_samp(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_samp(total, other=customer_id)"}],
         })
         result = await sqlserver_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1111,7 +1110,7 @@ class TestSQLServerStatAggregations:
     async def test_covar_pop_variance_decomposition_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "covar_pop(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_pop(total, other=customer_id)"}],
         })
         result = await sqlserver_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1160,9 +1159,9 @@ def sqlserver_log10_env(sqlserver_container):
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testmssql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
         ],
     )))
     yield SlayerQueryEngine(storage=storage)
@@ -1174,14 +1173,14 @@ async def test_log10_round_trip_sqlserver(sqlserver_log10_env: SlayerQueryEngine
     """T-SQL has native LOG10 (TsqlDialect.log10_native = True). The emitted
     SQL must preserve ``LOG10(...)``."""
     result = await sqlserver_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]})
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]})
     )
     assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
         _math.log10(300.0), rel=1e-9
     )
 
     dry = await sqlserver_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]}),
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]}),
         dry_run=True,
     )
     assert dry.sql is not None
@@ -1206,7 +1205,7 @@ async def test_sqlserver_week_uses_iso_week(sqlserver_env: SlayerQueryEngine) ->
     Pin the emitted SQL."""
     query = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": [{"expression": "count(*)"}],
+        "metrics": [{"metric": "count(*)"}],
         "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "week"}],
     })
     dry = await sqlserver_env.execute(query=query, dry_run=True)
@@ -1227,8 +1226,8 @@ async def test_sqlserver_time_shift_uses_dateadd(sqlserver_env: SlayerQueryEngin
             field="created_at", granularity=TimeGranularity.MONTH,
         )],
         metrics=[
-            DatasetMetric(expression="sum(total)"),
-            DatasetMetric(expression="time_shift(sum(total), -1, 'month')", name="prev"),
+            QueryMetric(metric="sum(total)"),
+            QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev"),
         ],
     )
     dry = await sqlserver_env.execute(query=query, dry_run=True)
@@ -1282,13 +1281,13 @@ def planets_sqlserver_env(sqlserver_container):
             sql_table="planets",
             data_source="testmssql",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-                DatasetField(name="mass", sql="mass", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         )
@@ -1344,9 +1343,9 @@ def sqlserver_derived_chain_env(sqlserver_container):
             data_source="testmssql",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
             ],
         )
     ))
@@ -1356,17 +1355,17 @@ def sqlserver_derived_chain_env(sqlserver_container):
             data_source="testmssql",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
-                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
                     sql="a_tbl.bar / b_tbl.foo_normalized",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
-            relationships=[DatasetRelationship(to="b_tbl", join_pairs=[["b_id", "id"]])],
+            relationships=[DatasetRelationship(to="b_tbl", from_columns=["b_id"], to_columns=["id"])],
         )
     ))
     yield SlayerQueryEngine(storage=storage)
@@ -1381,10 +1380,10 @@ async def test_integration_sqlserver_cross_model_derived_columnsql(
         SlayerQuery(
             population="a_tbl",
             dimensions=[
-                FieldRef(name="id"),
-                FieldRef(name="ratio_using_derived"),
+                QueryDimension(field="id"),
+                QueryDimension(field="ratio_using_derived"),
             ],
-            order=[OrderItem(field=FieldRef(name="id"), direction="asc")],
+            order=[OrderItem(field="id", direction="asc")],
         )
     )
     assert response.row_count == 2
@@ -1458,7 +1457,7 @@ class TestSQLServerDateFunctions:
 @pytest.mark.parametrize("fn", ["substring", "substr"])
 async def test_two_arg_substring_executes(sqlserver_env: SlayerQueryEngine, fn: str) -> None:
     result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-        "population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
+        "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
         "filter": [f"{fn}(status, 2) == 'ending'"],
     }))
     assert result.data[0]["orders.n"] == 2
@@ -1470,7 +1469,7 @@ async def test_two_arg_substring_keeps_trailing_spaces(sqlserver_env: SlayerQuer
     # T-SQL '=' pads trailing spaces, so a trailing 'x' makes them count.
     async def count(filters: list[str]) -> int:
         result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}], "filter": filters,
+            "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": filters,
         }))
         return result.data[0]["orders.n"]
 
@@ -1481,7 +1480,7 @@ async def test_two_arg_substring_keeps_trailing_spaces(sqlserver_env: SlayerQuer
 @pytest.mark.integration
 async def test_length_counts_trailing_spaces(sqlserver_env: SlayerQueryEngine) -> None:
     result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-        "population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
+        "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
         "filter": ["length(concat(status, '  ')) != length(status) + 2"],
     }))
     assert result.data[0]["orders.n"] == 0
@@ -1491,7 +1490,7 @@ async def test_length_counts_trailing_spaces(sqlserver_env: SlayerQueryEngine) -
 async def test_length_of_a_number(sqlserver_env: SlayerQueryEngine) -> None:
     async def count(filters: list[str]) -> int:
         result = await sqlserver_env.execute(query=SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}], "filter": filters,
+            "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": filters,
         }))
         return result.data[0]["orders.n"]
 
@@ -1734,8 +1733,8 @@ def _jdocs_storage(container, tmp_path_factory, *, label: str):
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp(f"sqlserver_jdocs_{label}")))
         run_sync(storage.save_datasource(_ds_config(container, db_name)))
         run_sync(storage.save_dataset(SlayerDataset(name="jdocs", sql_table="jdocs", data_source="testmssql", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="payload", datatype=DataType.TEXT),
-            DatasetField(name="txt", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="payload", datatype=DataType.STRING),
+            DatasetField(name="txt", datatype=DataType.STRING),
         ])))
         yield storage
     finally:
@@ -1772,7 +1771,7 @@ class TestSQLServerLongJsonScalars:
             await engine.execute(query)
 
     async def test_long_scalar_fails_loud_grouped(self, _jdocs) -> None:
-        query = _jq(_v("json_value(payload, '$.a')"), metrics=[{"expression": "count(*)", "name": "n"}])
+        query = _jq(_v("json_value(payload, '$.a')"), metrics=[{"metric": "count(*)", "alias": "n"}])
         engine = SlayerQueryEngine(storage=_jdocs)
         with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
             await engine.execute(query)
@@ -1782,7 +1781,7 @@ class TestSQLServerLongJsonScalars:
         assert _per_id(resp) == {rid: "short" if rid == 2 else None for rid in _SHORT_IDS}, resp.sql
 
     async def test_grouped_having_ordered(self, _jdocs) -> None:
-        query = _jq(_v("json_value(payload, '$.a')"), ids=_SHORT_IDS, metrics=[{"expression": "count(*)", "name": "n"}],
+        query = _jq(_v("json_value(payload, '$.a')"), ids=_SHORT_IDS, metrics=[{"metric": "count(*)", "alias": "n"}],
                     filter=["n >= 1"], order=[{"field": "v"}])
         resp = await SlayerQueryEngine(storage=_jdocs).execute(query)
         assert {r["jdocs.v"]: int(r["jdocs.n"]) for r in resp.data} == {"short": 1, None: len(_SHORT_IDS) - 1}, resp.sql
@@ -1824,10 +1823,10 @@ def test_typed_probe_reports_declared_type_names(sqlserver_container) -> None:
     finally:
         _drop_module_db(sqlserver_container, db_name)
     assert {name: (column.type, column.db_type) for name, column in types.items()} == {
-        "i": (DataType.INT, "int"),
-        "m": (DataType.DOUBLE, "decimal(10,2)"),
-        "t": (DataType.TIMESTAMP, "datetime2(7)"),
-        "s": (DataType.TEXT, "nvarchar(50)"),
+        "i": (DataType.INTEGER, "int"),
+        "m": (DataType.FLOAT, "decimal(10,2)"),
+        "t": (DataType.DATETIME, "datetime2(7)"),
+        "s": (DataType.STRING, "nvarchar(50)"),
     }
 
 
@@ -1850,8 +1849,8 @@ async def test_money_columns_are_exact(sqlserver_container, tmp_path) -> None:
         await storage.save_datasource(ds)
         await storage.save_dataset(ledger.model_copy(update={"fields": [
             *ledger.fields,
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE, db_type="money"),
-            DatasetField(name="small_doubled", sql="small * 2", datatype=DataType.DOUBLE, db_type="smallmoney"),
+            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT, db_type="money"),
+            DatasetField(name="small_doubled", sql="small * 2", datatype=DataType.FLOAT, db_type="smallmoney"),
         ]}))
         engine = SlayerQueryEngine(storage=storage)
         sums = SlayerQuery.model_validate({"population": "ledger", "metrics": ["sum(amount)", "sum(small)"]})
@@ -1889,7 +1888,7 @@ async def sqlserver_one_connection(_sqlserver_env_storage):
             engine.close()
 
 
-_EXPLAINED = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
+_EXPLAINED = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
 
 
 @pytest.mark.integration

@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import DatasetMetric, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1865_fixtures import q
 
 # gold spend=150, silver spend=200 → only silver clears 175 ('hi').
 CM_BAND = (
@@ -30,12 +32,12 @@ class TestKeylessFilterRowRoutes:
         dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
         unfiltered = (await exec_engine.execute(q(
             dimensions=dims,
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ))).data
         filtered = (await exec_engine.execute(q(
             dimensions=dims,
             filter=[f"{KEYLESS_AGG} > 175"],
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ))).data
         assert 0 < len(filtered) <= len(unfiltered)
         # Row-routed against the attached tier-total: only silver rows survive → 'hi'.
@@ -56,7 +58,7 @@ class TestKeylessOrderByDimensionName:
         dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
         resp = await exec_engine.execute(q(
             dimensions=dims,
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             order=[{"field": "band", "direction": "asc"}],
         ))
         bands = [r["orders.band"] for r in resp.data]
@@ -68,8 +70,8 @@ class TestKeylessDualRoleRejected:
         # The keyless aggregate banded by the computed dim, also selected as a
         # measure while its partition key (tier) is absent → partition-key error.
         query = q(
-            dimensions=[{"expression": CM_BAND, "name": "band"}, "customers.regions.name"],
-            metrics=[DatasetMetric(expression=KEYLESS_AGG, name="dual")],
+            dimensions=[{"field": CM_BAND, "alias": "band"}, "customers.regions.name"],
+            metrics=[QueryMetric(metric=KEYLESS_AGG, alias="dual")],
         )
         with pytest.raises(
             ValueError,

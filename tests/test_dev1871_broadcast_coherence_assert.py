@@ -6,8 +6,8 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine import elaborate, plan
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -17,10 +17,10 @@ def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(dialect="postgres", population=SlayerDataset(
         name="orders", data_source="coh_ds", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     ))
 
@@ -28,8 +28,8 @@ def _bundle() -> ResolvedSourceBundle:
 def _query(expression: str) -> SlayerQuery:
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status"), FieldRef(name="tier")],
-        metrics=[DatasetMetric(expression=expression, name="mix")],
+        dimensions=[QueryDimension(field="status"), QueryDimension(field="tier")],
+        metrics=[QueryMetric(metric=expression, alias="mix")],
     )
 
 

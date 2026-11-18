@@ -93,9 +93,9 @@ async def _seed_basic(storage: YAMLStorage) -> None:
         sql_table="customers",
         data_source="mydb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(
-                name="region", sql="region", datatype=DataType.TEXT,
+                name="region", sql="region", datatype=DataType.STRING,
                 description="Customer billing region.",
             ),
         ],
@@ -106,15 +106,15 @@ async def _seed_basic(storage: YAMLStorage) -> None:
         data_source="mydb",
         description="One row per placed order.",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(
-                name="amount", sql="amount", datatype=DataType.DOUBLE,
+                name="amount", sql="amount", datatype=DataType.FLOAT,
                 description="Order total in USD.",
             ),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             # Collides by name with the aggregation below.
             DatasetField(
-                name="big", sql="amount", datatype=DataType.DOUBLE,
+                name="big", sql="amount", datatype=DataType.FLOAT,
                 description="Order amount, aliased.",
             ),
         ],
@@ -131,7 +131,7 @@ async def _seed_basic(storage: YAMLStorage) -> None:
             ),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[("customer_id", "id")]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     ))
     await storage.set_datasource_priority(["mydb"])
@@ -335,7 +335,7 @@ class TestCollision:
             name="dupes",
             sql_table="dupes",
             data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
             aggregations=[
                 Aggregation(name="dup", expression="MAX({col})"),
                 Aggregation(name="dup", expression="MIN({col})"),
@@ -360,7 +360,7 @@ class TestCollision:
             name="ma",
             sql_table="ma",
             data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
             metrics=[DatasetMetric(name="same", expression="sum(id)")],
             aggregations=[Aggregation(name="same", expression="MAX({col})")],
         ))
@@ -413,7 +413,7 @@ class TestEntityTypeMismatch:
             sql_table="amount",
             data_source="mydb",
             description="UNRELATED model named amount.",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
@@ -470,9 +470,9 @@ class TestHiddenRendered:
             sql_table="withsecret",
             data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
-                    name="secret", sql="secret", datatype=DataType.TEXT,
+                    name="secret", sql="secret", datatype=DataType.STRING,
                     description="Hidden but inspectable.", hidden=True,
                 ),
             ],
@@ -492,7 +492,7 @@ class TestHiddenRendered:
             data_source="mydb",
             hidden=True,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
             ],
         ))
         svc = InspectService(storage=storage)
@@ -517,7 +517,7 @@ class TestDatasourceModelCollision:
             name="shared",
             sql_table="shared",
             data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
 
     async def test_datasource_interpretation(self, storage: YAMLStorage) -> None:
@@ -811,8 +811,8 @@ class TestModelSamplesWithEngine:
                 sql_table="orders",
                 data_source="live",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             ))
             engine = SlayerQueryEngine(storage=st)
@@ -836,9 +836,9 @@ class TestCollectModelEntityPairsIncludeHidden:
             sql_table="m",
             data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="visible", sql="visible", datatype=DataType.TEXT),
-                DatasetField(name="secret", sql="secret", datatype=DataType.TEXT, hidden=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="visible", sql="visible", datatype=DataType.STRING),
+                DatasetField(name="secret", sql="secret", datatype=DataType.STRING, hidden=True),
             ],
         )
 
@@ -879,9 +879,9 @@ class TestHiddenStaysOutOfSearch:
             sql_table="leaky",
             data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
-                    name="topsecret", sql="topsecret", datatype=DataType.TEXT,
+                    name="topsecret", sql="topsecret", datatype=DataType.STRING,
                     hidden=True,
                 ),
             ],
@@ -907,14 +907,14 @@ def _orders_like_dataset() -> SlayerDataset:
         data_source="mydb",
         description="One row per placed order.",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="big", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="big", sql="amount", datatype=DataType.FLOAT),
         ],
         metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)")],
         aggregations=[Aggregation(name="big", expression="MAX({col})")],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[("customer_id", "id")])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -938,8 +938,8 @@ class TestModelSkeletonHelpers:
         bare = SlayerDataset(
             name="customers", sql_table="customers", data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
         md = render_dataset_skeleton(dataset=bare)
@@ -960,7 +960,7 @@ class TestModelSkeletonHelpers:
         m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
             fields=[
-                DatasetField(name="secret", sql="secret", datatype=DataType.TEXT, hidden=True),
+                DatasetField(name="secret", sql="secret", datatype=DataType.STRING, hidden=True),
             ],
         )
         md = render_dataset_skeleton(dataset=m)
@@ -975,7 +975,7 @@ class TestModelSkeletonHelpers:
         # used to reach the defensive ``m.name is not None`` filter path.
         base = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
             metrics=[DatasetMetric(name="tmp", expression="sum(id)")],
         )
         m = base.model_copy(update={"metrics": [DatasetMetric(expression="max(id)")]})
@@ -1004,9 +1004,9 @@ class TestModelSkeletonHelpers:
         m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="visible", sql="visible", datatype=DataType.TEXT),
-                DatasetField(name="secret", sql="secret", datatype=DataType.TEXT, hidden=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="visible", sql="visible", datatype=DataType.STRING),
+                DatasetField(name="secret", sql="secret", datatype=DataType.STRING, hidden=True),
             ],
         )
         assert dataset_skeleton_fields(dataset=m)["field_names"] == ["id", "visible"]
@@ -1017,7 +1017,7 @@ class TestModelSkeletonHelpers:
         # validator so we can prove the defensive filter in the helper.
         base = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
             metrics=[DatasetMetric(name="named", expression="sum(id)")],
         )
         m = base.model_copy(update={"metrics": [
@@ -1031,13 +1031,13 @@ class TestModelSkeletonHelpers:
         m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="z_id", sql="z_id", datatype=DataType.INT),
-                DatasetField(name="a_id", sql="a_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="z_id", sql="z_id", datatype=DataType.INTEGER),
+                DatasetField(name="a_id", sql="a_id", datatype=DataType.INTEGER),
             ],
             relationships=[
-                DatasetRelationship(to="zebra", join_pairs=[("z_id", "id")]),
-                DatasetRelationship(to="apple", join_pairs=[("a_id", "id")]),
+                DatasetRelationship(to="zebra", from_columns=["z_id"], to_columns=["id"]),
+                DatasetRelationship(to="apple", from_columns=["a_id"], to_columns=["id"]),
             ],
         )
         assert dataset_skeleton_fields(dataset=m)["relationships_to"] == ["apple", "zebra"]
@@ -1175,7 +1175,7 @@ class TestDatasourceCompactFalseSkeletons:
         await storage.save_dataset(SlayerDataset(
             name="hiddends", sql_table="hiddends", data_source="mydb",
             hidden=True,
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
@@ -1198,7 +1198,7 @@ class TestDatasourceCompactFalseSkeletons:
         await storage.save_dataset(SlayerDataset(
             name="onlyhidden", sql_table="onlyhidden", data_source="emptyds",
             hidden=True,
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         outj = await svc.inspect(
@@ -1428,7 +1428,7 @@ class TestAmbiguousModelName:
         ))
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="otherdb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         await storage.set_datasource_priority([])
 
@@ -1478,11 +1478,11 @@ class TestAmbiguousModelName:
         ))
         await storage.save_dataset(SlayerDataset(
             name="shared", sql_table="shared", data_source="mydb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         await storage.save_dataset(SlayerDataset(
             name="shared", sql_table="shared", data_source="otherdb",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         await storage.set_datasource_priority([])  # no model-leg winner
         svc = InspectService(storage=storage)

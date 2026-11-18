@@ -18,9 +18,9 @@ from slayer.cli import main as cli_main
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationArgumentError, SlayerError
 from slayer.core.models import (
-    Aggregation, AggregationParam, DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset,
+    Aggregation, AggregationParam, DatasetField, DatasourceConfig, SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.database.client import SlayerSQLClient, TypeProbe
@@ -50,8 +50,8 @@ def _dataset(expression: str, *, name: str = "orders", data_source: str = _DS,
         sql=sql,
         data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
         aggregations=[Aggregation(name=agg, expression=expression)],
     )
@@ -157,7 +157,7 @@ class TestEngineCheck:
         monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
         model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
             aggregations=[Aggregation(name="custom_agg", expression=_BROKEN)],
         )
         with pytest.raises(SqlTemplateError, match="custom_agg"):
@@ -177,7 +177,7 @@ class TestEngineCheck:
         # `#` is a comment in MySQL, so `{mask}` is never read there (it is on SQLite).
         model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
             aggregations=[Aggregation.model_validate({
                 "name": "masked", "expression": "SUM({value}) # {mask}",
                 "params": [{"name": "mask", "sql": "1"}],
@@ -285,7 +285,7 @@ class TestRest:
         assert client.post("/datasets", json=_dataset("SUM({value})").model_dump(mode="json")).status_code == 200
 
         def detail(formula: str) -> str:
-            resp = client.post("/query", json={"population": "orders", "metrics": [{"expression": formula, "name": "m"}]})
+            resp = client.post("/query", json={"population": "orders", "metrics": [{"metric": formula, "alias": "m"}]})
             assert resp.status_code == 400, resp.text
             return resp.json()["detail"]
 
@@ -356,7 +356,7 @@ class TestMcp:
         assert saved is not None
         assert [a.name for a in saved.aggregations] == ["sum_sq"]
         resp = await engine.execute(SlayerQuery(
-            population="orders", metrics=[DatasetMetric(expression="sum_sq(amount)", name="m")],
+            population="orders", metrics=[QueryMetric(metric="sum_sq(amount)", alias="m")],
         ))
         assert resp.data[0]["orders.m"] == pytest.approx(13.0)
 
@@ -444,7 +444,7 @@ async def test_ranked_formula_rejected_before_backing_query_expansion(
     monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
     model = SlayerDataset(
         name="obs", data_source=_DS,
-        source_queries=[SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])],
+        source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
         aggregations=[Aggregation(name="last", expression="MAX({value})")],
     )
     with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take an expression"):

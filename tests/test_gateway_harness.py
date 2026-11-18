@@ -26,7 +26,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 
 
 async def test_a_plain_engine_query_is_refused(tmp_path: Path) -> None:
@@ -70,5 +70,5 @@ async def test_the_backend_client_runs_under_the_guard(tmp_path: Path) -> None:
     client.close()
     assert guard.attempts == []
     assert rows == [{"n": 4}]
-    assert types == {"id": ResultColumnType(type=DataType.INT)}
+    assert types == {"id": ResultColumnType(type=DataType.INTEGER)}
     assert client.statements() == ["SELECT COUNT(*) AS n FROM orders", "SELECT id FROM orders"]

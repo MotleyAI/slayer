@@ -245,8 +245,8 @@ class TestSaveCollisions:
     async def test_a_new_join_name_collision_is_refused(self, storage: StorageBackend) -> None:
         await storage.save_dataset(dev2215_datasets()[1])
         model = orders_dataset().model_copy(update={"relationships": [
-            DatasetRelationship(to="customers", name="buyer", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="customers", name="Buyer", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", name="buyer", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="customers", name="Buyer", from_columns=["customer_id"], to_columns=["id"]),
         ]})
         with pytest.raises(SlayerError) as err:
             await storage.save_dataset(model)
@@ -254,11 +254,11 @@ class TestSaveCollisions:
         assert "Buyer" in str(err.value)
 
     @pytest.mark.parametrize("source_queries", [
-        [{"name": "Monthly", "population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]},
-         {"name": "monthly", "population": "Monthly", "metrics": [{"expression": "sum(n)", "name": "t"}]},
-         {"population": "monthly", "metrics": [{"expression": "sum(t)", "name": "u"}]}],
-        [{"population": "orders", "metrics": [{"expression": "sum(amount)", "name": "Total"},
-                                                 {"expression": "count(*)", "name": "total"}]}],
+        [{"name": "Monthly", "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]},
+         {"name": "monthly", "population": "Monthly", "metrics": [{"metric": "sum(n)", "alias": "t"}]},
+         {"population": "monthly", "metrics": [{"metric": "sum(t)", "alias": "u"}]}],
+        [{"population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "Total"},
+                                                 {"metric": "count(*)", "alias": "total"}]}],
     ], ids=["stage-names", "result-names"])
     async def test_a_saved_query_collision_is_refused(self, storage: StorageBackend,
                                                       source_queries: list[dict[str, Any]]) -> None:
@@ -337,8 +337,8 @@ async def test_result_names_colliding_by_case_are_refused_on_every_dialect(diale
 
 async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
     saved = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": [
-        {"population": "orders", "metrics": [{"expression": "sum(amount)", "name": "Total"},
-                                                {"expression": "count(*)", "name": "total"}]}]})
+        {"population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "Total"},
+                                                {"metric": "count(*)", "alias": "total"}]}]})
     async with dev2215_engine("sqlite", datasets=[*dev2215_datasets(), saved]) as eng:
         resp = await eng.execute(q(population="saved", metrics=[m("sum(Total)", "a")]))
     assert num(single(resp, "a", dataset="saved")) == 160.0
@@ -372,7 +372,7 @@ def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: st
 
 
 def test_an_explicitly_named_reference_stays_computed() -> None:
-    (dim,) = q(dimensions=[{"expression": '"status"', "name": "st"}]).dimensions or []
+    (dim,) = q(dimensions=[{"field": '"status"', "alias": "st"}]).dimensions or []
     assert isinstance(dim, ComputedDimension)
 
 
@@ -384,14 +384,14 @@ def test_a_refinement_dedupes_a_quoted_and_a_plain_reference() -> None:
 
 def test_a_quoted_dimension_takes_its_column_name() -> None:
     with pytest.raises(ValueError, match="used twice"):
-        q(dimensions=['"status"'], time_dimensions=[{"field": "created_at", "granularity": "month", "name": "status"}])
+        q(dimensions=['"status"'], time_dimensions=[{"field": "created_at", "granularity": "month", "alias": "status"}])
     q(dimensions=['"orders".status'],
-      time_dimensions=[{"field": "created_at", "granularity": "month", "name": "orders_status"}])
+      time_dimensions=[{"field": "created_at", "granularity": "month", "alias": "orders_status"}])
 
 
 def test_model_lookups_fold() -> None:
     model = SlayerDataset(name="x", sql_table="orders", data_source="test",
-                        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
                         metrics=[DatasetMetric(name="Total", expression="count(*)")])
     column, measure = model.get_field("ID"), model.get_metric("total")
     assert column is not None

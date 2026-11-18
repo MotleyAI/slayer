@@ -45,8 +45,8 @@ def _unloadable_reader(sql: str) -> SlayerDataset:
     """``reader``, joined to the unloadable model, with a column ``sql``."""
     return SlayerDataset(
         name="reader", sql_table="pub_items", data_source=DS,
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="leak", datatype=DataType.INT, sql=sql)],
-        relationships=[DatasetRelationship(to=UNLOADABLE, join_pairs=[["id", "id"]], cardinality=RelationshipCardinality.ONE_TO_ONE)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="leak", datatype=DataType.INTEGER, sql=sql)],
+        relationships=[DatasetRelationship(to=UNLOADABLE, from_columns=["id"], to_columns=["id"], cardinality=RelationshipCardinality.ONE_TO_ONE)],
     )
 
 
@@ -195,20 +195,20 @@ class TestModelsReadBy:
         assert {"fin", "hr"} <= self.reads(SlayerQuery.model_validate(MIXED_QUERY), datasets)
 
     @pytest.mark.parametrize("stage", [
-        {"population": "hr", "extensions": [{"source_name": "hr", "metrics": [{"name": "x", "expression": "sum(salary * 2)"}]}]},
+        {"population": "hr", "extensions": [{"dataset": "hr", "metrics": [{"name": "x", "expression": "sum(salary * 2)"}]}]},
         {"population": "pub", "extensions": [
-            {"source_name": "pub", "relationships": [{"to": "hr", "join_pairs": [["id", "id"]]}]}]},
+            {"dataset": "pub", "relationships": [{"to": "hr", "from_columns": ["id"], "to_columns": ["id"]}]}]},
         {"population": "pub_link", "dimensions": [f"{PRUNED_EDGE}.dept"]},
         {"population": "fin", "time_dimensions": [{"field": "hr.hired_at", "granularity": "month"}]},
-        {"population": "fin", "metrics": [{"expression": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
+        {"population": "fin", "metrics": [{"metric": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
     ], ids=["extension-base", "extension-join", "model-join", "time-dimension-hop", "filter-hop"])
     async def test_query_fields_read_hr(self, datasets: dict[str, SlayerDataset], stage: dict) -> None:
         assert "hr" in self.reads(SlayerQuery.model_validate(stage), datasets)
 
     async def test_sibling_stage_chain_reads_the_first_source(self, datasets: dict[str, SlayerDataset]) -> None:
         chained = SlayerDataset(name="chained", source_queries=[
-            SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"expression": "sum(salary)", "name": "t"}]}),
-            SlayerQuery.model_validate({"population": "s1", "metrics": [{"expression": "sum(t)"}]}),
+            SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "t"}]}),
+            SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "sum(t)"}]}),
         ])
         reads = self.reads(chained, datasets)
         assert "hr" in reads
@@ -217,7 +217,7 @@ class TestModelsReadBy:
     async def test_saved_measure_reads_are_followed_recursively(self, datasets: dict[str, SlayerDataset]) -> None:
         relay = datasets["pub"].model_copy(update={
             "name": "relay",
-            "relationships": [DatasetRelationship(to="pay_measure", join_pairs=[["id", "id"]])],
+            "relationships": [DatasetRelationship(to="pay_measure", from_columns=["id"], to_columns=["id"])],
             "metrics": [DatasetMetric(name="relayed", expression="pay_measure.hr_salary_total")],
         })
         assert {"pay_measure", "hr"} <= self.reads(relay, datasets)

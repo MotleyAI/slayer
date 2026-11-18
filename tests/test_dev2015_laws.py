@@ -106,7 +106,7 @@ async def test_timestamp_axis_buckets_like_a_date_axis(backend) -> None:
     rows = [(1, 1, "2025-01-10 08:00:00", 100.0), (2, 2, "2025-01-31 23:59:59", 50.0),
             (3, 1, "2025-02-01 00:00:00", 70.0)]
     async with spine_engine(backend, tables=spine_tables(orders_rows=rows, date_type="TIMESTAMP"),
-                            datasets=spine_datasets(date_type=DataType.TIMESTAMP)) as eng:
+                            datasets=spine_datasets(date_type=DataType.DATETIME)) as eng:
         resp = await eng.execute(spine_query(metrics=TWO_FACTS))
         mid = await eng.execute(spine_query(metrics=TWO_FACTS[:1], date_range=["2025-01-15", "2025-02-28"]))
     got = by_bucket(resp, ["o", "r", "n"])

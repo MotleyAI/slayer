@@ -26,11 +26,11 @@ def _datasets() -> list[SlayerDataset]:
     models.append(SlayerDataset(
         name="order_facts", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="accounts", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="accounts", from_columns=["customer_id"], to_columns=["id"])],
     ))
     return models
 
@@ -69,7 +69,7 @@ class TestDefaultRankingKey:
     async def test_temporal_computed_dimension_ranks_each_cell(self, engine: SlayerQueryEngine) -> None:
         """Spec scenario: each (EFF, month) cell holds one order, so it carries that order's amount."""
         resp = await engine.execute(q(
-            dimensions=["id", {"expression": EFF, "name": "e"}], time_dimensions=[td("created_at")],
+            dimensions=["id", {"field": EFF, "alias": "e"}], time_dimensions=[td("created_at")],
             metrics=[m("last(amount)")],
         ))
         assert by_dims(resp, ["orders.id"]) == {(i,): float(10 * i) for i in range(1, 7)}
@@ -87,7 +87,7 @@ class TestExpressionRankingKey:
     async def test_coalesced_ranking_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "balances", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "last(balance, coalesce(updated_at, created_at))", "name": "v"}],
+            "metrics": [{"metric": "last(balance, coalesce(updated_at, created_at))", "alias": "v"}],
         }))
         assert by_dims(resp, ["balances.customer_id"], "balances.v") == {(1,): 150.0, (2,): 70.0}
 
@@ -102,7 +102,7 @@ class TestExpressionRankingKey:
     async def test_fanning_leaf_local_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"expression": "last(spend, coalesce(orders.created_at, signup_ts))", "name": "v"}],
+            "metrics": [{"metric": "last(spend, coalesce(orders.created_at, signup_ts))", "alias": "v"}],
         })
         with pytest.raises(UnsafeRelationshipInputError) as ei:
             await sqlite_engine.execute(query)
@@ -112,8 +112,8 @@ class TestExpressionRankingKey:
     async def test_fanning_leaf_target_rooted_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "order_facts",
-            "metrics": [{"expression": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
-                          "name": "v"}],
+            "metrics": [{"metric": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
+                          "alias": "v"}],
         })
         with pytest.raises(UnsafeRelationshipInputError) as ei:
             await sqlite_engine.execute(query)
@@ -172,8 +172,8 @@ class TestExpressionParameters:
     async def test_expression_weight_named_and_positional(self, engine: SlayerQueryEngine) -> None:
         baseline = _single(await engine.execute(q(metrics=[m("weighted_avg(price, weight=quantity)")])))
         assert baseline == pytest.approx(40 / 13)
-        named = await engine.execute(q(metrics=[{"expression": "weighted_avg(price, weight=quantity * 2)"}]))
-        positional = await engine.execute(q(metrics=[{"expression": "weighted_avg(price, quantity * 2)"}]))
+        named = await engine.execute(q(metrics=[{"metric": "weighted_avg(price, weight=quantity * 2)"}]))
+        positional = await engine.execute(q(metrics=[{"metric": "weighted_avg(price, quantity * 2)"}]))
         assert _single(named) == pytest.approx(baseline)
         assert _single(positional) == pytest.approx(baseline)
         assert named.columns == positional.columns

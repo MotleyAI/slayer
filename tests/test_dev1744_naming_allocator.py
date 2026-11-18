@@ -36,7 +36,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.compile.projection import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine import bind_inputs
@@ -98,12 +98,12 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region_id", datatype=DataType.INT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
                 # Case-only pair over two DIFFERENT physical columns.
-                DatasetField(name="Rev", sql="revx", datatype=DataType.DOUBLE),
-                DatasetField(name="rev", sql="revy", datatype=DataType.DOUBLE),
+                DatasetField(name="Rev", sql="revx", datatype=DataType.FLOAT),
+                DatasetField(name="rev", sql="revy", datatype=DataType.FLOAT),
             ],
         ),
         _validate=False,
@@ -115,23 +115,23 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
             data_source="prod",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
                 # __-name carve-out + join-crossing filter => filtered-local
                 # isolation (its own _cm_ CTE).
                 DatasetField(
                     name="customers__revenue",
                     sql="amount",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     filter="customers.region_id = 1",
                 ),
             ],
             relationships=[
                 DatasetRelationship(
-                    to="customers", join_pairs=[["customer_id", "id"]],
+                    to="customers", from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -212,8 +212,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             metrics=[
-                DatasetMetric(expression="sum(customers.Rev)", name="upper"),
-                DatasetMetric(expression="sum(customers.rev)", name="lower"),
+                QueryMetric(metric="sum(customers.Rev)", alias="upper"),
+                QueryMetric(metric="sum(customers.rev)", alias="lower"),
             ],
         )
 
@@ -223,10 +223,10 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    DatasetMetric(expression="sum(customers.Rev)", name="upper"),
-                    DatasetMetric(expression="sum(customers.rev)", name="lower"),
+                    QueryMetric(metric="sum(customers.Rev)", alias="upper"),
+                    QueryMetric(metric="sum(customers.rev)", alias="lower"),
                 ],
             ),
             dry_run=True,
@@ -249,8 +249,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             metrics=[
-                DatasetMetric(expression="sum(customers.revenue)", name="xmodel"),
-                DatasetMetric(expression="sum(customers__revenue)", name="local"),
+                QueryMetric(metric="sum(customers.revenue)", alias="xmodel"),
+                QueryMetric(metric="sum(customers__revenue)", alias="local"),
             ],
         )
 
@@ -260,8 +260,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="unfiltered"),
-                DatasetMetric(expression="sum(customers__revenue)", name="filtered"),
+                QueryMetric(metric="sum(amount)", alias="unfiltered"),
+                QueryMetric(metric="sum(customers__revenue)", alias="filtered"),
             ],
         )
 
@@ -271,10 +271,10 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    DatasetMetric(expression="sum(customers.revenue)"),
-                    DatasetMetric(expression="sum(customers.Rev)"),
+                    QueryMetric(metric="sum(customers.revenue)"),
+                    QueryMetric(metric="sum(customers.Rev)"),
                 ],
             )
         )
@@ -300,11 +300,11 @@ class TestCrossModelCteNameAllocation:
                 ],
                 metrics=[
                     # Hidden CMA feeding a transform.
-                    DatasetMetric(
-                        expression="cumsum(sum(customers.revenue))", name="run",
+                    QueryMetric(
+                        metric="cumsum(sum(customers.revenue))", alias="run",
                     ),
                     # A second cross-model aggregate, so a leaked alias differs.
-                    DatasetMetric(expression="sum(customers.Rev)", name="rv"),
+                    QueryMetric(metric="sum(customers.Rev)", alias="rv"),
                 ],
                 to_many_handling="broadcast",
             ),
@@ -333,10 +333,10 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    DatasetMetric(expression="sum(customers.revenue)", name="a"),
-                    DatasetMetric(expression="sum(customers.revenue)", name="b"),
+                    QueryMetric(metric="sum(customers.revenue)", alias="a"),
+                    QueryMetric(metric="sum(customers.revenue)", alias="b"),
                 ],
             ),
             dry_run=True,
@@ -350,10 +350,10 @@ class TestCrossModelCteNameAllocation:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    DatasetMetric(expression="sum(customers.revenue)", name="a"),
-                    DatasetMetric(expression="sum(customers.revenue)", name="b"),
+                    QueryMetric(metric="sum(customers.revenue)", alias="a"),
+                    QueryMetric(metric="sum(customers.revenue)", alias="b"),
                 ],
             )
         )
@@ -427,8 +427,8 @@ class TestAllocatorRouting:
                     ),
                 ],
                 metrics=[
-                    DatasetMetric(expression="sum(amount, window='90d')", name="Wm"),
-                    DatasetMetric(expression="sum(amount, window='30d')", name="wm2"),
+                    QueryMetric(metric="sum(amount, window='90d')", alias="Wm"),
+                    QueryMetric(metric="sum(amount, window='30d')", alias="wm2"),
                 ],
             ),
             dry_run=True,
@@ -516,11 +516,11 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
             data_source="prod",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name=column, sql="hostile", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
+                DatasetField(name=column, sql="hostile", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -541,10 +541,10 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    DatasetMetric(expression=f"sum({column})", name="hostile_sum"),
-                    DatasetMetric(expression="sum(amount)", name="amt"),
+                    QueryMetric(metric=f"sum({column})", alias="hostile_sum"),
+                    QueryMetric(metric="sum(amount)", alias="amt"),
                 ],
             )
         )
@@ -567,7 +567,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
             SlayerQuery(
                 population="orders",
                 dimensions=[FieldRef(name=column)],
-                metrics=[DatasetMetric(expression="sum(amount)", name="amt")],
+                metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
             )
         )
         assert {r[f"orders.{column}"] for r in resp.data} == {1.0, 2.0, 3.0}
@@ -583,8 +583,8 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="last(amount)", name="lastamt")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="last(amount)", alias="lastamt")],
             )
         )
         by_status = {r["orders.status"]: r["orders.lastamt"] for r in resp.data}
@@ -608,7 +608,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                     ),
                 ],
                 metrics=[
-                    DatasetMetric(expression="sum(amount, window='90d')", name="w"),
+                    QueryMetric(metric="sum(amount, window='90d')", alias="w"),
                 ],
             )
         )

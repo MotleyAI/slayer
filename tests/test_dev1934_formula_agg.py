@@ -17,7 +17,7 @@ from slayer.core.errors import AggregationArgumentError, UnresolvableDimensionRe
 from slayer.core.models import (
     Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 from slayer.sql.sql_template import SqlTemplateError
 from slayer.storage.sqlite_conn import transaction
@@ -60,11 +60,11 @@ def _orders(aggs: tuple[Aggregation, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="price", sql="price", datatype=DataType.DOUBLE),
-            DatasetField(name="discount", sql="discount", datatype=DataType.DOUBLE),
-            DatasetField(name="netd", sql="price - discount", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
+            DatasetField(name="discount", sql="discount", datatype=DataType.FLOAT),
+            DatasetField(name="netd", sql="price - discount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
             DatasetField(name="q2", sql="quantity + 1"),
         ],
         aggregations=list(aggs),
@@ -72,7 +72,7 @@ def _orders(aggs: tuple[Aggregation, ...] = ()) -> SlayerDataset:
 
 
 def _q(expression: str) -> SlayerQuery:
-    return SlayerQuery(population="orders", metrics=[DatasetMetric(expression=expression, name="m")])
+    return SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression, alias="m")])
 
 
 async def _sql(
@@ -86,12 +86,12 @@ async def _joined_sql(*, agg: Aggregation, expression: str, validate: bool = Tru
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="weight", sql="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
         ],
     )
     host = _orders((agg,)).model_copy(
-        update={"relationships": [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]},
+        update={"relationships": [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]},
     )
     return await _engine_generate(query=_q(expression), dataset=host, extra_datasets=[customers], validate=validate)
 
@@ -383,7 +383,7 @@ class TestValueResolutionIsAst:
     def test_resolve_value_ast_returns_expression(self) -> None:
         spec = AggRenderSpec(
             name="netd", sql="price - discount", dataset_name="orders", alias="orders.netd_sum",
-            aggregation="sum", agg_kwargs={}, field_type=DataType.DOUBLE,
+            aggregation="sum", agg_kwargs={}, field_type=DataType.FLOAT,
         )
         out = SQLGenerator(dialect="postgres")._resolve_value_ast(spec)
         assert isinstance(out, Expression)
@@ -434,8 +434,8 @@ class TestPickedValueExecution:
         async with seeded_exec_engine(
             dialect="sqlite", seed=seed_1832_sqlite, datasets=dev1832_datasets(),
         ) as (engine, _db):
-            resp = await engine.execute(sales_q(metrics=[DatasetMetric(
-                expression="weighted_avg(amount, weight=q_amount)", name="m")]))
+            resp = await engine.execute(sales_q(metrics=[QueryMetric(
+                metric="weighted_avg(amount, weight=q_amount)", alias="m")]))
         assert resp.data[0]["sales.m"] == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 
 
@@ -454,10 +454,10 @@ _K_UNUSED = Aggregation(name="kx", expression="SUM({value}) * {k}", params=[
 
 async def _windowed_sql(expression: str, agg: Aggregation) -> str:
     model = _orders((agg,)).model_copy(update={"fields": [
-        *_orders().fields, DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP),
+        *_orders().fields, DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
     ]})
     query = SlayerQuery(
-        population="orders", metrics=[DatasetMetric(expression=expression, name="m")],
+        population="orders", metrics=[QueryMetric(metric=expression, alias="m")],
         time_dimensions=[TimeDimension(field="ordered_at", granularity=TimeGranularity.MONTH)],
     )
     return " ".join((await _engine_generate(query=query, dataset=model)).split())
@@ -535,7 +535,7 @@ _COUNT_K = Aggregation(
 
 async def _star_sql(expression: str, *, filters: list[str] | None = None) -> str:
     query = SlayerQuery(
-        population="orders", metrics=[DatasetMetric(expression=expression, name="m")], filter=filters,
+        population="orders", metrics=[QueryMetric(metric=expression, alias="m")], filter=filters,
     )
     return " ".join((await _engine_generate(query=query, dataset=_orders((_COUNT_K,)))).split())
 
@@ -543,12 +543,12 @@ async def _star_sql(expression: str, *, filters: list[str] | None = None) -> str
 async def _associated_star_sql(expression: str) -> str:
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test", aggregations=[_COUNT_K],
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
     )
-    host = _orders().model_copy(update={"relationships": [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]})
+    host = _orders().model_copy(update={"relationships": [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]})
     query = SlayerQuery(
-        population="orders", metrics=[DatasetMetric(expression=expression, name="m")],
-        dimensions=[FieldRef(name="quantity")], to_many_handling="associate",
+        population="orders", metrics=[QueryMetric(metric=expression, alias="m")],
+        dimensions=[QueryDimension(field="quantity")], to_many_handling="associate",
     )
     return " ".join((await _engine_generate(query=query, dataset=host, extra_datasets=[customers])).split())
 

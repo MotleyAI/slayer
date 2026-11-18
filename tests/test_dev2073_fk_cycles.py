@@ -131,7 +131,7 @@ class TestOneEdgePerFkRelationship:
             orders = await lv.dataset("orders")
             await lv.storage.save_dataset(orders.model_copy(update={"relationships": []}))
             customers = await lv.dataset("customers")
-            reverse = DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]], name=name)
+            reverse = DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"], name=name)
             await lv.storage.save_dataset(customers.model_copy(update={"relationships": [reverse]}))
 
             result = await lv.ingest()

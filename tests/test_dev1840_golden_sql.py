@@ -76,7 +76,7 @@ def _cases() -> dict:
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.last_status = 'ok'"])},
         "exists/nested_band_producer": {"models": "default", "query": q(
-            dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
             metrics=[M], filter=["channel = 'app'"])},
         "exists/declared_reverse": {"models": "rev", "query": q(
             dimensions=["customers.tier"], metrics=[CM],

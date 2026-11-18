@@ -54,14 +54,14 @@ def _store(base: Path, ds: DatasourceConfig) -> str:
     run_sync(storage.save_datasource(ds))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source=ds.name,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="region", sql="region", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="region", sql="region", datatype=DataType.STRING)],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source=ds.name,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     return str(base)
 

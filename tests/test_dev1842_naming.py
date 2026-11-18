@@ -41,14 +41,14 @@ class TestImplicitAndExplicitName:
         """Unnamed ``customers.aov`` → result key ``orders.customers.aov``."""
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
-                                      metrics=[{"expression": "customers.aov"}]))
+                                      metrics=[{"metric": "customers.aov"}]))
         assert "orders.customers.aov" in resp.columns
 
     async def test_explicit_name_overrides_the_implicit_key(self, exec_backend: tuple[str, SlayerQueryEngine]) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            metrics=[{"expression": "customers.aov", "name": "myaov"}]))
+            metrics=[{"metric": "customers.aov", "alias": "myaov"}]))
         assert "orders.myaov" in resp.columns
         assert "orders.customers.aov" not in resp.columns
 
@@ -83,13 +83,13 @@ class TestTypeAndFormatInheritance:
         carries it."""
         col = await self._virtual_column(
             DatasetMetric(expression="customers.typed_aov", name="ta"), "ta")
-        assert col.datatype == DataType.DOUBLE
+        assert col.datatype == DataType.FLOAT
 
     async def test_query_level_type_overrides_saved_type(self) -> None:
         col = await self._virtual_column(
-            DatasetMetric(expression="customers.typed_aov", name="ti", datatype=DataType.INT),
+            DatasetMetric(expression="customers.typed_aov", name="ti", datatype=DataType.INTEGER),
             "ti")
-        assert col.datatype == DataType.INT
+        assert col.datatype == DataType.INTEGER
 
     async def test_inferred_type_matches_hand_expanded(self) -> None:
         """``customers.aov`` (no declared type) infers the SAME type as the

@@ -6,9 +6,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasetField
 from slayer.importers.physical import unreadable_fields
 
-STATUS = DatasetField(name="status", sql="status", datatype=DataType.TEXT)
-LEGAL = DatasetField(name="Status", sql='"LegalType"', datatype=DataType.TEXT)
-DONE = DatasetField(name="done", sql="amount", datatype=DataType.DOUBLE, filter="status = 'completed'")
+STATUS = DatasetField(name="status", sql="status", datatype=DataType.STRING)
+LEGAL = DatasetField(name="Status", sql='"LegalType"', datatype=DataType.STRING)
+DONE = DatasetField(name="done", sql="amount", datatype=DataType.FLOAT, filter="status = 'completed'")
 
 
 def test_an_exact_name_column_wins_over_a_case_only_namesake() -> None:

@@ -13,6 +13,8 @@ from slayer.engine.plan import plan_query
 from slayer.ir.planned import AssociationProducerKernel, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import bundle, dev1840_datasets
 from tests._dev1841_fixtures import DatasetMetric, assoc_q
 from tests._dev1900_fixtures import dev1900_datasets, orders_q
@@ -77,8 +79,8 @@ class TestTwoHopHome:
         the two-hop reverse path ('customers', 'orders')."""
         att = _assoc(plan_query(
             query=orders_q(dimensions=["status"],
-                           metrics=[DatasetMetric(expression="sum(customers.regions.pop)",
-                                                  name="rp")],
+                           metrics=[QueryMetric(metric="sum(customers.regions.pop)",
+                                                  alias="rp")],
                            to_many_handling="associate"),
             bundle=_bundle1900()))
         assert att.producer_root_dataset == "regions"
@@ -105,7 +107,7 @@ class TestNestedAttachedParameterProducer:
         amount-sum parameter's own orders-rooted producer, not a host-rooted one."""
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"],
-                          metrics=[DatasetMetric(expression=HEADLINE, name="w")]),
+                          metrics=[QueryMetric(metric=HEADLINE, alias="w")]),
             bundle=bundle()))
         nested_roots = [n.producer_root_dataset
                         for n in att.producer_plan.regroup_attach_plans]

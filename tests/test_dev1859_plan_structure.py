@@ -18,12 +18,13 @@ from slayer.engine.plan import plan_query
 from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     INNER_UP_CITY,
     INNER_UP_PRODUCT,
     MIXED_BAND_EXPR,
     MIXED_SUM,
-    DatasetMetric,
     dev1847_datasets,
     gen,
     sales_q,
@@ -48,7 +49,7 @@ def _bundle() -> ResolvedSourceBundle:
 def _plan(expression: str):
     return plan_query(
         query=sales_q(dimensions=["region"],
-                      metrics=[DatasetMetric(expression=expression, name="m")]),
+                      metrics=[QueryMetric(metric=expression, alias="m")]),
         bundle=_bundle())
 
 
@@ -124,7 +125,7 @@ class TestEmittedGroupByStaysPure:
     async def test_no_group_by_references_the_row_leaf(self, formula):
         sql = await gen(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=formula, name="m")]))
+            metrics=[QueryMetric(metric=formula, alias="m")]))
         ast = sqlglot.parse_one(sql, read="postgres")
         groups = list(ast.find_all(exp.Group))
         assert groups
@@ -168,8 +169,8 @@ class TestDedupOneProducer:
     def test_shared_between_two_measures(self):
         planned = plan_query(
             query=sales_q(dimensions=["region"], metrics=[
-                DatasetMetric(expression=f"sum(quantity * {_REGION_SUM})", name="a"),
-                DatasetMetric(expression=f"sum(unit_price * {_REGION_SUM})", name="b")]),
+                QueryMetric(metric=f"sum(quantity * {_REGION_SUM})", alias="a"),
+                QueryMetric(metric=f"sum(unit_price * {_REGION_SUM})", alias="b")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 
@@ -183,8 +184,8 @@ class TestBandedDimensionOpacity:
     def test_one_attach_inner_nested(self):
         planned = plan_query(
             query=sales_q(
-                dimensions=[{"expression": MIXED_BAND_EXPR, "name": "mixed_band"}],
-                metrics=[DatasetMetric(expression="sum(amount)", name="tot")]),
+                dimensions=[{"field": MIXED_BAND_EXPR, "alias": "mixed_band"}],
+                metrics=[QueryMetric(metric="sum(amount)", alias="tot")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 
@@ -199,9 +200,9 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
     def _plan_banded_partition(self):
         band = {"expression": MIXED_BAND_EXPR, "name": "mixed_band"}
         return plan_query(
-            query=sales_q(dimensions=[band], metrics=[DatasetMetric(
-                expression=f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",
-                name="m")]),
+            query=sales_q(dimensions=[band], metrics=[QueryMetric(
+                metric=f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",
+                alias="m")]),
             bundle=_bundle())
 
     def test_dimension_attach_is_planned(self):
@@ -218,7 +219,7 @@ class TestFirstOverMixedSource:
     async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         q = sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression=f"first(quantity * {INNER_UP_PRODUCT}, id)",
-                name="f")])
+            metrics=[QueryMetric(
+                metric=f"first(quantity * {INNER_UP_PRODUCT}, id)",
+                alias="f")])
         assert "ROW_NUMBER" in (await gen(q)).upper()

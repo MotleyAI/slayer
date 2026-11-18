@@ -124,7 +124,7 @@ class TestPersistence:
             sql_table="v_orders",
             data_source="ds",
             source_kind="view",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         loaded = await storage.get_dataset("v_orders", data_source="ds")
@@ -138,7 +138,7 @@ class TestPersistence:
             sql_table="mv_orders",
             data_source="ds",
             source_kind="materialized_view",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         loaded = await storage.get_dataset("mv_orders", data_source="ds")
@@ -302,14 +302,14 @@ class TestSourceKindRefresh:
             sql_table="foo",
             data_source="ds",
             source_kind="view",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         fresh = SlayerDataset(
             name="foo",
             sql_table="foo",
             data_source="ds",
             source_kind=None,
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         outcome = _additive_merge_existing(persisted=persisted, fresh=fresh)
         assert outcome.kind_changed is False
@@ -322,7 +322,7 @@ class TestSourceKindRefresh:
             sql_table="foo",
             data_source="ds",
             source_kind="table",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         outcome = _additive_merge_existing(
             persisted=model, fresh=model.model_copy(deep=True)

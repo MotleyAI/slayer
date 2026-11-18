@@ -31,7 +31,7 @@ class TestIntegerRule:
         assert _value(single(resp), target=target) == expected, resp.sql
 
     async def test_fractional_double_column(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"expression": "TRY_CAST(price / 2 AS INT)", "name": "x"}]))
+        resp = await engine.execute(q(dimensions=["id", {"field": "TRY_CAST(price / 2 AS INT)", "alias": "x"}]))
         got = {int(k): (None if v is None else int(v)) for k, v in by_key(resp, "id", "x").items()}
         assert got == {1: 1, 2: None, 3: 2, 4: None, 5: None}, resp.sql
 
@@ -62,18 +62,18 @@ class TestJsonSource:
 class TestBooleanSource:
     @pytest.mark.parametrize("target", ["INT", "SMALLINT", "DOUBLE"])
     async def test_reads_as_one_or_zero(self, engine: SlayerQueryEngine, target: str) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"expression": f"TRY_CAST(amount > 15 AS {target})", "name": "x"}]))
+        resp = await engine.execute(q(dimensions=["id", {"field": f"TRY_CAST(amount > 15 AS {target})", "alias": "x"}]))
         got = {int(k): _value(v, target=target) for k, v in by_key(resp, "id", "x").items()}
         assert got == {1: 0, 2: 1, 3: 1, 4: 1, 5: None}, resp.sql
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_emits_everywhere(self, dialect: str) -> None:
-        await emit(q(dimensions=["id", {"expression": "TRY_CAST(amount > 15 AS INT)", "name": "x"}]), dialect=dialect)
+        await emit(q(dimensions=["id", {"field": "TRY_CAST(amount > 15 AS INT)", "alias": "x"}]), dialect=dialect)
 
 
 class TestParameterisedTarget:
     async def test_invalid_text_is_null(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"expression": "TRY_CAST(code AS DECIMAL(10,2))", "name": "x"}]))
+        resp = await engine.execute(q(dimensions=["id", {"field": "TRY_CAST(code AS DECIMAL(10,2))", "alias": "x"}]))
         got = {int(k): (None if v is None else float(v)) for k, v in by_key(resp, "id", "x").items()}
         assert got == {1: 12.0, 2: None, 3: None, 4: 7.0, 5: None}, resp.sql
 
@@ -105,7 +105,7 @@ class TestEmission:
     @pytest.mark.parametrize("target", ["INT", "SMALLINT", "BIGINT", "INTEGER"])
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_integer_targets_emit_everywhere(self, dialect: str, target: str, source: str) -> None:
-        await emit(q(dimensions=["id", {"expression": f"TRY_CAST({source} AS {target})", "name": "x"}]),
+        await emit(q(dimensions=["id", {"field": f"TRY_CAST({source} AS {target})", "alias": "x"}]),
                    dialect=dialect)
 
     @pytest.mark.parametrize(("dialect", "target"), [
@@ -113,7 +113,7 @@ class TestEmission:
         ("duckdb", "HUGEINT"),
     ])
     async def test_wide_target_of_a_number_casts_to_the_target(self, dialect: str, target: str) -> None:
-        sql = await emit(q(dimensions=["id", {"expression": f"TRY_CAST(price / 2 AS {target})", "name": "x"}]),
+        sql = await emit(q(dimensions=["id", {"field": f"TRY_CAST(price / 2 AS {target})", "alias": "x"}]),
                          dialect=dialect)
         assert "AS BIGINT" not in sql.upper(), sql
         assert "AS SIGNED" not in sql.upper(), sql

@@ -193,8 +193,8 @@ class TestBigQueryCommentIngestion:
     def test_types_sanity(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
         models, _ = bq_datasets
         cols = {c.name: c for c in models["orders"].fields}
-        assert cols["id"].datatype is DataType.INT
-        assert cols["amount"].datatype is DataType.DOUBLE
+        assert cols["id"].datatype is DataType.INTEGER
+        assert cols["amount"].datatype is DataType.FLOAT
 
 
 class TestBigQueryDatasetDescription:
@@ -316,7 +316,7 @@ class TestBigQueryDriftWithSecondDataset:
         models = await ingestion.ingest_datasource_async(ds, client=client_for(ds))
         assert {m.sql_table for m in models} == {"orders", "plain"}
         plain = next(m for m in models if m.name == "plain")
-        plain.fields.append(DatasetField(name="ghost", datatype=DataType.TEXT))
+        plain.fields.append(DatasetField(name="ghost", datatype=DataType.STRING))
 
         entries = await validate_datasource(datasource=ds, datasets=models, client=client_for(ds))
 
@@ -413,14 +413,14 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage: StorageBackend
     engine = SlayerQueryEngine(storage=bq_dev2120_storage)
     for column in ("zoned_ts", "wall_ts"):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "events", "dimensions": ["id", {"expression": f"date_add({column}, 1, 'day')", "name": "v"}],
+            "population": "events", "dimensions": ["id", {"field": f"date_add({column}, 1, 'day')", "alias": "v"}],
             "filter": [f"{column} < now()", f"{column} > date_add(now(), -36500, 'day')"],
         }))
         got = {int(r["events.id"]): r["events.v"] for r in resp.data}
         assert got == {1: datetime(2024, 3, 1, 10, 0), 2: datetime(2025, 6, 2, 23, 30)}, (column, resp.sql)
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "events",
-            "dimensions": ["id", column, {"expression": f"date_trunc('month', {column})", "name": "bucket"}],
+            "dimensions": ["id", column, {"field": f"date_trunc('month', {column})", "alias": "bucket"}],
         }))
         rows = {int(r["events.id"]): (r[f"events.{column}"], r["events.bucket"]) for r in resp.data}
         assert rows == {1: (datetime(2024, 2, 29, 10, 0), datetime(2024, 2, 1)),
@@ -436,7 +436,7 @@ async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage: StorageBackend
 def _stale_contractors(data_source: str) -> SlayerDataset:
     """``contractors`` as stored before list columns: ``skills`` as TEXT."""
     return SlayerDataset(name="stale", sql_table="contractors", data_source=data_source, fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="skills", datatype=DataType.TEXT)])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="skills", datatype=DataType.STRING)])
 
 
 @pytest.fixture(scope="module")
@@ -468,7 +468,7 @@ def test_repeated_field_ingested(bq_lists) -> None:
     (model,) = run_sync(_ingest(bq_lists[1], include_tables=["contractors"]))
     skills = model.get_field("skills")
     assert skills is not None
-    assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.STRING)
     assert "STRING" in (skills.db_type or "").upper(), skills.db_type
 
 

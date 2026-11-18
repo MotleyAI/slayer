@@ -230,7 +230,7 @@ class TestPlainDimensionValue:
 class TestPredicateDimension:
     async def test_in_dimension(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["quantity", {"expression": "quantity in (1, 2)", "name": "b"}],
+            dimensions=["quantity", {"field": "quantity in (1, 2)", "alias": "b"}],
             metrics=[N]))
         got = {r["sales.quantity"]: bool(r["sales.b"]) for r in resp.data}
         assert got == {q: q in (1.0, 2.0) for q in QTY_TIMES_COUNT}
@@ -394,10 +394,10 @@ class TestStageDimensionValue:
         resp = await exec_engine.execute([
             SlayerQuery.model_validate({
                 "name": "st", "population": "sales", "dimensions": ["region", "city"],
-                "metrics": [{"expression": "sum(amount)", "name": "tot"}]}),
+                "metrics": [{"metric": "sum(amount)", "alias": "tot"}]}),
             SlayerQuery.model_validate({
                 "population": "st", "dimensions": ["region"],
-                "metrics": [{"expression": "iif(region == 'North', sum(tot), 0)", "name": "m"}]}),
+                "metrics": [{"metric": "iif(region == 'North', sum(tot), 0)", "alias": "m"}]}),
         ])
         got = {r["st.region"]: r["st.m"] for r in resp.data}
         assert got == {"North": 90.0, "South": 0, "East": 0, "Gap": 0, "Void": 0}

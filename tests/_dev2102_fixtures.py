@@ -119,7 +119,7 @@ def _cols(*spec: tuple[str, DataType], pk: str | None = "id") -> list[DatasetFie
     return [DatasetField(name=n, datatype=t, primary_key=n == pk) for n, t in spec]
 
 
-_INT, _TEXT, _DOUBLE = DataType.INT, DataType.TEXT, DataType.DOUBLE
+_INT, _TEXT, _DOUBLE = DataType.INTEGER, DataType.STRING, DataType.FLOAT
 
 
 def countries() -> SlayerDataset:
@@ -161,11 +161,11 @@ def orders() -> SlayerDataset:
             ("billing_address_id", _INT), ("shipping_address_id", _INT), ("referrer_id", _INT),
             ("ship_region_id", _INT)),
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=CUSTOMER_PAIRS, join_type=JoinType.LEFT,
+            DatasetRelationship(to="customers", from_columns=[p[0] for p in CUSTOMER_PAIRS], to_columns=[p[1] for p in CUSTOMER_PAIRS], join_type=JoinType.LEFT,
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
-            DatasetRelationship(to="addresses", name="billing_address", join_pairs=BILLING_PAIRS,
+            DatasetRelationship(to="addresses", name="billing_address", from_columns=[p[0] for p in BILLING_PAIRS], to_columns=[p[1] for p in BILLING_PAIRS],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
-            DatasetRelationship(to="addresses", name="shipping_address", join_pairs=SHIPPING_PAIRS,
+            DatasetRelationship(to="addresses", name="shipping_address", from_columns=[p[0] for p in SHIPPING_PAIRS], to_columns=[p[1] for p in SHIPPING_PAIRS],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
         ],
     )
@@ -186,11 +186,11 @@ def base_datasets() -> list[SlayerDataset]:
         _plain("users", ("id", _INT), ("name", _TEXT), pk="id"),
         _plain("parts", ("id", _INT), ("pa", _INT), ("pb", _INT), pk="id"),
         _plain("part_keys", ("ka", _INT), ("kb", _INT),
-               joins=[DatasetRelationship(to="parts", join_pairs=[["ka", "pa"], ["kb", "pb"]])]),
+               joins=[DatasetRelationship(to="parts", from_columns=["ka", "kb"], to_columns=["pa", "pb"])]),
         _plain("part_keys_b", ("ka", _INT), ("kb", _INT)),
         _plain("shipments", ("id", _INT), ("address_id", _INT), pk="id", joins=[
-            DatasetRelationship(to="addresses", name="origin", join_pairs=[["address_id", "id"]]),
-            DatasetRelationship(to="addresses", name="dest", join_pairs=[["address_id", "id"]]),
+            DatasetRelationship(to="addresses", name="origin", from_columns=["address_id"], to_columns=["id"]),
+            DatasetRelationship(to="addresses", name="dest", from_columns=["address_id"], to_columns=["id"]),
         ]),
     ]
 
@@ -222,12 +222,12 @@ def q(**fields: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(fields)
 
 
-def ext(source_name: str, **fields: Any) -> dict:
-    return {"source_name": source_name, **fields}
+def ext(dataset: str, **fields: Any) -> dict:
+    return {"dataset": dataset, **fields}
 
 
 def join(target: str, pairs: list[list[str]], **fields: Any) -> dict:
-    return {"to": target, "join_pairs": pairs, **fields}
+    return {"to": target, "from_columns": [p[0] for p in pairs], "to_columns": [p[1] for p in pairs], **fields}
 
 
 async def run(engine: SlayerQueryEngine, query: Any) -> SlayerResponse:

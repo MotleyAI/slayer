@@ -48,31 +48,31 @@ def _base_datasets(ds: str) -> list[SlayerDataset]:
         SlayerDataset(
             name="customers", sql_table="customers", data_source=ds,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         ),
         SlayerDataset(
             name="products", sql_table="products", data_source=ds,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
-                DatasetField(name="price", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="price", datatype=DataType.FLOAT),
             ],
         ),
         SlayerDataset(
             name="orders", sql_table="orders", data_source=ds,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="product_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="product_id", datatype=DataType.INTEGER),
                 # Derived, so never drift; executing it fails for a non-drift reason.
-                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE),
+                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-                DatasetRelationship(to="products", join_pairs=[["product_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+                DatasetRelationship(to="products", from_columns=["product_id"], to_columns=["id"]),
             ],
         ),
     ]
@@ -83,8 +83,8 @@ def _sql_dataset(*, name: str, sql: str, ds: str = "ds") -> SlayerDataset:
         name=name, sql=sql, data_source=ds,
         fields=[
             # A 0-row SQLite trial reports every column as TEXT.
-            DatasetField(name="id", datatype=DataType.TEXT, primary_key=True),
-            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
         ],
     )
 
@@ -93,7 +93,7 @@ def _sql_dataset(*, name: str, sql: str, ds: str = "ds") -> SlayerDataset:
 _UNRELATED_FAILURE = {
     "population": "orders",
     "dimensions": ["customers.region"],
-    "metrics": [{"expression": "sum(bad)"}],
+    "metrics": [{"metric": "sum(bad)"}],
 }
 
 
@@ -227,7 +227,7 @@ class TestReadSetScope:
         env.live("DROP TABLE customers")
         err = await _fails_with_drift(env.engine, {
             "population": "orders", "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         }, explain=explain)
         assert "customers" in _blamed(err)
         assert any(
@@ -249,27 +249,27 @@ class TestReadSetScope:
             pytest.param(
                 "customers",
                 {"population": "orders", "dimensions": ["customers.region"],
-                 "metrics": [{"expression": "sum(amount)"}]},
+                 "metrics": [{"metric": "sum(amount)"}]},
                 None,
                 id="single-stage",
             ),
             pytest.param(
                 "customers",
-                {"population": "s1", "metrics": [{"expression": "sum(total)"}]},
+                {"population": "s1", "metrics": [{"metric": "sum(total)"}]},
                 {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
-                 "metrics": [{"expression": "sum(amount)", "name": "total"}]},
+                 "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
                 id="multi-stage",
             ),
             pytest.param(
                 "orders",
                 {"population": "customers", "dimensions": ["region"],
-                 "metrics": [{"expression": "sum(orders.amount)"}]},
+                 "metrics": [{"metric": "sum(orders.amount)"}]},
                 None,
                 id="cross-model-producer",
             ),
             pytest.param(
                 "orders",
-                {"population": "customers", "metrics": [{"expression": "count(*)"}],
+                {"population": "customers", "metrics": [{"metric": "count(*)"}],
                  "filter": ["orders.amount > 5"]},
                 None,
                 id="filter-semi-join",
@@ -289,10 +289,10 @@ class TestReadSetScope:
         await env.engine.create_dataset_from_query(
             query=[
                 {"name": "unused", "population": "products", "dimensions": ["name"],
-                 "metrics": [{"expression": "count(*)", "name": "n"}]},
+                 "metrics": [{"metric": "count(*)", "alias": "n"}]},
                 {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
-                 "metrics": [{"expression": "sum(amount)", "name": "total"}]},
-                {"population": "s1", "metrics": [{"expression": "sum(total)", "name": "grand"}]},
+                 "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
+                {"population": "s1", "metrics": [{"metric": "sum(total)", "alias": "grand"}]},
             ],
             name="qb_pruned",
         )
@@ -305,7 +305,7 @@ class TestReadSetScope:
             for s in stored.source_queries or []
         ]
         await env.save(stored.model_copy(update={"source_queries": stages}))
-        query = {"population": "qb_pruned", "metrics": [{"expression": "sum(grand)"}]}
+        query = {"population": "qb_pruned", "metrics": [{"metric": "sum(grand)"}]}
         dry = await env.engine.execute(query, dry_run=True)
         assert "products" not in (dry.sql or ""), "fixture must prune the unused stage"
 
@@ -316,14 +316,14 @@ class TestReadSetScope:
         await env.engine.create_dataset_from_query(
             query=[
                 {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
-                 "metrics": [{"expression": "sum(amount)", "name": "total"}]},
-                {"population": "s1", "metrics": [{"expression": "sum(total)", "name": "grand"}]},
+                 "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
+                {"population": "s1", "metrics": [{"metric": "sum(total)", "alias": "grand"}]},
             ],
             name="qb",
         )
         env.live("ALTER TABLE orders DROP COLUMN amount")
         err = await _fails_with_drift(
-            env.engine, {"population": "qb", "metrics": [{"expression": "sum(grand)"}]},
+            env.engine, {"population": "qb", "metrics": [{"metric": "sum(grand)"}]},
         )
         assert "orders" in _blamed(err)
 
@@ -333,7 +333,7 @@ class TestPayload:
         env.live("ALTER TABLE customers DROP COLUMN region")
         err = await _fails_with_drift(env.engine, {
             "population": "orders", "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
         assert err.datasets == ["customers"]
         assert err.datasets == sorted(_blamed(err))
@@ -343,7 +343,7 @@ class TestPayload:
         env.live("DROP TABLE customers")
         err = await _fails_with_drift(env.engine, {
             "population": "orders", "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
         assert err.datasets == ["customers", "orders"]
         assert err.datasets == sorted(_blamed(err))
@@ -358,9 +358,9 @@ class TestScopedInspection:
             SlayerDataset(
                 name=f"t{i}", sql_table=f"t{i}", data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="v", datatype=DataType.DOUBLE),
-                    DatasetField(name="bad", sql="no_such_fn(v)", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="v", datatype=DataType.FLOAT),
+                    DatasetField(name="bad", sql="no_such_fn(v)", datatype=DataType.FLOAT),
                 ],
             )
             for i in range(10)
@@ -374,7 +374,7 @@ class TestScopedInspection:
                 wraps=sqlite_introspect.probe_sqlite_integer_column,
             ) as probe:
                 await _fails_unwrapped(
-                    e.engine, {"population": "t3", "metrics": [{"expression": "sum(bad)"}]},
+                    e.engine, {"population": "t3", "metrics": [{"metric": "sum(bad)"}]},
                 )
             assert [c.kwargs["table_name"] for c in introspect.call_args_list] == ["t3"]
             assert {c.kwargs["table"] for c in probe.call_args_list} == {"t3"}
@@ -391,7 +391,7 @@ class TestScopedInspection:
         await env.save(_sql_dataset(name="sq_orders", sql="SELECT id, amount FROM orders"))
         await env.save(_sql_dataset(name="sq_customers", sql="SELECT id, region FROM customers"))
         await _fails_unwrapped(
-            env.engine, {"population": "sq_orders", "metrics": [{"expression": "sum(bad)"}]},
+            env.engine, {"population": "sq_orders", "metrics": [{"metric": "sum(bad)"}]},
         )
         assert spies.trialled() == ["sq_orders"]
 
@@ -409,13 +409,13 @@ class TestScopedInspection:
         await env.save(SlayerDataset(
             name="orders_view", sql_table="v_orders", data_source="ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
             ],
         ))
         await _fails_unwrapped(
-            env.engine, {"population": "orders_view", "metrics": [{"expression": "sum(bad)"}]},
+            env.engine, {"population": "orders_view", "metrics": [{"metric": "sum(bad)"}]},
         )
 
     async def test_explicit_validation_stays_whole_datasource(self, env: _Env, spies: _Spies) -> None:
@@ -423,7 +423,7 @@ class TestScopedInspection:
             "ALTER TABLE products DROP COLUMN name; ALTER TABLE customers DROP COLUMN region;"
         )
         await _fails_unwrapped(
-            env.engine, {"population": "orders", "metrics": [{"expression": "sum(bad)"}]},
+            env.engine, {"population": "orders", "metrics": [{"metric": "sum(bad)"}]},
         )
         entries = await env.engine.validate_datasets(data_source="ds")
         assert {e.dataset_name for e in entries} >= {"customers", "products"}
@@ -450,7 +450,7 @@ class TestSnapshotReuse:
         await env.save(_sql_dataset(name="sq_orders", sql="SELECT id, amount FROM orders"))
         for _ in range(3):
             await _fails_unwrapped(
-                env.engine, {"population": "sq_orders", "metrics": [{"expression": "sum(bad)"}]},
+                env.engine, {"population": "sq_orders", "metrics": [{"metric": "sum(bad)"}]},
             )
         assert spies.trialled() == ["sq_orders"]
 
@@ -460,11 +460,11 @@ class TestSnapshotReuse:
         sql = "SELECT id, amount FROM orders"
         await env.save(_sql_dataset(name="sq_b", sql=sql))
         await env.save(_sql_dataset(name="sq_a", sql=sql).model_copy(update={
-            "relationships": [DatasetRelationship(to="sq_b", join_pairs=[["id", "id"]])],
+            "relationships": [DatasetRelationship(to="sq_b", from_columns=["id"], to_columns=["id"])],
         }))
         await _fails_unwrapped(env.engine, {
             "population": "sq_a", "dimensions": ["sq_b.id"],
-            "metrics": [{"expression": "sum(bad)"}],
+            "metrics": [{"metric": "sum(bad)"}],
         })
         assert len(spies.trialled()) == 1
 
@@ -477,7 +477,7 @@ class TestSnapshotReuse:
         ) as resolve:
             for _ in range(2):
                 await _fails_unwrapped(
-                    env.engine, {"population": "sq_broken", "metrics": [{"expression": "count(*)"}]},
+                    env.engine, {"population": "sq_broken", "metrics": [{"metric": "count(*)"}]},
                 )
         assert spies.trialled() == ["sq_broken"]
         assert resolve.call_count == 1
@@ -507,7 +507,7 @@ class TestSnapshotReuse:
     ) -> None:
         env.live("DROP TABLE orders")
         spies.listing.side_effect = RuntimeError("permission denied")
-        query = {"population": "orders", "metrics": [{"expression": "sum(amount)"}]}
+        query = {"population": "orders", "metrics": [{"metric": "sum(amount)"}]}
         for _ in range(2):
             err = await _fails_unwrapped(env.engine, query)
             assert "no such table" in str(err).lower()
@@ -516,7 +516,7 @@ class TestSnapshotReuse:
     async def test_a_model_edit_within_the_window_is_honoured(self, env: _Env, spies: _Spies) -> None:
         env.live("ALTER TABLE orders DROP COLUMN amount")
         first = await _fails_with_drift(
-            env.engine, {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
+            env.engine, {"population": "orders", "metrics": [{"metric": "sum(amount)"}]},
         )
         assert any(
             isinstance(e, EditDatasetDelete) and e.dataset_name == "orders"
@@ -529,7 +529,7 @@ class TestSnapshotReuse:
             "fields": [c for c in orders.fields if c.name != "amount"],
         }))
         await _fails_unwrapped(
-            env.engine, {"population": "orders", "metrics": [{"expression": "sum(bad)"}]},
+            env.engine, {"population": "orders", "metrics": [{"metric": "sum(bad)"}]},
         )
         assert spies.listing.call_count == 1
 
@@ -546,7 +546,7 @@ class TestSnapshotReuse:
 
     async def test_a_dropped_tables_absence_is_reused(self, env: _Env, spies: _Spies) -> None:
         env.live("DROP TABLE orders")
-        query = {"population": "orders", "metrics": [{"expression": "sum(amount)"}]}
+        query = {"population": "orders", "metrics": [{"metric": "sum(amount)"}]}
         for _ in range(3):
             err = await _fails_with_drift(env.engine, query)
             assert any(
@@ -569,7 +569,7 @@ class TestSnapshotReuse:
         def _orders(schema: str) -> SlayerDataset:
             return SlayerDataset(
                 name="orders", sql_table=f"{schema}.orders", data_source="ds",
-                fields=[DatasetField(name="id", datatype=DataType.TEXT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.STRING, primary_key=True)],
             )
 
         snapshot = schema_drift.DriftSnapshot(created_at=0.0)
@@ -579,7 +579,7 @@ class TestSnapshotReuse:
             ), patch.object(
                 ingestion, "list_ingestable_objects", side_effect=_listing,
             ) as listing, patch.object(
-                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.STRING}),
             ):
                 first = await schema_drift.validate_datasource(
                     datasource=ds, datasets=[_orders("a")], client=client, snapshot=snapshot,
@@ -602,7 +602,7 @@ class TestSnapshotReuse:
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         model = SlayerDataset(
             name="orders", sql_table="a.orders", data_source="ds",
-            fields=[DatasetField(name="id", datatype=DataType.TEXT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.STRING, primary_key=True)],
         )
         async with _client(ds) as client:
             with patch.object(
@@ -611,7 +611,7 @@ class TestSnapshotReuse:
                 ingestion, "list_ingestable_objects",
                 side_effect=lambda **_: [IngestableObject(name="orders", kind="table")],
             ), patch.object(
-                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
+                schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.STRING}),
             ) as introspect:
                 entries = await schema_drift.validate_datasource(
                     datasource=ds, datasets=[model], client=client,
@@ -645,7 +645,7 @@ class TestResolvedDatasource:
             )
             await env.save(SlayerDataset(
                 name=f"{other}_t", sql_table=f"{other}_t", data_source=other,
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             ))
         spies.listing.reset_mock()
         render = SlayerQueryEngine._plan_and_render
@@ -689,11 +689,11 @@ class TestUnreadableTable:
         with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
             await _fails_unwrapped(env.engine, {
                 "population": "customers", "dimensions": ["region"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             env.live("ALTER TABLE orders DROP COLUMN amount")
             err = await _fails_with_drift(
-                env.engine, {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
+                env.engine, {"population": "orders", "metrics": [{"metric": "sum(amount)"}]},
             )
         assert "orders" in _blamed(err)
 
@@ -725,7 +725,7 @@ class TestUnreachableDatasource:
         self, tmp_path: Path, source: str,
     ) -> None:
         engine = await _unreachable_engine(tmp_path)
-        query = {"population": source, "metrics": [{"expression": "count(*)"}]}
+        query = {"population": source, "metrics": [{"metric": "count(*)"}]}
         try:
             with patch.object(
                 SlayerSQLClient, "_metadata", autospec=True,
@@ -764,41 +764,41 @@ _LONG = "AnExtremelyLongModelNameThatForcesIdentifierFitting"
 
 _QB_STAGES = [
     {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
-     "metrics": [{"expression": "sum(amount)", "name": "total"}]},
-    {"population": "s1", "metrics": [{"expression": "sum(total)", "name": "grand"}]},
+     "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
+    {"population": "s1", "metrics": [{"metric": "sum(total)", "alias": "grand"}]},
 ]
 
 # (id, input, expected read set); query-backed models qb / qb_pruned are saved by the test.
 _READ_SET_CORPUS = [
     pytest.param(
         {"population": "orders", "dimensions": ["customers.region"],
-         "metrics": [{"expression": "sum(amount)"}]},
+         "metrics": [{"metric": "sum(amount)"}]},
         {"orders", "customers"}, id="single-stage",
     ),
     pytest.param(
-        [_QB_STAGES[0], {"population": "s1", "metrics": [{"expression": "sum(total)"}]}],
+        [_QB_STAGES[0], {"population": "s1", "metrics": [{"metric": "sum(total)"}]}],
         {"orders", "customers"}, id="multi-stage",
     ),
     pytest.param(
-        {"population": "qb", "metrics": [{"expression": "sum(grand)"}]},
+        {"population": "qb", "metrics": [{"metric": "sum(grand)"}]},
         {"qb", "orders", "customers"}, id="query-backed-splice",
     ),
     pytest.param(
-        {"population": "qb_pruned", "metrics": [{"expression": "sum(grand)"}]},
+        {"population": "qb_pruned", "metrics": [{"metric": "sum(grand)"}]},
         {"qb_pruned", "orders", "customers"}, id="pruned-splice",
     ),
     pytest.param(
         {"population": "customers", "dimensions": ["region"],
-         "metrics": [{"expression": "sum(orders.amount)"}]},
+         "metrics": [{"metric": "sum(orders.amount)"}]},
         {"customers", "orders"}, id="cross-model-producer",
     ),
     pytest.param(
-        {"population": "customers", "metrics": [{"expression": "count(*)"}],
+        {"population": "customers", "metrics": [{"metric": "count(*)"}],
          "filter": ["orders.amount > 5"]},
         {"customers", "orders"}, id="filter-semi-join",
     ),
     pytest.param(
-        {"population": "sq_orders", "metrics": [{"expression": "count(*)"}]},
+        {"population": "sq_orders", "metrics": [{"metric": "count(*)"}]},
         {"sq_orders"}, id="sql-model",
     ),
 ]
@@ -809,25 +809,25 @@ def _long_chain_datasets(ds: str) -> list[SlayerDataset]:
         SlayerDataset(
             name=f"{_LONG}Invoice", sql_table="invoices", data_source=ds,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to=f"{_LONG}Customer", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to=f"{_LONG}Customer", from_columns=["customer_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name=f"{_LONG}Customer", sql_table="customers", data_source=ds,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="consumer_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to=f"{_LONG}Consumer", join_pairs=[["consumer_id", "id"]])],
+            relationships=[DatasetRelationship(to=f"{_LONG}Consumer", from_columns=["consumer_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name=f"{_LONG}Consumer", sql_table="consumers", data_source=ds,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="lifetime_value", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="lifetime_value", datatype=DataType.FLOAT),
             ],
         ),
     ]
@@ -874,7 +874,7 @@ class TestReadSetStamp:
         await env.engine.create_dataset_from_query(
             query=[
                 {"name": "unused", "population": "products", "dimensions": ["name"],
-                 "metrics": [{"expression": "count(*)", "name": "n"}]},
+                 "metrics": [{"metric": "count(*)", "alias": "n"}]},
                 *_QB_STAGES,
             ],
             name="qb_pruned",
@@ -906,7 +906,7 @@ class TestReadSetStamp:
             statement, touched, sql = await _render(engine, {
                 "population": f"{_LONG}Invoice",
                 "dimensions": ["status", f"{_LONG}Customer.{_LONG}Consumer.lifetime_value"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
         finally:
             await engine.aclose()

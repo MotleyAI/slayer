@@ -14,8 +14,9 @@ from slayer.core.keys import AggregateKey, FieldKey, TransformKey
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1750_fixtures import (
-    DatasetMetric,
     SlayerQuery,
     customers_dataset,
     line_items_dataset,
@@ -37,7 +38,7 @@ def _plan(expression: str, *, name: str = "prev"):
     return plan_query(
         query=SlayerQuery(
             population="orders", time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression=expression, name=name)],
+            metrics=[QueryMetric(metric=expression, alias=name)],
         ),
         bundle=_bundle(),
     )
@@ -118,8 +119,8 @@ class TestGuardOwnership:
             query=SlayerQuery(
                 population="orders", time_dimensions=month_td(),
                 metrics=[
-                    DatasetMetric(expression="sum(customers.spend)", name="cm"),
-                    DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
+                    QueryMetric(metric="sum(customers.spend)", alias="cm"),
+                    QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
                 ],
             ),
             bundle=_bundle(),

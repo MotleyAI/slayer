@@ -22,7 +22,7 @@ from slayer.core.keys import (
     LiteralKey,
     Phase,
 )
-from slayer.core.query import DatasetMetric, SlayerQuery
+from slayer.core.query import DatasetMetric, QueryMetric, SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import (
     PlannedQuery,
@@ -92,8 +92,8 @@ class TestPartitionKeyFilter:
     async def test_measure_partitioned_by_band_under_partition_key_filter(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", _band("customer_id", 50)],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s"),
-                      DatasetMetric(expression="sum(amount, partition_by=band)", name="bt")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s"),
+                      QueryMetric(metric="sum(amount, partition_by=band)", alias="bt")],
             filter=["customer_id is not null"],
         ))
         assert _rows(resp, "region", "band", "s", "bt") == [
@@ -110,7 +110,7 @@ class TestGrainConsumersUnderPartitionKeyFilter:
     async def test_ranked_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[_band("customer_id", 50)],
-            metrics=[DatasetMetric(expression="last(amount, ordered_at)", name="v")],
+            metrics=[QueryMetric(metric="last(amount, ordered_at)", alias="v")],
             filter=["customer_id is not null"],
         ))
         assert _rows(resp, "band", "v") == [("high", 60.0), ("other", 25.0)]
@@ -131,7 +131,7 @@ class TestGrainConsumersUnderPartitionKeyFilter:
     async def test_time_ordered_measure(self, exec_engine, formula, extra_filters, expected) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[_band("customer_id", 50)], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression=formula, name="v")],
+            metrics=[QueryMetric(metric=formula, alias="v")],
             filter=["customer_id is not null", *extra_filters],
         ))
         got = sorted(((r["orders.band"], month_key(r["orders.ordered_at"]), float(r["orders.v"]))
@@ -165,7 +165,7 @@ class TestOrderKeyBesideRankedMeasure:
         self, exec_engine, formula, expected, order_col,
     ) -> None:
         resp = await exec_engine.execute(_q(
-            metrics=[DatasetMetric(expression=formula, name="v")],
+            metrics=[QueryMetric(metric=formula, alias="v")],
             order=[{"field": order_col, "direction": "desc"}],
         ))
         assert _rows(resp, "v") == [(expected,)]
@@ -174,7 +174,7 @@ class TestOrderKeyBesideRankedMeasure:
         # Regression guard: a dimensioned query already wraps the sort key.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="last(amount, ordered_at)", name="v")],
+            metrics=[QueryMetric(metric="last(amount, ordered_at)", alias="v")],
             order=[{"field": "city", "direction": "desc"}],
         ))
         assert _rows(resp, "region", "v") == [("North", 30.0), ("South", 25.0), (None, 60.0)]
@@ -187,8 +187,8 @@ class TestProducerGrainCoverage:
     async def test_measure_partitioned_by_computed_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", _band("customer_id", 50)],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s"),
-                      DatasetMetric(expression="sum(amount, partition_by=band)", name="bt")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s"),
+                      QueryMetric(metric="sum(amount, partition_by=band)", alias="bt")],
         ))
         assert _rows(resp, "region", "band", "s", "bt") == [
             ("North", "high", 100.0, 160.0),
@@ -217,7 +217,7 @@ def _slot_id_by_alias(pq: PlannedQuery, alias: str) -> str:
 class TestPlannedGrain:
     def test_grain_is_dimension_positions_in_order(self) -> None:
         pq = _plan(
-            dimensions=["region", {"expression": "region", "name": "r2"}, _band("customer_id", 50)],
+            dimensions=["region", {"field": "region", "alias": "r2"}, _band("customer_id", 50)],
             time_dimensions=month_td(), metrics=[REVENUE],
         )
         assert pq.grain == [
@@ -228,7 +228,7 @@ class TestPlannedGrain:
 
     @pytest.mark.parametrize("formula", ["sum(amount)", "last(amount, ordered_at)"])
     def test_grouped_zero_dimension_grain_is_empty(self, formula) -> None:
-        pq = _plan(metrics=[DatasetMetric(expression=formula, name="v")])
+        pq = _plan(metrics=[QueryMetric(metric=formula, alias="v")])
         assert pq.grain == []
 
     def test_raw_rows_grain_is_none(self) -> None:

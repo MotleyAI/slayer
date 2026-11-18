@@ -67,7 +67,7 @@ class TestPushedFilterEntryIdentity:
         metric counts the customers with an app order (c1, c3), unfanned."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, CM],
             filter=[_EXCLUDED_APP],
         ))
@@ -89,10 +89,10 @@ class TestPushedFilterEntryIdentity:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("CASE WHEN sum(customers.regions.pop, "
+                "field": ("CASE WHEN sum(customers.regions.pop, "
                                "partition_by=customers.regions.name) > 150 "
                                "THEN 'hi' ELSE 'lo' END"),
-                "name": "pband",
+                "alias": "pband",
             }],
             metrics=[M],
             filter=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
@@ -128,7 +128,7 @@ class TestBroadcastDedup:
         computed dimension's producer chain must not shadow the outer one."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}, "status"],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}, "status"],
             metrics=[M, CM],
             to_many_handling="broadcast",
         ))
@@ -146,7 +146,7 @@ class TestBroadcastDedup:
         """Anchor for the nested case: without status, nothing broadcasts."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, CM],
         ))
         assert broadcast_warnings(resp) == []

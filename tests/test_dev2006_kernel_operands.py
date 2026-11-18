@@ -27,6 +27,8 @@ from slayer.ir.planned import (
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests import _dev1841_fixtures as f1841
 from tests._dev2006_fixtures import (
     AVG_LAST_BY_CUSTOMER,
@@ -347,7 +349,7 @@ class TestAssociatedRankedPickStaysTyped:
         "dimensions": ["status"],
         "time_dimensions": [f1841.TimeDimension(
             field="customers.signup_at", granularity=f1841.TimeGranularity.MONTH)],
-        "metrics": [f1841.DatasetMetric(expression="last(customers.spend)", name="l")],
+        "metrics": [QueryMetric(metric="last(customers.spend)", alias="l")],
     }
 
     async def test_cross_model_last_needing_association(self, dev1841_engine):

@@ -190,9 +190,9 @@ class TestAdditive:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -203,13 +203,13 @@ class TestAdditive:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                     DatasetField(
                         name="customer_id",
                         sql="customer_id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                 ],
                 relationships=[],
@@ -282,9 +282,9 @@ class TestSkipNonSqlTableModes:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -303,7 +303,7 @@ class TestSkipNonSqlTableModes:
         await engine.create_dataset_from_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)", "name": "total"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "total"}],
             }),
             name="orders_summary",
         )
@@ -697,7 +697,7 @@ async def _persist_int_dataset(
     col_kwargs: dict[str, Any] = {
         "name": column,
         "sql": column,
-        "datatype": DataType.INT,
+        "datatype": DataType.INTEGER,
         "format": column_format or NumberFormat(type=NumberFormatType.INTEGER),
         "description": description,
     }
@@ -712,7 +712,7 @@ async def _persist_int_dataset(
             data_source=ds_name,
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
                 DatasetField(**col_kwargs),
             ],
@@ -739,7 +739,7 @@ class TestSqliteProbeWideningOnReingest:
 
         loaded = await storage.get_dataset("sensordata", data_source="ds")
         col = next(c for c in loaded.fields if c.name == "tempstabidx")
-        assert col.datatype is DataType.DOUBLE
+        assert col.datatype is DataType.FLOAT
         assert col.format is not None
         assert col.format.type is NumberFormatType.FLOAT
 
@@ -757,7 +757,7 @@ class TestSqliteProbeWideningOnReingest:
 
         loaded = await storage.get_dataset("sensordata", data_source="ds")
         col = next(c for c in loaded.fields if c.name == "status")
-        assert col.datatype is DataType.TEXT
+        assert col.datatype is DataType.STRING
         # On widening to TEXT, the auto-default integer format must be cleared.
         assert col.format is None
 
@@ -783,12 +783,12 @@ class TestSqliteProbeWideningOnReingest:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                        name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                     ),
                     DatasetField(
                         name="tempstabidx",
                         sql="tempstabidx",
-                        datatype=DataType.INT,
+                        datatype=DataType.INTEGER,
                         format=NumberFormat(type=NumberFormatType.INTEGER),
                         description="hand-authored note",
                         label="Temp Stab",
@@ -804,7 +804,7 @@ class TestSqliteProbeWideningOnReingest:
 
         loaded = await storage.get_dataset("sensordata", data_source="ds")
         col = next(c for c in loaded.fields if c.name == "tempstabidx")
-        assert col.datatype is DataType.DOUBLE
+        assert col.datatype is DataType.FLOAT
         # User metadata preserved verbatim.
         assert col.description == "hand-authored note"
         assert col.label == "Temp Stab"
@@ -834,7 +834,7 @@ class TestSqliteProbeWideningOnReingest:
 
         loaded = await storage.get_dataset("t", data_source="ds")
         col = next(c for c in loaded.fields if c.name == "qty")
-        assert col.datatype is DataType.INT
+        assert col.datatype is DataType.INTEGER
 
     async def test_non_sqlite_with_live_schema_drift_stays_strict_additive(
         self, workspace: Path
@@ -864,7 +864,7 @@ class TestSqliteProbeWideningOnReingest:
         loaded = await storage.get_dataset("t", data_source="ds")
         col = next(c for c in loaded.fields if c.name == "qty")
         # Non-SQLite: persisted INT stays INT, even though fresh said DOUBLE.
-        assert col.datatype is DataType.INT
+        assert col.datatype is DataType.INTEGER
 
     async def test_widened_columns_in_model_addition(
         self, workspace: Path
@@ -933,10 +933,10 @@ class TestSqliteProbeWideningOnReingest:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                        name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                     ),
                     DatasetField(
-                        name="qty", sql="qty", datatype=DataType.DOUBLE,
+                        name="qty", sql="qty", datatype=DataType.FLOAT,
                         format=NumberFormat(type=NumberFormatType.FLOAT),
                     ),
                 ],
@@ -948,7 +948,7 @@ class TestSqliteProbeWideningOnReingest:
         loaded = await storage.get_dataset("sensordata", data_source="ds")
         col = next(c for c in loaded.fields if c.name == "qty")
         # DOUBLE preserved, never narrowed.
-        assert col.datatype is DataType.DOUBLE
+        assert col.datatype is DataType.FLOAT
 
     async def test_custom_format_preserved_on_widening(
         self, workspace: Path, caplog
@@ -981,7 +981,7 @@ class TestSqliteProbeWideningOnReingest:
 
         loaded = await storage.get_dataset("sensordata", data_source="ds")
         col = next(c for c in loaded.fields if c.name == "amount")
-        assert col.datatype is DataType.DOUBLE
+        assert col.datatype is DataType.FLOAT
         # Custom format must be preserved verbatim.
         assert col.format is not None
         assert col.format.type is NumberFormatType.CURRENCY

@@ -305,7 +305,7 @@ def _skip_labels(report) -> list[str]:
 async def _query_count(storage: YAMLStorage, dataset_name: str) -> int:
     engine = SlayerQueryEngine(storage=storage)
     resp = await engine.execute(
-        SlayerQuery.model_validate({"population": dataset_name, "metrics": [{"expression": "count(*)", "name": "n"}]})
+        SlayerQuery.model_validate({"population": dataset_name, "metrics": [{"metric": "count(*)", "alias": "n"}]})
     )
     assert resp.row_count == 1, resp.data
     return next(iter(resp.data[0].values()))
@@ -774,7 +774,7 @@ class TestForeignKeysAreSchemaAware:
         child = models["child"]
         assert child.sql_table == "ofr.child"
         assert [j.to for j in child.relationships] == ["parent"]
-        assert child.relationships[0].join_pairs == [["parent_id", "id"]]
+        assert child.relationships[0].column_pairs == [("parent_id", "id")]
 
 
 # ===========================================================================
@@ -797,7 +797,7 @@ class TestSelfHeal:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         ds = _ds(basic_db)
         # Pretend an older run stored ``reports`` unqualified with hand metadata.
-        col = DatasetField(name="id", sql="id", datatype=DataType.INT, description="hand id")
+        col = DatasetField(name="id", sql="id", datatype=DataType.INTEGER, description="hand id")
         await self._persist_bare(storage, ds, [col],
                                  extra={"description": "hand table"})
         result = await _idempotent(
@@ -817,7 +817,7 @@ class TestSelfHeal:
         ds = _ds(basic_db)
         model = SlayerDataset(
             name="reports", sql_table="prod.reports", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         await storage.save_datasource(ds)
         await storage.save_dataset(model)
@@ -839,9 +839,9 @@ class TestSelfHeal:
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT,
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER,
                        format={"type": "integer"}),
-                DatasetField(name="val", sql="val", datatype=DataType.INT,
+                DatasetField(name="val", sql="val", datatype=DataType.INTEGER,
                        format={"type": "integer"}),
             ],
         ))
@@ -865,7 +865,7 @@ class TestSelfHeal:
         await storage.save_datasource(ds)
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=[DatasetField(name="a", sql="a", datatype=DataType.INT)],
+            fields=[DatasetField(name="a", sql="a", datatype=DataType.INTEGER)],
         ))
         await _idempotent(
             datasource=ds, storage=storage, schemas=["main"],   # verbatim → main.reports
@@ -905,7 +905,7 @@ class TestCrossSchemaMergeGuard:
         await storage.save_datasource(ds)
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=[DatasetField(name="a", sql="a", datatype=DataType.INT)],
+            fields=[DatasetField(name="a", sql="a", datatype=DataType.INTEGER)],
         ))
         result = await _idempotent(
             datasource=ds, storage=storage, schemas=["s2"]
@@ -926,7 +926,7 @@ class TestCrossSchemaMergeGuard:
         await storage.save_datasource(ds)
         await storage.save_dataset(SlayerDataset(
             name="reports", sql_table="reports", data_source="ds",
-            fields=[DatasetField(name="a", sql="a", datatype=DataType.INT)],
+            fields=[DatasetField(name="a", sql="a", datatype=DataType.INTEGER)],
         ))
 
         real = mod.list_ingestable_objects
@@ -983,7 +983,7 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         model = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
@@ -1004,7 +1004,7 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         model = SlayerDataset(
             name="orders", sql_table="analytics.orders", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
@@ -1022,7 +1022,7 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         model = SlayerDataset(
             name="reports", sql_table="openfda_rest.reports", data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         await storage.save_dataset(model)
         real = mod.list_ingestable_objects
@@ -1049,8 +1049,8 @@ class TestValidateModels:
         model = SlayerDataset(
             name="reports", sql_table="s2.reports", data_source="ds",
             fields=[
-                DatasetField(name="b", sql="b", datatype=DataType.INT),
-                DatasetField(name="c", sql="c", datatype=DataType.INT),
+                DatasetField(name="b", sql="b", datatype=DataType.INTEGER),
+                DatasetField(name="c", sql="c", datatype=DataType.INTEGER),
             ],
         )
         await storage.save_dataset(model)
@@ -1068,8 +1068,8 @@ class TestValidateModels:
             name="analytics_orders", sql_table="analytics.orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT),
-                DatasetField(name="note", sql="note", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER),
+                DatasetField(name="note", sql="note", datatype=DataType.STRING),
             ],
         )
         await storage.save_dataset(model)
@@ -1087,8 +1087,8 @@ class TestValidateModels:
         model = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT),
-                DatasetField(name="ghost", sql="ghost", datatype=DataType.INT),  # not live
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER),
+                DatasetField(name="ghost", sql="ghost", datatype=DataType.INTEGER),  # not live
             ],
         )
         await storage.save_dataset(model)
@@ -1118,8 +1118,8 @@ class TestValidateModels:
             name="analytics_orders", sql_table="analytics.orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT),
-                DatasetField(name="note", sql="note", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER),
+                DatasetField(name="note", sql="note", datatype=DataType.STRING),
             ],
         )
         await storage.save_dataset(model)
@@ -1153,12 +1153,12 @@ class TestValidateModels:
         await storage.save_datasource(ds)
         models = [
             SlayerDataset(name="orders", sql_table="orders", data_source="ds",
-                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)]),
+                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)]),
             SlayerDataset(name="customers", sql_table="cat.main.customers",
                         data_source="ds",
-                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)]),
+                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)]),
             SlayerDataset(name="foo", sql_table="analytics.foo", data_source="ds",
-                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)]),
+                        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)]),
         ]
         for m in models:
             await storage.save_dataset(m)

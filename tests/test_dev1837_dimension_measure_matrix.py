@@ -34,6 +34,8 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import RK_X, WM_X
 from tests._dev1837_fixtures import (
     CM_TOTAL,
@@ -293,8 +295,8 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression=TRANSFORM_FORMULAS[op], name="x"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x"),
             ],
         )
         x_map = with_nulls(GROUP_M_MONTH["col"].keys(), TRANSFORM_X[("col", op)])
@@ -318,8 +320,8 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
             ],
         ), dry_run=True)
         body = _extract_cte_body(dry.sql, r"shifted_\w+")
@@ -371,9 +373,9 @@ class TestConsecutivePeriodsReset:
             dimensions=[DIM_FAMILY_DIMS["band"][1]],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(
-                    expression="consecutive_periods(sum(amount) != 40)", name="x",
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(
+                    metric="consecutive_periods(sum(amount) != 40)", alias="x",
                 ),
             ],
         ))
@@ -397,9 +399,9 @@ class TestExplicitTransformPartition:
         resp = await engine.execute(q(
             dimensions=DIM_FAMILY_DIMS["band"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(
-                    expression="rank(sum(amount), partition_by=region, direction='desc')", name="x",
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(
+                    metric="rank(sum(amount), partition_by=region, direction='desc')", alias="x",
                 ),
             ],
         ))

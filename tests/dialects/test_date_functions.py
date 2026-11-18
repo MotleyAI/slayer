@@ -22,7 +22,7 @@ GOLDEN_PATH = Path(__file__).parent.parent / "golden" / "dev1737_date_functions.
 TIER1 = ["sqlite", "postgres", "duckdb", "mysql", "clickhouse", "tsql", "snowflake", "bigquery"]
 SUB_DAY = [TimeGranularity.SECOND, TimeGranularity.MINUTE, TimeGranularity.HOUR]
 DAY_OR_COARSER = [g for g in TimeGranularity if g not in SUB_DAY]
-OPERANDS = [DataType.DATE, DataType.TIMESTAMP]
+OPERANDS = [DataType.DATE, DataType.DATETIME]
 
 
 def _cases() -> dict:
@@ -38,7 +38,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(expr: str, dialect: str):
-    query = {"population": "dt", "dimensions": ["id", {"expression": expr, "name": "v"}]}
+    query = {"population": "dt", "dimensions": ["id", {"field": expr, "alias": "v"}]}
     try:
         return await _engine_generate(query=[query], dataset=dt_dataset(), dialect=dialect)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
@@ -122,12 +122,12 @@ class TestHooks:
 
     @pytest.mark.parametrize("value,dt", [
         (date(2024, 2, 29), DataType.DATE),
-        (datetime(2024, 2, 29, 10, 15, 30), DataType.TIMESTAMP),
+        (datetime(2024, 2, 29, 10, 15, 30), DataType.DATETIME),
     ])
     def test_temporal_literal(self, dialect: str, value, dt: DataType) -> None:
         sql = _assert_well_formed(get_dialect(dialect).build_temporal_literal(value=value, dt=dt), dialect)
         assert "2024-02-29" in sql
-        assert ("10:15:30" in sql) is (dt is DataType.TIMESTAMP)
+        assert ("10:15:30" in sql) is (dt is DataType.DATETIME)
 
 
 class TestDialectBranches:
@@ -174,7 +174,7 @@ class TestDialectBranches:
     @pytest.mark.parametrize("unit", SUB_DAY)
     def test_bigquery_sub_day_diff_uses_datetime_functions(self, unit: TimeGranularity) -> None:
         sql = _sql(get_dialect("bigquery").build_date_diff(
-            unit=unit, start=_col("s"), end=_col("e"), operand=DataType.TIMESTAMP), "bigquery")
+            unit=unit, start=_col("s"), end=_col("e"), operand=DataType.DATETIME), "bigquery")
         assert "DATETIME_DIFF(" in sql, sql
         assert "DATE_DIFF(" not in sql, sql
 

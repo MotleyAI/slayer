@@ -198,7 +198,7 @@ class TestPostFilter:
         assert got == {m: v for m, v in CUMSUM_BY_MONTH.items() if v > 50}
 
     _COMPOSITE = {
-        "dimensions": [{"expression": "lower(status)", "name": "ls"}],
+        "dimensions": [{"field": "lower(status)", "alias": "ls"}],
         "filter": ["cumsum(sum(amount)) > 50 or lower(status) == 'c'"],
     }
 
@@ -277,12 +277,12 @@ _CUSTOMER_ROWS = [(i, "gold" if i % 2 else "silver") for i in range(1, 8)]
 def _qb_datasets(data_source: str) -> list[SlayerDataset]:
     orders = orders_dataset()
     orders.data_source = data_source
-    orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    orders.relationships = [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name=LONG, sql="tier", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name=LONG, sql="tier", datatype=DataType.STRING),
         ],
     )
     return [orders, customers]
@@ -362,7 +362,7 @@ def _stat_seams(expression: str) -> dict:
         }),
         "non_root_stage": [
             {"name": "s1", "population": "orders", "time_dimensions": month, "metrics": measure},
-            {"population": "s1", "metrics": [{"expression": "max(w)", "name": "mx"}]},
+            {"population": "s1", "metrics": [{"metric": "max(w)", "alias": "mx"}]},
         ],
         "root_stage": [
             {"name": "s1", "population": "orders", "dimensions": ["id"]},

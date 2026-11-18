@@ -151,9 +151,9 @@ def _regions_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.FLOAT),
         ],
     )
 
@@ -162,12 +162,12 @@ def _customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -175,9 +175,9 @@ def _order_tags_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="order_tags", sql_table="order_tags", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -187,36 +187,36 @@ def _orders_dataset(*, data_source: str = "test") -> SlayerDataset:
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             # Kept as a plain column; its second edge onto customers is gone —
             # DEV-1853 makes parallel edges fail closed in BOTH directions, so
             # host-local filters now push down by semi-join over the inverted
             # edge instead of dropping (divergences.md class (c)/(d)).
-            DatasetField(name="billed_customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="billed_customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             # The DEV-1735 "also in scope" shape: a LOCAL derived column whose
             # ``Column.sql`` reaches THROUGH a join. Ordering by it is rejected
             # today in both grouped and ungrouped queries even though the bare
             # ``customers.regions.name`` resolves ungrouped (DEV-1703 Phase 1).
             DatasetField(
-                name="cust_region", datatype=DataType.TEXT,
+                name="cust_region", datatype=DataType.STRING,
                 sql="customers.regions.name",
             ),
             # A NON-crossing derived column — the control. Ordering by it must
             # keep working exactly as it does today.
-            DatasetField(name="amount_x2", datatype=DataType.DOUBLE, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
             # A derived column over ANOTHER derived column. Only the expanding
             # resolver inlines the sibling; resolving the raw ``Column.sql``
             # emits the bare name ``amount_x2``, which is not a database column
             # — so this is what tells the two render paths apart.
-            DatasetField(name="amount_x4", datatype=DataType.DOUBLE, sql="amount_x2 * 2"),
+            DatasetField(name="amount_x4", datatype=DataType.FLOAT, sql="amount_x2 * 2"),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="order_tags", join_pairs=[["id", "order_id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="order_tags", from_columns=["id"], to_columns=["order_id"]),
         ],
     )
 

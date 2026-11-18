@@ -40,9 +40,9 @@ def _make_engine(rows: list[tuple[int, float, str]]) -> SlayerQueryEngine:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="cost", sql="cost", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="cost", sql="cost", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -52,7 +52,7 @@ def _monthly(engine: SlayerQueryEngine, shift: str) -> dict[str, float | None]:
     resp = engine.execute_sync(query={
         "population": "orders",
         "metrics": ["sum(cost)",
-                     {"expression": f"time_shift(sum(cost), -1, '{shift}')", "name": "prev"}],
+                     {"metric": f"time_shift(sum(cost), -1, '{shift}')", "alias": "prev"}],
         "time_dimensions": [{"field": "created_at", "granularity": "month"}],
         "order": [{"field": "created_at", "direction": "asc"}],
     })
@@ -97,7 +97,7 @@ def test_change_uses_full_previous_month():
     ])
     resp = engine.execute_sync(query={
         "population": "orders",
-        "metrics": ["sum(cost)", {"expression": "change(sum(cost))", "name": "chg"}],
+        "metrics": ["sum(cost)", {"metric": "change(sum(cost))", "alias": "chg"}],
         "time_dimensions": [{"field": "created_at", "granularity": "month"}],
         "order": [{"field": "created_at", "direction": "asc"}],
     })
@@ -112,7 +112,7 @@ def test_aligned_shift_truncates_once():
     resp = engine.execute_sync(query={
         "population": "orders",
         "metrics": ["sum(cost)",
-                     {"expression": "time_shift(sum(cost), -1, 'month')", "name": "prev"}],
+                     {"metric": "time_shift(sum(cost), -1, 'month')", "alias": "prev"}],
         "time_dimensions": [{"field": "created_at", "granularity": "month"}],
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "'month')" in ln.lower()]
@@ -129,7 +129,7 @@ def test_unaligned_shift_still_rebuckets():
     resp = engine.execute_sync(query={
         "population": "orders",
         "metrics": ["sum(cost)",
-                     {"expression": "time_shift(sum(cost), -1, 'day')", "name": "prev"}],
+                     {"metric": "time_shift(sum(cost), -1, 'day')", "alias": "prev"}],
         "time_dimensions": [{"field": "created_at", "granularity": "month"}],
     }, dry_run=True)
     shifted = [ln for ln in resp.sql.splitlines() if "'day')" in ln.lower()]

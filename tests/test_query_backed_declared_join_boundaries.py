@@ -34,14 +34,14 @@ async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngi
     await engine.save_dataset(_customer_totals())
     consumer = orders_dataset().model_copy(update={
         "name": "consumer",
-        "relationships": [DatasetRelationship(to="customer_totals", join_pairs=[["customer_id", "customer_id"]])],
+        "relationships": [DatasetRelationship(to="customer_totals", from_columns=["customer_id"], to_columns=["customer_id"])],
     })
     await engine.save_dataset(consumer)
 
     response = await engine.execute(_query(
         population="consumer",
         dimensions=["customer_totals.customers.name"],
-        metrics=[{"expression": "sum(amount)", "name": "total"}],
+        metrics=[{"metric": "sum(amount)", "alias": "total"}],
     ))
 
     assert cells(response, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
@@ -52,13 +52,13 @@ async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engin
     customers = customers_dataset()
     await engine.save_dataset(customers.model_copy(update={"relationships": [
         *customers.relationships,
-        DatasetRelationship(to="customer_totals", join_pairs=[["id", "customer_id"]], name="totals"),
+        DatasetRelationship(to="customer_totals", from_columns=["id"], to_columns=["customer_id"], name="totals"),
     ]}))
 
     response = await engine.execute(_query(
         population="customer_totals",
         dimensions=["customers.name"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     ))
 
     assert cells(response, dim_suffix="name", metric="total") == AMOUNT_BY_CUSTOMER
@@ -71,11 +71,11 @@ async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: Sl
     }))
 
     response = await engine.execute(_query(
-        population="customer_totals", extensions=[{"source_name": "customer_totals", "relationships": [{
-            "to": "customers", "join_pairs": [["customer_id", "id"]], "name": "reviewer",
+        population="customer_totals", extensions=[{"dataset": "customer_totals", "relationships": [{
+            "to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "reviewer",
         }]}],
         dimensions=["owner.name", "reviewer.tier"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     ))
 
     assert {
@@ -89,11 +89,11 @@ async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: Sl
 async def test_ordinary_stage_does_not_inherit_backing_source_joins(engine):
     stage = _query(
         name="s", population="orders", dimensions=["customer_id"],
-        metrics=[{"expression": "sum(amount)", "name": "amt"}],
+        metrics=[{"metric": "sum(amount)", "alias": "amt"}],
     )
     consumer = _query(
         population="s", dimensions=["customers.name"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     )
 
     with pytest.raises(UnrelatedDatasetError):
@@ -109,12 +109,12 @@ async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine
 
     unjoined = await engine.execute(_query(
         population="customer_totals",
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     ))
     assert unjoined.data == [{"customer_totals.total": 150.0}]
 
     joined = await engine.execute(_query(
         population="customer_totals", dimensions=["_stage.name"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     ))
     assert cells(joined, dim_suffix="_stage.name", metric="total") == AMOUNT_BY_CUSTOMER

@@ -45,16 +45,16 @@ def _seed(db_path: str) -> None:
 
 def _dataset(*, arrays: bool) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE),
-        DatasetField(name="qty", sql="quantity", datatype=DataType.INT),
-        DatasetField(name="order_total", sql='"Order Total"', datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.FLOAT),
+        DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT),
+        DatasetField(name="qty", sql="quantity", datatype=DataType.INTEGER),
+        DatasetField(name="order_total", sql='"Order Total"', datatype=DataType.FLOAT),
         DatasetField(name="ordered_at", datatype=DataType.DATE),
-        DatasetField(name="ordered_ts", datatype=DataType.TIMESTAMP),
+        DatasetField(name="ordered_ts", datatype=DataType.DATETIME),
     ]
     if arrays:
-        columns.append(DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.INT))
+        columns.append(DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.INTEGER))
     return SlayerDataset(name="t", sql_table="t", data_source="test", fields=columns)
 
 

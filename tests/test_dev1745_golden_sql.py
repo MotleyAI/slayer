@@ -88,12 +88,12 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="population", datatype=DataType.DOUBLE),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.FLOAT),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
             # Column.sql — derived on a two-hop target
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
@@ -102,12 +102,12 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
-            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="tier", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         aggregations=[
             Aggregation(
                 name="wscaled_sum", expression="SUM({value} * {w})",
@@ -123,20 +123,20 @@ def _orders() -> SlayerDataset:
         # SlayerModel.filters — a Mode-A always-applied WHERE
         filters=["amount >= 0"],
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             # 'status' also exists on regions — same-name collision
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.STRING),
             # a column named like a statement keyword
-            DatasetField(name="select", datatype=DataType.TEXT),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="select", datatype=DataType.STRING),
+            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
             # Column.filter — Mode-A predicate crossing a join
             DatasetField(name="eu_amount", sql="amount",
-                   filter="customers.tier = 'eu'", datatype=DataType.DOUBLE),
+                   filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
             # raw ref that inlines to a constant (dual-scan contract)
-            DatasetField(name="flag_const", sql="1", datatype=DataType.INT),
+            DatasetField(name="flag_const", sql="1", datatype=DataType.INTEGER),
             # Quoted dotted identifier. Mode-A is raw SQL for the TARGET
             # dialect, and this spelling is Postgres-flavoured: BigQuery quotes
             # identifiers with backticks and reads "..." as a STRING, so there
@@ -146,16 +146,16 @@ def _orders() -> SlayerDataset:
             # does with this input rather than a defect to fix here. Mode-A
             # portability across quoting styles is a separate concern.
             DatasetField(name="quoted_cross", sql='"customers"."spend"',
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # derived-of-derived, two hops (currently BROKEN — see module doc)
             DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             DatasetField(name="multi_model",
                    sql="customers.spend + customers.regions.population",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
@@ -174,57 +174,57 @@ def _cases() -> dict:
         # --- host scope, plain Mode-A surfaces ---
         "host/model_filter": _q(
             dimensions=dim_status,
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
         "host/column_sql_derived": _q(
-            dimensions=[{"expression": "doubled", "name": "doubled"}],
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            dimensions=[{"field": "doubled", "alias": "doubled"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
         "host/column_filter_crossing": _q(
             dimensions=dim_status,
-            metrics=[{"expression": "sum(eu_amount)", "name": "m"}],
+            metrics=[{"metric": "sum(eu_amount)", "alias": "m"}],
         ),
         "host/const_expanding_ref": _q(
             dimensions=dim_status,
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
             filter=["flag_const == 1"],
         ),
         "host/quoted_dotted_identifier": _q(
-            dimensions=[{"expression": "quoted_cross", "name": "quoted_cross"}],
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            dimensions=[{"field": "quoted_cross", "alias": "quoted_cross"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
         "host/statement_keyword_column": _q(
-            dimensions=[{"expression": "select", "name": "select"}],
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            dimensions=[{"field": "select", "alias": "select"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
         "host/same_named_column_and_model": _q(
             dimensions=dim_status,
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
             filter=["status == 'x'"],
         ),
         # --- derived expansion ---
         "expand/derived_of_derived": _q(
-            dimensions=[{"expression": "deep_pop", "name": "deep_pop"}],
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            dimensions=[{"field": "deep_pop", "alias": "deep_pop"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
         "expand/multi_model_derived": _q(
-            dimensions=[{"expression": "multi_model", "name": "multi_model"}],
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            dimensions=[{"field": "multi_model", "alias": "multi_model"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
         # --- cross-model _cm_ scope ---
         "cm/joined_measure": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            metrics=[{"expression": "sum(customers.spend)"}],
+            metrics=[{"metric": "sum(customers.spend)"}],
         ),
         "cm/fragment_default_crossing": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            metrics=[{"expression": "wscaled_sum(customers.spend)"}],
+            metrics=[{"metric": "wscaled_sum(customers.spend)"}],
         ),
         "cm/outer_where_wrapper": _q(
             dimensions=dim_status,
-            metrics=[{"expression": "sum(eu_amount)", "name": "eu"}],
+            metrics=[{"metric": "sum(eu_amount)", "alias": "eu"}],
             filter=["sum(eu_amount) > 100"],
         ),
         # --- windowed _src scope ---
@@ -233,14 +233,14 @@ def _cases() -> dict:
                 "field": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            metrics=[{"expression": "sum(eu_amount)", "name": "m"}],
+            metrics=[{"metric": "sum(eu_amount)", "alias": "m"}],
         ),
         "windowed/date_range_filter": _q(
             time_dimensions=[{
                 "field": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
     }
 

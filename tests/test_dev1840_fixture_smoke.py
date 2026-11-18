@@ -12,6 +12,8 @@ import pytest
 from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.engine.plan import plan_query
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import (
     DatasetMetric,
     SPEND_ALL_BY_TIER,
@@ -72,11 +74,11 @@ class TestGraphExecutes:
         fails closed. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
-            tq(metrics=[DatasetMetric(expression="sum(reviews.stars)", name="rv")]),
+            tq(metrics=[QueryMetric(metric="sum(reviews.stars)", alias="rv")]),
         )
         assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
         ambiguous = tq(
-            metrics=[DatasetMetric(expression="sum(agents.score)", name="sm")],
+            metrics=[QueryMetric(metric="sum(agents.score)", alias="sm")],
         )
         with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(ambiguous)

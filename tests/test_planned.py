@@ -66,12 +66,12 @@ class TestValueSlot:
             public_aliases=["revenue_sum"],
             phase=Phase.AGGREGATE,
             label="Total revenue",
-            type=DataType.DOUBLE,
+            type=DataType.FLOAT,
         )
         assert s.public_name == "revenue_sum"
         assert s.public_aliases == ["revenue_sum"]
         assert s.label == "Total revenue"
-        assert s.type is DataType.DOUBLE
+        assert s.type is DataType.FLOAT
 
     def test_hidden_no_public_alias(self):
         # Order-only / filter-only refs intern as hidden slots with no

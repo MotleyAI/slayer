@@ -25,7 +25,7 @@ def partitioned(key: str, *, time_dimensions: list[Any], source: str = "orders",
                 dimensions: tuple[str, ...] = ("region",)) -> dict[str, Any]:
     return {
         "population": source, "dimensions": list(dimensions), "time_dimensions": time_dimensions,
-        "metrics": [{"expression": f"sum({value}, partition_by=[{key}])", "name": "part_total"}],
+        "metrics": [{"metric": f"sum({value}, partition_by=[{key}])", "alias": "part_total"}],
     }
 
 
@@ -35,8 +35,8 @@ class TestProjectedTimeDimension:
             return {
                 "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
                 "metrics": [
-                    {"expression": f"sum(amount, partition_by=[{key}])", "name": "month_total"},
-                    {"expression": f"rank(sum(amount), partition_by=[{key}], direction='desc')", "name": "r"},
+                    {"metric": f"sum(amount, partition_by=[{key}])", "alias": "month_total"},
+                    {"metric": f"rank(sum(amount), partition_by=[{key}], direction='desc')", "alias": "r"},
                 ],
             }
 
@@ -46,7 +46,7 @@ class TestProjectedTimeDimension:
         def query(key: str) -> dict[str, Any]:
             return {
                 "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
-                "metrics": [{"expression": f"sum(amount, partition_by={key})", "name": "month_total"}],
+                "metrics": [{"metric": f"sum(amount, partition_by={key})", "alias": "month_total"}],
             }
 
         await assert_equivalent(engine, query("date_trunc('month', created_at)"), query("created_at"))
@@ -88,7 +88,7 @@ class TestOtherTimeColumns:
     async def test_stage_time_column(self, engine: SlayerQueryEngine) -> None:
         inner = {
             "name": "s", "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         }
 
         def query(key: str) -> list[dict[str, Any]]:

@@ -24,7 +24,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 def monthly(name: str, **kw: Any) -> dict[str, Any]:
     return {
         "population": "orders", "time_dimensions": [MONTH],
-        "metrics": [{"expression": "change(sum(amount))", "name": name}], **kw,
+        "metrics": [{"metric": "change(sum(amount))", "alias": name}], **kw,
     }
 
 
@@ -60,7 +60,7 @@ class TestQueryMeasureNamedAfterTransform:
         def stages(name: str) -> list[dict[str, Any]]:
             return [
                 {**monthly(name), "name": "s"},
-                {"population": "s", "metrics": [{"expression": f"max({name})", "name": f"top_{name}"}]},
+                {"population": "s", "metrics": [{"metric": f"max({name})", "alias": f"top_{name}"}]},
             ]
 
         await assert_renamed_twin(engine, stages("change"), stages("chg"))
@@ -68,11 +68,11 @@ class TestQueryMeasureNamedAfterTransform:
     @pytest.mark.parametrize("name", ["cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead",
                                       "consecutive_periods", "rank", "percent_rank", "dense_rank", "ntile"])
     def test_every_transform_name_accepted(self, name: str) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)", "name": name}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": name}]})
         assert [m.name for m in query.metrics or []] == [name]
 
     def test_refinement_measure_accepted(self) -> None:
-        refinement = QueryRefinement.model_validate({"metrics": [{"expression": "count(*)", "name": "rank"}]})
+        refinement = QueryRefinement.model_validate({"metrics": [{"metric": "count(*)", "alias": "rank"}]})
         assert [m.name for m in refinement.metrics or []] == ["rank"]
 
 
@@ -81,7 +81,7 @@ class TestModelExtensionMeasure:
         def query(name: str) -> dict[str, Any]:
             return {
                 "population": "orders",
-                "extensions": [{"source_name": "orders", "metrics": [{"name": name, "expression": "sum(amount)"}]}],
+                "extensions": [{"dataset": "orders", "metrics": [{"name": name, "expression": "sum(amount)"}]}],
                 "dimensions": ["region"], "metrics": [name],
             }
 
@@ -105,8 +105,8 @@ class TestSavedMeasureNamedRank:
             return {
                 "population": "orders", "dimensions": ["region"],
                 "metrics": [
-                    {"expression": f"{saved} * 2", "name": "doubled"},
-                    {"expression": "rank(sum(amount), direction='desc')", "name": "r"},
+                    {"metric": f"{saved} * 2", "alias": "doubled"},
+                    {"metric": "rank(sum(amount), direction='desc')", "alias": "r"},
                 ],
             }
 

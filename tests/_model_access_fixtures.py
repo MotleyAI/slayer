@@ -119,14 +119,14 @@ def _seed(db_path: str, *, dialect: str) -> None:
 
 
 def _staff_join() -> DatasetRelationship:
-    return DatasetRelationship(to="hr", join_pairs=[["staff_id", "id"]], cardinality=RelationshipCardinality.MANY_TO_ONE)
+    return DatasetRelationship(to="hr", from_columns=["staff_id"], to_columns=["id"], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
 def _pay(name: str, **extra) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="staff_id", datatype=DataType.INT),
-        DatasetField(name="gross", datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="staff_id", datatype=DataType.INTEGER),
+        DatasetField(name="gross", datatype=DataType.FLOAT),
         *extra.pop("fields", []),
     ]
     return SlayerDataset(name=name, sql_table="pay_runs", data_source=DS, fields=columns, relationships=[_staff_join()], **extra)
@@ -134,43 +134,43 @@ def _pay(name: str, **extra) -> SlayerDataset:
 
 def table_datasets() -> list[SlayerDataset]:
     """The table-backed models (saved unvalidated, in this order)."""
-    hr_dept = DatasetField(name="dept_label", datatype=DataType.TEXT, sql="hr.dept")
-    masked = DatasetField(name="gross_eng", datatype=DataType.DOUBLE, sql="gross", filter="hr.dept = 'eng'")
+    hr_dept = DatasetField(name="dept_label", datatype=DataType.STRING, sql="hr.dept")
+    masked = DatasetField(name="gross_eng", datatype=DataType.FLOAT, sql="gross", filter="hr.dept = 'eng'")
     hr_total = DatasetMetric(name="hr_salary_total", expression="sum(hr.salary)")
     return [
         SlayerDataset(
             name="pub", sql_table="pub_items", data_source=DS, description="public catalogue items",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="label", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="label", datatype=DataType.STRING)],
         ),
         SlayerDataset(
             name="hr", sql_table="hr_staff", data_source=DS, access_tags=["hr"], description="payroll staff roster",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="dept", datatype=DataType.TEXT),
-                DatasetField(name="salary", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="dept", datatype=DataType.STRING),
+                DatasetField(name="salary", datatype=DataType.FLOAT),
                 DatasetField(name="hired_at", datatype=DataType.DATE),
             ],
         ),
         SlayerDataset(
             name="fin", sql_table="fin_ledger", data_source=DS, access_tags=["fin"], description="finance ledger entries",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="staff_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="staff_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[_staff_join()],
         ),
         SlayerDataset(
             name="pub_link", sql_table="pub_items", data_source=DS,
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="label", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="label", datatype=DataType.STRING)],
             relationships=[DatasetRelationship(
-                to="hr", name=PRUNED_EDGE, join_pairs=[["id", "id"]], cardinality=RelationshipCardinality.ONE_TO_ONE,
+                to="hr", name=PRUNED_EDGE, from_columns=["id"], to_columns=["id"], cardinality=RelationshipCardinality.ONE_TO_ONE,
             )],
         ),
         SlayerDataset(
             name="dangling", sql_table="pub_items", data_source=DS,
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
-            relationships=[DatasetRelationship(to="ghost", join_pairs=[["id", "id"]])],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+            relationships=[DatasetRelationship(to="ghost", from_columns=["id"], to_columns=["id"])],
         ),
         _pay("pay", fields=[hr_dept], metrics=[hr_total], filters=["hr.dept IS NOT NULL"]),
         _pay("pay_col", fields=[hr_dept]),
@@ -189,19 +189,19 @@ def query_backed_datasets() -> list[SlayerDataset]:
         return SlayerDataset(name=name, source_queries=[SlayerQuery.model_validate(s) for s in stages])
 
     return [
-        qb("hr_summary", {"population": "hr", "dimensions": ["dept"], "metrics": [{"expression": "sum(salary)", "name": "total"}]}),
-        qb("hr_rollup", {"population": "hr_summary", "metrics": [{"expression": "sum(total)", "name": "grand"}]}),
-        qb("fin_hop", {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(amount)", "name": "amt"}]}),
+        qb("hr_summary", {"population": "hr", "dimensions": ["dept"], "metrics": [{"metric": "sum(salary)", "alias": "total"}]}),
+        qb("hr_rollup", {"population": "hr_summary", "metrics": [{"metric": "sum(total)", "alias": "grand"}]}),
+        qb("fin_hop", {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}),
         qb("fin_ordered", {
-            "population": "fin", "dimensions": ["id"], "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "population": "fin", "dimensions": ["id"], "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
             "order": [{"field": "hr.salary", "direction": "desc"}],
         }),
-        qb("fin_report", {"population": "fin", "metrics": [{"expression": "sum(amount)", "name": "amt"}]}),
+        qb("fin_report", {"population": "fin", "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}),
     ]
 
 
-MIXED_QUERY = {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(amount)"}]}
-QHOP_QUERY = {"population": "pay", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(gross)"}]}
+MIXED_QUERY = {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(amount)"}]}
+QHOP_QUERY = {"population": "pay", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(gross)"}]}
 
 
 async def _save_memories(storage: StorageBackend) -> None:

@@ -16,9 +16,10 @@ from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1838_fixtures import (
     BAND,
-    FieldRef,
     DatasetMetric,
     OrderItem,
     dev1838_datasets,
@@ -57,23 +58,23 @@ def _walk_cmas(planned: PlannedQuery, out: list[_LegacyCrossModelPlan]) -> None:
 
 SHAPES = {
     "cross_model_sum": q(dimensions=["status"], metrics=[
-        M, DatasetMetric(expression="sum(customers.spend)", name="cm")]),
+        M, QueryMetric(metric="sum(customers.spend)", alias="cm")]),
     "cross_model_last": q(dimensions=["status"], metrics=[
-        DatasetMetric(expression="last(customers.spend)", name="sl")],
+        QueryMetric(metric="last(customers.spend)", alias="sl")],
         to_many_handling="broadcast"),
     "filtered_local": q(dimensions=["status"], metrics=[
-        M, DatasetMetric(expression="sum(gold_amount)", name="g")]),
+        M, QueryMetric(metric="sum(gold_amount)", alias="g")]),
     "crossing_arg": q(dimensions=["status"], metrics=[
-        M, DatasetMetric(expression="wscaled_sum(amount)", name="w")]),
+        M, QueryMetric(metric="wscaled_sum(amount)", alias="w")]),
     "host_grain_wrap": q(dimensions=["status"], metrics=[M],
                          order=[OrderItem(
-                             field=FieldRef(name="tier", dataset="customers"),
+                             field="customers.tier",
                              direction="asc")]),
     "windowed": q(dimensions=["region"], time_dimensions=month_td(),
-                  metrics=[DatasetMetric(expression="sum(amount, window='90d')",
-                                         name="w")]),
+                  metrics=[QueryMetric(metric="sum(amount, window='90d')",
+                                         alias="w")]),
     "band_cross_model": q(dimensions=["status", BAND], metrics=[
-        M, DatasetMetric(expression="sum(customers.spend)", name="cm")]),
+        M, QueryMetric(metric="sum(customers.spend)", alias="cm")]),
 }
 
 

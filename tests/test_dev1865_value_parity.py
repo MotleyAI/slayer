@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1865_fixtures import DatasetMetric, month_td, q
 
 
@@ -79,15 +81,15 @@ class TestNullPredicateDropsRow:
         twin = (await exec_engine.execute(q(
             dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="s"),
-                DatasetMetric(expression="sum(nomatch)", name="e"),
+                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(nomatch)", alias="e"),
             ],
         ))).data
         assert twin
         assert all(r["orders.e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             filter=["sum(nomatch) > 0"],
         ))).data
         assert filtered == []
@@ -100,18 +102,18 @@ class TestPositionSupportCannotLag:
         expr = "sum(customers.spend, partition_by=customers.regions.name)"
         dims = ["customers.regions.name", "customers.tier"]
         as_measure = (await exec_engine.execute(q(
-            dimensions=dims, metrics=[DatasetMetric(expression=expr, name="e")],
+            dimensions=dims, metrics=[QueryMetric(metric=expr, alias="e")],
         ))).data
         assert as_measure
         as_filter = (await exec_engine.execute(q(
             dimensions=dims,
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             filter=[f"{expr} > 100"],
         ))).data
         assert 0 < len(as_filter) <= len(as_measure)
         ordered = (await exec_engine.execute(q(
             dimensions=dims,
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             order=[{"field": expr, "direction": "desc"}],
         ))).data
         assert len(ordered) == len(as_measure)

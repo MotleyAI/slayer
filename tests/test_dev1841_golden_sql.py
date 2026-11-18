@@ -18,8 +18,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import dev1840_datasets
-from tests._dev1841_fixtures import DatasetMetric, SlayerQuery, dev1841_datasets
+from tests._dev1841_fixtures import SlayerQuery, dev1841_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -32,13 +34,13 @@ _MODEL_SETS = {
     "ext": dev1841_datasets,
 }
 
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-NC = DatasetMetric(expression="count(customers.*)", name="nc")
-POP = DatasetMetric(expression="sum(customers.regions.pop)", name="pop")
-MED = DatasetMetric(expression="median(customers.spend)", name="med")
-RENT = DatasetMetric(expression="sum(stores.rent)", name="rent")
-GS = DatasetMetric(expression="sum(customers.gold_spend)", name="gs")
-PART = DatasetMetric(expression="sum(customers.spend, partition_by=status)", name="cm")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+NC = QueryMetric(metric="count(customers.*)", alias="nc")
+POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
+MED = QueryMetric(metric="median(customers.spend)", alias="med")
+RENT = QueryMetric(metric="sum(stores.rent)", alias="rent")
+GS = QueryMetric(metric="sum(customers.gold_spend)", alias="gs")
+PART = QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="cm")
 
 
 def _cases() -> dict:

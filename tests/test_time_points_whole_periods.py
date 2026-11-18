@@ -13,7 +13,7 @@ from tests._time_points_fixtures import (
 )
 
 D = datetime
-PLAIN = {"expression": "sum(amount)", "name": "s"}
+PLAIN = {"metric": "sum(amount)", "alias": "s"}
 WINDOW = {"expression": "sum(amount, window='90d')", "name": "w"}
 
 
@@ -131,7 +131,7 @@ class TestTwoGranularities:
 
 class TestStageTimeDimension:
     async def test_stage_column_snaps(self, engine) -> None:
-        got = await monthly(engine, metrics=[{"expression": "sum(rev)", "name": "r"}], dataset="daily",
+        got = await monthly(engine, metrics=[{"metric": "sum(rev)", "alias": "r"}], dataset="daily",
                             date_range=["2025-01-15", None], whole_periods_only=True)
         assert min(got) == "2025-01"
         assert max(got) == "2026-08"

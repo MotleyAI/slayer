@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
@@ -161,7 +161,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.regions.name"],
-            metrics=[DatasetMetric(expression="sum(customers.gold_spend)", name="gs")],
+            metrics=[QueryMetric(metric="sum(customers.gold_spend)", alias="gs")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.regions.name")
@@ -202,8 +202,8 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend) / sum(amount)", name="ratio",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend) / sum(amount)", alias="ratio",
             )],
         )
         resp = await engine.execute(query)

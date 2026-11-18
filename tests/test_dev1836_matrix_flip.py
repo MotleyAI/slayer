@@ -28,6 +28,8 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.planned import RegroupAttachPlan
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
     AMOUNT_BY_CHANNEL,
@@ -120,8 +122,8 @@ class TestRowAttachWithCrossModelMeasure:
         """Transform-root dimension family × cross-model measure."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": "rank(sum(amount, partition_by=channel), direction='desc')",
-                         "name": "rr"}],
+            dimensions=[{"field": "rank(sum(amount, partition_by=channel), direction='desc')",
+                         "alias": "rr"}],
             metrics=[M, CM], to_many_handling="broadcast",
         ))
         by = {int(k[0]): row for k, row in rows_by(resp, "orders.rr").items()}
@@ -137,9 +139,9 @@ class TestRowAttachWithCrossModelMeasure:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("rank(sum(amount, partition_by=channel) - "
+                "field": ("rank(sum(amount, partition_by=channel) - "
                                "sum(amount, partition_by=status), direction='desc')"),
-                "name": "mr",
+                "alias": "mr",
             }],
             metrics=[M, CM], to_many_handling="broadcast",
         ))
@@ -169,7 +171,7 @@ class TestCrossModelSourceInComputedDimension:
     async def test_spend_band_dimension_executes(self, exec_backend):
         dialect, engine = exec_backend
         query = q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M],
         )
         resp = await engine.execute(query)
@@ -184,7 +186,7 @@ class TestCrossModelSourceInComputedDimension:
         by a computed dimension whose own producer nests inside it."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, CM],
         )
         resp = await engine.execute(query)
@@ -202,7 +204,7 @@ class TestCrossModelSourceInComputedDimension:
     def test_nested_attach_lives_inside_the_producer_plan(self):
         planned = plan_query(
             query=q(
-                dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+                dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
                 metrics=[M, CM],
             ),
             bundle=_bundle(),
@@ -234,7 +236,7 @@ class TestIntermediateHopDimensions:
         tier aggregates the distinct regions its customers reach."""
         _, engine = exec_backend
         kw = {"dimensions": ["customers.tier"],
-              "metrics": [M, DatasetMetric(expression="sum(customers.regions.pop)", name="pop")]}
+              "metrics": [M, QueryMetric(metric="sum(customers.regions.pop)", alias="pop")]}
         default = await engine.execute(q(**kw))
         assoc = await engine.execute(q(**kw, to_many_handling="associate"))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
@@ -249,8 +251,8 @@ class TestIntermediateHopDimensions:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            metrics=[M, DatasetMetric(expression="sum(customers.regions.pop)",
-                                      name="pop")],
+            metrics=[M, QueryMetric(metric="sum(customers.regions.pop)",
+                                      alias="pop")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query)

@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import ComputedDimension, QueryDimension, SlayerQuery
 from tests._dev1920_fixtures import FISCAL_QUARTER, StoreFactory, make_store, run  # noqa: F401 — fixture
 
 MONTH = {"field": "created_at", "granularity": "month"}
@@ -97,7 +97,7 @@ async def test_query_keys(make_store: StoreFactory, fields: dict, keys: list[str
 
 @pytest.mark.parametrize(("expression", "name"), DIMENSION_NAMES)
 def test_computed_dimension_auto_name(expression: str, name: str) -> None:
-    assert ComputedDimension(expression=expression).name == name
+    assert QueryDimension(field=expression).name == name
     [dim] = SlayerQuery.model_validate({"population": "orders", "dimensions": [expression]}).dimensions or []
     assert isinstance(dim, ComputedDimension)
     assert dim.name == name

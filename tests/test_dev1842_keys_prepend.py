@@ -82,7 +82,7 @@ def _samples() -> dict:
         SqlFragmentKey: SqlFragmentKey(
             template="{r0} * 2", refs=(FieldKey(path=(), leaf="spend"),),
         ),
-        CastKey: CastKey(source=FieldKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INT),
+        CastKey: CastKey(source=FieldKey(path=(), leaf="spend"), type_text="INT", data_type=DataType.INTEGER),
         ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
         ListSetKey: ListSetKey(source=FieldKey(path=(), leaf="tags")),
     }

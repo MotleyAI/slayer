@@ -16,8 +16,8 @@ from typing import AsyncIterator
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
@@ -29,39 +29,39 @@ def _datasets() -> list[SlayerDataset]:
     policy = SlayerDataset(
         name="policy", sql_table="policy", data_source="test",
         fields=[
-            DatasetField(name="policy_identifier", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="policy_number", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="party_a", datatype=DataType.INT),
+            DatasetField(name="policy_identifier", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="policy_number", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="party_a", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(to="policy_amount",
-                      join_pairs=[["policy_identifier", "policy_identifier"]],
+                      from_columns=["policy_identifier"], to_columns=["policy_identifier"],
                       join_type="inner"),
-            DatasetRelationship(to="party", join_pairs=[["party_a", "id"]]),
+            DatasetRelationship(to="party", from_columns=["party_a"], to_columns=["id"]),
         ],
     )
     policy_amount = SlayerDataset(
         name="policy_amount", sql_table="policy_amount", data_source="test",
         fields=[
-            DatasetField(name="pa_id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="policy_identifier", datatype=DataType.INT),
-            DatasetField(name="policy_amount", datatype=DataType.DOUBLE),
-            DatasetField(name="party_b", datatype=DataType.INT),
+            DatasetField(name="pa_id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="policy_identifier", datatype=DataType.INTEGER),
+            DatasetField(name="policy_amount", datatype=DataType.FLOAT),
+            DatasetField(name="party_b", datatype=DataType.INTEGER),
         ],
         relationships=[
             # DEV-1853: no declared reverse edge — the policy_amount → policy
             # hop is the INVERTED policy → policy_amount edge, provably to-one
             # structurally (policy_identifier is policy's PK).
             # Same sibling model as the host, joined on a DIFFERENT key.
-            DatasetRelationship(to="party", join_pairs=[["party_b", "id"]]),
+            DatasetRelationship(to="party", from_columns=["party_b"], to_columns=["id"]),
         ],
     )
     party = SlayerDataset(
         name="party", sql_table="party", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="code", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.STRING),
         ],
     )
     return [policy, policy_amount, party]
@@ -98,7 +98,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         )
 
 
-CM = DatasetMetric(expression="sum(policy_amount.policy_amount)", name="cm")
+CM = QueryMetric(metric="sum(policy_amount.policy_amount)", alias="cm")
 MONTH = [TimeDimension(field="created_at",
                        granularity=TimeGranularity.MONTH)]
 
@@ -121,8 +121,8 @@ class TestTimeTruncGrainReroots:
         (the window_td_key call site) — it must execute, not mis-bind."""
         resp = await engine.execute(SlayerQuery(
             population="policy", time_dimensions=list(MONTH),
-            metrics=[DatasetMetric(
-                expression="sum(policy_amount.policy_amount, window='20d')", name="w",
+            metrics=[QueryMetric(
+                metric="sum(policy_amount.policy_amount, window='20d')", alias="w",
             )],
         ))
         assert resp.sql is not None
@@ -144,7 +144,7 @@ class TestSiblingFilterBindsTheHostInstance:
         opposite rows here."""
         resp = await engine.execute(SlayerQuery(
             population="policy",
-            dimensions=[FieldRef(name="policy_number")],
+            dimensions=[QueryDimension(field="policy_number")],
             metrics=[CM],
             filter=["party.code = 'X'"],
         ))

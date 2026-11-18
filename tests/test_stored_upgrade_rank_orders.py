@@ -49,7 +49,7 @@ def _stages(*, query_version: int | None = None) -> list[dict]:
 
 def _memory_query(*, version: int | None = 4) -> dict:
     k = keys_for(entity="SlayerQuery", version=version or mig.CURRENT_VERSIONS["SlayerQuery"])
-    q: dict = {k.population: "orders", "dimensions": [{"name": "status"}],
+    q: dict = {k.population: "orders", "dimensions": ["status"],
                k.query_metrics: [{k.expression: "sum(amount)", "name": "rev"}],
                "order": [funcstyle_rank_order(MEMORY_RANK)], "limit": 1}
     if version is not None:

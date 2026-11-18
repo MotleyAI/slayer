@@ -38,9 +38,9 @@ def ev_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 

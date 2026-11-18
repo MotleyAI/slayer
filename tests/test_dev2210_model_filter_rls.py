@@ -36,20 +36,20 @@ JOIN_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
 
 
 def _id() -> DatasetField:
-    return DatasetField(name="id", datatype=DataType.INT, primary_key=True)
+    return DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)
 
 
 def _datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(name="shipments", data_source="test", sql_table="shipments", fields=[
-            _id(), DatasetField(name="order_ref", datatype=DataType.INT), DatasetField(name="carrier", datatype=DataType.TEXT),
+            _id(), DatasetField(name="order_ref", datatype=DataType.INTEGER), DatasetField(name="carrier", datatype=DataType.STRING),
         ]),
         SlayerDataset(name="ups_orders", data_source="test", sql_table="orders", fields=[_id()],
-                    relationships=[DatasetRelationship(to="shipments", join_pairs=[["id", "order_ref"]])],
+                    relationships=[DatasetRelationship(to="shipments", from_columns=["id"], to_columns=["order_ref"])],
                     filters=["shipments.carrier = 'ups'"]),
         SlayerDataset(name="returns", data_source="test", sql_table="returns",
-                    fields=[_id(), DatasetField(name="order_id", datatype=DataType.INT)],
-                    relationships=[DatasetRelationship(to="ups_orders", join_pairs=[["order_id", "id"]])]),
+                    fields=[_id(), DatasetField(name="order_id", datatype=DataType.INTEGER)],
+                    relationships=[DatasetRelationship(to="ups_orders", from_columns=["order_id"], to_columns=["id"])]),
     ]
 
 

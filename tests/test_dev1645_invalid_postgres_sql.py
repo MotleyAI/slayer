@@ -29,7 +29,7 @@ import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery, TimeDimension
 from slayer.sql.generator import SQLGenerator
 
 from tests._engine_helpers import _engine_generate
@@ -47,28 +47,28 @@ def _orders_customers_regions() -> tuple[SlayerDataset, list[SlayerDataset]]:
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",  # lets first/last + cumsum tests reuse this graph
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     return orders, [customers, regions]
 
@@ -84,10 +84,10 @@ def orders_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -101,7 +101,7 @@ def accounts_dataset() -> SlayerDataset:
         sql_table="public.accounts",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             DatasetField(
                 name="is_inactive",
                 datatype=DataType.BOOLEAN,
@@ -109,7 +109,7 @@ def accounts_dataset() -> SlayerDataset:
             ),
             DatasetField(
                 name="acct_form",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
                 sql="acct_form",  # lowercase sibling — must stay unquoted
             ),
         ],
@@ -129,9 +129,9 @@ class TestFlavorAOrderByUnprojected:
         ``"orders.created_at"`` (a nonexistent output column on Postgres)."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="desc")],
+            order=[OrderItem(field="created_at", direction="desc")],
         )
         sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert "ORDER BY orders.created_at DESC" in sql
@@ -145,9 +145,9 @@ class TestFlavorAOrderByUnprojected:
         column name via ``AS "orders.rev"``)."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [FieldRef(name="status")],
-            "metrics": [{"expression": "sum(revenue)", "name": "rev"}],
-            "order": [OrderItem(field=FieldRef(name="rev"), direction="desc")],
+            "dimensions": [QueryDimension(field="status")],
+            "metrics": [{"metric": "sum(revenue)", "alias": "rev"}],
+            "order": [OrderItem(field="rev", direction="desc")],
         })
         sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert 'ORDER BY "orders.rev" DESC' in sql
@@ -158,12 +158,12 @@ class TestFlavorAOrderByUnprojected:
         """Flavor A + B together: a non-projected mixed-case sort column emits a
         split reference whose column part is quoted: ``orders."CreatedAt"``."""
         model = orders_dataset.model_copy(deep=True)
-        model.fields.append(DatasetField(name="CreatedAt", sql="CreatedAt", datatype=DataType.TIMESTAMP))
+        model.fields.append(DatasetField(name="CreatedAt", sql="CreatedAt", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field=FieldRef(name="CreatedAt"), direction="desc")],
+            order=[OrderItem(field="CreatedAt", direction="desc")],
         )
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert 'ORDER BY orders."CreatedAt" DESC' in sql
@@ -176,9 +176,9 @@ class TestFlavorAOrderByUnprojected:
         fallback sort key."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
             limit=10,
             offset=5,
         )
@@ -195,24 +195,24 @@ class TestFlavorAOrderByUnprojected:
         clusters = SlayerDataset(
             name="clusters", sql_table="clusters", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
             ],
         )
         accts = SlayerDataset(
             name="accts", sql_table="accts", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
-            relationships=[DatasetRelationship(to="clusters", join_pairs=[["clu_ref", "id"]])],
+            relationships=[DatasetRelationship(to="clusters", from_columns=["clu_ref"], to_columns=["id"])],
         )
         query = SlayerQuery.model_validate({
             "population": "accts",
-            "dimensions": [FieldRef(name="status")],
-            "metrics": [{"expression": "sum(clusters.score)", "name": "sc"}],
-            "order": [OrderItem(field=FieldRef(name="sc"), direction="desc")],
+            "dimensions": [QueryDimension(field="status")],
+            "metrics": [{"metric": "sum(clusters.score)", "alias": "sc"}],
+            "order": [OrderItem(field="sc", direction="desc")],
             "to_many_handling": "broadcast",
         })
         sql = _norm(await _engine_generate(
@@ -242,8 +242,8 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
-            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
@@ -264,9 +264,9 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "filter": ["customers.regions.name == 'US'"],
-            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+            "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
@@ -284,9 +284,9 @@ class TestFlavorAOrderByUnprojected:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}],  # windowed -> combined CTE path
+            "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}],  # windowed -> combined CTE path
             "filter": ["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
-            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+            "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
@@ -303,9 +303,9 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "last(amount, created_at)", "name": "latest"}],
+            "metrics": [{"metric": "last(amount, created_at)", "alias": "latest"}],
             "filter": ["customers.regions.name == 'US'"],
-            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+            "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
@@ -333,9 +333,9 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "filter": ["customers.regions.name == 'US'"],
-            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+            "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
@@ -350,8 +350,8 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
-            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
@@ -364,9 +364,9 @@ class TestFlavorAJoinedOrderByResolves:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}],
+            "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}],
             "filter": ["customers.regions.name == 'US'"],
-            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+            "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
@@ -392,7 +392,7 @@ class TestFlavorBMixedCaseQuoting:
         """
         query = SlayerQuery(
             population="accounts",
-            dimensions=[FieldRef(name="is_inactive"), FieldRef(name="acct_form")],
+            dimensions=[QueryDimension(field="is_inactive"), QueryDimension(field="acct_form")],
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(query=query, dataset=accounts_dataset))
@@ -411,7 +411,7 @@ class TestFlavorBMixedCaseQuoting:
         ``_parse_predicate`` and must emit the quoted form in the WHERE."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"expression": "count(*)", "name": "cnt"}],
+            "metrics": [{"metric": "count(*)", "alias": "cnt"}],
             "filter": ["is_inactive == True"],
         })
         sql = _norm(await _engine_generate(query=query, dataset=accounts_dataset))
@@ -425,9 +425,9 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             filters=["StateFlag IS NOT NULL"],
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(*)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert "WHERE" in sql
         assert '"StateFlag"' in sql
@@ -440,16 +440,16 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(
                     name="amount",
                     sql="amount",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     filter="StateFlag = 'Active'",
                 ),
             ],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "sum(amount)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(amount)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert '"StateFlag"' in sql
 
@@ -461,8 +461,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="cluster_analysis",
             data_source="test",
             fields=[
-                DatasetField(name="CLSTR_PIN", sql="CLSTR_PIN", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.DOUBLE),
+                DatasetField(name="CLSTR_PIN", sql="CLSTR_PIN", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
             ],
         )
         accounts = SlayerDataset(
@@ -470,16 +470,16 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="account_clusters",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="cluster_analysis", join_pairs=[["clu_ref", "CLSTR_PIN"]])],
+            relationships=[DatasetRelationship(to="cluster_analysis", from_columns=["clu_ref"], to_columns=["CLSTR_PIN"])],
         )
         # A cross-model dimension forces a visible LEFT JOIN ... ON <keys>,
         # matching the fake_account_15 shape (`ON ... = cluster_analysis.CLSTR_PIN`).
         query = SlayerQuery(
             population="account_clusters",
-            dimensions=[FieldRef(name="score", dataset="cluster_analysis")],
+            dimensions=[QueryDimension(field="cluster_analysis.score")],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(
@@ -498,13 +498,13 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="StateFlag", sql="StateFlag", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="StateFlag", sql="StateFlag", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
             population="accounts",
-            dimensions=[FieldRef(name="StateFlag")],
+            dimensions=[QueryDimension(field="StateFlag")],
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(query=query, dataset=model))
@@ -520,16 +520,16 @@ class TestFlavorBMixedCaseQuoting:
             data_source="test",
             default_time_dimension="ts",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="RegionCode", sql="RegionCode", datatype=DataType.TEXT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="ts", sql="ts", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="RegionCode", sql="RegionCode", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="ts", sql="ts", datatype=DataType.DATETIME),
             ],
         )
         query = SlayerQuery.model_validate({
             "population": "events",
-            "dimensions": [FieldRef(name="RegionCode")],
-            "metrics": [{"expression": "last(amount, ts)", "name": "latest"}],
+            "dimensions": [QueryDimension(field="RegionCode")],
+            "metrics": [{"metric": "last(amount, ts)", "alias": "latest"}],
         })
         sql = _norm(await _engine_generate(query=query, dataset=model))
         # The OUTER group-by / projection reference must be quoted so it
@@ -550,13 +550,13 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="MixedAmt", sql="MixedAmt", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="MixedAmt", sql="MixedAmt", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"expression": "sum(MixedAmt)", "name": "s"}],
+            "metrics": [{"metric": "sum(MixedAmt)", "alias": "s"}],
         })
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert 'SUM(accounts."MixedAmt")' in sql
@@ -567,21 +567,21 @@ class TestFlavorBMixedCaseQuoting:
         regions = SlayerDataset(
             name="regions", sql_table="MyRegions", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
         cust = SlayerDataset(
             name="cust", sql_table="cust", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         query = SlayerQuery(
             population="cust",
-            dimensions=[FieldRef(name="name", dataset="regions")],
+            dimensions=[QueryDimension(field="regions.name")],
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(
@@ -595,15 +595,15 @@ class TestFlavorBMixedCaseQuoting:
             name="accounts",
             sql_table="public.MyAccounts",
             data_source="test",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(*)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert '"MyAccounts"' in sql
 
     async def test_lowercase_only_expression_unchanged(self, orders_dataset: SlayerDataset) -> None:
         """No spurious quoting: an all-lowercase expression emits unchanged."""
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(revenue)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(revenue)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert "SUM(orders.amount)" in sql
         assert '"amount"' not in sql
@@ -616,11 +616,11 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="j", sql="COALESCE(RawVal, 0)", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="j", sql="COALESCE(RawVal, 0)", datatype=DataType.FLOAT),
             ],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "sum(j)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(j)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert "COALESCE" in sql
         assert '"COALESCE"' not in sql
@@ -635,8 +635,8 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="regions",
             data_source="test",
             fields=[
-                DatasetField(name="RegionId", sql="RegionId", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="RegionId", sql="RegionId", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
         customers = SlayerDataset(
@@ -644,14 +644,14 @@ class TestFlavorBMixedCaseQuoting:
             sql_table="customers",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="RegionRef", sql="RegionRef", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="RegionRef", sql="RegionRef", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["RegionRef", "RegionId"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["RegionRef"], to_columns=["RegionId"])],
         )
         query = SlayerQuery(
             population="customers",
-            dimensions=[FieldRef(name="name", dataset="regions")],
+            dimensions=[QueryDimension(field="regions.name")],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(
@@ -717,7 +717,7 @@ class TestMixedCaseQuotingMultiDialect:
             sql_table="public.accounts",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(
                     name="is_inactive",
                     datatype=DataType.BOOLEAN,
@@ -727,7 +727,7 @@ class TestMixedCaseQuotingMultiDialect:
         )
         query = SlayerQuery(
             population="accounts",
-            dimensions=[FieldRef(name="is_inactive")],
+            dimensions=[QueryDimension(field="is_inactive")],
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(query=query, dataset=model, dialect=dialect))

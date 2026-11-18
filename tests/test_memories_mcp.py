@@ -32,7 +32,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -104,14 +104,14 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="orders",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(
                     name="customer_id",
                     sql="customer_id",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
             metrics=[DatasetMetric(expression="sum(amount) / count(*)", name="aov")],
@@ -124,7 +124,7 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             relationships=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -136,9 +136,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="customers",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
     )
@@ -149,9 +149,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="invoices",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -278,8 +278,8 @@ class TestSaveMemoryQuery:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(amount)")],
             filter=["status = 'paid'"],
         )
         result = await _call(
@@ -306,7 +306,7 @@ class TestSaveMemoryQuery:
     ) -> None:
         query_dict = {
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         }
         result = await _call(
             mcp_server,
@@ -327,7 +327,7 @@ class TestSaveMemoryQuery:
     ) -> None:
         query = SlayerQuery(
             population="customers",
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await _call(
             mcp_server,

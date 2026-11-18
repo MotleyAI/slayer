@@ -48,7 +48,7 @@ LOCATIONS: Dict[str, Callable[[], object]] = {
     "cross_model": lambda: orders_q(metrics=_metrics("customers.score")),
     "stage": lambda: [
         {"name": "s1", "population": "orders", "dimensions": ["region", "status"],
-         "metrics": [{"expression": "sum(amount)", "name": "x"}]},
+         "metrics": [{"metric": "sum(amount)", "alias": "x"}]},
         {"population": "s1", "dimensions": ["region"], "metrics": _metrics("x"), "filter": WEST},
     ],
     "association": lambda: SlayerQuery.model_validate({

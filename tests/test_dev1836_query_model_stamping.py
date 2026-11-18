@@ -13,9 +13,10 @@ import pytest
 from slayer.core.models import DatasetRelationship
 from slayer.core.relationship_walker import provably_to_one
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
     AMOUNT_BY_STATUS,
-    DatasetMetric,
     make_exec_engine,
     orders_dataset,
     q,
@@ -38,7 +39,7 @@ class TestStamping:
     async def test_aggregated_query_stamps_composite_grain(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
             "vm_agg",
         )
         assert _pk_names(model) == {"status", "channel"}
@@ -68,23 +69,23 @@ class TestStampedModelProvesJoins:
     async def test_join_onto_complete_grain_is_provable(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
             "vm_kpis",
         )
         full = DatasetRelationship(
             to="vm_kpis",
-            join_pairs=[["status", "status"], ["channel", "channel"]],
+            from_columns=["status", "channel"], to_columns=["status", "channel"],
         )
         assert provably_to_one(edge=full, target_dataset=model)
 
     async def test_join_onto_partial_grain_stays_unproven(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
             "vm_kpis2",
         )
         partial = DatasetRelationship(
-            to="vm_kpis2", join_pairs=[["status", "status"]],
+            to="vm_kpis2", from_columns=["status"], to_columns=["status"],
         )
         assert not provably_to_one(edge=partial, target_dataset=model)
 
@@ -95,19 +96,19 @@ class TestStampedModelProvesJoins:
         join onto the query-backed model keeps exact per-dimension values."""
         await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
             "vm_grain",
         )
         host = orders_dataset()
         host.name = "orders_kpi"
         host.relationships.append(DatasetRelationship(
             to="vm_grain",
-            join_pairs=[["status", "status"], ["channel", "channel"]],
+            from_columns=["status", "channel"], to_columns=["status", "channel"],
         ))
         await engine.storage.save_dataset(host, _validate=False)
         resp = await engine.execute(q(
             population="orders_kpi", dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(vm_grain.total)", name="t")],
+            metrics=[QueryMetric(metric="sum(vm_grain.total)", alias="t")],
         ))
         got = {r["orders_kpi.status"]: float(r["orders_kpi.t"])
                for r in resp.data}
@@ -119,5 +120,5 @@ class TestStampedModelProvesJoins:
             q(dimensions=["status"], distinct_dimension_values=False),
             "vm_dup2",
         )
-        join = DatasetRelationship(to="vm_dup2", join_pairs=[["status", "status"]])
+        join = DatasetRelationship(to="vm_dup2", from_columns=["status"], to_columns=["status"])
         assert not provably_to_one(edge=join, target_dataset=model)

@@ -41,81 +41,81 @@ def _cases() -> dict:
         # time_shift over composites — the lift's core.
         "ts/ratio_by_store": _q(
             dimensions=["store"],
-            metrics=[{"expression": "time_shift(sum(revenue) / sum(qty), -1)",
-                       "name": "prev"}],
+            metrics=[{"metric": "time_shift(sum(revenue) / sum(qty), -1)",
+                       "alias": "prev"}],
         ),
         "ts/change_pct_ratio": _q(
             dimensions=["store"],
-            metrics=[{"expression": "change_pct(sum(revenue) / count(*))", "name": "pct"}],
+            metrics=[{"metric": "change_pct(sum(revenue) / count(*))", "alias": "pct"}],
         ),
         "ts/coalesce_missing": _q(metrics=[
-            {"expression": "time_shift(coalesce(sum(revenue), 0), -1)", "name": "prev"},
+            {"metric": "time_shift(coalesce(sum(revenue), 0), -1)", "alias": "prev"},
         ]),
         "ts/two_leaves": _q(metrics=[
-            {"expression": "time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
-             "name": "prev"},
+            {"metric": "time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
+             "alias": "prev"},
         ]),
         "ts/crossing_join": _q(metrics=[
-            {"expression": "time_shift(wrevenue_sum(revenue) * 2, -1)", "name": "prev"},
+            {"metric": "time_shift(wrevenue_sum(revenue) * 2, -1)", "alias": "prev"},
         ]),
         # consecutive_periods over the newly lifted value/predicate shapes.
         "cp/numeric_delta": _q(metrics=[
-            {"expression": "consecutive_periods(sum(revenue) - sum(cost))", "name": "streak"},
+            {"metric": "consecutive_periods(sum(revenue) - sum(cost))", "alias": "streak"},
         ]),
         "cp/bare_cumsum": _q(metrics=[
-            {"expression": "consecutive_periods(cumsum(sum(revenue)))", "name": "streak"},
+            {"metric": "consecutive_periods(cumsum(sum(revenue)))", "alias": "streak"},
         ]),
         "cp/or": _q(metrics=[
-            {"expression": "consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
-             "name": "streak"},
+            {"metric": "consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
+             "alias": "streak"},
         ]),
         "cp/not": _q(metrics=[
-            {"expression": "consecutive_periods(not (sum(revenue) > 90))", "name": "streak"},
+            {"metric": "consecutive_periods(not (sum(revenue) > 90))", "alias": "streak"},
         ]),
         "cp/in": _q(
             dimensions=["store"],
-            metrics=[{"expression": "consecutive_periods(store in ('A', 'B'))",
-                       "name": "streak"}],
+            metrics=[{"metric": "consecutive_periods(store in ('A', 'B'))",
+                       "alias": "streak"}],
         ),
         "cp/negated_in": _q(
             dimensions=["store"],
-            metrics=[{"expression": "consecutive_periods(store not in ('B', 'C'))",
-                       "name": "streak"}],
+            metrics=[{"metric": "consecutive_periods(store not in ('B', 'C'))",
+                       "alias": "streak"}],
         ),
         "cp/and_simple": _q(metrics=[
-            {"expression": "consecutive_periods(sum(revenue) > 40 and sum(cost) > 10)",
-             "name": "streak"},
+            {"metric": "consecutive_periods(sum(revenue) > 40 and sum(cost) > 10)",
+             "alias": "streak"},
         ]),
         "cp/nested_in_and": _q(
             dimensions=["store"],
             metrics=[{
-                "expression": "consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
-                "name": "streak"}],
+                "metric": "consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
+                "alias": "streak"}],
         ),
         "cp/iif": _q(metrics=[
-            {"expression": "consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
-             "name": "streak"},
+            {"metric": "consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
+             "alias": "streak"},
         ]),
         # null-test predicates: bare top level and under a connective.
         "cp/is_null_top": _q(metrics=[
-            {"expression": "consecutive_periods(sum(hi_rev) is None)", "name": "streak"},
+            {"metric": "consecutive_periods(sum(hi_rev) is None)", "alias": "streak"},
         ]),
         "cp/is_not_null_and": _q(metrics=[
-            {"expression": "consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
-             "name": "streak"},
+            {"metric": "consecutive_periods(sum(hi_rev) is not None and sum(cost) > 0)",
+             "alias": "streak"},
         ]),
         # comparison-predicate cp already renders — a regression anchor.
         "cp/change_gt_anchor": _q(metrics=[
-            {"expression": "consecutive_periods(change(sum(revenue)) > 0)", "name": "streak"},
+            {"metric": "consecutive_periods(change(sum(revenue)) > 0)", "alias": "streak"},
         ]),
         "cp/boolean_numeric": _q(metrics=[
-            {"expression": "consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))",
-             "name": "x"},
+            {"metric": "consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))",
+             "alias": "x"},
         ]),
         # Still fail-closed — records the raise. The DEV-1868 series-regime
         # lifts moved the ts_* shapes to tests/test_dev1868_golden_sql.py.
         "reject/cp_string_family": _q(metrics=[
-            {"expression": "consecutive_periods(lower(max(sku)))", "name": "x"},
+            {"metric": "consecutive_periods(lower(max(sku)))", "alias": "x"},
         ]),
     }
 

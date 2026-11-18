@@ -350,7 +350,7 @@ class TestSafeGetTableComment:
 
 class TestSqliteProbePreservesComments:
     async def test_non_affinity_engine_keeps_comments(self) -> None:
-        cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="kept")]
+        cols = [IntrospectedColumn(name="a", type=DataType.INTEGER, comment="kept")]
         async with _client(DatasourceConfig(name="mem", type="duckdb", database=":memory:")) as client:
             with patch("slayer.database.sqlite_introspect.probe_sqlite_integer_column") as probe:
                 out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
@@ -361,9 +361,9 @@ class TestSqliteProbePreservesComments:
         async with _client(DatasourceConfig(name="mem", type="sqlite", database=":memory:")) as client:
             await client.execute("CREATE TABLE t (a INTEGER)")
             await client.execute("INSERT INTO t VALUES (1.5)")
-            cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="probed")]
+            cols = [IntrospectedColumn(name="a", type=DataType.INTEGER, comment="probed")]
             out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
-            assert out[0].type is DataType.DOUBLE
+            assert out[0].type is DataType.FLOAT
             assert out[0].comment == "probed"
 
 
@@ -573,7 +573,7 @@ class TestAdditiveMergeDescriptions:
             data_source="ds",
             description=description,
             fields=[
-                DatasetField(name="a", sql="a", datatype=DataType.INT, description=col_description)
+                DatasetField(name="a", sql="a", datatype=DataType.INTEGER, description=col_description)
             ],
         )
 
@@ -584,7 +584,7 @@ class TestAdditiveMergeDescriptions:
             data_source="ds",
             description="fresh model desc",
             fields=[
-                DatasetField(name="a", sql="a", datatype=DataType.INT, description="fresh col desc")
+                DatasetField(name="a", sql="a", datatype=DataType.INTEGER, description="fresh col desc")
             ],
         )
 
@@ -995,7 +995,7 @@ class TestBigQueryDriverContract:
         assert model.description == "All orders"
         cols = {c.name: c for c in model.fields}
         assert cols["id"].description == "row id"
-        assert cols["id"].datatype is DataType.INT
+        assert cols["id"].datatype is DataType.INTEGER
         assert cols["amount"].description == "order amount"
-        assert cols["amount"].datatype is DataType.DOUBLE
+        assert cols["amount"].datatype is DataType.FLOAT
         assert cols["status"].description is None

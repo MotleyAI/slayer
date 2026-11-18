@@ -16,8 +16,8 @@ def _dataset(name: str, ds: str, *, joins=None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source=ds, sql_table=name,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="val", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="val", datatype=DataType.FLOAT),
         ],
         relationships=joins or [],
     )
@@ -75,7 +75,7 @@ def test_join_scoping_does_not_cross_datasources():
     # The join must resolve to sales.customers, never hr.customers.
     orders = _dataset(
         "orders", "sales",
-        joins=[DatasetRelationship(to="customers", join_pairs=[["id", "id"]])],
+        joins=[DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])],
     )
     catalog = build_catalog_grouped_by_schema(
         datasets_by_datasource={

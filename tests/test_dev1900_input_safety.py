@@ -19,6 +19,8 @@ import pytest
 from slayer.core.errors import SlayerError, UnanalyzableAggregationParameterError
 from slayer.engine.elaborate_env import check_input_dependencies_analyzable
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
     DatasetMetric,
@@ -141,8 +143,8 @@ class TestUnanalyzableDefinition:
     async def test_unparseable_column_filter_typed_error(self, unparse_engine):
         """A source column's ``filter=`` referencing an unanalyzable derived
         column is an input dependency too — fail closed, never stamped ``()``."""
-        q = orders_q(metrics=[DatasetMetric(
-            expression="sum(customers.flagged_spend)", name="fs")])
+        q = orders_q(metrics=[QueryMetric(
+            metric="sum(customers.flagged_spend)", alias="fs")])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)

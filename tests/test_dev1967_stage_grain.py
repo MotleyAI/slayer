@@ -49,7 +49,7 @@ class TestGrainEmission:
     def test_aggregate_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
             dimensions=["status", CHANNEL_TOTAL],
-            metrics=[{"expression": "count(*)", "name": "n"}],
+            metrics=[{"metric": "count(*)", "alias": "n"}],
         )
         assert grain == ["status", "ct"]
 
@@ -59,35 +59,35 @@ class TestGrainEmission:
     def test_partitioned_measure_is_not_a_member(self) -> None:
         grain = _grain(
             dimensions=["status", "channel"],
-            metrics=[{"expression": "sum(amount, partition_by=status)", "name": "st"}],
+            metrics=[{"metric": "sum(amount, partition_by=status)", "alias": "st"}],
         )
         assert grain == ["status", "channel"]
 
     def test_transform_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
-            dimensions=["status", {"expression": "rank(sum(amount, partition_by=channel), direction='desc')", "name": "rk"}],
-            metrics=[{"expression": "count(*)", "name": "n"}],
+            dimensions=["status", {"field": "rank(sum(amount, partition_by=channel), direction='desc')", "alias": "rk"}],
+            metrics=[{"metric": "count(*)", "alias": "n"}],
         )
         assert grain == ["status", "rk"]
 
     def test_cumsum_stage_grain_includes_its_time_bucket(self) -> None:
         grain = _grain(
             time_dimensions=MONTH,
-            metrics=[{"expression": "cumsum(sum(amount))", "name": "cs"}],
+            metrics=[{"metric": "cumsum(sum(amount))", "alias": "cs"}],
         )
         assert grain == ["ordered_at"]
 
     def test_slot_shared_by_dimension_and_measure_contributes_only_the_dimension(self) -> None:
         expr = "sum(amount, partition_by=status)"
         grain = _grain(
-            dimensions=["status", {"expression": expr, "name": "ct"}],
-            metrics=[{"expression": expr, "name": "ct2"}],
+            dimensions=["status", {"field": expr, "alias": "ct"}],
+            metrics=[{"metric": expr, "alias": "ct2"}],
         )
         assert grain == ["status", "ct"]
 
     def test_slot_under_two_dimension_aliases_contributes_the_first(self) -> None:
         grain = _grain(
-            dimensions=["status", {"expression": "status", "name": "s2"}],
+            dimensions=["status", {"field": "status", "alias": "s2"}],
             metrics=[AMOUNT],
         )
         assert grain == ["status"]
@@ -97,11 +97,11 @@ class TestSiblingStageGrain:
     def test_named_sibling_stage_schema_carries_its_grain(self) -> None:
         sibling = SlayerQuery.model_validate({
             "name": "c", "population": "customers", "dimensions": ["id"],
-            "metrics": [{"expression": "max(tier)", "name": "tr"}],
+            "metrics": [{"metric": "max(tier)", "alias": "tr"}],
         })
         root = SlayerQuery.model_validate({
             "population": "c", "dimensions": ["tr"],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         customers = next(m for m in dev1836_datasets() if m.name == "customers")
         bundle = _bundle().model_copy(update={"stage_source_datasets": {"c": customers}})
@@ -112,14 +112,14 @@ class TestSiblingStageGrain:
 
 class TestGrainValidator:
     def test_grain_member_must_name_a_column(self) -> None:
-        columns = [StageField(name="a", sql_alias="a", datatype=DataType.TEXT)]
+        columns = [StageField(name="a", sql_alias="a", datatype=DataType.STRING)]
         with pytest.raises(ValidationError):
             StageSchema(relation_name="s", fields=columns, grain=["b"])
 
     def test_grain_members_naming_columns_validate(self) -> None:
         schema = StageSchema(
             relation_name="s",
-            fields=[StageField(name="a", sql_alias="a", datatype=DataType.TEXT)],
+            fields=[StageField(name="a", sql_alias="a", datatype=DataType.STRING)],
             grain=["a"],
         )
         assert schema.grain == ["a"]

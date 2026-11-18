@@ -23,7 +23,7 @@ class TestGranularityNamesReserved:
             assert gran in msg, f"error must name reserved granularity {gran!r}: {msg}"
 
     def test_model_with_granularity_named_aggregation_rejected(self) -> None:
-        amount = DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)
+        amount = DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)
         with pytest.raises(pydantic.ValidationError, match="week_sunday"):
             fx.dataset(
                 name="orders", sql_table="orders", data_source="test",

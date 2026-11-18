@@ -49,7 +49,7 @@ def _nocase_seed(db_path: str) -> None:
 
 def _people_dataset() -> SlayerDataset:
     return SlayerDataset(name="people", sql_table="people", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING),
     ])
 
 

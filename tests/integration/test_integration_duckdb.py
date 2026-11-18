@@ -9,8 +9,8 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
@@ -76,14 +76,14 @@ def _duckdb_env_storage(tmp_path_factory):
         sql_table="orders",
         data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
 
-            DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="avg_amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
     customers_model = SlayerDataset(
@@ -91,9 +91,9 @@ def _duckdb_env_storage(tmp_path_factory):
         sql_table="customers",
         data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
 
         ],
     )
@@ -114,7 +114,7 @@ def duckdb_env(_duckdb_env_storage):
 @pytest.mark.integration
 class TestDuckDBQueries:
     async def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
@@ -126,24 +126,24 @@ class TestDuckDBQueries:
         assert orders is not None
         await duckdb_env.storage.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
             *orders.fields, DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
-                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.DOUBLE),
+                        "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
         ]}))
         query = SlayerQuery(
             population="orders_rx",
-            dimensions=[FieldRef(name="rx")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="rx")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await duckdb_env.execute(query=query)
         by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(total)"}]})
         result = await duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     async def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "avg(avg_amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(avg_amount)"}]})
         result = await duckdb_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -151,8 +151,8 @@ class TestDuckDBQueries:
     async def test_group_by_status(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
         })
         result = await duckdb_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
@@ -163,7 +163,7 @@ class TestDuckDBQueries:
     async def test_filter_equals(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status == 'completed'"],
         })
         result = await duckdb_env.execute(query=query)
@@ -172,7 +172,7 @@ class TestDuckDBQueries:
     async def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["amount > 100"],
         })
         result = await duckdb_env.execute(query=query)
@@ -181,9 +181,9 @@ class TestDuckDBQueries:
     async def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
-            "order": [{"field": {"name": "count"}, "direction": "desc"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
+            "order": [{"field": "count", "direction": "desc"}],
         })
         result = await duckdb_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
@@ -191,8 +191,8 @@ class TestDuckDBQueries:
     async def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
             "limit": 2,
         })
         result = await duckdb_env.execute(query=query)
@@ -201,8 +201,8 @@ class TestDuckDBQueries:
     async def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}, {"expression": "sum(total)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}, {"metric": "sum(total)"}],
+            "dimensions": ["status"],
         })
         result = await duckdb_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
@@ -213,7 +213,7 @@ class TestDuckDBQueries:
         """DuckDB supports DATE_TRUNC natively."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
         })
         result = await duckdb_env.execute(query=query)
@@ -222,7 +222,7 @@ class TestDuckDBQueries:
     async def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{
                 "field": {"name": "created_at"},
                 "granularity": "month",
@@ -237,7 +237,7 @@ class TestDuckDBQueries:
     async def test_composite_filter(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status == 'completed' or status == 'pending'"],
         })
         result = await duckdb_env.execute(query=query)
@@ -254,10 +254,10 @@ class TestDuckDBQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="time_shift(sum(total), -1, 'month')", name="prev_month"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev_month"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
@@ -274,10 +274,10 @@ class TestDuckDBQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="change(sum(total))", name="amount_change"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="change(sum(total))", alias="amount_change"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
@@ -293,10 +293,10 @@ class TestDuckDBQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="change_pct(sum(total))", name="pct"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="change_pct(sum(total))", alias="pct"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
@@ -313,11 +313,11 @@ class TestDuckDBQueries:
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="time_shift(sum(total), -1, 'month')", name="prev"),
-                DatasetMetric(expression="time_shift(sum(total), 1, 'month')", name="next"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev"),
+                QueryMetric(metric="time_shift(sum(total), 1, 'month')", alias="next"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
@@ -339,10 +339,10 @@ class TestDuckDBQueries:
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="cumsum(sum(total))", name="running"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="cumsum(sum(total))", alias="running"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 3
@@ -482,8 +482,8 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
 
@@ -505,8 +505,8 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}, {"expression": "sum(amount)"}],
-            "dimensions": [{"name": "customers.regions.name"}],
+            "metrics": [{"metric": "count(*)"}, {"metric": "sum(amount)"}],
+            "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
 
@@ -529,7 +529,7 @@ class TestDuckDBMedianPercentile:
 
     async def test_median(self, duckdb_env: SlayerQueryEngine) -> None:
         # amounts = [100, 200, 50, 150, 75, 300] -> median 125
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "median(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(total)"}]})
         result = await duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
@@ -537,8 +537,8 @@ class TestDuckDBMedianPercentile:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "percentile(total, p=0.25)"},
-                {"expression": "percentile(total, p=0.75)"},
+                {"metric": "percentile(total, p=0.25)"},
+                {"metric": "percentile(total, p=0.75)"},
             ],
         )
         result = await duckdb_env.execute(query=query)
@@ -552,8 +552,8 @@ class TestDuckDBMedianPercentile:
         # cancelled: [75]            -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "median(total)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "median(total)"}],
+            "dimensions": ["status"],
         })
         result = await duckdb_env.execute(query=query)
         by_status = {
@@ -573,7 +573,7 @@ class TestDuckDBStatAggregations:
     """
 
     async def test_stddev_samp_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "stddev_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "stddev_samp(total)"}]})
         result = await duckdb_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -581,7 +581,7 @@ class TestDuckDBStatAggregations:
         )
 
     async def test_var_pop_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "var_pop(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_pop(total)"}]})
         result = await duckdb_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_pop"]) == pytest.approx(
@@ -591,7 +591,7 @@ class TestDuckDBStatAggregations:
     async def test_corr_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "corr(total, other=customer_id)"}],
+            "metrics": [{"metric": "corr(total, other=customer_id)"}],
         })
         result = await duckdb_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -604,7 +604,7 @@ class TestDuckDBStatAggregations:
     async def test_covar_samp_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "covar_samp(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_samp(total, other=customer_id)"}],
         })
         result = await duckdb_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -619,7 +619,7 @@ class TestDuckDBStatAggregations:
     async def test_covar_pop_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "covar_pop(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_pop(total, other=customer_id)"}],
         })
         result = await duckdb_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -638,7 +638,7 @@ class TestDuckDBStatAggregations:
         existing = await duckdb_env.storage.get_dataset("orders")
         assert existing is not None
         cols = list(existing.fields) + [
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.DOUBLE),
+            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
         ]
         await duckdb_env.save_dataset(
             SlayerDataset(
@@ -650,7 +650,7 @@ class TestDuckDBStatAggregations:
         )
 
         result = await duckdb_env.execute(
-            SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]})
+            SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]})
         )
         # max(amount) = 300, log10(300) ≈ 2.4771
         assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
@@ -658,7 +658,7 @@ class TestDuckDBStatAggregations:
         )
 
         dry = await duckdb_env.execute(
-            SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]}),
+            SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]}),
             dry_run=True,
         )
         assert dry.sql is not None
@@ -719,13 +719,13 @@ async def planets_duckdb_env(tmp_path):
             sql_table="planets",
             data_source="planets_duckdb",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-                DatasetField(name="mass", sql="mass", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         )
@@ -776,9 +776,9 @@ async def duckdb_derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -788,16 +788,16 @@ async def duckdb_derived_chain_env(tmp_path):
             data_source="ds",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
                     sql="a_tbl.bar / b_tbl.foo_normalized",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
-            relationships=[DatasetRelationship(to="b_tbl", join_pairs=[["b_id", "id"]])],
+            relationships=[DatasetRelationship(to="b_tbl", from_columns=["b_id"], to_columns=["id"])],
         )
     )
     return SlayerQueryEngine(storage=storage)
@@ -811,10 +811,10 @@ async def test_integration_duckdb_cross_model_derived_columnsql(
         SlayerQuery(
             population="a_tbl",
             dimensions=[
-                FieldRef(name="id"),
-                FieldRef(name="ratio_using_derived"),
+                QueryDimension(field="id"),
+                QueryDimension(field="ratio_using_derived"),
             ],
-            order=[OrderItem(field=FieldRef(name="id"), direction="asc")],
+            order=[OrderItem(field="id", direction="asc")],
         )
     )
     assert response.row_count == 2
@@ -866,30 +866,30 @@ def _dev1531_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="regions", sql_table="regions", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="payment_amount", sql="payment_amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="payment_amount", sql="payment_amount", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INT),
-            DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="region_payment", sql="customers.regions.payment_amount", datatype=DataType.DOUBLE),
-            DatasetField(name="cust_balance", sql="customers.balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="region_payment", sql="customers.regions.payment_amount", datatype=DataType.FLOAT),
+            DatasetField(name="cust_balance", sql="customers.balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     return storage
 
@@ -905,7 +905,7 @@ class TestDev1531CrossJoinFirstLast:
         # Latest order (2024-03-01) → customer 2 → region 2 → payment 20.0.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="last(region_payment, orders.created_at)")],
+            metrics=[QueryMetric(metric="last(region_payment, orders.created_at)")],
         )
         result = await dev1531_env.execute(query=query)
         assert float(result.data[0]["orders.region_payment_last_created_at"]) == pytest.approx(20.0)
@@ -914,7 +914,7 @@ class TestDev1531CrossJoinFirstLast:
         # Earliest order (2024-01-01) → customer 1 → region 1 → payment 10.0.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="first(region_payment, orders.created_at)")],
+            metrics=[QueryMetric(metric="first(region_payment, orders.created_at)")],
         )
         result = await dev1531_env.execute(query=query)
         assert float(result.data[0]["orders.region_payment_first_created_at"]) == pytest.approx(10.0)
@@ -923,7 +923,7 @@ class TestDev1531CrossJoinFirstLast:
         # Latest order → customer 2 → balance 200.0.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="last(cust_balance, orders.created_at)")],
+            metrics=[QueryMetric(metric="last(cust_balance, orders.created_at)")],
         )
         result = await dev1531_env.execute(query=query)
         assert float(result.data[0]["orders.cust_balance_last_created_at"]) == pytest.approx(200.0)
@@ -933,8 +933,8 @@ class TestDev1531CrossJoinFirstLast:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(expression="last(region_payment, orders.created_at)"),
-                DatasetMetric(expression="sum(amount)"),
+                QueryMetric(metric="last(region_payment, orders.created_at)"),
+                QueryMetric(metric="sum(amount)"),
             ],
         )
         result = await dev1531_env.execute(query=query)
@@ -946,7 +946,7 @@ class TestDev1531CrossJoinFirstLast:
         # HAVING region_payment:last > 15 → 20.0 passes → one row.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="last(region_payment, orders.created_at)")],
+            metrics=[QueryMetric(metric="last(region_payment, orders.created_at)")],
             filter=["last(region_payment, orders.created_at) > 15"],
         )
         result = await dev1531_env.execute(query=query)
@@ -957,7 +957,7 @@ class TestDev1531CrossJoinFirstLast:
         # HAVING region_payment:last > 25 → 20.0 fails → zero rows.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="last(region_payment, orders.created_at)")],
+            metrics=[QueryMetric(metric="last(region_payment, orders.created_at)")],
             filter=["last(region_payment, orders.created_at) > 25"],
         )
         result = await dev1531_env.execute(query=query)
@@ -1009,21 +1009,21 @@ def _dev1709_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="line_items", sql_table="line_items", data_source="dev1709duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", sql="order_id", datatype=DataType.INT),
-            DatasetField(name="qty", sql="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", sql="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="dev1709duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]])],
+        relationships=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )))
     return storage
 
@@ -1044,8 +1044,8 @@ class TestDev1709SiblingProtection:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(expression="sum(amount)"),
-                DatasetMetric(expression="sum(line_items.qty)", name="li_qty_sum"),
+                QueryMetric(metric="sum(amount)"),
+                QueryMetric(metric="sum(line_items.qty)", alias="li_qty_sum"),
             ],
         )
         result = await dev1709_env.execute(query=query)
@@ -1062,8 +1062,8 @@ class TestDev1709SiblingProtection:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(expression="sum(amount)"),
-                DatasetMetric(expression="sum(li_qty)"),
+                QueryMetric(metric="sum(amount)"),
+                QueryMetric(metric="sum(li_qty)"),
             ],
         )
         with pytest.raises(ValueError) as ei:
@@ -1080,8 +1080,8 @@ class TestDev1709SiblingProtection:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(expression="last(amount, orders.created_at)"),
-                DatasetMetric(expression="sum(line_items.qty)", name="li_qty_sum"),
+                QueryMetric(metric="last(amount, orders.created_at)"),
+                QueryMetric(metric="sum(line_items.qty)", alias="li_qty_sum"),
             ],
         )
         result = await dev1709_env.execute(query=query)
@@ -1096,7 +1096,7 @@ class TestDev1709SiblingProtection:
         # silently — a hard error naming the hop and the remedy.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="weighted_avg(amount, weight=li_qty)")],
+            metrics=[QueryMetric(metric="weighted_avg(amount, weight=li_qty)")],
         )
         with pytest.raises(ValueError) as ei:
             await dev1709_env.execute(query=query)
@@ -1112,8 +1112,8 @@ class TestDev1709SiblingProtection:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(expression="sum(amount)"),
-                DatasetMetric(expression="sum(line_items.qty)", name="li_qty_sum"),
+                QueryMetric(metric="sum(amount)"),
+                QueryMetric(metric="sum(line_items.qty)", alias="li_qty_sum"),
             ],
             filter=["status = 'paid'"],
         )
@@ -1159,19 +1159,19 @@ def _f1f4_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="f1f4duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="f1f4duckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     return storage
 
@@ -1189,7 +1189,7 @@ class TestF1F4SemanticValues:
         # and customer 2 is reached only via an unpaid order.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["status = 'paid'"],
         )
         result = await f1f4_env.execute(query=query)
@@ -1199,7 +1199,7 @@ class TestF1F4SemanticValues:
         # Second host filter (status='unpaid') — only customer 2 (200.0).
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["status = 'unpaid'"],
         )
         result = await f1f4_env.execute(query=query)
@@ -1211,7 +1211,7 @@ class TestF1F4SemanticValues:
         # scalar onto — the query returns zero rows.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["status = 'nonexistent'"],
         )
         result = await f1f4_env.execute(query=query)
@@ -1223,8 +1223,8 @@ class TestF1F4SemanticValues:
         # a scalar broadcast to every host group — each status shows the full 700.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="status")],
             to_many_handling="broadcast",
         )
         result = await f1f4_env.execute(query=query)
@@ -1292,32 +1292,32 @@ def _dev1728_duckdb_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="regions", sql_table="regions", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
         ],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INT),
-            DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.DOUBLE),
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         default_time_dimension="signup_at",
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         default_time_dimension="created_at",
     )))
     return storage
@@ -1334,8 +1334,8 @@ class TestDev1728DerivedSharedGrain:
         # Group cross-model sum by target-local ltv_x2.
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.ltv_x2")],
-            metrics=[DatasetMetric(expression="sum(customers.lifetime_value)")],
+            dimensions=[QueryDimension(field="customers.ltv_x2")],
+            metrics=[QueryMetric(metric="sum(customers.lifetime_value)")],
         )
         result = await dev1728_env.execute(query=query)
         by_grain = {
@@ -1352,8 +1352,8 @@ class TestDev1728DerivedSharedGrain:
         # Group cross-model sum by crossing deep_pop = regions.population.
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.deep_pop")],
-            metrics=[DatasetMetric(expression="sum(customers.lifetime_value)")],
+            dimensions=[QueryDimension(field="customers.deep_pop")],
+            metrics=[QueryMetric(metric="sum(customers.lifetime_value)")],
         )
         result = await dev1728_env.execute(query=query)
         by_pop = {
@@ -1371,8 +1371,8 @@ class TestDev1728DerivedSharedGrain:
         # native IS NOT DISTINCT FROM join-back.
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.deep_pop")],
-            metrics=[DatasetMetric(expression="sum(customers.lifetime_value)")],
+            dimensions=[QueryDimension(field="customers.deep_pop")],
+            metrics=[QueryMetric(metric="sum(customers.lifetime_value)")],
         )
         result = await dev1728_env.execute(query=query)
         by_pop = {
@@ -1389,9 +1389,9 @@ class TestDev1728DerivedSharedGrain:
         # last(lifetime_value ORDER BY signup_at) per crossing population group.
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.deep_pop")],
-            metrics=[DatasetMetric(
-                expression="last(customers.lifetime_value, customers.signup_at)")],
+            dimensions=[QueryDimension(field="customers.deep_pop")],
+            metrics=[QueryMetric(
+                metric="last(customers.lifetime_value, customers.signup_at)")],
         )
         result = await dev1728_env.execute(query=query)
         by_pop = {
@@ -1433,9 +1433,9 @@ def _dev1753_storage(tmp_path_factory):
     run_sync(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="testduckdb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="disc", sql="disc", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="disc", sql="disc", datatype=DataType.FLOAT),
         ],
     )))
     return storage
@@ -1451,8 +1451,8 @@ class TestDev1753GreatestLeastIgnoreNulls:
     async def _values(self, engine, expression):
         result = await engine.execute(query=SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="id")],
-            metrics=[DatasetMetric(expression=expression, name="g")],
+            dimensions=[QueryDimension(field="id")],
+            metrics=[QueryMetric(metric=expression, alias="g")],
         ))
         return {int(r["orders.id"]): r["orders.g"] for r in result.data}
 
@@ -1475,7 +1475,7 @@ class TestDev1753GreatestLeastIgnoreNulls:
         """DuckDB ``TRUNC`` toward zero on a live server."""
         result = await dev1753_env.execute(query=SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
             filter=["trunc(amount) == 10"],
         ))
         assert result.data[0]["orders.n"] == 1

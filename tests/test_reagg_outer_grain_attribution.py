@@ -305,7 +305,7 @@ class TestOtherConsumerShapes:
 class TestExpressionAndKeylessGrain:
     async def test_band_determined_through_an_attached_expression(self, engine):
         resp = await engine.execute(query(
-            dimensions=["name", {"expression": BAND_EXPR, "name": "band"}],
+            dimensions=["name", {"field": BAND_EXPR, "alias": "band"}],
             metrics=[m(f"sum({MAX_Q})")]))
         approx_cells(cells(resp, keys=("name", "band")), {**SUM_MAX_Q_BY_BAND, ("Cy", "lo"): None})
         _clean(resp)

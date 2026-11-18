@@ -28,7 +28,15 @@ from slayer.core.models import (
     SourceDatasetOrigin,
 )
 from slayer.core.policy import ColumnFilterRuleset, JoinFilterRule, JoinFilterRuleset
-from slayer.core.query import DatasetExtension, FieldRef, OrderItem, QueryRefinement, SlayerQuery, TimeDimension
+from slayer.core.query import (
+    DatasetExtension,
+    FieldRef,
+    OrderItem,
+    QueryMetric,
+    QueryRefinement,
+    SlayerQuery,
+    TimeDimension,
+)
 from slayer.core.recommend import CandidateCoverage, PopulationRecommendation
 from slayer.core.warnings import (
     AssociatedWarningPayload,
@@ -86,7 +94,8 @@ CLASSES: dict[tuple[str, str], str] = {
     ("slayer.core.models", "ModelMeasure"): "DatasetMetric",
     ("slayer.core.models", "ModelJoin"): "DatasetRelationship",
     ("slayer.core.models", "SourceModelOrigin"): "SourceDatasetOrigin",
-    ("slayer.core.query", "ColumnRef"): "FieldRef",
+    ("slayer.core.query", "ColumnRef"): "QueryDimension",
+    ("slayer.core.query", "ComputedDimension"): "QueryDimension",
     ("slayer.core.query", "ModelExtension"): "DatasetExtension",
     ("slayer.core.query", "ModelVariables"): "DatasetVariables",
     ("slayer.core.query", "ModelMeasure"): "DatasetMetric",
@@ -316,19 +325,19 @@ def _query() -> SlayerQuery:
 
 
 _EXT_METRIC = {"name": "aov", "expression": "sum(amount) / count(*)"}
-_EXT_REL = {"to": "customers", "join_pairs": [["customer_id", "id"]], "name": "buyer"}
+_EXT_REL = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}
 
 
 def _extension() -> DatasetExtension:
     return DatasetExtension.model_validate(
-        {"source_name": "orders", "metrics": [_EXT_METRIC], "relationships": [_EXT_REL]})
+        {"dataset": "orders", "metrics": [_EXT_METRIC], "relationships": [_EXT_REL]})
 
 
 #: Every curated pre-2.0 attribute name, keyed ``<owner>.<old>``.
 ATTRIBUTES: dict[str, AttributeCase] = {
     "dataset.columns": AttributeCase(
         make=_dataset, old="columns", new="fields",
-        assign=lambda: [DatasetField.model_validate({"name": "only", "datatype": "INT"})]),
+        assign=lambda: [DatasetField.model_validate({"name": "only", "datatype": "Integer"})]),
     "dataset.measures": AttributeCase(
         make=_dataset, old="measures", new="metrics",
         assign=lambda: [DatasetMetric.model_validate({"name": "n", "expression": "count(*)"})]),
@@ -341,11 +350,11 @@ ATTRIBUTES: dict[str, AttributeCase] = {
         make=lambda: SourceDatasetOrigin(name="s", agg_field_names=frozenset({"a"})),
         old="agg_column_names", new="agg_field_names", assign=lambda: frozenset({"b"})),
     "field.type": AttributeCase(
-        make=lambda: DatasetField.model_validate({"name": "x", "datatype": "INT"}),
-        old="type", new="datatype", assign=lambda: DataType.TEXT),
+        make=lambda: DatasetField.model_validate({"name": "x", "datatype": "Integer"}),
+        old="type", new="datatype", assign=lambda: DataType.STRING),
     "metric.type": AttributeCase(
-        make=lambda: DatasetMetric.model_validate({"name": "m", "expression": "count(*)", "datatype": "INT"}),
-        old="type", new="datatype", assign=lambda: DataType.DOUBLE),
+        make=lambda: DatasetMetric.model_validate({"name": "m", "expression": "count(*)", "datatype": "Integer"}),
+        old="type", new="datatype", assign=lambda: DataType.FLOAT),
     "metric.formula": AttributeCase(
         make=lambda: DatasetMetric.model_validate({"name": "m", "expression": "count(*)"}),
         old="formula", new="expression", assign=lambda: "sum(amount)"),
@@ -353,8 +362,16 @@ ATTRIBUTES: dict[str, AttributeCase] = {
         make=lambda: Aggregation.model_validate({"name": "doubled", "expression": "SUM({value}) * 2"}),
         old="formula", new="expression", assign=lambda: "SUM({value}) * 3"),
     "relationship.target_model": AttributeCase(
-        make=lambda: DatasetRelationship.model_validate({"to": "customers", "join_pairs": [["customer_id", "id"]]}),
+        make=lambda: DatasetRelationship.model_validate({"to": "customers", "from_columns": ["customer_id"],
+                                                         "to_columns": ["id"]}),
         old="target_model", new="to", assign=lambda: "buyers"),
+    "relationship.join_pairs": AttributeCase(
+        make=lambda: DatasetRelationship.model_validate({"to": "customers", "from_columns": ["customer_id", "region"],
+                                                         "to_columns": ["id", "region"]}),
+        old="join_pairs", new="column_pairs", assign=lambda: [("customer_id", "cid")], serialized=False),
+    "query_metric.formula": AttributeCase(
+        make=lambda: QueryMetric.model_validate({"metric": "count(*)", "alias": "n"}), old="formula", new="metric",
+        assign=lambda: "sum(amount)"),
     "query.source_model": AttributeCase(make=_query, old="source_model", new="population", assign=lambda: "customers"),
     "query.measures": AttributeCase(
         make=_query, old="measures", new="metrics",
@@ -375,7 +392,7 @@ ATTRIBUTES: dict[str, AttributeCase] = {
         old="column_ref", new="field_ref"),
     "order_item.column": AttributeCase(
         make=lambda: OrderItem.model_validate({"field": "status"}), old="column", new="field",
-        assign=lambda: FieldRef(name="amount")),
+        assign=lambda: "amount"),
     "order_item.raw_formula": AttributeCase(
         make=lambda: OrderItem.model_validate({"field": "status"}), old="raw_formula", new="raw_expression",
         assign=lambda: "sum(amount)"),
@@ -385,6 +402,8 @@ ATTRIBUTES: dict[str, AttributeCase] = {
     "extension.measures": AttributeCase(
         make=_extension, old="measures", new="metrics",
         assign=lambda: [DatasetMetric.model_validate({**_EXT_METRIC, "name": "aov2"})]),
+    "extension.source_name": AttributeCase(make=_extension, old="source_name", new="dataset",
+                                           assign=lambda: "customers"),
     "extension.joins": AttributeCase(
         make=_extension, old="joins", new="relationships",
         assign=lambda: [DatasetRelationship.model_validate({**_EXT_REL, "name": "payer"})]),
@@ -514,7 +533,7 @@ class TestAttributes:
 
     def test_dataset_columns_write_lands_in_fields(self) -> None:
         dataset = _dataset()
-        only = [DatasetField.model_validate({"name": "only", "datatype": "INT"})]
+        only = [DatasetField.model_validate({"name": "only", "datatype": "Integer"})]
         with recorded() as caught:
             setattr(dataset, "columns", only)
         assert dataset.fields == only

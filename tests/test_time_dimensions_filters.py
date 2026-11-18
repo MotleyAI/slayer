@@ -47,10 +47,10 @@ def _orders_dataset(default_td: str | None = None) -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="reviewed_at", datatype=DataType.DATE),
         ],
         default_time_dimension=default_td,
@@ -63,8 +63,8 @@ def _customers_dataset() -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="signed_up_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="signed_up_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -75,13 +75,13 @@ def _orders_with_customers_join() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -183,14 +183,14 @@ class TestResolveMainTimeDimension:
             data_source="prod",
             sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="signed_up_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="signed_up_at", datatype=DataType.DATETIME),
             ],
             relationships=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -289,18 +289,18 @@ class TestResolveMainTimeDimension:
             data_source="prod",
             sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="payment_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="payment_id", datatype=DataType.INTEGER),
             ],
             relationships=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
                 DatasetRelationship(
                     to="payments",
-                    join_pairs=[["payment_id", "id"]],
+                    from_columns=["payment_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -355,14 +355,14 @@ class TestResolveMainTimeDimension:
             data_source="prod",
             sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="reviewed_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="reviewed_at", datatype=DataType.DATETIME),
             ],
             relationships=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
             default_time_dimension="created_at",  # doesn't match any LOCAL TD
@@ -392,9 +392,9 @@ class TestResolveMainTimeDimension:
             data_source="prod",
             sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="reviewed_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="reviewed_at", datatype=DataType.DATETIME),
             ],
             default_time_dimension="created_at",
         )
@@ -551,7 +551,7 @@ class TestDateRangeFilter:
         # legacy WHERE order: date_range first, user filter second.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "filter": ["amount > 0"],
             "time_dimensions": [
                 TimeDimension(

@@ -15,6 +15,8 @@ import pytest
 from slayer.core.errors import SlayerError
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     AMOUNT_BY_TIER_STATUS,
@@ -54,8 +56,8 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="count(customers.seg_label)",
-                                   name="x")],
+            metrics=[QueryMetric(metric="count(customers.seg_label)",
+                                   alias="x")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -66,8 +68,8 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(customers.vip_spend)",
-                                   name="x")],
+            metrics=[QueryMetric(metric="sum(customers.vip_spend)",
+                                   alias="x")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -79,8 +81,8 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(expression="last(customers.spend, ordered_at)",
-                                   name="x")],
+            metrics=[QueryMetric(metric="last(customers.spend, ordered_at)",
+                                   alias="x")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -96,8 +98,8 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, partition_by=status)", name="x",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=status)", alias="x",
             )],
             to_many_handling="broadcast",
         )
@@ -113,9 +115,9 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, partition_by=customers.segments.label)",
-                name="x",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.segments.label)",
+                alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -130,9 +132,9 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="sum(amount, partition_by=customers.segments.label)",
-                name="x",
+            metrics=[QueryMetric(
+                metric="sum(amount, partition_by=customers.segments.label)",
+                alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -147,10 +149,10 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             dimensions=[{
-                "expression": ("CASE WHEN sum(amount, partition_by="
+                "field": ("CASE WHEN sum(amount, partition_by="
                                "customers.segments.label) > 10 "
                                "THEN 1 ELSE 0 END"),
-                "name": "b",
+                "alias": "b",
             }],
             metrics=[M],
         )
@@ -162,8 +164,8 @@ class TestUnsafeExplicitPartitionKeys:
         _, engine = exec_backend
         query = q(
             to_many_handling="error", dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, partition_by=status)", name="x",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=status)", alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -178,8 +180,8 @@ class TestSafeJoinedPartitionKey:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier", "status"],
-            metrics=[M, DatasetMetric(
-                expression="sum(amount, partition_by=customers.tier)", name="pt",
+            metrics=[M, QueryMetric(
+                metric="sum(amount, partition_by=customers.tier)", alias="pt",
             )],
         )
         resp = await engine.execute(query)

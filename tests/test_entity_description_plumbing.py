@@ -62,10 +62,10 @@ async def storage_rich() -> AsyncIterator[StorageBackend]:
             data_source="warehouse",
             description="Orders table desc.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount_paid", datatype=DataType.FLOAT,
                        description="amount_paid column desc."),
-                DatasetField(name="status", datatype=DataType.TEXT),  # no description
+                DatasetField(name="status", datatype=DataType.STRING),  # no description
             ],
             metrics=[
                 DatasetMetric(

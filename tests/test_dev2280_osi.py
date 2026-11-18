@@ -27,8 +27,8 @@ IMPORT_DDL = [s.replace(" ts ", " created_at ").replace("(id, ts", "(id, created
 def ev_dataset(*measures: DatasetMetric) -> SlayerDataset:
     return SlayerDataset(
         name="ev", sql_table="ev", data_source=DATASOURCE,
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="ts", datatype=DataType.TIMESTAMP),
-                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="ts", datatype=DataType.DATETIME),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)],
         metrics=list(measures),
     )
 

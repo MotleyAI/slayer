@@ -29,7 +29,7 @@ postgresql_proc = factories.postgresql_proc(port=None)
 
 _ORDERS_DDL = "CREATE TABLE orders (id INTEGER PRIMARY KEY, amount DOUBLE PRECISION)"
 _ORDERS_ROWS = "INSERT INTO orders VALUES (1, 10.0), (2, 20.0)"
-_QUERY = {"population": "orders", "metrics": [{"expression": "sum(amount)", "name": "total"}]}
+_QUERY = {"population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "total"}]}
 _PLAN = [{"StmtText": "plan", "NodeId": 1}]
 
 
@@ -37,8 +37,8 @@ def _orders_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 

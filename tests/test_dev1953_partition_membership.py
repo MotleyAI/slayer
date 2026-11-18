@@ -14,6 +14,8 @@ from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import bundle as orders_bundle, q as orders_q
 from tests._dev1847_fixtures import (
     DatasetMetric,
@@ -140,7 +142,7 @@ class TestNonMemberRejected:
 
     async def test_aggregation_parameter(self, engine):
         query = sales_q(dimensions=CRP, metrics=[
-            DatasetMetric(expression=f"weighted_avg(amount, weight={NONMEMBER})", name="w")])
+            QueryMetric(metric=f"weighted_avg(amount, weight={NONMEMBER})", alias="w")])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")

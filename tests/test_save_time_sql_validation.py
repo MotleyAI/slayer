@@ -65,7 +65,7 @@ def _sql_dataset(
         name=name,
         sql=sql,
         data_source=data_source,
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT)],
     )
 
 
@@ -117,7 +117,7 @@ class _CapturingClient:
 
     async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:
         self._sink.append(probe.sql)
-        return {"id": ResultColumnType(type=DataType.DOUBLE)}
+        return {"id": ResultColumnType(type=DataType.FLOAT)}
 
 
 class TestSchemaDriftReusesSharedBuilder:
@@ -135,14 +135,14 @@ class TestSchemaDriftReusesSharedBuilder:
             datasource = DatasourceConfig(name=_DS, type="sqlite", database=":memory:")
 
             async def get_result_column_types(self, probe: TypeProbe) -> dict[str, ResultColumnType]:  # noqa: ARG002
-                return {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
+                return {"id": ResultColumnType(type=DataType.INTEGER, db_type="integer")}
 
         live = await _live_columns_for_sql_dataset(
             dataset=_sql_dataset("SELECT id FROM orders"),
             client=_IntClient(),  # pyright: ignore[reportArgumentType] — a probe-only fake
         )
         assert live is not None
-        assert live.result_column_types() == {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
+        assert live.result_column_types() == {"id": ResultColumnType(type=DataType.INTEGER, db_type="integer")}
 
 
 class TestRejectAndAccept:
@@ -216,7 +216,7 @@ class TestGatesSkipProbe:
         )
         model = SlayerDataset(
             name="t", sql_table="orders", data_source=_DS,
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT)],
         )
         await engine.validate_sql_dataset_source(model)  # must not raise
 
@@ -281,7 +281,7 @@ class TestGatesSkipProbe:
             name="col_var_model",
             sql="SELECT nonexistent FROM orders",
             data_source=_DS,
-            fields=[DatasetField(name="c", sql="{threshold}", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="c", sql="{threshold}", datatype=DataType.STRING)],
         )
         with pytest.raises(DatasetSqlValidationError):
             await engine.validate_sql_dataset_source(model)

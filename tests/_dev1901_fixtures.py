@@ -80,8 +80,8 @@ def dev1901_datasets() -> List[SlayerDataset]:
     models = dev1908_datasets()
     orders = _by_name(models, "orders")
     orders.fields.extend([
-        DatasetField(name="factor", datatype=DataType.DOUBLE),
-        DatasetField(name="cust_spend", datatype=DataType.DOUBLE, sql="customers.spend"),
+        DatasetField(name="factor", datatype=DataType.FLOAT),
+        DatasetField(name="cust_spend", datatype=DataType.FLOAT, sql="customers.spend"),
     ])
     orders.aggregations.extend([
         _w("wsum", "store_no"),
@@ -99,8 +99,8 @@ def dev1901_datasets() -> List[SlayerDataset]:
     ])
     customers = _by_name(models, "customers")
     customers.fields.extend([
-        DatasetField(name="factor", datatype=DataType.DOUBLE),
-        DatasetField(name="group", datatype=DataType.DOUBLE),
+        DatasetField(name="factor", datatype=DataType.FLOAT),
+        DatasetField(name="group", datatype=DataType.FLOAT),
     ])
     customers.aggregations.extend([
         _w("wcase_c", CASE_C),
@@ -117,24 +117,24 @@ def revisit_datasets() -> List[SlayerDataset]:
     defaults to ``hr.back.spend`` (a revisit through edge names, which never cancel)."""
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="customer_id", datatype=DataType.INT),
-                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                          cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="region_id", datatype=DataType.INT),
-                 DatasetField(name="spend", datatype=DataType.DOUBLE)],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="region_id", datatype=DataType.INTEGER),
+                 DatasetField(name="spend", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                          name="hr", cardinality=RelationshipCardinality.MANY_TO_ONE)],
         aggregations=[_w("wrev", "hr.back.spend"), _w("wrev_expr", "hr.back.spend * 1")])
     regions = SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="manager_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["manager_id", "id"]],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="manager_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["manager_id"], to_columns=["id"],
                          name="back", cardinality=RelationshipCardinality.MANY_TO_ONE)])
     return [orders, customers, regions]
 
@@ -148,8 +148,8 @@ def window_param_datasets(*, placeholder: bool) -> List[SlayerDataset]:
            Aggregation(name="wwin", expression="SUM({value}) * {window}"))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)],
         aggregations=[agg])
     return [orders]
 

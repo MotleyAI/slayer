@@ -66,7 +66,7 @@ class TestNamingRespectsAuthoredJoins:
         """) as lv:
             await lv.ingest()
             orders = await lv.dataset("orders")
-            legacy = DatasetRelationship(to="addresses", join_pairs=[["legacy_addr", "id"]])
+            legacy = DatasetRelationship(to="addresses", from_columns=["legacy_addr"], to_columns=["id"])
             await lv.storage.save_dataset(orders.model_copy(update={"relationships": [legacy]}))
             lv.run("ALTER TABLE orders ADD COLUMN billing_address_id INTEGER REFERENCES addresses(id);"
                    "UPDATE orders SET billing_address_id = 1;")
@@ -86,7 +86,7 @@ class TestNamingRespectsAuthoredJoins:
         """) as lv:
             await lv.ingest()
             orders = await lv.dataset("orders")
-            joins = [DatasetRelationship(to="addresses", join_pairs=[[col, "id"]]) for col in ("a1", "a2")]
+            joins = [DatasetRelationship(to="addresses", from_columns=[col], to_columns=["id"]) for col in ("a1", "a2")]
             await lv.storage.save_dataset(orders.model_copy(update={"relationships": joins}))
 
             await lv.ingest()

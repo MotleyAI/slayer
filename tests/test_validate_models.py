@@ -79,10 +79,10 @@ def _orders_dataset(
         data_source=data_source,
         fields=columns
         or [
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
         ],
         relationships=joins or [],
         metrics=metrics or [],
@@ -97,10 +97,10 @@ def _live_orders(
     return LiveTable(
         columns=columns
         or {
-            "id": DataType.DOUBLE,
-            "amount": DataType.DOUBLE,
-            "status": DataType.TEXT,
-            "customer_id": DataType.DOUBLE,
+            "id": DataType.FLOAT,
+            "amount": DataType.FLOAT,
+            "status": DataType.STRING,
+            "customer_id": DataType.FLOAT,
         },
     )
 
@@ -130,24 +130,24 @@ def _retype_for(entries: Sequence[DriftReportEntry], column: str) -> dict:
 
 class TestDataTypeBucket:
     def test_number_string_boolean_temporal(self) -> None:
-        # DataType.DOUBLE → DOUBLE, DataType.TEXT → TEXT.
-        assert data_type_bucket(DataType.DOUBLE) == "number"
-        assert data_type_bucket(DataType.TEXT) == "string"
+        # DataType.FLOAT → DOUBLE, DataType.STRING → TEXT.
+        assert data_type_bucket(DataType.FLOAT) == "number"
+        assert data_type_bucket(DataType.STRING) == "string"
         assert data_type_bucket(DataType.BOOLEAN) == "boolean"
         # DATE and TIMESTAMP collapse to "temporal"
-        assert data_type_bucket(DataType.DATE) == data_type_bucket(DataType.TIMESTAMP)
+        assert data_type_bucket(DataType.DATE) == data_type_bucket(DataType.DATETIME)
         assert data_type_bucket(DataType.DATE) == "temporal"
 
     def test_number_and_string_are_different_buckets(self) -> None:
-        assert data_type_bucket(DataType.DOUBLE) != data_type_bucket(DataType.TEXT)
+        assert data_type_bucket(DataType.FLOAT) != data_type_bucket(DataType.STRING)
 
     def test_int_and_double_share_number_bucket(self) -> None:
         # Critical invariance — drift detection must NOT flag a
         # persisted DOUBLE column against an INT live column (or vice versa)
         # even though they're now distinct enum members.
-        assert data_type_bucket(DataType.INT) == "number"
-        assert data_type_bucket(DataType.DOUBLE) == "number"
-        assert data_type_bucket(DataType.INT) == data_type_bucket(DataType.DOUBLE)
+        assert data_type_bucket(DataType.INTEGER) == "number"
+        assert data_type_bucket(DataType.FLOAT) == "number"
+        assert data_type_bucket(DataType.INTEGER) == data_type_bucket(DataType.FLOAT)
 
 
 # ---------------------------------------------------------------------------
@@ -169,10 +169,10 @@ class TestDiffSqlTableModel:
         model = _orders_dataset()
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.DOUBLE,
+                "id": DataType.FLOAT,
+                "amount": DataType.FLOAT,
                 # status missing
-                "customer_id": DataType.DOUBLE,
+                "customer_id": DataType.FLOAT,
             }
         )
         entry, dropped = diff_sql_table_dataset(
@@ -200,10 +200,10 @@ class TestDiffSqlTableModel:
         model = _orders_dataset()
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.TEXT,  # bucket flip
-                "status": DataType.TEXT,
-                "customer_id": DataType.DOUBLE,
+                "id": DataType.FLOAT,
+                "amount": DataType.STRING,  # bucket flip
+                "status": DataType.STRING,
+                "customer_id": DataType.FLOAT,
             }
         )
         entry, dropped = diff_sql_table_dataset(
@@ -221,10 +221,10 @@ class TestDiffSqlTableModel:
         model = _orders_dataset()
         live = _live_orders(
             columns={
-                "id": DataType.INT,
-                "amount": DataType.DOUBLE,
-                "status": DataType.TEXT,
-                "customer_id": DataType.INT,
+                "id": DataType.INTEGER,
+                "amount": DataType.FLOAT,
+                "status": DataType.STRING,
+                "customer_id": DataType.INTEGER,
             }
         )
         entry, _ = diff_sql_table_dataset(
@@ -238,13 +238,13 @@ class TestDiffSqlTableModel:
             sql_table="events",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
                 DatasetField(name="happened_at", sql="happened_at", datatype=DataType.DATE),
             ],
         )
         # Live reports TIMESTAMP — same bucket as DATE.
         live = LiveTable(
-            columns={"id": DataType.DOUBLE, "happened_at": DataType.TIMESTAMP},
+            columns={"id": DataType.FLOAT, "happened_at": DataType.DATETIME},
         )
         entry, _ = diff_sql_table_dataset(
             dataset=model, live_table=live, available_datasets_in_ds={"events"}
@@ -256,16 +256,16 @@ class TestDiffSqlTableModel:
             joins=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
         # Live drops customer_id
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.DOUBLE,
-                "status": DataType.TEXT,
+                "id": DataType.FLOAT,
+                "amount": DataType.FLOAT,
+                "status": DataType.STRING,
             }
         )
         entry, _ = diff_sql_table_dataset(
@@ -280,7 +280,7 @@ class TestDiffSqlTableModel:
             joins=[
                 DatasetRelationship(
                     to="warehouses",
-                    join_pairs=[["customer_id", "id"]],  # using customer_id as the key
+                    from_columns=["customer_id"], to_columns=["id"],  # using customer_id as the key
                 ),
             ],
         )
@@ -293,31 +293,31 @@ class TestDiffSqlTableModel:
         assert "warehouses" in entry.remove.relationships
 
     def test_join_local_column_resolves_through_column_sql(self) -> None:
-        """``join.join_pairs[*][0]`` is a semantic column name; resolve to
+        """``join.column_pairs[*][0]`` is a semantic column name; resolve to
         the physical column via ``Column.sql`` before checking against the
         live table. CodeRabbit thread #103/r3196378686.
         """
         # Model: ``customer_id`` semantic name maps to physical ``customer_fk``.
         model = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="customer_id", sql="customer_fk", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_fk", datatype=DataType.FLOAT),
             ],
             joins=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],  # semantic
+                    from_columns=["customer_id"], to_columns=["id"],  # semantic
                 ),
             ],
         )
         live = _live_orders(
             columns={
-                "id": DataType.DOUBLE,
-                "amount": DataType.DOUBLE,
-                "status": DataType.TEXT,
-                "customer_fk": DataType.DOUBLE,  # physical name in the live DB
+                "id": DataType.FLOAT,
+                "amount": DataType.FLOAT,
+                "status": DataType.STRING,
+                "customer_fk": DataType.FLOAT,  # physical name in the live DB
             }
         )
         entry, _ = diff_sql_table_dataset(
@@ -342,11 +342,11 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders WHERE archived = true",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        live = {"id": DataType.DOUBLE, "amount": DataType.DOUBLE}
+        live = {"id": DataType.FLOAT, "amount": DataType.FLOAT}
         entry, dropped = diff_sql_dataset(dataset=model, live_columns=live)
         assert entry is None
         assert dropped == set()
@@ -357,8 +357,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         # live_columns=None signals trial-execute failed
@@ -374,8 +374,8 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         entry, dropped = diff_sql_dataset(
@@ -392,11 +392,11 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        live = {"id": DataType.DOUBLE, "amount": DataType.TEXT}
+        live = {"id": DataType.FLOAT, "amount": DataType.STRING}
         entry, dropped = diff_sql_dataset(dataset=model, live_columns=live)
         assert entry is None
         assert dropped == set()
@@ -407,11 +407,11 @@ class TestDiffSqlModel:
             sql="SELECT id, amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
-        live = {"id": DataType.DOUBLE, "amount": DataType.DOUBLE, "extra": DataType.TEXT}
+        live = {"id": DataType.FLOAT, "amount": DataType.FLOAT, "extra": DataType.STRING}
         entry, _ = diff_sql_dataset(dataset=model, live_columns=live)
         # validate_models reports deletes only — additions are out of scope
         assert entry is None
@@ -528,14 +528,14 @@ class TestCascadeRules:
         """
         model = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # derived column referencing 'amount'
-                DatasetField(name="amount_x2", sql="amount * 2", datatype=DataType.DOUBLE),
+                DatasetField(name="amount_x2", sql="amount * 2", datatype=DataType.FLOAT),
                 # transitively-derived: refs another derived column
-                DatasetField(name="amount_x4", sql="amount_x2 * 2", datatype=DataType.DOUBLE),
+                DatasetField(name="amount_x4", sql="amount_x2 * 2", datatype=DataType.FLOAT),
             ],
         )
         # Base diff: 'amount' dropped from live
@@ -589,7 +589,7 @@ class TestCascadeRules:
         """
         orders = _orders_dataset(
             joins=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
             metrics=[
                 DatasetMetric(expression="rolling_avg(customers.score)", name="ravg"),
@@ -600,8 +600,8 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
             ],
             aggregations=[
                 Aggregation(name="rolling_avg", expression="AVG({value})"),
@@ -632,7 +632,7 @@ class TestCascadeRules:
             joins=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -659,7 +659,7 @@ class TestCascadeRules:
             joins=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -668,7 +668,7 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
         # customers.id was dropped
@@ -712,20 +712,20 @@ class TestCascadeRules:
         """
         orders = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # derived cross-model ref
                 DatasetField(
                     name="customer_region",
                     sql="customers.region",
-                    datatype=DataType.TEXT,
+                    datatype=DataType.STRING,
                 ),
             ],
             joins=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -734,8 +734,8 @@ class TestCascadeRules:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
         edit = EditDatasetDelete(
@@ -767,11 +767,11 @@ class TestCascadeRules:
                 SlayerQuery.model_validate({
                     "name": "stage_a",
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)", "name": "total"}],
+                    "metrics": [{"metric": "sum(amount)", "alias": "total"}],
                 }),
                 SlayerQuery.model_validate({
                     "population": "stage_a",
-                    "metrics": [{"expression": "max(total)", "name": "peak"}],
+                    "metrics": [{"metric": "max(total)", "alias": "peak"}],
                 }),
             ],
         )
@@ -805,7 +805,7 @@ class TestCascadeRules:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)", "name": "total"}],
+                    "metrics": [{"metric": "sum(amount)", "alias": "total"}],
                     "filter": ["sum(amount) > 100"],
                 }),
             ],
@@ -836,7 +836,7 @@ class TestCascadeRules:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)", "name": "total"}],
+                    "metrics": [{"metric": "sum(amount)", "alias": "total"}],
                 }),
             ],
         )
@@ -853,13 +853,13 @@ class TestCascadeRules:
         """PK drops don't cascade into derived columns / measures / filters."""
         model = _orders_dataset(
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 # Derived column that *would* reference 'id' — but PK drops
                 # don't trigger cascade, so this column survives.
-                DatasetField(name="id_doubled", sql="id * 2", datatype=DataType.DOUBLE),
+                DatasetField(name="id_doubled", sql="id * 2", datatype=DataType.FLOAT),
             ],
             metrics=[DatasetMetric(expression="count_distinct(id)", name="unique_ids")],
         )
@@ -915,8 +915,8 @@ class TestCrossDatasourceBoundary:
             sql_table="customers",
             data_source="ds_b",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
         # Drop region in ds_b
@@ -1000,8 +1000,8 @@ class TestValidateModelsEndToEnd:
                 sql_table="customers",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -1011,15 +1011,15 @@ class TestValidateModelsEndToEnd:
                 sql_table="orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                    DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
                 ],
                 relationships=[
                     DatasetRelationship(
                         to="customers",
-                        join_pairs=[["customer_id", "id"]],
+                        from_columns=["customer_id"], to_columns=["id"],
                     ),
                 ],
             )
@@ -1096,9 +1096,9 @@ class TestValidateModelsEndToEnd:
                 data_source="ds_b",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                        name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                     ),
-                    DatasetField(name="sku", sql="sku", datatype=DataType.TEXT),
+                    DatasetField(name="sku", sql="sku", datatype=DataType.STRING),
                 ],
             )
         )
@@ -1188,9 +1188,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7, 0.9, 0.99],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")
@@ -1209,9 +1209,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 2, "abc", "xyz"],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")
@@ -1229,9 +1229,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 2, 3, 4, 5],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")
@@ -1260,10 +1260,10 @@ class TestValidateModelsSqliteProbe:
                 data_source="ds",
                 fields=[
                     DatasetField(
-                        name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                        name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                     ),
                     DatasetField(
-                        name="tempstabidx", sql="tempstabidx", datatype=DataType.INT,
+                        name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER,
                     ),
                 ],
             )
@@ -1289,9 +1289,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
         )
         with patch(
@@ -1313,9 +1313,9 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7, 0.9],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
             ],
             metrics=[
                 DatasetMetric(
@@ -1336,10 +1336,10 @@ class TestValidateModelsSqliteProbe:
             values=[1, 0.5, 0.7, 0.9],
             columns=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.INT, primary_key=True,
+                    name="id", sql="id", datatype=DataType.INTEGER, primary_key=True,
                 ),
-                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INT),
-                DatasetField(name="doubled", sql="tempstabidx * 2", datatype=DataType.INT),
+                DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INTEGER),
+                DatasetField(name="doubled", sql="tempstabidx * 2", datatype=DataType.INTEGER),
             ],
         )
         result = await engine.validate_datasets(data_source="ds")
@@ -1351,7 +1351,7 @@ class TestResolveLiveTable:
 
     @staticmethod
     def _live(name: str) -> LiveTable:
-        return LiveTable(columns={"id": DataType.DOUBLE})
+        return LiveTable(columns={"id": DataType.FLOAT})
 
     def test_bare_table_matches(self) -> None:
         live = self._live("orders")

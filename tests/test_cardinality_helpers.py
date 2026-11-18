@@ -132,7 +132,7 @@ def test_structural_target_not_verified_returns_none() -> None:
 
 
 def _c(name: str, *, pk: bool = False, unique: bool = False) -> DatasetField:
-    return DatasetField(name=name, datatype=DataType.INT, primary_key=pk, unique=unique)
+    return DatasetField(name=name, datatype=DataType.INTEGER, primary_key=pk, unique=unique)
 
 
 def test_solo_pk_column_declares_uniqueness() -> None:

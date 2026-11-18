@@ -44,10 +44,10 @@ FUNCTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 #: Branch pairs every conditional accepts → the joined type.
 COMPATIBLE: dict[str, tuple[str, str, DataType]] = {
-    "null-absorbed": ("amount", "NULL", DataType.INT),
-    "int-double": ("amount", "0.5", DataType.DOUBLE),
-    "date-timestamp": ("order_date", TS, DataType.TIMESTAMP),
-    "boolean-number": ("status = 'paid'", "amount", DataType.INT),
+    "null-absorbed": ("amount", "NULL", DataType.INTEGER),
+    "int-double": ("amount", "0.5", DataType.FLOAT),
+    "date-timestamp": ("order_date", TS, DataType.DATETIME),
+    "boolean-number": ("status = 'paid'", "amount", DataType.INTEGER),
 }
 #: ``greatest`` / ``least`` read a TEXT operand beside a number as a number; the others reject the mix.
 TEXT_AS_NUMBER = {"greatest", "least"}
@@ -56,7 +56,7 @@ TEXT_AS_NUMBER = {"greatest", "least"}
 def datasets_with_unknown(*, data_source: str = "test") -> list[SlayerDataset]:
     orders, *rest = idiom_datasets(data_source=data_source)
     orders = orders.model_copy(update={"fields": [
-        *orders.fields, DatasetField(name="opaque", sql="amount * 2", datatype=DataType.UNKNOWN),
+        *orders.fields, DatasetField(name="opaque", sql="amount * 2", datatype=DataType.OPAQUE),
     ]})
     return [orders, *rest]
 
@@ -87,7 +87,7 @@ def stage_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
 
 
 def as_dimension(expression: str) -> dict[str, Any]:
-    return {"dimensions": [{"expression": expression, "name": "x"}]}
+    return {"dimensions": [{"field": expression, "alias": "x"}]}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -118,7 +118,7 @@ class TestFunctionMatrix:
         expression = template.format(a="status", b="amount")
         if function in TEXT_AS_NUMBER:
             await engine.execute(dimension_query(expression))
-            assert inferred_type(as_dimension(expression), dialect=dialect) is DataType.DOUBLE
+            assert inferred_type(as_dimension(expression), dialect=dialect) is DataType.FLOAT
         else:
             await assert_branch_mismatch(engine, dimension_query(expression), "TEXT", "INT", call=names)
 
@@ -169,11 +169,11 @@ class TestScenarios:
         await assert_branch_mismatch(engine, dimension_query(expression), *types, call=call)
 
     @pytest.mark.parametrize(("expression", "joined"), [
-        ("CASE WHEN amount > 1 THEN amount ELSE 0.5 END", DataType.DOUBLE),
-        (f"coalesce(order_date, {TS})", DataType.TIMESTAMP),
-        ("iif(amount > 15, status = 'paid', 2)", DataType.INT),
-        ("CASE WHEN amount > 1 THEN status END", DataType.TEXT),
-        ("greatest(status, amount)", DataType.DOUBLE),
+        ("CASE WHEN amount > 1 THEN amount ELSE 0.5 END", DataType.FLOAT),
+        (f"coalesce(order_date, {TS})", DataType.DATETIME),
+        ("iif(amount > 15, status = 'paid', 2)", DataType.INTEGER),
+        ("CASE WHEN amount > 1 THEN status END", DataType.STRING),
+        ("greatest(status, amount)", DataType.FLOAT),
     ])
     async def test_compatible_mixes_execute_typed(self, engine: SlayerQueryEngine, dialect: str,
                                                   expression: str, joined: DataType) -> None:
@@ -189,8 +189,8 @@ class TestScenarios:
     async def test_inside_a_stage(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(engine, [
             {"name": "s1", "population": "orders",
-             "dimensions": [{"expression": "status", "name": "s"}, {"expression": "amount", "name": "n"}]},
-            {"population": "s1", "dimensions": [{"expression": "coalesce(s, n)", "name": "x"}]},
+             "dimensions": [{"field": "status", "alias": "s"}, {"field": "amount", "alias": "n"}]},
+            {"population": "s1", "dimensions": [{"field": "coalesce(s, n)", "alias": "x"}]},
         ], "TEXT", "INT", call=("coalesce",))
 
 
@@ -228,9 +228,9 @@ class TestEveryPosition:
 class TestInferredTypes:
     @pytest.mark.parametrize("dialect_name", ["duckdb", "sqlite", "postgres"])
     def test_coerced_measure_type(self, dialect_name: str) -> None:
-        item = {"metrics": [{"expression": "max(greatest(status, amount))", "name": "x"}]}
-        assert inferred_type(item, dialect=dialect_name) is DataType.DOUBLE
-        assert stage_type(item, dialect=dialect_name) is DataType.DOUBLE
+        item = {"metrics": [{"metric": "max(greatest(status, amount))", "alias": "x"}]}
+        assert inferred_type(item, dialect=dialect_name) is DataType.FLOAT
+        assert stage_type(item, dialect=dialect_name) is DataType.FLOAT
 
 
 class TestValueType:
@@ -242,23 +242,23 @@ class TestValueType:
         return value_type(key, field_type=scope_field_type(scope=scope, bundle=bundle))
 
     @pytest.mark.parametrize(("expression", "joined"), [
-        ("coalesce(amount, 0.5)", DataType.DOUBLE),
-        ("ifnull(amount, NULL)", DataType.INT),
-        (f"greatest(order_date, {TS})", DataType.TIMESTAMP),
-        ("least(status = 'paid', amount)", DataType.INT),
-        ("iif(amount > 1, amount, 0.5)", DataType.DOUBLE),
-        ("coalesce(opaque, amount)", DataType.INT),
+        ("coalesce(amount, 0.5)", DataType.FLOAT),
+        ("ifnull(amount, NULL)", DataType.INTEGER),
+        (f"greatest(order_date, {TS})", DataType.DATETIME),
+        ("least(status = 'paid', amount)", DataType.INTEGER),
+        ("iif(amount > 1, amount, 0.5)", DataType.FLOAT),
+        ("coalesce(opaque, amount)", DataType.INTEGER),
         ("coalesce(status, order_date)", None),
     ])
     def test_joined_branch_type(self, expression: str, joined: DataType | None) -> None:
         assert self._value_type(expression) is joined
 
     @pytest.mark.parametrize(("expression", "joined"), [
-        ("coalesce(u, n)", DataType.INT), ("iif(n > 1, u, 'x')", DataType.TEXT), ("greatest(u, n)", DataType.INT),
+        ("coalesce(u, n)", DataType.INTEGER), ("iif(n > 1, u, 'x')", DataType.STRING), ("greatest(u, n)", DataType.INTEGER),
     ])
     def test_untyped_stage_column_is_absorbed(self, expression: str, joined: DataType) -> None:
         schema = StageSchema(relation_name="s1", fields=[
-            StageField(name="u", sql_alias="u"), StageField(name="n", sql_alias="n", datatype=DataType.INT),
+            StageField(name="u", sql_alias="u"), StageField(name="n", sql_alias="n", datatype=DataType.INTEGER),
         ])
         bundle = ResolvedSourceBundle(dialect="postgres")
         key = bind_expr(parse_expr(expression), scope=schema, bundle=bundle).value_key

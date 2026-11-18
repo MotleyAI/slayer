@@ -1,0 +1,686 @@
+{
+ "alias_equal_to_default": {
+  "duckdb": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     1
+    ],
+    [
+     "ok",
+     4
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     1
+    ],
+    [
+     "ok",
+     4
+    ]
+   ]
+  }
+ },
+ "aliased_reference_dimension": {
+  "duckdb": {
+   "keys": [
+    "orders.buyer_name",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "A",
+     2
+    ],
+    [
+     "B",
+     2
+    ],
+    [
+     "C",
+     1
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.buyer_name",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "A",
+     2
+    ],
+    [
+     "B",
+     2
+    ],
+    [
+     "C",
+     1
+    ]
+   ]
+  }
+ },
+ "aliased_time_dimension": {
+  "duckdb": {
+   "keys": [
+    "orders.m",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "2024-01-01 00:00:00",
+     1
+    ],
+    [
+     "2024-03-01 00:00:00",
+     1
+    ],
+    [
+     "2024-06-01 00:00:00",
+     2
+    ],
+    [
+     "2024-12-01 00:00:00",
+     1
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.m",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "2024-01-01",
+     1
+    ],
+    [
+     "2024-03-01",
+     1
+    ],
+    [
+     "2024-06-01",
+     2
+    ],
+    [
+     "2024-12-01",
+     1
+    ]
+   ]
+  }
+ },
+ "expression_dimensions": {
+  "duckdb": {
+   "keys": [
+    "orders.status_uc",
+    "orders.lower_status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "HOLD",
+     "hold",
+     1
+    ],
+    [
+     "OK",
+     "ok",
+     4
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status_uc",
+    "orders.lower_status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "HOLD",
+     "hold",
+     1
+    ],
+    [
+     "OK",
+     "ok",
+     4
+    ]
+   ]
+  }
+ },
+ "filter_list": {
+  "duckdb": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "ok",
+     3
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "ok",
+     3
+    ]
+   ]
+  }
+ },
+ "multi_stage": {
+  "duckdb": {
+   "keys": [
+    "per_customer.avg_revenue",
+    "per_customer.revenue_total_max"
+   ],
+   "rows": [
+    [
+     50.0,
+     70.0
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "per_customer.avg_revenue",
+    "per_customer.revenue_total_max"
+   ],
+   "rows": [
+    [
+     50.0,
+     70.0
+    ]
+   ]
+  }
+ },
+ "named_and_unnamed_metrics": {
+  "duckdb": {
+   "keys": [
+    "orders.status",
+    "orders.amount_sum",
+    "orders.avg_amount",
+    "orders.revenue",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     30.0,
+     30.0,
+     30.0,
+     1
+    ],
+    [
+     "ok",
+     120.0,
+     30.0,
+     120.0,
+     4
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status",
+    "orders.amount_sum",
+    "orders.avg_amount",
+    "orders.revenue",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     30.0,
+     30.0,
+     30.0,
+     1
+    ],
+    [
+     "ok",
+     120.0,
+     30.0,
+     120.0,
+     4
+    ]
+   ]
+  }
+ },
+ "no_filter": {
+  "duckdb": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     1
+    ],
+    [
+     "ok",
+     4
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     1
+    ],
+    [
+     "ok",
+     4
+    ]
+   ]
+  }
+ },
+ "order_by_reference_and_expression": {
+  "duckdb": {
+   "keys": [
+    "orders.status",
+    "orders.customers.name",
+    "orders.amount_sum"
+   ],
+   "rows": [
+    [
+     "ok",
+     "C",
+     50.0
+    ],
+    [
+     "hold",
+     "B",
+     30.0
+    ],
+    [
+     "ok",
+     "B",
+     40.0
+    ],
+    [
+     "ok",
+     "A",
+     30.0
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status",
+    "orders.customers.name",
+    "orders.amount_sum"
+   ],
+   "rows": [
+    [
+     "ok",
+     "C",
+     50.0
+    ],
+    [
+     "hold",
+     "B",
+     30.0
+    ],
+    [
+     "ok",
+     "B",
+     40.0
+    ],
+    [
+     "ok",
+     "A",
+     30.0
+    ]
+   ]
+  }
+ },
+ "reference_dimensions": {
+  "duckdb": {
+   "keys": [
+    "orders.status",
+    "orders.customers.name",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     "B",
+     1
+    ],
+    [
+     "ok",
+     "A",
+     2
+    ],
+    [
+     "ok",
+     "B",
+     1
+    ],
+    [
+     "ok",
+     "C",
+     1
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status",
+    "orders.customers.name",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     "B",
+     1
+    ],
+    [
+     "ok",
+     "A",
+     2
+    ],
+    [
+     "ok",
+     "B",
+     1
+    ],
+    [
+     "ok",
+     "C",
+     1
+    ]
+   ]
+  }
+ },
+ "refinement_added_filter": {
+  "duckdb": {
+   "keys": [
+    "orders.ordered_at",
+    "orders.revenue"
+   ],
+   "rows": [
+    [
+     "2025-01-01 00:00:00",
+     100.0
+    ],
+    [
+     "2025-03-01 00:00:00",
+     50.0
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.ordered_at",
+    "orders.revenue"
+   ],
+   "rows": [
+    [
+     "2025-01-01",
+     100.0
+    ],
+    [
+     "2025-03-01",
+     50.0
+    ]
+   ]
+  }
+ },
+ "refinement_aliased_dimension": {
+  "duckdb": {
+   "keys": [
+    "orders.r",
+    "orders.ordered_at",
+    "orders.revenue"
+   ],
+   "rows": [
+    [
+     "EU",
+     "2025-02-01 00:00:00",
+     105.0
+    ],
+    [
+     "US",
+     "2025-01-01 00:00:00",
+     100.0
+    ],
+    [
+     "US",
+     "2025-03-01 00:00:00",
+     50.0
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.r",
+    "orders.ordered_at",
+    "orders.revenue"
+   ],
+   "rows": [
+    [
+     "EU",
+     "2025-02-01",
+     105.0
+    ],
+    [
+     "US",
+     "2025-01-01",
+     100.0
+    ],
+    [
+     "US",
+     "2025-03-01",
+     50.0
+    ]
+   ]
+  }
+ },
+ "refinement_aliased_metric": {
+  "duckdb": {
+   "keys": [
+    "orders.ordered_at",
+    "orders.revenue",
+    "orders.n"
+   ],
+   "rows": [
+    [
+     "2025-01-01 00:00:00",
+     100.0,
+     1
+    ],
+    [
+     "2025-02-01 00:00:00",
+     105.0,
+     2
+    ],
+    [
+     "2025-03-01 00:00:00",
+     50.0,
+     1
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.ordered_at",
+    "orders.revenue",
+    "orders.n"
+   ],
+   "rows": [
+    [
+     "2025-01-01",
+     100.0,
+     1
+    ],
+    [
+     "2025-02-01",
+     105.0,
+     2
+    ],
+    [
+     "2025-03-01",
+     50.0,
+     1
+    ]
+   ]
+  }
+ },
+ "refinement_repeated_filter": {
+  "duckdb": {
+   "keys": [
+    "orders.ordered_at",
+    "orders.revenue"
+   ],
+   "rows": [
+    [
+     "2025-01-01 00:00:00",
+     100.0
+    ],
+    [
+     "2025-02-01 00:00:00",
+     105.0
+    ],
+    [
+     "2025-03-01 00:00:00",
+     50.0
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.ordered_at",
+    "orders.revenue"
+   ],
+   "rows": [
+    [
+     "2025-01-01",
+     100.0
+    ],
+    [
+     "2025-02-01",
+     105.0
+    ],
+    [
+     "2025-03-01",
+     50.0
+    ]
+   ]
+  }
+ },
+ "single_filter": {
+  "duckdb": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     1
+    ],
+    [
+     "ok",
+     3
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.status",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "hold",
+     1
+    ],
+    [
+     "ok",
+     3
+    ]
+   ]
+  }
+ },
+ "time_dimension": {
+  "duckdb": {
+   "keys": [
+    "orders.created_at",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "2024-01-01 00:00:00",
+     1
+    ],
+    [
+     "2024-03-01 00:00:00",
+     1
+    ],
+    [
+     "2024-06-01 00:00:00",
+     2
+    ],
+    [
+     "2024-12-01 00:00:00",
+     1
+    ]
+   ]
+  },
+  "sqlite": {
+   "keys": [
+    "orders.created_at",
+    "orders._count"
+   ],
+   "rows": [
+    [
+     "2024-01-01",
+     1
+    ],
+    [
+     "2024-03-01",
+     1
+    ],
+    [
+     "2024-06-01",
+     2
+    ],
+    [
+     "2024-12-01",
+     1
+    ]
+   ]
+  }
+ }
+}

@@ -126,7 +126,7 @@ class TestPlanPredicate:
 
     def test_true_when_only_a_nested_producer_pushes(self):
         planned = plan_query(
-            query=q(dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
+            query=q(dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
                     metrics=[M], filter=["channel = 'app'"]),
             bundle=bundle(),
         )

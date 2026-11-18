@@ -52,10 +52,10 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="population", datatype=DataType.DOUBLE),
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.FLOAT),
+            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
@@ -64,11 +64,11 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -76,16 +76,16 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
             # a reserved-ish name that would shadow a statement keyword
-            DatasetField(name="select", datatype=DataType.TEXT),
+            DatasetField(name="select", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
@@ -164,12 +164,12 @@ class TestQualification:
         model" from "something re-qualified it against the scope root"."""
         customers = _customers()
         customers.fields.append(
-            DatasetField(name="balance_x2", sql="balance * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="balance_x2", sql="balance * 2", datatype=DataType.FLOAT),
         )
         host = _orders()
         # a same-named column on the ROOT, so a root-anchored pass is visible
         host.fields.append(
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
         )
         alloc = AliasAllocator()
         bundle = ResolvedSourceBundle(
@@ -269,7 +269,7 @@ class TestJoinRegistration:
         """
         customers = _customers()
         customers.fields.append(
-            DatasetField(name="flag_const", sql="1", datatype=DataType.INT),
+            DatasetField(name="flag_const", sql="1", datatype=DataType.INTEGER),
         )
         host = _orders()
         alloc = AliasAllocator()

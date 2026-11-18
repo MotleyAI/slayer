@@ -12,6 +12,8 @@ import pytest
 
 from slayer.core.errors import SlayerError
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
     DatasetMetric,
@@ -72,7 +74,7 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            metrics=[DatasetMetric(expression="last(customers.spend)", name="lastspend")])
+            metrics=[QueryMetric(metric="last(customers.spend)", alias="lastspend")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -83,8 +85,8 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, window='90d')", name="win")])
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='90d')", alias="win")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))

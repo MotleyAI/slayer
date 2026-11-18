@@ -37,9 +37,9 @@ _SUM_AMOUNT = AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
 
 def _ledger(*, data_source: str = "ds", db_type: str = "money") -> SlayerDataset:
     return SlayerDataset(name="ledger", sql_table="ledger", data_source=data_source, fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="amount", datatype=DataType.DOUBLE, db_type=db_type),
-        DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE, db_type=db_type),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.FLOAT, db_type=db_type),
+        DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT, db_type=db_type),
     ])
 
 
@@ -54,12 +54,12 @@ class TestRawNames:
 
     @pytest.mark.parametrize("name", MONEY_NAMES)
     def test_probed_type_keeps_the_name(self, name: str) -> None:
-        assert ResultColumnType(type=DataType.DOUBLE, db_type=name).lossy_db_type == name
+        assert ResultColumnType(type=DataType.FLOAT, db_type=name).lossy_db_type == name
 
     @pytest.mark.parametrize("name", MONEY_NAMES)
     def test_a_stored_money_column_preserves_its_aggregate(self, name: str) -> None:
         model = SlayerDataset(name="orders", data_source="ds", sql_table="orders",
-                            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE, db_type=name)])
+                            fields=[DatasetField(name="amount", datatype=DataType.FLOAT, db_type=name)])
         assert metric_key_preserves_native_type(dataset=model, key=_SUM_AMOUNT) is True
 
 
@@ -67,7 +67,7 @@ class TestInformationSchemaStrings:
     @pytest.mark.parametrize("name", MONEY_NAMES)
     def test_column_keeps_its_raw_type(self, name: str) -> None:
         column = column_from_type_string(name="amount", data_type=name)
-        assert (column.type, column.db_type) == (DataType.DOUBLE, name)
+        assert (column.type, column.db_type) == (DataType.FLOAT, name)
 
 
 class TestSqlAlchemyTypes:
@@ -76,7 +76,7 @@ class TestSqlAlchemyTypes:
     ], ids=["postgres-money", "mssql-money", "mssql-smallmoney"])
     def test_column_keeps_its_raw_type(self, sa_type: Any, name: str) -> None:
         column = column_from_sa_type(name="amount", sa_type=sa_type)
-        assert column.type is DataType.DOUBLE
+        assert column.type is DataType.FLOAT
         assert column.db_type is not None
         assert column.db_type.upper() == name
         assert is_exact_numeric_db_type(column.db_type)
@@ -86,13 +86,13 @@ class TestCursorDescriptions:
     def test_postgres_oid(self) -> None:
         described = describe_pg_cursor_column(("amount", _PG_MONEY_OID, None, None, None, None, None))
         assert described is not None
-        assert (described.type, described.lossy_db_type) == (DataType.DOUBLE, "money")
+        assert (described.type, described.lossy_db_type) == (DataType.FLOAT, "money")
 
     @pytest.mark.parametrize("name", ["money", "smallmoney"])
     def test_sql_server_result_description(self, name: str) -> None:
         (described,) = get_dialect("tsql").read_result_description(
             [{"name": "amount", "system_type_name": name, "is_hidden": False}]).values()
-        assert (described.type, described.lossy_db_type) == (DataType.DOUBLE, name)
+        assert (described.type, described.lossy_db_type) == (DataType.FLOAT, name)
 
 
 class TestEmission:
@@ -149,7 +149,7 @@ class TestExecutedPostgres:
             model = await _ingested(datasource)
         amount = model.get_field("amount")
         assert amount is not None
-        assert amount.datatype is DataType.DOUBLE
+        assert amount.datatype is DataType.FLOAT
         assert amount.db_type is not None
         assert amount.db_type.lower() == "money"
 
@@ -157,7 +157,7 @@ class TestExecutedPostgres:
         with pg_database(postgresql_proc, statements=_LEDGER, name="money_probe") as datasource:
             types = await _probe(datasource, "SELECT amount, amount * 2 AS doubled FROM ledger")
         assert {name: (t.type, t.lossy_db_type) for name, t in types.items()} == {
-            "amount": (DataType.DOUBLE, "money"), "doubled": (DataType.DOUBLE, "money"),
+            "amount": (DataType.FLOAT, "money"), "doubled": (DataType.FLOAT, "money"),
         }
 
     async def test_sum_and_derived_column_are_exact(self, tmp_path: Any, postgresql_proc: Any) -> None:

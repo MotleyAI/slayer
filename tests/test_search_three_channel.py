@@ -54,11 +54,11 @@ async def _seed_basic_corpus(storage: YAMLStorage) -> None:
         data_source="dsx",
         description="orders fact table",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(
                 name="amount",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 description="purchase amount in cents",
             ),
         ],

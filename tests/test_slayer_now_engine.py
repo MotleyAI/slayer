@@ -133,7 +133,7 @@ def _spine_months(resp) -> set[str]:
 async def test_time_spine_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     query = SlayerQuery.model_validate({
-        "metrics": [{"expression": "count(ev.id)", "name": "n"}],
+        "metrics": [{"metric": "count(ev.id)", "alias": "n"}],
         "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-05-01", None]}],
     })
     async with now_engine() as engine:

@@ -11,11 +11,12 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     DEPTH3_MAX_AVG_BY_PRODUCT,
     INNER_CR,
     INNER_CRP,
-    DatasetMetric,
     SHAPE_B_ACR,
     SHAPE_B_GROUP_SUM,
     SPEND_BAND_EXPR,
@@ -62,7 +63,7 @@ class TestDepthThree:
         regions of the average over cities, by hand-computed values."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["product"],
-            metrics=[DatasetMetric(expression=DEPTH3, name="d3")]))
+            metrics=[QueryMetric(metric=DEPTH3, alias="d3")]))
         by = rows_by(resp, "sales.product")
         for product, expected in DEPTH3_MAX_AVG_BY_PRODUCT.items():
             assert float(by[(product,)]["sales.d3"]) == pytest.approx(expected)
@@ -74,7 +75,7 @@ class TestDepthThree:
         parses with no nested WITH (``_assert_valid_sql``)."""
         sql = await gen(sales_q(
             dimensions=["product"],
-            metrics=[DatasetMetric(expression=DEPTH3, name="d3")]), dialect=dialect)
+            metrics=[QueryMetric(metric=DEPTH3, alias="d3")]), dialect=dialect)
         assert "__regroup__" not in sql, sql
         assert_scope_closed(sql, dialect=dialect)
 
@@ -87,7 +88,7 @@ class TestSharedProducerRendersOnce:
         band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
         both = sales_q(
             dimensions=["region", band],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")])
         resp = await exec_engine.execute(both)
         by = rows_by(resp, "sales.region", "sales.spend_band")
@@ -107,9 +108,9 @@ class TestSharedProducerRendersOnce:
         band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
         dialect = "postgres"
         single = sales_q(dimensions=["region", band],
-                         metrics=[DatasetMetric(expression="sum(amount)", name="tot")])
+                         metrics=[QueryMetric(metric="sum(amount)", alias="tot")])
         both = sales_q(dimensions=["region", band],
-                       metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
+                       metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
                                  reagg("avg", INNER_CR, name="acr")])
         s_sql = await gen(single, dialect=dialect)
         b_sql = await gen(both, dialect=dialect)

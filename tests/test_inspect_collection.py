@@ -71,31 +71,31 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
         name="orders", sql_table="orders", data_source="mydb",
         description="Orders fact.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT, description="Order state."),
-            DatasetField(name="amount", datatype=DataType.DOUBLE, description="USD amount."),
-            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING, description="Order state."),
+            DatasetField(name="amount", datatype=DataType.FLOAT, description="USD amount."),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
         ],
         metrics=[
             DatasetMetric(name="revenue", expression="sum(amount)"),
             DatasetMetric(name="orders_count", expression="count(*)"),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
     # A hidden model must NOT appear in any collection view.
     await storage.save_dataset(SlayerDataset(
         name="secret", sql_table="secret", data_source="mydb", hidden=True,
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
     await storage.save_dataset(SlayerDataset(
         name="events", sql_table="events", data_source="otherdb",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="kind", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="kind", datatype=DataType.STRING),
         ],
     ))
     await storage.set_datasource_priority(["mydb", "otherdb"])
@@ -110,17 +110,17 @@ async def _seed_single_ds(storage: YAMLStorage) -> None:
         name="orders", sql_table="orders", data_source="mydb",
         description="Orders fact.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT, description="Order state."),
-            DatasetField(name="amount", datatype=DataType.DOUBLE, description="USD amount."),
-            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING, description="Order state."),
+            DatasetField(name="amount", datatype=DataType.FLOAT, description="USD amount."),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
         ],
         metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
 
 
@@ -860,9 +860,9 @@ class TestHiddenColumnCount:
             await st.save_dataset(SlayerDataset(
                 name="widgets", sql_table="w", data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="visible_col", datatype=DataType.TEXT),
-                    DatasetField(name="secret_col", datatype=DataType.TEXT, hidden=True),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="visible_col", datatype=DataType.STRING),
+                    DatasetField(name="secret_col", datatype=DataType.STRING, hidden=True),
                 ],
             ))
             md = await _svc(st).inspect(reference=None, entity_type="dataset")
@@ -886,22 +886,22 @@ class TestSortedJoins:
             await st.save_dataset(SlayerDataset(
                 name="hub", sql_table="h", data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="z_id", datatype=DataType.INT, hidden=True),
-                    DatasetField(name="a_id", datatype=DataType.INT, hidden=True),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="z_id", datatype=DataType.INTEGER, hidden=True),
+                    DatasetField(name="a_id", datatype=DataType.INTEGER, hidden=True),
                 ],
                 relationships=[
-                    DatasetRelationship(to="zebra", join_pairs=[["z_id", "id"]]),
-                    DatasetRelationship(to="alpha", join_pairs=[["a_id", "id"]]),
+                    DatasetRelationship(to="zebra", from_columns=["z_id"], to_columns=["id"]),
+                    DatasetRelationship(to="alpha", from_columns=["a_id"], to_columns=["id"]),
                 ],
             ))
             await st.save_dataset(SlayerDataset(
                 name="alpha", sql_table="a", data_source="ds",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             ))
             await st.save_dataset(SlayerDataset(
                 name="zebra", sql_table="z", data_source="ds",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             ))
             md = await _svc(st).inspect(reference=None, entity_type="dataset")
             assert "relationships: `alpha`, `zebra`" in md

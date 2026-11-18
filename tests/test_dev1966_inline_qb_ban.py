@@ -34,10 +34,10 @@ INLINE_QB: Dict[str, Any] = {
     "data_source": "test",
     "source_queries": [{
         "population": "orders", "dimensions": ["status"],
-        "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+        "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
     }],
 }
-OUTER: Dict[str, Any] = {"dimensions": ["status"], "metrics": [{"expression": "sum(rev)", "name": "t"}]}
+OUTER: Dict[str, Any] = {"dimensions": ["status"], "metrics": [{"metric": "sum(rev)", "alias": "t"}]}
 
 
 def _assert_ban(exc: BaseException, name: str = "iqb") -> None:
@@ -112,9 +112,9 @@ class TestOtherInlineSourcesRejected:
     def test_inline_table_backed(self) -> None:
         inline = {
             "name": "orders_inline", "data_source": "test", "sql_table": "orders",
-            "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
-                        {"name": "customer_id", "datatype": "INT"},
-                        {"name": "amount", "datatype": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                        {"name": "customer_id", "datatype": "Integer"},
+                        {"name": "amount", "datatype": "Float"}],
         }
         measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
@@ -124,9 +124,9 @@ class TestOtherInlineSourcesRejected:
         inline = {
             "name": "orders_sql", "data_source": "test",
             "sql": "SELECT id, customer_id, amount FROM orders",
-            "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
-                        {"name": "customer_id", "datatype": "INT"},
-                        {"name": "amount", "datatype": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                        {"name": "customer_id", "datatype": "Integer"},
+                        {"name": "amount", "datatype": "Float"}],
         }
         measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
@@ -135,7 +135,7 @@ class TestOtherInlineSourcesRejected:
 
 class TestExtensionsAccepted:
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
-        ext = {"source_name": "cust_rev", "metrics": [m("sum(rev * 2)", "r2")]}
+        ext = {"dataset": "cust_rev", "metrics": [m("sum(rev * 2)", "r2")]}
         resp = await engine.execute(query(
             population="cust_rev", extensions=[ext], dimensions=["customer_id"], metrics=["r2"]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {

@@ -74,14 +74,14 @@ def main_tables(*, event_rows: Optional[list[tuple]] = None) -> list[TableSpec]:
 
 
 def _many_to_one(target: str, column: str) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=[[column, "id"]], cardinality=RelationshipCardinality.MANY_TO_ONE)
+    return DatasetRelationship(to=target, from_columns=[column], to_columns=["id"], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
 def customers_dataset(**extra: Any) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="city", datatype=DataType.TEXT),
-        DatasetField(name="tenant", datatype=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="city", datatype=DataType.STRING),
+        DatasetField(name="tenant", datatype=DataType.STRING),
         *extra.pop("fields", []),
     ]
     return SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=columns, **extra)
@@ -91,13 +91,13 @@ def events_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="events", sql_table="events", data_source="test", default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="amount_x2", datatype=DataType.DOUBLE, sql="amount * 2"),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
             DatasetField(name="created_at", datatype=DataType.DATE),
-            DatasetField(name="kind", datatype=DataType.TEXT),
-            DatasetField(name="user_id", datatype=DataType.INT),
-            DatasetField(name="tenant", datatype=DataType.TEXT),
+            DatasetField(name="kind", datatype=DataType.STRING),
+            DatasetField(name="user_id", datatype=DataType.INTEGER),
+            DatasetField(name="tenant", datatype=DataType.STRING),
         ],
         relationships=[_many_to_one("users", "user_id")],
     )
@@ -107,10 +107,10 @@ def users_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="users", sql_table="users", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="org_id", datatype=DataType.INT),
-            DatasetField(name="tenant", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="org_id", datatype=DataType.INTEGER),
+            DatasetField(name="tenant", datatype=DataType.STRING),
         ],
         relationships=[_many_to_one("orgs", "org_id")],
     )
@@ -120,9 +120,9 @@ def orgs_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orgs", sql_table="orgs", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="tenant", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="tenant", datatype=DataType.STRING),
         ],
     )
 
@@ -169,12 +169,12 @@ def _wide_datasets() -> list[SlayerDataset]:
     def flat(name: str, *columns: DatasetField) -> SlayerDataset:
         return SlayerDataset(
             name=name, sql_table=name, data_source="wide",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), *columns],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *columns],
         )
 
     return [
-        flat("customers", DatasetField(name="city", datatype=DataType.TEXT)),
-        *(flat(name, DatasetField(name="v", datatype=DataType.DOUBLE)) for name in WIDE_DATASETS),
+        flat("customers", DatasetField(name="city", datatype=DataType.STRING)),
+        *(flat(name, DatasetField(name="v", datatype=DataType.FLOAT)) for name in WIDE_DATASETS),
     ]
 
 

@@ -10,6 +10,8 @@ import pytest
 
 from slayer.core.errors import AssociationError, PartitionKeyError, SlayerError, UnsafeRelationshipInputError
 from slayer.core.warnings import DICE_SLICE_HINT, BroadcastGrainWarningPayload
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import month_key
 from tests._dev1841_fixtures import (
     ASSOC_COUNT_BY_STATUS,
@@ -42,7 +44,7 @@ MODES = [pytest.param(None, id="default"), pytest.param("associate", id="associa
 CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 COUNT = DatasetMetric(expression="count(customers.*)", name="n")
 LAST = DatasetMetric(expression="last(customers.spend, customers.signup_at)", name="ls")
-WINDOWED = DatasetMetric(expression="sum(customers.spend, window='90d')", name="win")
+WINDOWED = QueryMetric(metric="sum(customers.spend, window='90d')", alias="win")
 MIXED = DatasetMetric(
     expression="last(customers.spend, customers.signup_at) + sum(customers.spend, window='90d')", name="mix")
 STAGE_ROWS = DatasetMetric(expression="count(*)", name="k")
@@ -120,7 +122,7 @@ class TestTheDefaultAssociates:
 
     async def test_local_metric_never_double_counts(self, engine) -> None:
         kw = {"population": "customers", "dimensions": ["orders.status"],
-              "metrics": [DatasetMetric(expression="sum(spend)", name="sp")]}
+              "metrics": [QueryMetric(metric="sum(spend)", alias="sp")]}
         default = await engine.execute(_q(None, **kw))
         assoc = await engine.execute(_q("associate", **kw))
         cells = _status(default, "sp", root="customers")
@@ -146,13 +148,13 @@ class TestTheDefaultAssociates:
 class TestModeInvariance:
     async def test_fully_attributable_query(self, engine) -> None:
         kw = {"dimensions": ["status", "customers.tier"],
-              "metrics": [DatasetMetric(expression="sum(amount)", name="amt")]}
+              "metrics": [QueryMetric(metric="sum(amount)", alias="amt")]}
         runs = [await engine.execute(_q(mode, **kw)) for mode in (None, "broadcast", "associate", "error")]
         assert all(_same_rows(r, runs[0]) for r in runs)
         for r in runs:
             assert not broadcast_warnings(r)
             assert not associated_warnings(r)
-        total = await engine.execute(_q(None, metrics=[DatasetMetric(expression="sum(amount)", name="amt")]))
+        total = await engine.execute(_q(None, metrics=[QueryMetric(metric="sum(amount)", alias="amt")]))
         assert sum(float(r["orders.amt"]) for r in runs[0].data) == pytest.approx(float(total.data[0]["orders.amt"]))
 
     async def test_an_associated_measure_is_cardinality_neutral(self, engine) -> None:
@@ -256,19 +258,19 @@ class TestBroadcastFallback:
 
     @pytest.mark.parametrize("mode", [None, "broadcast", "associate", "error"])
     async def test_input_safety_is_not_a_fallback(self, crossing_engine, mode) -> None:
-        query = _q(mode, dimensions=["status"], metrics=[DatasetMetric(expression="sum(customers.vip_spend)", name="vip")])
+        query = _q(mode, dimensions=["status"], metrics=[QueryMetric(metric="sum(customers.vip_spend)", alias="vip")])
         with pytest.raises(UnsafeRelationshipInputError, match="unproven relationship hop"):
             await crossing_engine.execute(query)
 
     async def test_partition_key_fanning_from_its_host_fails_by_default(self, fanning_engine) -> None:
         query = _q(None, population="regions", dimensions=["bad_pop"],
-                   metrics=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")])
+                   metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")])
         with pytest.raises(PartitionKeyError, match="region_events"):
             await fanning_engine.execute(query)
 
     async def test_local_ranked_aggregate_never_raises(self, engine) -> None:
         kw = {"population": "customers", "dimensions": ["orders.status"],
-              "metrics": [DatasetMetric(expression="last(spend, signup_at)", name="l")]}
+              "metrics": [QueryMetric(metric="last(spend, signup_at)", alias="l")]}
         default = await engine.execute(_q(None, **kw))
         bcast = await engine.execute(_q("broadcast", **kw))
         assert _same_rows(default, bcast)
@@ -298,6 +300,6 @@ class TestUngrainedReaggregationInner:
 
     async def test_ranked_inner_fails_under_associate(self, engine) -> None:
         query = _q("associate", dimensions=["status"],
-                   metrics=[DatasetMetric(expression="sum(last(customers.spend, customers.signup_at))", name="sl")])
+                   metrics=[QueryMetric(metric="sum(last(customers.spend, customers.signup_at))", alias="sl")])
         with pytest.raises(AssociationError):
             await engine.execute(query)

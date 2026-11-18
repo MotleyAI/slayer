@@ -29,10 +29,10 @@ def _orders(*fields: dict[str, Any], **extra: Any) -> dict[str, Any]:
 # ─────────────────────────── field datatypes ───────────────────────────────
 
 @pytest.mark.parametrize(("datatype", "expected"), [
-    ("String", DataType.TEXT), ("Integer", DataType.INT), ("Decimal", DataType.DOUBLE),
-    ("Float", DataType.DOUBLE), ("Boolean", DataType.BOOLEAN), ("Date", DataType.DATE),
-    ("DateTime", DataType.TIMESTAMP), ("DateTimeTz", DataType.TIMESTAMP), ("Time", DataType.UNKNOWN),
-    ("Opaque", DataType.UNKNOWN),
+    ("String", DataType.STRING), ("Integer", DataType.INTEGER), ("Decimal", DataType.FLOAT),
+    ("Float", DataType.FLOAT), ("Boolean", DataType.BOOLEAN), ("Date", DataType.DATE),
+    ("DateTime", DataType.DATETIME), ("DateTimeTz", DataType.DATETIME), ("Time", DataType.OPAQUE),
+    ("Opaque", DataType.OPAQUE),
 ])
 @pytest.mark.usefixtures("failing_probe")
 def test_declared_type_used_when_the_database_cannot_report_one(db: Path, datatype: str, expected: DataType) -> None:
@@ -45,38 +45,38 @@ def test_declared_type_used_when_the_database_cannot_report_one(db: Path, dataty
 @pytest.mark.usefixtures("failing_probe")
 def test_double_when_neither_database_nor_declared_type(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("x", "UPPER(status)"))))
-    assert cols(by_name(result)["orders"])["x"].datatype == DataType.DOUBLE
+    assert cols(by_name(result)["orders"])["x"].datatype == DataType.FLOAT
 
 
 def test_database_type_wins_and_disagreement_is_reported(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("qty", "quantity", datatype="String"))))
     qty = cols(by_name(result)["orders"])["qty"]
-    assert qty.datatype == DataType.INT
+    assert qty.datatype == DataType.INTEGER
     assert (qty.meta or {})["osi_datatype"] == "String"
     assert mentions(result, "qty", severity="info")
 
 
 def test_probed_type_wins_over_declared_type(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("up", "UPPER(status)", datatype="Integer"))))
-    assert cols(by_name(result)["orders"])["up"].datatype == DataType.TEXT
+    assert cols(by_name(result)["orders"])["up"].datatype == DataType.STRING
     assert mentions(result, "up", severity="info")
 
 
 def test_agreeing_types_are_not_reported(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("qty", "quantity", datatype="Integer"))))
-    assert cols(by_name(result)["orders"])["qty"].datatype == DataType.INT
+    assert cols(by_name(result)["orders"])["qty"].datatype == DataType.INTEGER
     assert not mentions(result, "qty")
 
 
 def test_integer_expression_is_int(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("status_len", "LENGTH(status)", datatype="Integer"))))
-    assert cols(by_name(result)["orders"])["status_len"].datatype == DataType.INT
+    assert cols(by_name(result)["orders"])["status_len"].datatype == DataType.INTEGER
     assert not mentions(result, "status_len")
 
 
 @pytest.mark.parametrize(("select", "expected", "db_type"), [
-    pytest.param("CAST(o_totalprice AS DECIMAL(18,2))", DataType.DOUBLE, "DECIMAL(18,2)", id="exact-decimal"),
-    pytest.param("CAST('{}' AS JSON)", DataType.TEXT, None, id="duckdb-json-is-text"),
+    pytest.param("CAST(o_totalprice AS DECIMAL(18,2))", DataType.FLOAT, "DECIMAL(18,2)", id="exact-decimal"),
+    pytest.param("CAST('{}' AS JSON)", DataType.STRING, None, id="duckdb-json-is-text"),
 ])
 def test_query_column_keeps_its_database_type(db: Path, select: str, expected: DataType, db_type: str | None) -> None:
     source = f"SELECT o_orderkey, {select} AS x FROM orders"
@@ -97,7 +97,7 @@ def test_explicit_opt_out(db: Path) -> None:
     field = f("ordered_at", datatype="DateTime", dimension={"is_time": False})
     result = convert(db=db, docs=documents(_orders(field)))
     orders = by_name(result)["orders"]
-    assert cols(orders)["ordered_at"].datatype == DataType.TIMESTAMP
+    assert cols(orders)["ordered_at"].datatype == DataType.DATETIME
     assert orders.default_time_dimension is None
 
 
@@ -114,7 +114,7 @@ def test_role_on_a_non_temporal_column_keeps_its_type(db: Path, field: dict[str,
     result = convert(db=db, docs=documents(_orders(field)))
     orders = by_name(result)["orders"]
     column = cols(orders)[field["name"]]
-    assert column.datatype == (DataType.INT if field["name"] == "order_year" else DataType.TEXT)
+    assert column.datatype == (DataType.INTEGER if field["name"] == "order_year" else DataType.STRING)
     assert (column.meta or {})["osi_is_time"] is True
     assert orders.default_time_dimension is None
 
@@ -124,7 +124,7 @@ def test_time_of_day_is_not_the_default_time_dimension(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(f("at_time", "UPPER(status)", datatype="Time"))))
     orders = by_name(result)["orders"]
     at_time = cols(orders)["at_time"]
-    assert at_time.datatype == DataType.UNKNOWN
+    assert at_time.datatype == DataType.OPAQUE
     assert (at_time.meta or {})["osi_is_time"] is True
     assert orders.default_time_dimension is None
 

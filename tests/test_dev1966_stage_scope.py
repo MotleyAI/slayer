@@ -74,8 +74,8 @@ class TestStoredDefinitionsNeverSeeStages:
         customers_stage = query(name="customers", population="orders", dimensions=["customer_id"],
                                 metrics=[m("max(status)", "tier")])
         b = _b_over("customers.tier", "orders", extensions=[{
-            "source_name": "orders",
-            "relationships": [{"to": "customers", "join_pairs": [["customer_id", "customer_id"]]}],
+            "dataset": "orders",
+            "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}],
         }])
         resp = await engine.execute([customers_stage, b, _root_over_b("customers__tier")])
         assert rows_by(resp.data, key="b.customers__tier", value="b.total") == {"ok": 105.0, "new": 40.0}
@@ -104,8 +104,8 @@ class TestQueryBackedPrivateStageNames:
                   metrics=[m("sum(amt)", "t")])
         root = query(
             population="customers",
-            extensions=[{"source_name": "customers", "relationships": [
-                {"to": "s", "join_pairs": [["tier", "customers__tier"]]}]}],
+            extensions=[{"dataset": "customers", "relationships": [
+                {"to": "s", "from_columns": ["tier"], "to_columns": ["customers__tier"]}]}],
             dimensions=["tier", "s.t"], metrics=[m("sum(spend)", "sp")])
         resp = await engine.execute([s, root])
         assert resp.columns == ["customers.tier", "customers.s.t", "customers.sp"]
@@ -229,8 +229,8 @@ class TestReverseHopSpelling:
         s = query(name="s", population="customers", dimensions=["id", "tier"],
                   metrics=[m("sum(spend)", "sp")], to_many_handling="broadcast")
         root = query(population="s",
-                     extensions=[{"source_name": "s", "relationships": [
-                         {"to": "orders", "join_pairs": [["id", "customer_id"]]}]}],
+                     extensions=[{"dataset": "s", "relationships": [
+                         {"to": "orders", "from_columns": ["id"], "to_columns": ["customer_id"]}]}],
                      dimensions=["tier"], metrics=[m("sum(orders.amount)", "a")], to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             resp = await engine.execute([s, root])
@@ -243,8 +243,8 @@ class TestReverseHopSpelling:
         k = query(name="kpis", population="orders", dimensions=["customer_id"],
                   metrics=[m("sum(amount)", "amt")])
         root = query(population="customers",
-                     extensions=[{"source_name": "customers", "relationships": [
-                         {"to": "kpis", "join_pairs": [["id", "customer_id"]]}]}],
+                     extensions=[{"dataset": "customers", "relationships": [
+                         {"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"]}]}],
                      dimensions=["tier"], metrics=[m("sum(kpis.amt)", "t")])
         resp = await engine.execute([k, root])
         assert rows_by(resp.data, key="customers.tier", value="customers.t") == AMOUNT_BY_TIER

@@ -34,7 +34,7 @@ def _q(dimensions: list) -> SlayerQuery:
     return fx.q(
         population="orders",
         dimensions=dimensions,
-        metrics=[{"expression": "count(*)"}],
+        metrics=[{"metric": "count(*)"}],
     )
 
 
@@ -52,7 +52,7 @@ class TestWrongShapeGranularityCalls:
 class TestNonTemporalArgument:
     async def test_fails_at_binding_as_a_time_dimension(self, exec_engine) -> None:
         query = _q(["date_trunc('month', upper(status))"])  # accepted at construction
-        with pytest.raises(errors.TimeDimensionFieldError, match="TEXT"):
+        with pytest.raises(errors.TimeDimensionFieldError, match="String"):
             await exec_engine.execute(query, dry_run=True)
 
 
@@ -109,7 +109,7 @@ class TestNonRegression:
         query = fx.q(
             population="orders",
             dimensions=["status"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
             filter=[f"date_trunc('month', created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)
@@ -120,7 +120,7 @@ class TestNonRegression:
     ) -> None:
         """Position parity: a bare ``date_trunc`` measure gets the same treatment as another row-level temporal scalar."""
         async def outcome(formula: str):
-            query = fx.q(population="orders", dimensions=["status"], metrics=[{"expression": formula, "name": "v"}])
+            query = fx.q(population="orders", dimensions=["status"], metrics=[{"metric": formula, "alias": "v"}])
             try:
                 resp = await exec_engine.execute(query)
             except Exception as exc:  # noqa: BLE001 — the raised class is the compared outcome

@@ -20,9 +20,9 @@ from slayer.core.models import (
     SlayerDataset,
 )
 from slayer.core.query import (
-    FieldRef,
     DatasetExtension,
     OrderItem,
+    QueryDimension,
     SlayerQuery,
     TimeDimension,
 )
@@ -46,17 +46,17 @@ def _orders(**overrides) -> SlayerDataset:
         sql_table="orders",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
-            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
     fields.update(overrides)
@@ -69,8 +69,8 @@ def _customers(**overrides) -> SlayerDataset:
         data_source="test",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="score", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="score", datatype=DataType.FLOAT),
         ],
     )
     fields.update(overrides)
@@ -237,7 +237,7 @@ class TestModelMeasurePosition:
 
 class TestExtensionPositions:
     async def test_model_extension_measure(self) -> None:
-        ext = DatasetExtension(source_name="orders", metrics=[DatasetMetric(name="rev", expression="sum(revenue)")])
+        ext = DatasetExtension(dataset="orders", metrics=[DatasetMetric(name="rev", expression="sum(revenue)")])
         f = await _dry(SlayerQuery.model_validate({
             "population": "orders",
             "extensions": [ext],
@@ -248,7 +248,7 @@ class TestExtensionPositions:
 
     async def test_inline_source_model_measure(self) -> None:
         inline = DatasetExtension.model_validate({
-            "source_name": "orders",
+            "dataset": "orders",
             "metrics": [{"name": "rev", "expression": "sum(revenue)"}],
         })
         f = await _dry(SlayerQuery.model_validate({
@@ -271,12 +271,12 @@ class TestStagePositions:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(revenue)"}],
+            "metrics": [{"metric": "sum(revenue)"}],
         })
         root = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": ["status"],
-            "metrics": [{"expression": "max(revenue_sum)"}],
+            "metrics": [{"metric": "max(revenue_sum)"}],
         })
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -297,7 +297,7 @@ class TestStagePositions:
                 SlayerQuery.model_validate({
                     "population": "orders",
                     "dimensions": ["status"],
-                    "metrics": [{"expression": "sum(revenue)", "name": "rev"}],
+                    "metrics": [{"metric": "sum(revenue)", "alias": "rev"}],
                 })
             ],
         )
@@ -321,7 +321,7 @@ class TestCompositePositions:
         await _dry(_q(metrics=["cumsum(sum(revenue))"], time_dimensions=td))
 
     async def test_arithmetic_of_functional_aggs(self) -> None:
-        f = await _dry(_q(metrics=[{"expression": "sum(revenue) / count(*)", "name": "aov"}], dimensions=["status"]))
+        f = await _dry(_q(metrics=[{"metric": "sum(revenue) / count(*)", "alias": "aov"}], dimensions=["status"]))
         assert "orders.aov" in f.columns
 
 
@@ -351,7 +351,7 @@ class TestComputedDimensionPosition:
     async def test_raw_rows_rejection(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": _CASE_FUNC, "name": "band"}],
+            "dimensions": [{"field": _CASE_FUNC, "alias": "band"}],
             "distinct_dimension_values": False,
         })
         with pytest.raises(DistinctDimensionValuesError):
@@ -396,7 +396,7 @@ class TestExecuted:
         f = await engine.execute(
             _q(
                 metrics=["sum(revenue)", "count(*)"],
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 filter=["sum(revenue) > 10"],
                 order=[OrderItem(field="sum(revenue)", direction="desc")],
             )

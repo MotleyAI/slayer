@@ -72,7 +72,7 @@ class TestLiteralSlots:
         assert ids(resp) == {1, 5}
 
     async def test_doubled_braces_render_literal_braces(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=[{"expression": "'{{' || status || '}}'", "name": "b"}],
+        resp = await engine.execute(q(dimensions=[{"field": "'{{' || status || '}}'", "alias": "b"}],
                                       metrics=[m("count(*)")], variables={"k": 1}))
         assert set(by_key(resp, "b")) == {"{paid}", "{Pending}", "{void}"}
 

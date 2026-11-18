@@ -14,8 +14,9 @@ import pytest
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1750_fixtures import (
-    DatasetMetric,
     SlayerQuery,
     gen,
     month_td,
@@ -36,8 +37,8 @@ class TestLiftedShapesRender:
         """(a) A local ``time_shift`` beside a cross-model sibling: the shift's
         own inner is local and re-aggregates host-rooted."""
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="sum(customers.spend)", name="cm"),
-            DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
         ]))
         assert "shifted_" in sql, sql
         assert "_cm_" in sql, sql  # the sibling still isolates into its own CTE
@@ -47,15 +48,15 @@ class TestLiftedShapesRender:
         named repro. Renders scope-closed; the shift reads the producer that pulls
         the fragment's join (pinned in the fragment-join module)."""
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="time_shift(wscaled_sum(amount), -1)", name="prev"),
+            QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
         ]))
         assert_scope_closed(sql, dialect="duckdb")
         assert "customers__regions" in shifted_cte_body(sql), sql
 
     async def test_consecutive_periods_with_cross_model_sibling(self) -> None:
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="sum(customers.spend)", name="cm"),
-            DatasetMetric(expression="consecutive_periods(sum(amount) > 0)", name="streak"),
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="consecutive_periods(sum(amount) > 0)", alias="streak"),
         ]))
         assert "cp_" in sql, sql
 
@@ -63,24 +64,24 @@ class TestLiftedShapesRender:
         """cp has no target-grain failure mode: it reads the materialised
         cross-model alias and never re-aggregates, so it renders."""
         sql = await gen(_q(metrics=[
-            DatasetMetric(
-                expression="consecutive_periods(sum(customers.spend) > 0)",
-                name="streak",
+            QueryMetric(
+                metric="consecutive_periods(sum(customers.spend) > 0)",
+                alias="streak",
             ),
         ]))
         assert "cp_" in sql, sql
 
     async def test_change_desugars_and_renders(self) -> None:
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="sum(customers.spend)", name="cm"),
-            DatasetMetric(expression="change(sum(amount))", name="delta"),
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="change(sum(amount))", alias="delta"),
         ]))
         assert "shifted_" in sql, sql
 
     async def test_change_pct_desugars_and_renders(self) -> None:
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="sum(customers.spend)", name="cm"),
-            DatasetMetric(expression="change_pct(sum(amount))", name="delta"),
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="change_pct(sum(amount))", alias="delta"),
         ]))
         assert "shifted_" in sql, sql
 
@@ -90,7 +91,7 @@ class TestTargetGrainCrossModelRenders:
         """(c) DEV-1836 broadcasts the target-grain cross-model aggregate from a
         target-rooted producer, so the row-multiplying re-aggregation is gone."""
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="time_shift(sum(customers.spend), -1)", name="prev"),
+            QueryMetric(metric="time_shift(sum(customers.spend), -1)", alias="prev"),
         ]))
         assert "shifted_" in sql, sql
 
@@ -105,7 +106,7 @@ class TestTargetGrainCrossModelRenders:
             return real(self, **kwargs)
 
         q = _q(metrics=[
-            DatasetMetric(expression="time_shift(sum(customers.spend), -1)", name="prev"),
+            QueryMetric(metric="time_shift(sum(customers.spend), -1)", alias="prev"),
         ])
         with patch.object(
             SQLGenerator, "_emit_time_shift_ctes_for_planned", _spy,
@@ -127,7 +128,7 @@ class TestTargetGrainCrossModelRenders:
             SQLGenerator, "_emit_time_shift_ctes_for_planned", _spy,
         ):
             await gen(_q(metrics=[
-                DatasetMetric(expression="time_shift(wscaled_sum(amount), -1)", name="prev"),
+                QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
             ]))
         assert len(calls) == 1, calls
 
@@ -137,7 +138,7 @@ class TestWindowOpsUnaffected:
         """``cumsum`` (a window op, never guarded) over a cross-model aggregate
         must keep rendering — the narrowing must not disturb the window arm."""
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="cumsum(sum(customers.spend))", name="run"),
+            QueryMetric(metric="cumsum(sum(customers.spend))", alias="run"),
         ]))
         # A cumsum renders as a windowed running sum in the transform-chain step
         # CTE — pin the actual window shape, not a vacuous SUM( that any aggregate
@@ -152,9 +153,9 @@ class TestCompositeInputTimeShiftRenders:
         the old 7b.11 guard deferred now renders a shifted-CTE re-aggregation —
         no NotImplementedError remains."""
         q = _q(metrics=[
-            DatasetMetric(expression="sum(customers.spend)", name="cm"),
-            DatasetMetric(
-                expression="time_shift(sum(amount) + sum(amount), -1)", name="prev",
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(
+                metric="time_shift(sum(amount) + sum(amount), -1)", alias="prev",
             ),
         ])
         sql = await gen(q)

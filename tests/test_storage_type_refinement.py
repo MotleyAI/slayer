@@ -182,15 +182,15 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "id", "sql": "id", "datatype": "DOUBLE", "primary_key": True},
-                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
+                {"name": "id", "sql": "id", "datatype": "Float", "primary_key": True},
+                {"name": "qty", "sql": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         changed = await _refine(d, ds)
         assert changed is True
-        assert d["fields"][0]["datatype"] == "INT"
-        assert d["fields"][1]["datatype"] == "INT"
+        assert d["fields"][0]["datatype"] == "Integer"
+        assert d["fields"][1]["datatype"] == "Integer"
 
     async def test_leaves_double_for_real_columns(self, sqlite_with_int_double_text) -> None:
         d = {
@@ -198,13 +198,13 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
+                {"name": "amount", "sql": "amount", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     async def test_skips_text_and_other_types(self, sqlite_with_int_double_text) -> None:
         d = {
@@ -212,14 +212,14 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "name", "sql": "name", "datatype": "TEXT"},
-                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
+                {"name": "name", "sql": "name", "datatype": "String"},
+                {"name": "amount", "sql": "amount", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         await _refine(d, ds)
-        assert d["fields"][0]["datatype"] == "TEXT"
-        assert d["fields"][1]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "String"
+        assert d["fields"][1]["datatype"] == "Float"
 
     async def test_skips_non_base_derived_columns(self, sqlite_with_int_double_text) -> None:
         d = {
@@ -229,28 +229,28 @@ class TestRefineDictWithLiveSchema:
             "fields": [
                 # Non-bare sql: this is a derived column whose live type is
                 # unknown — refinement must NOT touch it even if id is INT.
-                {"name": "double_id", "sql": "id * 2", "datatype": "DOUBLE"},
+                {"name": "double_id", "sql": "id * 2", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     async def test_skips_query_backed_models(self) -> None:
         """Models without ``sql_table`` (e.g. query-backed) must short-circuit."""
         d = {
             "name": "rollup",
             "data_source": "live",
-            "source_queries": [{"population": "items", "metrics": [{"expression": "sum(qty)"}]}],
+            "source_queries": [{"population": "items", "metrics": [{"metric": "sum(qty)"}]}],
             "fields": [
-                {"name": "qty_sum", "sql": "qty_sum", "datatype": "DOUBLE"},
+                {"name": "qty_sum", "sql": "qty_sum", "datatype": "Float"},
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     async def test_skips_sql_mode_models(self) -> None:
         """Models in ``sql`` source-mode (explicit subquery) must short-circuit."""
@@ -259,13 +259,13 @@ class TestRefineDictWithLiveSchema:
             "sql": "SELECT * FROM items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
+                {"name": "qty", "sql": "qty", "datatype": "Float"},
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     async def test_unreachable_datasource_propagates(self) -> None:
         """DS unreachable → SQLAlchemy connect error propagates. Hard-fail per
@@ -275,7 +275,7 @@ class TestRefineDictWithLiveSchema:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
+                {"name": "qty", "sql": "qty", "datatype": "Float"},
             ],
         }
         # An unreachable Postgres URL → connect raises during introspection.
@@ -303,12 +303,12 @@ class TestYamlStorageRefinementOnLoad:
         assert loaded is not None
         # Map name -> type for ergonomic assertions.
         types = {c.name: c.datatype for c in loaded.fields}
-        assert types["id"] == DataType.INT
-        assert types["qty"] == DataType.INT
-        assert types["amount"] == DataType.DOUBLE
-        assert types["name"] == DataType.TEXT
+        assert types["id"] == DataType.INTEGER
+        assert types["qty"] == DataType.INTEGER
+        assert types["amount"] == DataType.FLOAT
+        assert types["name"] == DataType.STRING
         # Non-base derived column stays at DOUBLE (no refinement attempted).
-        assert types["double_amount"] == DataType.DOUBLE
+        assert types["double_amount"] == DataType.FLOAT
 
     async def test_first_load_writes_back_v5_with_refined_types(
         self, storage_with_v4_model: V4Store
@@ -479,7 +479,7 @@ class TestRefineSqliteAffinityProbe:
             "fields": [
                 {
                     "name": "qty", "sql": "qty",
-                    "datatype": "INT",
+                    "datatype": "Integer",
                     "format": {"type": "integer"},
                 },
             ],
@@ -487,7 +487,7 @@ class TestRefineSqliteAffinityProbe:
         ds = self._ds_for(db_path)
         changed = await _refine(d, ds)
         assert changed is True
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
         # Auto-default integer format is updated to FLOAT.
         assert d["fields"][0]["format"]["type"] == "float"
 
@@ -507,12 +507,12 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
+                {"name": "qty", "sql": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["fields"][0]["datatype"] == "INT"
+        assert d["fields"][0]["datatype"] == "Integer"
 
     async def test_sqlite_double_stays_double_when_probe_says_double(
         self, tmp_path: Path
@@ -528,12 +528,12 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
+                {"name": "qty", "sql": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     async def test_sqlite_double_stays_double_when_probe_returns_none(
         self, tmp_path: Path
@@ -548,7 +548,7 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
+                {"name": "qty", "sql": "qty", "datatype": "Float"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -557,7 +557,7 @@ class TestRefineSqliteAffinityProbe:
             return_value=None,
         ):
             await _refine(d, ds)
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     async def test_postgres_still_narrows_double_to_int(self) -> None:
         """Sanity: the DEV-1361 narrowing rule is preserved for non-SQLite
@@ -568,7 +568,7 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
+                {"name": "qty", "sql": "qty", "datatype": "Float"},
             ],
         }
         # Use a closed-port Postgres URL; the connect must raise (not
@@ -598,12 +598,12 @@ class TestRefineSqliteAffinityProbe:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "INT"},
+                {"name": "qty", "sql": "qty", "datatype": "Integer"},
             ],
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["fields"][0]["datatype"] == "INT"
+        assert d["fields"][0]["datatype"] == "Integer"
 
     async def test_custom_format_preserved_on_widening(self, tmp_path: Path) -> None:
         """A user-set custom format on a widening column is left untouched."""
@@ -617,7 +617,7 @@ class TestRefineSqliteAffinityProbe:
             "fields": [
                 {
                     "name": "qty", "sql": "qty",
-                    "datatype": "INT",
+                    "datatype": "Integer",
                     "format": {
                         "type": "currency",
                         "symbol": "€",
@@ -628,7 +628,7 @@ class TestRefineSqliteAffinityProbe:
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
         # Custom format preserved verbatim.
         assert d["fields"][0]["format"]["type"] == "currency"
         assert d["fields"][0]["format"]["symbol"] == "€"
@@ -649,7 +649,7 @@ class TestRefineSqliteAffinityProbe:
             "fields": [
                 {
                     "name": "qty", "sql": "qty",
-                    "datatype": "INT",
+                    "datatype": "Integer",
                     "format": {"type": "integer"},
                 },
             ],
@@ -657,7 +657,7 @@ class TestRefineSqliteAffinityProbe:
         ds = self._ds_for(db_path)
         changed = await _refine(d, ds)
         assert changed is True
-        assert d["fields"][0]["datatype"] == "TEXT"
+        assert d["fields"][0]["datatype"] == "String"
         # Auto-default integer format must be cleared on TEXT widening.
         assert d["fields"][0].get("format") in (None, {})
 
@@ -675,7 +675,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "qty", "sql": "qty", "datatype": "INT"},
+                {"name": "qty", "sql": "qty", "datatype": "Integer"},
             ],
         }
         # INT base columns are *widenable* (best-effort), not *refineable*
@@ -690,7 +690,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
             "sql_table": "items",
             "data_source": "live",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
+                {"name": "amount", "sql": "amount", "datatype": "Float"},
             ],
         }
         assert has_refineable_fields(d) is True
@@ -737,7 +737,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
         assert loaded is not None
         col = next(c for c in loaded.fields if c.name == "qty")
         # Persisted INT preserved as the safe default.
-        assert col.datatype is DataType.INT
+        assert col.datatype is DataType.INTEGER
         # Warning emitted naming the model + datasource.
         msgs = [r.getMessage() for r in caplog.records]
         assert any("items" in m and "live" in m for m in msgs), msgs
@@ -791,7 +791,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
         loaded = await YAMLStorage(base_dir=base).get_dataset("items", data_source="live")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert loaded.fields[0].datatype is DataType.DOUBLE
+        assert loaded.fields[0].datatype is DataType.FLOAT
 
 
 class TestV7SqliteModelNotAutoRepairedOnLoad:
@@ -831,11 +831,11 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
                     "fields": [
                         {
                             "name": "id", "sql": "id",
-                            "datatype": "INT", "primary_key": True,
+                            "datatype": "Integer", "primary_key": True,
                         },
                         # WRONG persisted type: live storage is REAL but
                         # persisted INT. Load must NOT widen it.
-                        {"name": "qty", "sql": "qty", "datatype": "INT"},
+                        {"name": "qty", "sql": "qty", "datatype": "Integer"},
                     ],
                 },
                 f,
@@ -852,7 +852,7 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
             loaded = await storage.get_dataset("items", data_source="live")
         # Type stays INT because the probe never ran.
         col = next(c for c in loaded.fields if c.name == "qty")
-        assert col.datatype is DataType.INT
+        assert col.datatype is DataType.INTEGER
 
 
 # ---------------------------------------------------------------------------
@@ -883,7 +883,7 @@ class TestCliMigrateTypes:
         # Output should mention the planned refinements.
         out = capsys.readouterr().out
         assert "id" in out
-        assert "INT" in out
+        assert "Integer" in out
 
     async def test_apply_writes_refinements(self, storage_with_v4_model) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
         args = _build_args(
@@ -994,8 +994,8 @@ class TestCliMigrateTypes:
         assert result is True
         out = capsys.readouterr().out
         assert "qty" in out
-        assert "INT" in out
-        assert "DOUBLE" in out
+        assert "Integer" in out
+        assert "Float" in out
 
     def test_missing_datasource_skips_silently_for_sqlite_int_only(
         self, tmp_path, capsys,

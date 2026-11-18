@@ -52,8 +52,8 @@ async def seeded_storage() -> AsyncIterator[StorageBackend]:
         await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         ))
         for i in range(1, 6):

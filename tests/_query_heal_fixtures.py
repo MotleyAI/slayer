@@ -82,10 +82,10 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test", default_time_dimension="signup_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="credit", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="credit", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -96,20 +96,20 @@ def orders_dataset(
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
         ],
         metrics=list(metrics),
         aggregations=list(aggregations),
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             DatasetRelationship(
-                to="order_items", join_pairs=[["id", "order_id"]],
+                to="order_items", from_columns=["id"], to_columns=["order_id"],
                 cardinality=RelationshipCardinality.ONE_TO_MANY,
             ),
         ],
@@ -120,14 +120,14 @@ def order_items_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="order_items", sql_table="order_items", data_source="test", default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="product_id", datatype=DataType.INT),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="product_id", datatype=DataType.INTEGER),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="products", join_pairs=[["product_id", "id"]])],
+        relationships=[DatasetRelationship(to="products", from_columns=["product_id"], to_columns=["id"])],
     )
 
 
@@ -135,9 +135,9 @@ def products_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="products", sql_table="products", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="category", datatype=DataType.TEXT),
-            DatasetField(name="list_price", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="category", datatype=DataType.STRING),
+            DatasetField(name="list_price", datatype=DataType.FLOAT),
         ],
     )
 

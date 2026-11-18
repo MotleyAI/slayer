@@ -20,7 +20,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import FieldRef, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -34,15 +34,15 @@ def sales_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="city", datatype=DataType.TEXT),
-            DatasetField(name="product", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.DOUBLE),
-            DatasetField(name="unit_price", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="product", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="unit_price", datatype=DataType.FLOAT),
             # amount restricted to product 'Q' — sparse by design.
-            DatasetField(name="q_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="q_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="product = 'Q'"),
         ],
         aggregations=[
@@ -59,8 +59,8 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -69,10 +69,10 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                          cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
@@ -81,11 +81,11 @@ def corders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="corders", data_source="test", sql_table="corders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                          cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
@@ -102,13 +102,13 @@ def source_queries_equiv_dataset() -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name="city_region_total", population="sales",
-                dimensions=[FieldRef(name="region"), FieldRef(name="city")],
-                metrics=[DatasetMetric(expression="sum(amount)", name="city_total")],
+                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
+                metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
             ),
             SlayerQuery(
                 population="city_region_total",
-                dimensions=[FieldRef(name="region")],
-                metrics=[DatasetMetric(expression="avg(city_total)", name="acr")],
+                dimensions=[QueryDimension(field="region")],
+                metrics=[QueryMetric(metric="avg(city_total)", alias="acr")],
             ),
         ],
     )

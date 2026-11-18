@@ -68,7 +68,7 @@ async def test_v10_model_loads_without_datasource_entry(tmp_path, backend):
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=None, models=[_items(version=10)])
     model = await storage.get_dataset("items", data_source=DS)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.DOUBLE
+    assert column_of(model, "amount").datatype is DataType.FLOAT
     assert (await raw_doc(storage, "items"))["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -79,7 +79,7 @@ async def test_v10_model_loads_with_unreachable_datasource(tmp_path, backend, no
     storage = await raw_store(backend=backend, base=str(tmp_path), datasource=ds, models=[_items(version=10)])
     model = await storage.get_dataset("items", data_source=DS)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.DOUBLE
+    assert column_of(model, "amount").datatype is DataType.FLOAT
     assert no_live_access == []
 
 
@@ -107,7 +107,7 @@ async def test_v7_model_is_still_refined(tmp_path, backend):
         engine.close()
         engine_factory.invalidate_engine(ds)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.INT
+    assert column_of(model, "amount").datatype is DataType.INTEGER
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -141,7 +141,7 @@ async def test_refinement_reads_only_the_models_table(tmp_path: Path) -> None:
         engine.close()
         engine_factory.invalidate_engine(ds)
     assert model is not None
-    assert column_of(model, "amount").datatype is DataType.INT
+    assert column_of(model, "amount").datatype is DataType.INTEGER
     reads = [c for c in clients[0].calls if c.op == "reflect_columns"]
     assert [(c.args[0] if c.args else c.kwargs["location"]).name for c in reads] == ["items"]
     assert "list_objects" not in clients[0].ops()
@@ -210,12 +210,12 @@ async def test_sqlite_refinement_keeps_its_sampling_rules(tmp_path: Path) -> Non
     samples_model = models["samples"]
     types = {c.name: c.datatype for c in samples_model.fields}
     assert types == {
-        "id": DataType.INT, "ints": DataType.INT, "reals": DataType.DOUBLE, "mixed_real": DataType.DOUBLE,
-        "blobs": DataType.TEXT, "coercible": DataType.DOUBLE, "noncoercible": DataType.TEXT,
-        "nonfinite": DataType.TEXT,
+        "id": DataType.INTEGER, "ints": DataType.INTEGER, "reals": DataType.FLOAT, "mixed_real": DataType.FLOAT,
+        "blobs": DataType.STRING, "coercible": DataType.FLOAT, "noncoercible": DataType.STRING,
+        "nonfinite": DataType.STRING,
     }
-    assert column_of(models["big"], "v").datatype is DataType.DOUBLE
-    assert column_of(models["events"], "group").datatype is DataType.INT
-    assert column_of(models["odd"], "v").datatype is DataType.INT
+    assert column_of(models["big"], "v").datatype is DataType.FLOAT
+    assert column_of(models["events"], "group").datatype is DataType.INTEGER
+    assert column_of(models["odd"], "v").datatype is DataType.INTEGER
     assert clients
     assert clients[0].statements()

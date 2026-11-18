@@ -113,12 +113,12 @@ class TestCalendarStreak:
             "name": "s1", "population": "orders",
             "time_dimensions": [{"field": "order_date", "granularity": "month"}],
             "filter": ["customer_id = 1"],
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [{"field": "order_date", "granularity": "month"}],
-            "metrics": [{"expression": "consecutive_periods(sum(total) > 100)", "name": "v"}],
+            "metrics": [{"metric": "consecutive_periods(sum(total) > 100)", "alias": "v"}],
         })
         resp = await exec_engine.execute(query=[inner, outer])
         got = _unique([(month_of(r["s1.order_date"]), int(r["s1.v"])) for r in resp.data])
@@ -158,7 +158,7 @@ class TestEveryGranularity:
     async def test_own_calendar_step(self, exec_engine, granularity: str) -> None:
         got = await _ticks_columns(exec_engine, ticks_query(
             series=f"streak_{granularity}", granularity=granularity,
-            metrics=[{"expression": "consecutive_periods(sum(amount) > 0)", "name": "v"}],
+            metrics=[{"metric": "consecutive_periods(sum(amount) > 0)", "alias": "v"}],
         ), "v")
         assert got["v"] == [1, 2, 1, 2]
 
@@ -171,8 +171,8 @@ class TestSubDayTimeOffsets:
         got = await _ticks_columns(exec_engine, ticks_query(
             series=f"shift_{granularity}", granularity=granularity,
             metrics=[
-                {"expression": "time_shift(sum(amount), -1)", "name": "prev"},
-                {"expression": "change(sum(amount))", "name": "chg"},
+                {"metric": "time_shift(sum(amount), -1)", "alias": "prev"},
+                {"metric": "change(sum(amount))", "alias": "chg"},
             ],
         ), "prev", "chg")
         assert got == {"prev": [None, 1, 2, None], "chg": [None, 1, 1, None]}

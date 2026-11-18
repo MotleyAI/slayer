@@ -69,9 +69,9 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
     )
 
@@ -81,11 +81,11 @@ def clients_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="clients", data_source="test", sql_table="acct",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="cust_rev", join_pairs=[["id", "customer_id"]])],
+        relationships=[DatasetRelationship(to="cust_rev", from_columns=["id"], to_columns=["customer_id"])],
     )
 
 
@@ -94,16 +94,16 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT, label=STATUS_LABEL),
-            DatasetField(name="amount", datatype=DataType.DOUBLE, description=AMOUNT_DESCRIPTION,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING, label=STATUS_LABEL),
+            DatasetField(name="amount", datatype=DataType.FLOAT, description=AMOUNT_DESCRIPTION,
                    format=NumberFormat(type=NumberFormatType.CURRENCY)),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="clients", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="clients", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -113,9 +113,9 @@ def orders_v_dataset(*, default: Optional[str]) -> SlayerDataset:
     return SlayerDataset(
         name="orders_v", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         query_variables={"th": default} if default is not None else {},
     )
@@ -191,8 +191,8 @@ def jt_qb_dataset() -> SlayerDataset:
         "jt_qb",
         query(name="a",
               population="customers",
-              extensions=[{"source_name": "customers",
-                           "relationships": [{"to": "b", "join_pairs": [["id", "customer_id"]]}]}],
+              extensions=[{"dataset": "customers",
+                           "relationships": [{"to": "b", "from_columns": ["id"], "to_columns": ["customer_id"]}]}],
               dimensions=["tier"], metrics=[m("sum(b.rev)", "ab")]),
         query(name="b", population="orders", dimensions=["customer_id"],
               metrics=[m("sum(amount)", "rev")]),
@@ -204,9 +204,9 @@ def _sql_dataset(name: str, sql: str) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql=sql,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -324,7 +324,7 @@ def explicit_splice(
             return spec
         joins = [j.model_copy(update={"to": rename.get(j.to, j.to)})
                  for j in spec.relationships or []]
-        return spec.model_copy(update={"source_name": rename.get(spec.source_name, spec.source_name),
+        return spec.model_copy(update={"dataset": rename.get(spec.dataset, spec.dataset),
                                        "relationships": joins})
 
     out = []

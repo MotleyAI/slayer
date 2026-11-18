@@ -112,7 +112,7 @@ def test_mixed_case_foreign_physical_join_keys() -> None:
     )
     models = _datasets(result)
     (join,) = models["orders"].relationships
-    ((src, tgt),) = join.join_pairs
+    ((src, tgt),) = join.column_pairs
     assert column(models["orders"], src).physical_name == "custid"
     assert column(models["customers"], tgt).physical_name == "custid"
 
@@ -280,7 +280,7 @@ def test_declared_type_matches_the_folded_column() -> None:
     result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "Qty", "type": "categorical"}]},
                   regular=[{"name": "orders", "columns": [{"name": "Qty", "data_type": "integer"}]}],
                   dialect="postgres").convert()
-    assert column(datasets_of(result)["items"], "Qty").datatype is DataType.INT
+    assert column(datasets_of(result)["items"], "Qty").datatype is DataType.INTEGER
 
 
 def test_source_resolution_report_survives_metadata_collection(tmp_path: Path) -> None:
@@ -436,7 +436,7 @@ def test_live_source_reflects_a_quoted_lowercase_table_exactly(tmp_path: Path, m
 
     async def record(**kwargs: Any) -> list[IntrospectedColumn]:
         seen.append(kwargs)
-        return [IntrospectedColumn(name="x", type=DataType.INT)]
+        return [IntrospectedColumn(name="x", type=DataType.INTEGER)]
 
     monkeypatch.setattr(column_types, "introspect_table_columns", record)
     datasource = LiveDatasource(offline_reason=None, data_source=DS, db_type="snowflake", dialect="snowflake")

@@ -52,11 +52,11 @@ def streak_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="streak_events", sql_table="streak_events", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="series", sql="series", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="series", sql="series", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="d", sql="d", datatype=DataType.DATE),
-            DatasetField(name="ts", sql="ts", datatype=DataType.TIMESTAMP),
+            DatasetField(name="ts", sql="ts", datatype=DataType.DATETIME),
         ],
     )
 
@@ -68,7 +68,7 @@ async def assert_calendar_streak(
         "population": "streak_events",
         "time_dimensions": [{"field": column, "granularity": granularity}],
         "filter": [f"series = '{granularity}'"],
-        "metrics": [{"expression": "consecutive_periods(sum(amount) > 0)", "name": "v"}],
+        "metrics": [{"metric": "consecutive_periods(sum(amount) > 0)", "alias": "v"}],
     }))
     rows = sorted(resp.data, key=lambda r: str(r[f"streak_events.{column}"]))
     assert [int(r["streak_events.v"]) for r in rows] == [1, 2, 1, 2], rows

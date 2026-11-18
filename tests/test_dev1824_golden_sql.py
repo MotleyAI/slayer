@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1824_fixtures import BAND35, DatasetMetric, dev1824_models, month_td, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1824_fixtures import BAND35, dev1824_models, month_td, q
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -35,170 +37,170 @@ def _cases() -> dict:
     return {
         "lift/window_partition": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(
-                expression="sum(amount, window='90d', partition_by=region)", name="w",
+            metrics=[QueryMetric(
+                metric="sum(amount, window='90d', partition_by=region)", alias="w",
             )],
         ),
         "lift/two_ranked_producers": q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="last(amount, partition_by=region)", name="a"),
-                DatasetMetric(expression="last(amount, partition_by=city)", name="b"),
+                QueryMetric(metric="last(amount, partition_by=region)", alias="a"),
+                QueryMetric(metric="last(amount, partition_by=city)", alias="b"),
             ],
         ),
         "lift/three_level_nesting": q(
-            dimensions=["region", {"expression": CBAND, "name": "cband"}],
+            dimensions=["region", {"field": CBAND, "alias": "cband"}],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="s"),
-                DatasetMetric(
-                    expression="sum(amount, window='90d', partition_by=region)",
-                    name="w",
+                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(
+                    metric="sum(amount, window='90d', partition_by=region)",
+                    alias="w",
                 ),
-                DatasetMetric(expression="last(amount, partition_by=region)", name="l"),
+                QueryMetric(metric="last(amount, partition_by=region)", alias="l"),
             ],
         ),
         "lift/first_last_partition": q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(
-                expression="last(amount, partition_by=region)", name="l",
+            metrics=[QueryMetric(
+                metric="last(amount, partition_by=region)", alias="l",
             )],
         ),
         "lift/temporal_partition_last": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(
-                expression="last(amount, partition_by=[region, ordered_at])", name="l",
+            metrics=[QueryMetric(
+                metric="last(amount, partition_by=[region, ordered_at])", alias="l",
             )],
         ),
         "lift/cumsum_partitioned": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(
-                expression="cumsum(sum(amount, partition_by=[region, ordered_at]))",
-                name="c",
+            metrics=[QueryMetric(
+                metric="cumsum(sum(amount, partition_by=[region, ordered_at]))",
+                alias="c",
             )],
         ),
         "lift/rank_partitioned_measure": q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression=RANK_DIM, name="r")],
+            metrics=[QueryMetric(metric=RANK_DIM, alias="r")],
         ),
         "lift/filter_partitioned": q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "lift/filter_conjunct_split": q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "lift/coexist_row_combined": q(
-            dimensions=["region", {"expression": BAND35, "name": "band"}],
+            dimensions=["region", {"field": BAND35, "alias": "band"}],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="s"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
             ],
         ),
         "lift/coexist_same_agg_both": q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount, partition_by=region) > 55 "
-                               "THEN 1 ELSE 0 END", "name": "band"},
+                {"field": "CASE WHEN sum(amount, partition_by=region) > 55 "
+                               "THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            metrics=[DatasetMetric(
-                expression="sum(amount, partition_by=region)", name="rt",
+            metrics=[QueryMetric(
+                metric="sum(amount, partition_by=region)", alias="rt",
             )],
         ),
         "lift/order_raw_aggregate": q(
-            dimensions=["region", "city", {"expression": BAND35, "name": "band"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             order=[{"field": "sum(amount, partition_by=city)", "direction": "asc"}],
         ),
         "lift/coexist_windowed": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         ),
         "lift/coexist_first_last": q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="last(amount)", name="l"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="last(amount)", alias="l"),
             ],
         ),
         "lift/coexist_cross_model": q(
             to_many_handling="broadcast",
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="sum(customers.spend)", name="cm"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ),
         "lift/coexist_transform": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="cumsum(sum(amount))", name="c"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="cumsum(sum(amount))", alias="c"),
             ],
         ),
         "lift/dim_two_partition_sets": q(
             dimensions=[
                 "region",
-                {"expression": "sum(amount, partition_by=city) - "
-                               "sum(amount, partition_by=region)", "name": "gap"},
+                {"field": "sum(amount, partition_by=city) - "
+                               "sum(amount, partition_by=region)", "alias": "gap"},
             ],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "lift/dim_rank": q(
-            dimensions=["region", {"expression": RANK_DIM, "name": "rr"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            dimensions=["region", {"field": RANK_DIM, "alias": "rr"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "lift/dim_first_last": q(
             dimensions=[
                 "region",
-                {"expression": "last(amount, partition_by=region)", "name": "la"},
+                {"field": "last(amount, partition_by=region)", "alias": "la"},
             ],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "lift/dim_window": q(
-            dimensions=["region", {"expression": WBAND, "name": "wband"}],
+            dimensions=["region", {"field": WBAND, "alias": "wband"}],
             time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "guard/dim_bare_aggregate": q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
-                 "name": "b"},
+                {"field": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
+                 "alias": "b"},
             ],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "guard/dim_cross_model_source": q(
             to_many_handling="broadcast",
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(customers.spend, partition_by=region) "
-                               "> 100 THEN 1 ELSE 0 END", "name": "cband"},
+                {"field": "CASE WHEN sum(customers.spend, partition_by=region) "
+                               "> 100 THEN 1 ELSE 0 END", "alias": "cband"},
             ],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "guard/filter_no_common_scope": q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
         "lift/nested_attach": q(
             dimensions=[
-                {"expression": BAND35, "name": "band"},
+                {"field": BAND35, "alias": "band"},
                 # partition_by carries extra keys so the internal CTE alias stays
                 # over bigquery's 300-byte limit — the tier-1 identifier-fitting
                 # premise pinned in test_dev1891_internal_identifier_fit.py (D5's
                 # Column.filter desugar shortened the encoding).
-                {"expression": "sum(amount, partition_by=[band, region, customer_id])",
-                 "name": "b2"},
+                {"field": "sum(amount, partition_by=[band, region, customer_id])",
+                 "alias": "b2"},
             ],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ),
     }
 

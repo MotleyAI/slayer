@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
-    DatasetMetric,
     SPEND_BAND,
     SPEND_BY_BAND,
     make_exec_engine,
@@ -50,8 +51,8 @@ class TestCompositeShapes:
     async def test_local_and_cross_model_in_one_expression(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(expression="sum(amount) / sum(customers.spend)",
-                                   name="r")],
+            metrics=[QueryMetric(metric="sum(amount) / sum(customers.spend)",
+                                   alias="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=RATIO_BY_TIER)
 
@@ -60,23 +61,23 @@ class TestCompositeShapes:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(
-                expression="round(sum(customers.spend) / sum(amount), 2)", name="r")],
+            metrics=[QueryMetric(
+                metric="round(sum(customers.spend) / sum(amount), 2)", alias="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=ROUND_BY_TIER)
 
     async def test_cross_model_operand_with_literal(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(expression="sum(customers.spend) * 2", name="r")],
+            metrics=[QueryMetric(metric="sum(customers.spend) * 2", alias="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=TIMES2_BY_TIER)
 
     async def test_two_cross_model_operands_same_model(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend) - max(customers.spend)", name="r")],
+            metrics=[QueryMetric(
+                metric="sum(customers.spend) - max(customers.spend)", alias="r")],
         ))
         _assert_by_tier(resp, name="orders.r", expected=SUM_MINUS_MAX_BY_TIER)
 
@@ -85,9 +86,9 @@ class TestCompositeShapes:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend) / sum(customers.regions.pop)",
-                name="r")],
+            metrics=[QueryMetric(
+                metric="sum(customers.spend) / sum(customers.regions.pop)",
+                alias="r")],
         ))
         by = rows_by(resp, REGION)
         for region, value in SPEND_OVER_POP_BY_REGION.items():
@@ -101,9 +102,9 @@ class TestCompositeShapes:
 class TestComputedDimensionCoexistence:
     async def test_band_dimension_with_cross_model_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "band"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s"),
-                      DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            dimensions=[{"field": SPEND_BAND, "alias": "band"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s"),
+                      QueryMetric(metric="sum(customers.spend)", alias="sp")],
         ))
         by = rows_by(resp, "orders.band")
         for band in ("hi", "lo"):

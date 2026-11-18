@@ -77,37 +77,37 @@ def _assert_type_error(exc: pytest.ExceptionInfo, *needles: str) -> None:
 class TestTemporalType:
     @pytest.mark.parametrize("text,expected", [
         ("order_date", DataType.DATE),
-        ("created_at", DataType.TIMESTAMP),
+        ("created_at", DataType.DATETIME),
         ("customers.signup_date", DataType.DATE),
         ("status", None),
         ("raw_dt", None),
         ("amount", None),
-        ("max(created_at)", DataType.TIMESTAMP),
+        ("max(created_at)", DataType.DATETIME),
         ("min(order_date)", DataType.DATE),
-        ("first(created_at)", DataType.TIMESTAMP),
+        ("first(created_at)", DataType.DATETIME),
         ("last(order_date)", DataType.DATE),
         ("sum(amount)", None),
         ("count(created_at)", None),
         ("date_add(order_date, 1, 'month')", DataType.DATE),
         ("date_add(order_date, sla_days, 'week')", DataType.DATE),
-        ("date_add(order_date, 2, 'hour')", DataType.TIMESTAMP),
-        ("date_add(created_at, 1, 'day')", DataType.TIMESTAMP),
+        ("date_add(order_date, 2, 'hour')", DataType.DATETIME),
+        ("date_add(created_at, 1, 'day')", DataType.DATETIME),
         ("date_add('2024-01-01', 1, 'day')", DataType.DATE),
-        ("date_add('2024-01-01 10:00:00', 1, 'day')", DataType.TIMESTAMP),
-        ("now()", DataType.TIMESTAMP),
+        ("date_add('2024-01-01 10:00:00', 1, 'day')", DataType.DATETIME),
+        ("now()", DataType.DATETIME),
         ("current_date()", DataType.DATE),
-        ("coalesce(shipped_at, now())", DataType.TIMESTAMP),
+        ("coalesce(shipped_at, now())", DataType.DATETIME),
         ("coalesce(order_date, current_date())", DataType.DATE),
-        ("coalesce(order_date, created_at)", DataType.TIMESTAMP),
+        ("coalesce(order_date, created_at)", DataType.DATETIME),
         ("coalesce(order_date, None)", DataType.DATE),
         ("coalesce(order_date, 5)", None),
         ("coalesce(order_date, status)", None),
-        ("ifnull(shipped_at, created_at)", DataType.TIMESTAMP),
+        ("ifnull(shipped_at, created_at)", DataType.DATETIME),
         ("nullif(order_date, current_date())", DataType.DATE),
         ("nullif(order_date, created_at)", DataType.DATE),
-        ("greatest(order_date, created_at)", DataType.TIMESTAMP),
+        ("greatest(order_date, created_at)", DataType.DATETIME),
         ("least(order_date, customers.signup_date)", DataType.DATE),
-        ("iif(amount > 10, shipped_at, created_at)", DataType.TIMESTAMP),
+        ("iif(amount > 10, shipped_at, created_at)", DataType.DATETIME),
         ("CASE WHEN amount > 10 THEN order_date ELSE NULL END", DataType.DATE),
         ("iif(amount > 10, order_date, 1)", None),
         ("date_part('year', created_at)", None),
@@ -173,7 +173,7 @@ class TestOperandRejections:
 
     async def test_numeric_measure_operand(self, engine) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, metrics=[{"expression": "max(date_part('year', amount))", "name": "y"}])
+            await _dry(engine, metrics=[{"metric": "max(date_part('year', amount))", "alias": "y"}])
         _assert_type_error(exc, "amount")
 
     @pytest.mark.parametrize("filt,literal", [
@@ -226,7 +226,7 @@ class TestCountRules:
 
     async def test_non_numeric_aggregate_count(self, engine) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, metrics=[{"expression": "date_add(max(order_date), max(status), 'day')", "name": "m"}])
+            await _dry(engine, metrics=[{"metric": "date_add(max(order_date), max(status), 'day')", "alias": "m"}])
         _assert_type_error(exc, "date_add")
 
     @pytest.mark.parametrize("count", ["3", "-3", "sla_days", "-sla_days", "sla_days * 2", "id"])
@@ -234,7 +234,7 @@ class TestCountRules:
         await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
 
     async def test_aggregate_count_accepted(self, engine) -> None:
-        await _dry(engine, metrics=[{"expression": "date_add(max(order_date), max(sla_days), 'month')", "name": "m"}])
+        await _dry(engine, metrics=[{"metric": "date_add(max(order_date), max(sla_days), 'month')", "alias": "m"}])
 
 
 class TestAcceptedOperands:
@@ -273,7 +273,7 @@ class TestAcceptedOperands:
         "max(shipped_at - interval(2, 'day'))",
     ])
     async def test_measure_binds(self, engine, formula: str) -> None:
-        await _dry(engine, metrics=[{"expression": formula, "name": "m"}])
+        await _dry(engine, metrics=[{"metric": formula, "alias": "m"}])
 
     async def test_placeholder_in_date_position(self, engine) -> None:
         await _dry(
@@ -311,34 +311,34 @@ class TestStageOperands:
     async def test_stage_dimension_column(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["created_at", "status"],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         outer = SlayerQuery.model_validate({
-            "population": "s1", "dimensions": [{"expression": "date_part('year', created_at)", "name": "y"}],
-            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
+            "population": "s1", "dimensions": [{"field": "date_part('year', created_at)", "alias": "y"}],
+            "metrics": [{"metric": "sum(n)", "alias": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_stage_measure_column(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["status"],
-            "metrics": [{"expression": "max(created_at)", "name": "last_at"}],
+            "metrics": [{"metric": "max(created_at)", "alias": "last_at"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1", "dimensions": ["status"],
             "filter": ["date_diff('day', last_at, now()) > 0"],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_stage_text_column_rejected(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["status"],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1", "filter": ["date_part('year', status) = 1"],
-            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
+            "metrics": [{"metric": "sum(n)", "alias": "n_total"}],
         })
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute([s1, outer], dry_run=True)
@@ -351,13 +351,13 @@ class TestStageOperands:
 
 class TestResultTypes:
     @pytest.mark.parametrize("text,expected", [
-        ("date_part('month', created_at)", DataType.INT),
-        ("date_diff('day', created_at, shipped_at)", DataType.INT),
+        ("date_part('month', created_at)", DataType.INTEGER),
+        ("date_diff('day', created_at, shipped_at)", DataType.INTEGER),
         ("date_add(order_date, 1, 'month')", DataType.DATE),
-        ("date_add(order_date, 2, 'hour')", DataType.TIMESTAMP),
-        ("date_add(created_at, 1, 'day')", DataType.TIMESTAMP),
+        ("date_add(order_date, 2, 'hour')", DataType.DATETIME),
+        ("date_add(created_at, 1, 'day')", DataType.DATETIME),
         ("current_date()", DataType.DATE),
-        ("now()", DataType.TIMESTAMP),
+        ("now()", DataType.DATETIME),
         ("date_add(customers.signup_date, 1, 'year')", DataType.DATE),
     ])
     def test_dimension_metadata(self, text: str, expected: DataType) -> None:
@@ -365,14 +365,14 @@ class TestResultTypes:
         assert dim_type == expected
 
     @pytest.mark.parametrize("text,expected", [
-        ("date_diff('day', min(created_at), max(created_at))", DataType.INT),
-        ("date_part('year', max(order_date))", DataType.INT),
+        ("date_diff('day', min(created_at), max(created_at))", DataType.INTEGER),
+        ("date_part('year', max(order_date))", DataType.INTEGER),
         ("date_add(max(order_date), 1, 'month')", DataType.DATE),
-        ("date_add(max(created_at), 1, 'month')", DataType.TIMESTAMP),
+        ("date_add(max(created_at), 1, 'month')", DataType.DATETIME),
         ("current_date()", DataType.DATE),
-        ("now()", DataType.TIMESTAMP),
+        ("now()", DataType.DATETIME),
         ("max(date_add(order_date, 1, 'day'))", DataType.DATE),
-        ("min(coalesce(shipped_at, created_at))", DataType.TIMESTAMP),
+        ("min(coalesce(shipped_at, created_at))", DataType.DATETIME),
     ])
     def test_measure_type(self, text: str, expected: DataType) -> None:
         assert metric_key_type(dataset=ORDERS, key=_bind(text)) == expected
@@ -382,22 +382,22 @@ class TestResultTypes:
             query={
                 "population": "orders",
                 "dimensions": [
-                    {"expression": "date_part('month', created_at)", "name": "m"},
-                    {"expression": "date_add(order_date, 1, 'month')", "name": "due"},
-                    {"expression": "date_add(order_date, 2, 'hour')", "name": "due_at"},
+                    {"field": "date_part('month', created_at)", "alias": "m"},
+                    {"field": "date_add(order_date, 1, 'month')", "alias": "due"},
+                    {"field": "date_add(order_date, 2, 'hour')", "alias": "due_at"},
                 ],
                 "metrics": [
-                    {"expression": "date_diff('day', min(created_at), max(created_at))", "name": "span"},
-                    {"expression": "date_add(max(order_date), 1, 'month')", "name": "next_due"},
+                    {"metric": "date_diff('day', min(created_at), max(created_at))", "alias": "span"},
+                    {"metric": "date_add(max(order_date), 1, 'month')", "alias": "next_due"},
                 ],
             },
             name="dated", save=False,
         )
         types = {c.name: c.datatype for c in model.fields}
-        assert types["m"] == DataType.INT
+        assert types["m"] == DataType.INTEGER
         assert types["due"] == DataType.DATE
-        assert types["due_at"] == DataType.TIMESTAMP
-        assert types["span"] == DataType.INT
+        assert types["due_at"] == DataType.DATETIME
+        assert types["span"] == DataType.INTEGER
         assert types["next_due"] == DataType.DATE
 
     async def test_joined_and_stage_backed_result_types(self, engine: SlayerQueryEngine) -> None:
@@ -405,42 +405,42 @@ class TestResultTypes:
             query=[
                 {
                     "name": "s1", "population": "orders", "dimensions": ["status", "created_at"],
-                    "metrics": [{"expression": "date_add(max(customers.signup_date), 1, 'day')", "name": "joined_due"}],
+                    "metrics": [{"metric": "date_add(max(customers.signup_date), 1, 'day')", "alias": "joined_due"}],
                 },
                 {
                     "population": "s1",
-                    "dimensions": [{"expression": "date_part('year', created_at)", "name": "y"}],
+                    "dimensions": [{"field": "date_part('year', created_at)", "alias": "y"}],
                     "metrics": [
-                        {"expression": "max(joined_due)", "name": "due"},
-                        {"expression": "date_diff('day', max(joined_due), max(created_at))", "name": "lag_days"},
-                        {"expression": "date_add(max(created_at), 1, 'hour')", "name": "next_at"},
+                        {"metric": "max(joined_due)", "alias": "due"},
+                        {"metric": "date_diff('day', max(joined_due), max(created_at))", "alias": "lag_days"},
+                        {"metric": "date_add(max(created_at), 1, 'hour')", "alias": "next_at"},
                     ],
                 },
             ],
             name="staged", save=False,
         )
         types = {c.name: c.datatype for c in model.fields}
-        assert types["y"] == DataType.INT
+        assert types["y"] == DataType.INTEGER
         assert types["due"] == DataType.DATE
-        assert types["lag_days"] == DataType.INT
-        assert types["next_at"] == DataType.TIMESTAMP
+        assert types["lag_days"] == DataType.INTEGER
+        assert types["next_at"] == DataType.DATETIME
 
     async def test_stage_passthrough_keeps_types(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             query=[
                 {
                     "name": "s1", "population": "orders", "dimensions": ["status", "created_at"],
-                    "metrics": [{"expression": "max(order_date)", "name": "od"}, {"expression": "count(*)", "name": "n"}],
+                    "metrics": [{"metric": "max(order_date)", "alias": "od"}, {"metric": "count(*)", "alias": "n"}],
                 },
                 {
                     "population": "s1", "dimensions": ["created_at"],
-                    "metrics": [{"expression": "max(od)", "name": "o"}, {"expression": "sum(n)", "name": "total"}],
+                    "metrics": [{"metric": "max(od)", "alias": "o"}, {"metric": "sum(n)", "alias": "total"}],
                 },
             ],
             name="passthrough", save=False,
         )
         types = {c.name: c.datatype for c in model.fields}
-        assert types["created_at"] == DataType.TIMESTAMP
+        assert types["created_at"] == DataType.DATETIME
         assert types["o"] == DataType.DATE
 
     async def test_stage_measure_over_temporal_expression(self, engine: SlayerQueryEngine) -> None:
@@ -448,13 +448,13 @@ class TestResultTypes:
             query=[
                 {
                     "name": "s1", "population": "orders", "dimensions": ["status", "order_date"],
-                    "metrics": [{"expression": "count(*)", "name": "n"}],
+                    "metrics": [{"metric": "count(*)", "alias": "n"}],
                 },
                 {
                     "population": "s1", "dimensions": ["status"],
                     "metrics": [
-                        {"expression": "max(date_add(order_date, 1, 'day'))", "name": "next_day"},
-                        {"expression": "min(coalesce(order_date, current_date()))", "name": "first_day"},
+                        {"metric": "max(date_add(order_date, 1, 'day'))", "alias": "next_day"},
+                        {"metric": "min(coalesce(order_date, current_date()))", "alias": "first_day"},
                     ],
                 },
             ],
@@ -468,16 +468,16 @@ class TestResultTypes:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         s2 = SlayerQuery.model_validate({
             "name": "s2", "population": "s1", "dimensions": ["created_at"],
-            "metrics": [{"expression": "sum(n)", "name": "total"}],
+            "metrics": [{"metric": "sum(n)", "alias": "total"}],
         })
         s3 = SlayerQuery.model_validate({
             "population": "s2",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.DAY)],
-            "metrics": [{"expression": "sum(total)", "name": "t"}],
+            "metrics": [{"metric": "sum(total)", "alias": "t"}],
         })
         with pytest.raises(TimeDimensionFieldError, match="already bucketed at 'month'"):
             await engine.execute([s1, s2, s3], dry_run=True)
@@ -485,26 +485,26 @@ class TestResultTypes:
     async def test_date_add_stage_column_is_a_time_axis(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "dimensions": [{"expression": "date_add(order_date, 1, 'month')", "name": "due"}],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "dimensions": [{"field": "date_add(order_date, 1, 'month')", "alias": "due"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="due", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
+            "metrics": [{"metric": "sum(n)", "alias": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_date_part_stage_column_is_not_a_time_axis(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "dimensions": [{"expression": "date_part('month', created_at)", "name": "m"}],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "dimensions": [{"field": "date_part('month', created_at)", "alias": "m"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="m", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
+            "metrics": [{"metric": "sum(n)", "alias": "n_total"}],
         })
-        with pytest.raises(TimeDimensionFieldError, match="INT"):
+        with pytest.raises(TimeDimensionFieldError, match="Integer"):
             await engine.execute([s1, outer], dry_run=True)

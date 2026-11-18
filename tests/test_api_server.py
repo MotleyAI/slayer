@@ -281,7 +281,7 @@ class TestIngestEndpoint:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"population": "nonexistent", "metrics": [{"expression": "count(*)"}]})
+        resp = client.post("/query", json={"population": "nonexistent", "metrics": [{"metric": "count(*)"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -289,9 +289,9 @@ class TestQuery:
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         )))
-        resp = client.post("/query", json={"population": "orders", "metrics": [{"expression": "sum(revenue)"}]})
+        resp = client.post("/query", json={"population": "orders", "metrics": [{"metric": "sum(revenue)"}]})
         assert resp.status_code == 400
 
     def test_query_schema_drift_returns_422(
@@ -306,7 +306,7 @@ class TestQuery:
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
         resp = client.post("/query", json={
-            "population": "orders", "metrics": [{"expression": "count(*)"}],
+            "population": "orders", "metrics": [{"metric": "count(*)"}],
         })
         assert resp.status_code == 422
         assert resp.json()["detail"]["error"] == "schema_drift"
@@ -314,7 +314,7 @@ class TestQuery:
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
-            {"population": "orders", "metrics": [{"expression": "count(*)"}]}
+            {"population": "orders", "metrics": [{"metric": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None
@@ -362,7 +362,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             ))
         )
         resp = client.post("/datasets", json={
@@ -370,7 +370,7 @@ class TestQueryBackedModelsAPI:
             "data_source": "ds",
             "source_queries": [{
                 "population": "upstream",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dry_run": True,
             }],
             "query_variables": {},
@@ -394,7 +394,7 @@ class TestQueryBackedModelsAPI:
         run_sync(
             storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
             ))
         )
         resp = client.post("/datasets", json={
@@ -402,7 +402,7 @@ class TestQueryBackedModelsAPI:
             "data_source": "ds",
             "source_queries": [{
                 "population": "upstream",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             }],
             "fields": [{"name": "x", "datatype": "string"}],
         })
@@ -505,7 +505,7 @@ class TestRunByNameRefine:
 
     def test_conflict_is_400(self, client: TestClient, seeded: YAMLStorage) -> None:
         resp = client.post("/query", json={
-            "name": "monthly_revenue", "refine": {"metrics": [{"expression": "count(*)", "name": "revenue"}]},
+            "name": "monthly_revenue", "refine": {"metrics": [{"metric": "count(*)", "alias": "revenue"}]},
         })
         assert resp.status_code == 400
         assert "revenue" in resp.text
@@ -543,9 +543,9 @@ class TestQueryListBody:
             "data_source": "ds_list",
             "sql_table": "orders",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
-                {"name": "status", "sql": "status", "datatype": "TEXT"},
-                {"name": "customer_id", "sql": "customer_id", "datatype": "DOUBLE"},
+                {"name": "amount", "sql": "amount", "datatype": "Float"},
+                {"name": "status", "sql": "status", "datatype": "String"},
+                {"name": "customer_id", "sql": "customer_id", "datatype": "Float"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -560,12 +560,12 @@ class TestQueryListBody:
                 {
                     "name": "by_customer",
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
-                    "dimensions": [{"name": "customer_id"}],
+                    "metrics": [{"metric": "sum(amount)"}],
+                    "dimensions": ["customer_id"],
                 },
                 {
                     "population": "by_customer",
-                    "metrics": [{"expression": "avg(amount_sum)"}],
+                    "metrics": [{"metric": "avg(amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -585,17 +585,17 @@ class TestQueryListBody:
                 {
                     "name": "a",
                     "population": "b",
-                    "metrics": [{"expression": "avg(amount_sum)"}],
+                    "metrics": [{"metric": "avg(amount_sum)"}],
                 },
                 {
                     "name": "b",
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
-                    "dimensions": [{"name": "customer_id"}],
+                    "metrics": [{"metric": "sum(amount)"}],
+                    "dimensions": ["customer_id"],
                 },
                 {
                     "population": "a",
-                    "metrics": [{"expression": "max(amount_sum_avg)"}],
+                    "metrics": [{"metric": "max(amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -613,9 +613,9 @@ class TestQueryListBody:
         self._setup_orders(client)
         resp = client.post("/query", json={
             "queries": [
-                {"name": "a", "population": "b", "metrics": [{"expression": "sum(amount)"}]},
-                {"name": "b", "population": "a", "metrics": [{"expression": "sum(amount)"}]},
-                {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
+                {"name": "a", "population": "b", "metrics": [{"metric": "sum(amount)"}]},
+                {"name": "b", "population": "a", "metrics": [{"metric": "sum(amount)"}]},
+                {"population": "orders", "metrics": [{"metric": "sum(amount)"}]},
             ],
             "dry_run": True,
         })
@@ -637,7 +637,7 @@ class TestQueryInlineSourceModel:
             "data_source": "ds_inline",
             "sql_table": "orders",
             "fields": [
-                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
+                {"name": "amount", "sql": "amount", "datatype": "Float"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -652,7 +652,7 @@ class TestQueryInlineSourceModel:
                     {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                 ],
             }],
-            "metrics": [{"expression": "sum(double_amount)"}],
+            "metrics": [{"metric": "sum(double_amount)"}],
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -671,7 +671,7 @@ class TestQueryInlineSourceModel:
                 "data_source": "ds_adhoc",
                 "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
             },
-            "metrics": [{"expression": "sum(x)"}],
+            "metrics": [{"metric": "sum(x)"}],
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -738,7 +738,7 @@ class TestOpenAPI400Documentation:
         ))
         run_sync(storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="ds",
-            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
         )))
         # Save a query-backed model whose stage does NOT have dry_run set.
         setup_resp = client.post("/datasets", json={
@@ -746,7 +746,7 @@ class TestOpenAPI400Documentation:
             "data_source": "ds",
             "source_queries": [{
                 "population": "upstream",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             }],
         })
         assert setup_resp.status_code == 200, setup_resp.text

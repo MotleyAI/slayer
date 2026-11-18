@@ -199,8 +199,8 @@ class TestConflicts:
         assert "'a'" in message, message
 
     def test_several_edges_sharing_the_declared_name_are_ambiguous(self) -> None:
-        home = DatasetRelationship(to="regions", name="home", join_pairs=REGION_PAIRS)
-        back = DatasetRelationship(to="customers", name="home", join_pairs=[["id", "region_id"]])
+        home = DatasetRelationship(to="regions", name="home", from_columns=[p[0] for p in REGION_PAIRS], to_columns=[p[1] for p in REGION_PAIRS])
+        back = DatasetRelationship(to="customers", name="home", from_columns=["id"], to_columns=["region_id"])
         merge = EdgeMerge(datasets={"customers": customers(home), "regions": regions().model_copy(
             update={"relationships": [back]})})
         with pytest.raises(QueryExtensionError, match="matches 2 edges"):
@@ -253,9 +253,9 @@ class TestNewEdges:
             ext("regions", relationships=[join("customers", [["manager_id", "id"]], name="manager")]),
         ])
         stored = with_datasets(
-            customers(DatasetRelationship(to="regions", name="home_region", join_pairs=REGION_PAIRS)),
+            customers(DatasetRelationship(to="regions", name="home_region", from_columns=[p[0] for p in REGION_PAIRS], to_columns=[p[1] for p in REGION_PAIRS])),
             regions().model_copy(update={"relationships": [
-                DatasetRelationship(to="customers", name="manager", join_pairs=[["manager_id", "id"]])]}),
+                DatasetRelationship(to="customers", name="manager", from_columns=["manager_id"], to_columns=["id"])]}),
         )
         async with shop(dialect) as engine:
             with pytest.raises(CircularRelationshipPathError):
@@ -266,9 +266,9 @@ class TestNewEdges:
 
     async def test_a_query_written_join_to_a_stage_wins_over_a_same_named_stored_edge(self, dialect) -> None:
         stage = q(name="customers", population="orders", dimensions=["customer_id"],
-                  metrics=[{"expression": "sum(amount)", "name": "spent"}])
+                  metrics=[{"metric": "sum(amount)", "alias": "spent"}])
         root = q(population="orders", dimensions=["customers.spent"],
-                 metrics=[{"expression": "sum(amount)", "name": "a"}],
+                 metrics=[{"metric": "sum(amount)", "alias": "a"}],
                  extensions=[ext("orders", relationships=[join("customers", [["customer_id", "customer_id"]])])])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])

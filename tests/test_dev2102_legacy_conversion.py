@@ -30,9 +30,9 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import SAVED, deprecated_in, deprecations, mcp_payload, orders_engine, payload_of
 
 LEGACY = {
-    "source_name": "orders",
+    "dataset": "orders",
     "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}],
-    "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
+    "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
 }
 
 
@@ -177,8 +177,8 @@ class TestInternalProducers:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=db))
         model = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE), DatasetField(name="qty", datatype=DataType.INT)])
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT), DatasetField(name="qty", datatype=DataType.INTEGER)])
         await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         sent: list[SlayerQuery] = []
@@ -202,9 +202,9 @@ class TestInternalProducers:
 
     def test_facade_dynamic_join_emits_the_current_form(self, recorded) -> None:
         orders = SlayerDataset(name="orders", data_source="jaffle", sql_table="orders", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="store_id", datatype=DataType.INT)])
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="store_id", datatype=DataType.INTEGER)])
         stores = SlayerDataset(name="stores", data_source="jaffle", sql_table="stores", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)])
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)])
         sql = (
             'SELECT "Stores"."name" AS "Stores__name" FROM "public"."orders" '
             'LEFT JOIN (SELECT "public"."stores"."id" AS "id", "public"."stores"."name" AS "name" '

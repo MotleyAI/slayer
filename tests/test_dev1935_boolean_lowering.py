@@ -21,6 +21,8 @@ from slayer.ir.planned import PlannedQuery, SemiJoinHop
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1935_fixtures import (
     ASSOC_OR,
     ASSOC_OR_ABSENT,
@@ -69,7 +71,7 @@ from tests._dev1935_fixtures import (
 
 MODES = ["broadcast", "associate", "error"]
 
-SPEND = DatasetMetric(expression="sum(spend)", name="sp")
+SPEND = QueryMetric(metric="sum(spend)", alias="sp")
 SPEND_X = DatasetMetric(expression="sum(customers.spend)", name="csp")
 PARTITIONED = DatasetMetric(expression="sum(spend, partition_by=tier)", name="pt")
 

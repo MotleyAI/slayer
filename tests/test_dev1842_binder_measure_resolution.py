@@ -43,9 +43,9 @@ def _dataset(metrics) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
         metrics=metrics,
         default_time_dimension="created_at",
@@ -55,7 +55,7 @@ def _dataset(metrics) -> SlayerDataset:
 async def _gen(dataset, expression, **kw) -> str:
     return await _engine_generate(
         query=SlayerQuery.model_validate({"population": "orders",
-                                          "metrics": [{"expression": expression, "name": "x"}], **kw}),
+                                          "metrics": [{"metric": expression, "alias": "x"}], **kw}),
         dataset=dataset, dialect="duckdb", validate=False,
     )
 
@@ -188,7 +188,7 @@ class TestStageSchemaScope:
     def test_dotted_ref_in_stage_schema_is_rejected(self) -> None:
         stage = StageSchema(
             relation_name="s",
-            fields=[StageField(name="aov", sql_alias="aov", datatype=DataType.DOUBLE)],
+            fields=[StageField(name="aov", sql_alias="aov", datatype=DataType.FLOAT)],
         )
         parsed = parse_expr("customers.aov")
         bundle = ResolvedSourceBundle(dialect="duckdb")

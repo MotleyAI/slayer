@@ -20,7 +20,7 @@ def _shape(rel: dict) -> tuple:
 
 
 def _to_orders(cardinality: RelationshipCardinality | None) -> DatasetRelationship:
-    return DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]], cardinality=cardinality)
+    return DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"], cardinality=cardinality)
 
 
 _FK = ("orders", "customers", ["customer_id"], ["id"])
@@ -64,7 +64,7 @@ async def test_undetermined_cardinality_proven_by_source_key(env) -> None:
 
 
 async def test_undetermined_cardinality_not_provable_is_reported(env) -> None:
-    unkeyed = DatasetRelationship(to="orders", join_pairs=[["status", "status"]])
+    unkeyed = DatasetRelationship(to="orders", from_columns=["status"], to_columns=["status"])
     result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(relationships=[unkeyed]))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
     [entry] = mentions(result, "visits", severity="dropped")
@@ -74,7 +74,7 @@ async def test_undetermined_cardinality_not_provable_is_reported(env) -> None:
 
 
 async def test_many_to_many_join_is_reported(env) -> None:
-    m2m = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+    m2m = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                     cardinality=RelationshipCardinality.MANY_TO_MANY)
     result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, joins=[]), visits(relationships=[m2m]))
     assert relationships(result.document) == []
@@ -89,7 +89,7 @@ async def test_relationship_named_after_its_join(env) -> None:
 
 
 async def test_generated_relationship_names_are_unique(env) -> None:
-    to_cust = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+    to_cust = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                         cardinality=RelationshipCardinality.MANY_TO_ONE)
     result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(relationships=[to_cust]))
     names = [r["name"] for r in relationships(result.document)]

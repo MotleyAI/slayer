@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1865_fixtures import (
     BAND35,
     CITY_TOTAL,
     REGION_TOTAL,
-    DatasetMetric,
     q,
     rows_by,
 )
@@ -34,13 +35,13 @@ class TestCrossModelPartitionedFilter:
     ) -> None:
         base = q(
             dimensions=["customers.regions.name", "customers.tier"],
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         )
         unfiltered = rows_by(await exec_engine.execute(base), RK_REGION, RK_TIER)
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
             filter=["sum(customers.spend, partition_by=customers.regions.name) > 100"],
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
         )), RK_REGION, RK_TIER)
         # RegN partition total 300 > 100 survives; RegS total 50 does not.
         assert {k[0] for k in filtered} == {"RegN"}
@@ -56,10 +57,10 @@ class TestCrossModelPartitionedFilter:
         base = q(
             dimensions=["customers.regions.name", "customers.tier"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="sp"),
-                DatasetMetric(
-                    expression="sum(customers.spend, partition_by=customers.regions.name)",
-                    name="rsp",
+                QueryMetric(metric="sum(customers.spend)", alias="sp"),
+                QueryMetric(
+                    metric="sum(customers.spend, partition_by=customers.regions.name)",
+                    alias="rsp",
                 ),
             ],
         )
@@ -68,10 +69,10 @@ class TestCrossModelPartitionedFilter:
             dimensions=["customers.regions.name", "customers.tier"],
             filter=["sum(customers.spend, partition_by=customers.regions.name) > 100"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="sp"),
-                DatasetMetric(
-                    expression="sum(customers.spend, partition_by=customers.regions.name)",
-                    name="rsp",
+                QueryMetric(metric="sum(customers.spend)", alias="sp"),
+                QueryMetric(
+                    metric="sum(customers.spend, partition_by=customers.regions.name)",
+                    alias="rsp",
                 ),
             ],
         )), RK_REGION, RK_TIER)
@@ -92,13 +93,13 @@ class TestLocalPartitionedFilter:
     async def test_keep_rows_whose_partition_total_qualifies(self, exec_engine) -> None:
         base = q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         unfiltered = rows_by(await exec_engine.execute(base), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         # North (100) and NULL-region (60) qualify; South (50) does not.
         assert {k for k in filtered} == {k for k in unfiltered if REGION_TOTAL[k[0]] > 50}
@@ -114,12 +115,12 @@ class TestLocalPartitionedFilter:
         combined = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         separate = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50", "city != 'CityB'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         assert key(combined) == key(separate)
 
@@ -133,12 +134,12 @@ class TestComputedDimAggregateMixing:
         # masks per base row before re-aggregation — a field-typed conjunct.
         dims = ["region", "city", {"expression": BAND35, "name": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
-            dimensions=dims, metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            dimensions=dims, metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=dims,
             filter=["band == 1 or channel == 'app'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         # Row mask keeps a row iff its city total > 35 OR its channel is app.
         assert set(filtered) <= set(unfiltered)
@@ -154,12 +155,12 @@ class TestComputedDimAggregateMixing:
         # query grain — a measure-typed conjunct that prunes cells only.
         dims = ["region", "city", {"expression": BAND35, "name": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
-            dimensions=dims, metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            dimensions=dims, metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=dims,
             filter=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         expected = {k for k, v in CITY_TOTAL.items() if v > 45}
         assert set(filtered) == expected
@@ -177,12 +178,12 @@ class TestComputedDimOwnAggregateIsField:
     async def test_filter_on_own_partition_aggregate_row_masks(self, exec_engine) -> None:
         dims = ["region", "city", {"expression": BAND35, "name": "band"}]
         unfiltered = rows_by(await exec_engine.execute(q(
-            dimensions=dims, metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            dimensions=dims, metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         filtered = rows_by(await exec_engine.execute(q(
             dimensions=dims,
             filter=["sum(amount, partition_by=city) > 45"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         expected = {k for k, v in CITY_TOTAL.items() if v > 45}
         assert set(filtered) == expected

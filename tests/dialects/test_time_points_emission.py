@@ -37,7 +37,7 @@ async def _sql(
 
 
 def _literal(dialect: str, value: date) -> str:
-    dt = DataType.TIMESTAMP if isinstance(value, datetime) else DataType.DATE
+    dt = DataType.DATETIME if isinstance(value, datetime) else DataType.DATE
     d = get_dialect(dialect)
     return d.build_temporal_literal(value=value, dt=dt).sql(dialect=d.sqlglot_name)
 

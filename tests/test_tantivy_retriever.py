@@ -34,8 +34,8 @@ def _dataset(name: str = "orders") -> SlayerDataset:
         data_source="mydb",
         description=f"{name} fact table",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT,
                    description="line amount in cents"),
         ],
     )

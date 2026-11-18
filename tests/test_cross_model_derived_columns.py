@@ -19,8 +19,8 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import DatasetFieldCycleError
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import FieldRef, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -79,9 +79,9 @@ async def _save_a_b(storage: YAMLStorage, *, a_columns: list[DatasetField]) -> S
         data_source="test",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE),
-            DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+            DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model_b)
@@ -90,12 +90,12 @@ async def _save_a_b(storage: YAMLStorage, *, a_columns: list[DatasetField]) -> S
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
             *a_columns,
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_a)
     return model_a
@@ -115,7 +115,7 @@ async def test_cross_model_dim_derived_column_via_query(tmp_path) -> None:
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         population="A",
-        dimensions=[FieldRef(name="foo_normalized", dataset="B")],
+        dimensions=[QueryDimension(field="B.foo_normalized")],
     )
     sql = await _gen_sql(engine, query, model_a)
     assert "B.foo_raw / 100.0" in _norm(sql), f"Expected qualified B.foo_raw, got:\n{sql}"
@@ -133,13 +133,13 @@ async def test_quoted_self_identity_column_emits_quoted_and_no_cycle(tmp_path) -
         data_source="test",
         sql_table="merchant",
         fields=[
-            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.TEXT),
+            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model)
     query = SlayerQuery(
         population="merchant",
-        dimensions=[FieldRef(name="legalEntityType")],
+        dimensions=[QueryDimension(field="legalEntityType")],
     )
     sql = await _gen_sql(engine, query, model)
     assert '"legalEntityType"' in sql, f"Expected quoted identifier preserved, got:\n{sql}"
@@ -152,23 +152,23 @@ async def test_quoted_self_identity_column_is_qualified_across_a_join(tmp_path) 
     other = SlayerDataset(
         name="other", data_source="test", sql_table="other",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.STRING),
         ],
     )
     merchant = SlayerDataset(
         name="merchant", data_source="test", sql_table="merchant",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="other_id", datatype=DataType.INT),
-            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="other_id", datatype=DataType.INTEGER),
+            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="other", join_pairs=[["other_id", "id"]])],
+        relationships=[DatasetRelationship(to="other", from_columns=["other_id"], to_columns=["id"])],
     )
     await storage.save_dataset(other)
     query = SlayerQuery(
         population="merchant",
-        dimensions=[FieldRef(name="legalEntityType"), FieldRef(name="other.legalEntityType")],
+        dimensions=[QueryDimension(field="legalEntityType"), QueryDimension(field="other.legalEntityType")],
     )
     sql = await _gen_sql(engine=engine, query=query, dataset=merchant)
     assert 'merchant."legalEntityType"' in sql, sql
@@ -182,12 +182,12 @@ async def test_derived_over_quoted_self_identity_keeps_quoting(tmp_path) -> None
     model = SlayerDataset(
         name="merchant", data_source="test", sql_table="merchant",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.TEXT),
-            DatasetField(name="label", sql="legalEntityType", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.STRING),
+            DatasetField(name="label", sql="legalEntityType", datatype=DataType.STRING),
         ],
     )
-    query = SlayerQuery(population="merchant", dimensions=[FieldRef(name="label")])
+    query = SlayerQuery(population="merchant", dimensions=[QueryDimension(field="label")])
     sql = await _gen_sql(engine=engine, query=query, dataset=model)
     assert '"legalEntityType"' in sql, sql
     assert _no_bare_derived_ref(sql, "merchant", "label"), sql  # label was inlined
@@ -204,12 +204,12 @@ async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None
         DatasetField(
             name="ratio_using_derived",
             sql="A.bar / B.foo_normalized",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         ),
     ])
     query = SlayerQuery(
         population="A",
-        dimensions=[FieldRef(name="ratio_using_derived")],
+        dimensions=[QueryDimension(field="ratio_using_derived")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -227,9 +227,9 @@ async def test_cross_model_base_column_still_works(tmp_path) -> None:
     """Sanity: columns that reference a *base* joined column still work."""
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
-        DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.DOUBLE),
+        DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.FLOAT),
     ])
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="ratio_using_base")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="ratio_using_base")])
     sql = await _gen_sql(engine, query, model_a)
     assert "A.bar / B.foo_raw" in _norm(sql), f"Base column ref broken:\n{sql}"
 
@@ -246,13 +246,13 @@ async def test_local_columnsql_references_local_derived(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="c2")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c2")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1"), (
@@ -275,14 +275,14 @@ async def test_chain_of_three_derived_columns(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="A.c1 + 10", datatype=DataType.DOUBLE),
-            DatasetField(name="c3", sql="A.c2 + 100", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="A.c1 + 10", datatype=DataType.FLOAT),
+            DatasetField(name="c3", sql="A.c2 + 100", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="c3")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c3")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1")
@@ -309,32 +309,32 @@ async def test_joined_model_derived_referencing_further_joined(tmp_path) -> None
     model_c = SlayerDataset(
         name="C", data_source="test", sql_table="C",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model_c)
     model_b = SlayerDataset(
         name="B", data_source="test", sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c_id", sql="c_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c_id", sql="c_id", datatype=DataType.FLOAT),
             # Derived on B referencing C (B joins C).
-            DatasetField(name="b_display", sql="C.name", datatype=DataType.TEXT),
+            DatasetField(name="b_display", sql="C.name", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="C", join_pairs=[["c_id", "id"]])],
+        relationships=[DatasetRelationship(to="C", from_columns=["c_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_b)
     model_a = SlayerDataset(
         name="A", data_source="test", sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_a)
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="b_display", dataset="B")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="B.b_display")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Must qualify under the canonical multi-hop alias B__C, not bare C.
@@ -366,9 +366,9 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         data_source="test",
         sql_table="C",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_c", sql="raw_c", datatype=DataType.DOUBLE),
-            DatasetField(name="x_derived", sql="raw_c * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_c", sql="raw_c", datatype=DataType.FLOAT),
+            DatasetField(name="x_derived", sql="raw_c * 2", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model_c)
@@ -377,10 +377,10 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         data_source="test",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c_id", sql="c_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c_id", sql="c_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="C", join_pairs=[["c_id", "id"]])],
+        relationships=[DatasetRelationship(to="C", from_columns=["c_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_b)
     model_a = SlayerDataset(
@@ -388,21 +388,21 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
-            DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
             # Use the path-style ref (B.C.x_derived) — A's column's sql can use
             # either dot or __ form.
             DatasetField(
                 name="ratio_multihop",
                 sql="A.bar / B.C.x_derived",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_a)
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="ratio_multihop")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="ratio_multihop")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "B__C", "x_derived"), (
@@ -425,9 +425,9 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name_raw", sql="name_raw", datatype=DataType.TEXT),
-            DatasetField(name="name_upper", sql="UPPER(name_raw)", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name_raw", sql="name_raw", datatype=DataType.STRING),
+            DatasetField(name="name_upper", sql="UPPER(name_raw)", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(regions)
@@ -436,10 +436,10 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     await storage.save_dataset(customers)
     warehouses = SlayerDataset(
@@ -447,10 +447,10 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="warehouses",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     await storage.save_dataset(warehouses)
     orders = SlayerDataset(
@@ -458,22 +458,22 @@ async def test_diamond_join_derived(tmp_path) -> None:
         data_source="test",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT),
             DatasetField(
                 name="diamond_concat",
                 sql="customers.regions.name_upper || '/' || warehouses.regions.name_upper",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
     )
     await storage.save_dataset(orders)
-    query = SlayerQuery(population="orders", dimensions=[FieldRef(name="diamond_concat")])
+    query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="diamond_concat")])
     sql = await _gen_sql(engine, query, orders)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "customers__regions", "name_upper")
@@ -494,12 +494,12 @@ async def test_cycle_detection(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c1", sql="A.c2 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="A.c1 - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", sql="A.c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="A.c1 - 1", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="c1")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c1")])
     with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
         await _gen_sql(engine, query, model_a)
     # The chain must follow recursion order, not a random frozenset
@@ -524,11 +524,11 @@ async def test_self_reference_terminates(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="bar")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="bar")])
     sql = await _gen_sql(engine, query, model_a)
     assert "A.bar" in _norm(sql)
 
@@ -544,10 +544,10 @@ async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
         DatasetField(
             name="mixed",
             sql="A.bar / B.foo_raw + B.foo_normalized",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         ),
     ])
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="mixed")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="mixed")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert "B.foo_raw / 100.0" in norm  # derived expanded
@@ -565,7 +565,7 @@ async def test_measure_aggregation_over_cross_model_derived(tmp_path) -> None:
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         population="A",
-        metrics=[DatasetMetric(expression="sum(B.foo_normalized)")],
+        metrics=[QueryMetric(metric="sum(B.foo_normalized)")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -590,12 +590,12 @@ async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_p
         DatasetField(
             name="ratio_using_derived",
             sql="A.bar / B.foo_normalized",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         ),
     ])
     query = SlayerQuery(
         population="A",
-        metrics=[DatasetMetric(expression="sum(ratio_using_derived)")],
+        metrics=[QueryMetric(metric="sum(ratio_using_derived)")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -615,7 +615,7 @@ async def test_filter_referencing_derived_column(tmp_path) -> None:
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         population="A",
-        dimensions=[FieldRef(name="bar")],
+        dimensions=[QueryDimension(field="bar")],
         filter=["B.foo_normalized > 0.5"],
     )
     sql = await _gen_sql(engine, query, model_a)
@@ -645,15 +645,15 @@ async def test_columnsql_references_unrelated_table_alias_left_alone(tmp_path) -
             "JOIN totally_external t ON a.id = t.a_id"
         ),
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
             # References the unrelated alias from inside the inline sql.
             # Wait — actually this is a same-model column so the expander
             # has no business touching it. Use a literal external reference:
-            DatasetField(name="passthrough", sql="bar + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="passthrough", sql="bar + 1", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="passthrough")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="passthrough")])
     sql = await _gen_sql(engine, query, model_a)
     # Should not raise. Bare ``bar`` is qualified to A in the outer wrapper;
     # ``some_col`` (referenced inside the model.sql subquery) is left untouched.
@@ -674,11 +674,11 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
     # ``foo_raw`` onto A so it collides with B's column of the same name.
     model_a = await _save_a_b(
         storage,
-        a_columns=[DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE)],
+        a_columns=[DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT)],
     )
     query = SlayerQuery(
         population="A",
-        dimensions=[FieldRef(name="foo_normalized", dataset="B")],
+        dimensions=[QueryDimension(field="B.foo_normalized")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -697,9 +697,9 @@ async def test_disambiguation_when_both_models_have_same_column_name(tmp_path) -
 
 
 _DEFAULT_C_COLUMNS: list[DatasetField] = [
-    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-    DatasetField(name="raw_c", sql="raw_c", datatype=DataType.DOUBLE),
-    DatasetField(name="x_derived", sql="raw_c * 2", datatype=DataType.DOUBLE),
+    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+    DatasetField(name="raw_c", sql="raw_c", datatype=DataType.FLOAT),
+    DatasetField(name="x_derived", sql="raw_c * 2", datatype=DataType.FLOAT),
 ]
 
 
@@ -716,20 +716,20 @@ async def _save_a_b_c(
     model_b = SlayerDataset(
         name="B", data_source="test", sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c_id", sql="c_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c_id", sql="c_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="C", join_pairs=[["c_id", "id"]])],
+        relationships=[DatasetRelationship(to="C", from_columns=["c_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_b)
     model_a = SlayerDataset(
         name="A", data_source="test", sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
-            DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_a)
     return model_a
@@ -742,7 +742,7 @@ async def test_multihop_query_dim_to_derived_target_column(tmp_path) -> None:
     model_a = await _save_a_b_c(storage)
     query = SlayerQuery(
         population="A",
-        dimensions=[FieldRef(name="x_derived", dataset="B.C")],
+        dimensions=[QueryDimension(field="B.C.x_derived")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -770,7 +770,7 @@ async def test_multihop_cross_model_measure_over_derived_target(tmp_path) -> Non
     model_a = await _save_a_b_c(storage)
     query = SlayerQuery(
         population="A",
-        metrics=[DatasetMetric(expression="sum(B.C.x_derived)")],
+        metrics=[QueryMetric(metric="sum(B.C.x_derived)")],
     )
     sql = await _gen_sql(engine, query, model_a)
     # Parse-sanity first so a malformed query short-circuits before the
@@ -802,7 +802,7 @@ async def test_multihop_filter_on_derived_target_column(tmp_path) -> None:
     model_a = await _save_a_b_c(storage)
     query = SlayerQuery(
         population="A",
-        dimensions=[FieldRef(name="bar")],
+        dimensions=[QueryDimension(field="bar")],
         filter=["B.C.x_derived > 0"],
     )
     sql = await _gen_sql(engine, query, model_a)
@@ -823,10 +823,10 @@ async def test_multihop_time_dim_to_derived_target_column(tmp_path) -> None:
     path through ``_maybe_expand`` from regular dims; pin it."""
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b_c(storage, c_columns=[
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="raw_ts", sql="raw_ts", datatype=DataType.TIMESTAMP),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="raw_ts", sql="raw_ts", datatype=DataType.DATETIME),
         # Derived passthrough — we just want it derived-shaped (sql != name).
-        DatasetField(name="shifted_ts", sql="raw_ts + 0", datatype=DataType.TIMESTAMP),
+        DatasetField(name="shifted_ts", sql="raw_ts + 0", datatype=DataType.DATETIME),
     ])
     query = SlayerQuery(
         population="A",
@@ -859,32 +859,32 @@ async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
     panels = SlayerDataset(
         name="solar_panels", data_source="test", sql_table="solar_panels",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="energy_out", sql="energy_out", datatype=DataType.DOUBLE),
-            DatasetField(name="energy_in", sql="energy_in", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="energy_out", sql="energy_out", datatype=DataType.FLOAT),
+            DatasetField(name="energy_in", sql="energy_in", datatype=DataType.FLOAT),
             # The derived column from the issue's repro.
             DatasetField(name="panel_efficiency",
                    sql="energy_out / energy_in",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(panels)
     arrays = SlayerDataset(
         name="solar_arrays", data_source="test", sql_table="solar_arrays",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="primary_panel_id", sql="primary_panel_id", datatype=DataType.DOUBLE),
-            DatasetField(name="area", sql="area", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="primary_panel_id", sql="primary_panel_id", datatype=DataType.FLOAT),
+            DatasetField(name="area", sql="area", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(to="solar_panels",
-                         join_pairs=[["primary_panel_id", "id"]])],
+                         from_columns=["primary_panel_id"], to_columns=["id"])],
     )
     await storage.save_dataset(arrays)
     # Dim-side: the issue's primary failure mode.
     dim_sql = await _gen_sql(
         engine,
         SlayerQuery(population="solar_arrays",
-                    dimensions=[FieldRef(name="panel_efficiency", dataset="solar_panels")]),
+                    dimensions=[QueryDimension(field="solar_panels.panel_efficiency")]),
         arrays,
     )
     norm = _norm(dim_sql)
@@ -895,7 +895,7 @@ async def test_dev_1339_solar_panels_repro(tmp_path) -> None:
     measure_sql = await _gen_sql(
         engine,
         SlayerQuery(population="solar_arrays",
-                    metrics=[DatasetMetric(expression="avg(solar_panels.panel_efficiency)")]),
+                    metrics=[QueryMetric(metric="avg(solar_panels.panel_efficiency)")]),
         arrays,
     )
     norm = _norm(measure_sql)
@@ -913,46 +913,46 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
     regions = SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name_raw", sql="name_raw", datatype=DataType.TEXT),
-            DatasetField(name="name_upper", sql="UPPER(name_raw)", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name_raw", sql="name_raw", datatype=DataType.STRING),
+            DatasetField(name="name_upper", sql="UPPER(name_raw)", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(regions)
     customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     await storage.save_dataset(customers)
     warehouses = SlayerDataset(
         name="warehouses", data_source="test", sql_table="warehouses",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     await storage.save_dataset(warehouses)
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
     )
     await storage.save_dataset(orders)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="max(customers.regions.name_upper)")],
+        metrics=[QueryMetric(metric="max(customers.regions.name_upper)")],
     )
     sql = await _gen_sql(engine, query, orders)
     norm = _norm(sql)
@@ -985,8 +985,8 @@ async def test_diamond_path_cross_model_measure_over_derived_target(tmp_path) ->
 async def test_generated_sql_parses(tmp_path, scenario) -> None:
     engine, storage = _engine_with_storage(tmp_path)
     model_a = await _save_a_b(storage, a_columns=[
-        DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.DOUBLE),
-        DatasetField(name="ratio_using_derived", sql="A.bar / B.foo_normalized", datatype=DataType.DOUBLE),
+        DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.FLOAT),
+        DatasetField(name="ratio_using_derived", sql="A.bar / B.foo_normalized", datatype=DataType.FLOAT),
     ])
     query = SlayerQuery(population="A", dimensions=[FieldRef(name=scenario)])
     sql = await _gen_sql(engine, query, model_a)
@@ -1034,9 +1034,9 @@ async def _orders_customers_storage(tmp_path) -> YAMLStorage:
     await storage.save_dataset(SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
         ],
     ))
     return storage
@@ -1056,21 +1056,21 @@ async def _save_orders_with_is_eu(
     test-specific columns / joins / filters via the keyword args.
     """
     base_cols: list[DatasetField] = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
     ]
     if include_amount:
-        base_cols.append(DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE))
+        base_cols.append(DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT))
     base_cols.append(DatasetField(
         name="is_eu",
         sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
-        datatype=DataType.DOUBLE,
+        datatype=DataType.FLOAT,
     ))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=base_cols + list(extra_columns or []),
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             *(extra_joins or []),
         ],
         filters=list(filters or []),
@@ -1091,7 +1091,7 @@ async def test_dev1334_query_filter_on_bare_derived_col_with_cross_table_sql_add
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         filter=["is_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1118,19 +1118,19 @@ async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
         storage,
         include_amount=False,
         extra_columns=[
-            DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
+            DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
             # Chains through is_eu.
             DatasetField(
                 name="is_premium_eu",
                 sql="CASE WHEN is_eu = 1 AND tier = 'gold' THEN 1 ELSE 0 END",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         filter=["is_premium_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1151,36 +1151,36 @@ async def test_dev1334_query_filter_on_multi_hop_derived_col_adds_all_prefixes(
     await storage.save_dataset(SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     ))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
             DatasetField(
                 name="region_label",
                 sql="customers.regions.name",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     await storage.save_dataset(orders)
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         filter=["region_label = 'US'"],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1201,7 +1201,7 @@ async def test_dev1334_model_level_filter_on_bare_derived_col_with_cross_table_s
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1229,14 +1229,14 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
                 name="eu_amount",
                 sql="amount",
                 filter="is_eu = 1",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="sum(eu_amount)", name="eu_total")],
+        metrics=[QueryMetric(metric="sum(eu_amount)", alias="eu_total")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1267,10 +1267,10 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
 # ---------------------------------------------------------------------------
 
 _CLAIM_LP_JOIN = DatasetRelationship(
-    to="loss_payment", join_pairs=[["id", "id"]],
+    to="loss_payment", from_columns=["id"], to_columns=["id"],
 )
 _CLAIM_LP_JOIN_INNER = DatasetRelationship(
-    to="loss_payment", join_pairs=[["id", "id"]],
+    to="loss_payment", from_columns=["id"], to_columns=["id"],
     join_type="inner",
 )
 
@@ -1282,7 +1282,7 @@ def _loss_payment_dataset(*, extra_columns, joins=None) -> SlayerDataset:
     return SlayerDataset(
         name="loss_payment", data_source="test", sql_table="Loss_Payment",
         fields=[
-            DatasetField(name="id", sql="Claim_Amount_Identifier", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="id", sql="Claim_Amount_Identifier", datatype=DataType.FLOAT, primary_key=True),
             *extra_columns,
         ],
         relationships=list(joins or []),
@@ -1302,7 +1302,7 @@ async def _claim_amount_filter_sql(
     claim_amount = SlayerDataset(
         name="claim_amount", data_source="test", sql_table="Claim_Amount",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
             *claim_columns,
         ],
         relationships=list(claim_joins),
@@ -1323,12 +1323,12 @@ async def test_dev1494_column_filter_dotted_base_ref_adds_join(tmp_path) -> None
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[_loss_payment_dataset(extra_columns=[
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
         claim_columns=[
-            DatasetField(name="loss_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.DOUBLE),
+            DatasetField(name="loss_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
-        metrics=[DatasetMetric(expression="sum(loss_amt)", name="amt")],
+        metrics=[QueryMetric(metric="sum(loss_amt)", alias="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"loss_payment join not discovered from dotted-base column filter:\n{sql}"
@@ -1348,25 +1348,25 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
     claim = SlayerDataset(
         name="claim", data_source="test", sql_table="Claim",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="state", sql="state", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="state", sql="state", datatype=DataType.STRING),
         ],
     )
     loss_payment = _loss_payment_dataset(
         extra_columns=[
-            DatasetField(name="claim_id", sql="claim_id", datatype=DataType.DOUBLE),
+            DatasetField(name="claim_id", sql="claim_id", datatype=DataType.FLOAT),
             # Derived column on the joined model whose sql reaches a further join.
-            DatasetField(name="deep_flag", sql="CASE WHEN claim.state = 'open' THEN 1 ELSE 0 END", datatype=DataType.DOUBLE),
+            DatasetField(name="deep_flag", sql="CASE WHEN claim.state = 'open' THEN 1 ELSE 0 END", datatype=DataType.FLOAT),
         ],
-        joins=[DatasetRelationship(to="claim", join_pairs=[["claim_id", "id"]])],
+        joins=[DatasetRelationship(to="claim", from_columns=["claim_id"], to_columns=["id"])],
     )
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[claim, loss_payment],
         claim_columns=[
-            DatasetField(name="deep_amt", sql="amount", filter="loss_payment.deep_flag = 1", datatype=DataType.DOUBLE),
+            DatasetField(name="deep_amt", sql="amount", filter="loss_payment.deep_flag = 1", datatype=DataType.FLOAT),
         ],
-        metrics=[DatasetMetric(expression="sum(deep_amt)", name="amt")],
+        metrics=[QueryMetric(metric="sum(deep_amt)", alias="amt")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate loss_payment join missing: {aliases}\nSQL:\n{sql}"
@@ -1396,12 +1396,12 @@ async def test_dev1494_model_filter_dotted_derived_ref_inlined(tmp_path) -> None
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[_loss_payment_dataset(extra_columns=[
-            DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
+            DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
         ])],
-        claim_columns=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
+        claim_columns=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
         claim_filters=["loss_payment.has_flag = 1"],
-        metrics=[DatasetMetric(expression="sum(amount)", name="amt")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"placeholder join not kept for model-filter has_flag idiom:\n{sql}"
@@ -1427,15 +1427,15 @@ async def test_dev1494_column_filter_does_not_disturb_sibling_unfiltered_measure
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[_loss_payment_dataset(extra_columns=[
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
         claim_columns=[
-            DatasetField(name="total_amt", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.DOUBLE),
+            DatasetField(name="total_amt", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
         metrics=[
-            DatasetMetric(expression="sum(total_amt)", name="total"),
-            DatasetMetric(expression="sum(paid_amt)", name="paid"),
+            QueryMetric(metric="sum(total_amt)", alias="total"),
+            QueryMetric(metric="sum(paid_amt)", alias="paid"),
         ],
     )
     # The unfiltered measure is a plain SUM over the base column, unguarded by
@@ -1458,16 +1458,16 @@ async def test_dev1494_column_filter_exists_subquery_ref_not_scanned_for_joins(
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[_loss_payment_dataset(extra_columns=[
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
         # Inner-scope ``loss_payment`` ref lives inside a subquery; it must not
         # pull an outer LEFT JOIN loss_payment into the base FROM.
         claim_columns=[DatasetField(
             name="exists_amt", sql="amount",
             filter="EXISTS (SELECT 1 FROM Loss_Payment AS loss_payment WHERE loss_payment.status = 'paid')",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         )],
-        metrics=[DatasetMetric(expression="sum(exists_amt)", name="amt")],
+        metrics=[QueryMetric(metric="sum(exists_amt)", alias="amt")],
     )
     # No OUTER join to loss_payment is added from the inner-scope ref.
     assert "loss_payment" not in _join_aliases(sql), (
@@ -1485,13 +1485,13 @@ async def test_dev1494_column_filter_constant_placeholder_join_kept_sqlite(
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[_loss_payment_dataset(extra_columns=[
-            DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
+            DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
         ])],
         claim_columns=[
-            DatasetField(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE),
+            DatasetField(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
         ],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
-        metrics=[DatasetMetric(expression="sum(loss_amt)", name="amt")],
+        metrics=[QueryMetric(metric="sum(loss_amt)", alias="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), f"placeholder join not kept:\n{sql}"
     assert _no_bare_derived_ref(sql, "loss_payment", "has_flag"), (
@@ -1514,21 +1514,21 @@ async def test_dev1494_column_filter_multihop_dotted_input_adds_all_joins(
     claim = SlayerDataset(
         name="claim", data_source="test", sql_table="Claim",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="state", sql="state", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="state", sql="state", datatype=DataType.STRING),
         ],
     )
     loss_payment = _loss_payment_dataset(
-        extra_columns=[DatasetField(name="claim_id", sql="claim_id", datatype=DataType.DOUBLE)],
-        joins=[DatasetRelationship(to="claim", join_pairs=[["claim_id", "id"]])],
+        extra_columns=[DatasetField(name="claim_id", sql="claim_id", datatype=DataType.FLOAT)],
+        joins=[DatasetRelationship(to="claim", from_columns=["claim_id"], to_columns=["id"])],
     )
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[claim, loss_payment],
         claim_columns=[
-            DatasetField(name="amt", sql="amount", filter="loss_payment.claim.state = 'open'", datatype=DataType.DOUBLE),
+            DatasetField(name="amt", sql="amount", filter="loss_payment.claim.state = 'open'", datatype=DataType.FLOAT),
         ],
-        metrics=[DatasetMetric(expression="sum(amt)", name="a")],
+        metrics=[QueryMetric(metric="sum(amt)", alias="a")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate join missing: {aliases}\nSQL:\n{sql}"
@@ -1548,13 +1548,13 @@ async def test_dev1494_column_filter_join_discovered_in_composite_measure(
     sql = await _claim_amount_filter_sql(
         tmp_path,
         extra_datasets=[_loss_payment_dataset(extra_columns=[
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ])],
         claim_columns=[
-            DatasetField(name="total_amt", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.DOUBLE),
+            DatasetField(name="total_amt", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
-        metrics=[DatasetMetric(expression="sum(paid_amt) + sum(total_amt)", name="combo")],
+        metrics=[QueryMetric(metric="sum(paid_amt) + sum(total_amt)", alias="combo")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"composite-measure filtered-aggregate join not discovered:\n{sql}"
@@ -1574,36 +1574,36 @@ async def test_dev1494_cross_model_cte_target_filter_adds_join(tmp_path) -> None
     await storage.save_dataset(SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="is_premium", sql="is_premium", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="is_premium", sql="is_premium", datatype=DataType.FLOAT),
         ],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
             # Cross-model target column whose Column.filter crosses customers→regions.
-            DatasetField(name="premium_rev", sql="revenue", filter="regions.is_premium = 1", datatype=DataType.DOUBLE),
+            DatasetField(name="premium_rev", sql="revenue", filter="regions.is_premium = 1", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     ))
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     await storage.save_dataset(orders)
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="sum(customers.premium_rev)", name="prem")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="sum(customers.premium_rev)", alias="prem")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "regions" in _join_aliases(sql), (
@@ -1624,20 +1624,20 @@ async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) 
     await storage.save_dataset(SlayerDataset(
         name="warehouses", data_source="test", sql_table="warehouses",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     ))
     orders = await _save_orders_with_is_eu(
         storage,
         include_amount=False,
-        extra_columns=[DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.DOUBLE)],
-        extra_joins=[DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]])],
+        extra_columns=[DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT)],
+        extra_joins=[DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"])],
     )
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         # Dotted ref → warehouses; bare-name ref → customers (via is_eu's chain).
         filter=["is_eu = 1 and warehouses.name = 'WH-1'"],
     )
@@ -1671,7 +1671,7 @@ async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         filter=[filter_expr],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1696,9 +1696,9 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="a", sql="orders.b + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="b", sql="orders.a - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a", sql="orders.b + 1", datatype=DataType.FLOAT),
+            DatasetField(name="b", sql="orders.a - 1", datatype=DataType.FLOAT),
         ],
     )
     # DEV-1410 added save-time cycle validation; this test pre-dates it and
@@ -1708,7 +1708,7 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         filter=["a = 0"],
     )
     with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
@@ -1743,14 +1743,14 @@ async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
             DatasetField(
                 name="bracket_eu",
                 sql="CASE WHEN [customers].[region] = 'EU' THEN 1 ELSE 0 END",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         filter=["bracket_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders, dialect="tsql")
@@ -1779,13 +1779,13 @@ async def test_dev1410_local_bare_ref_to_local_derived(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c1 * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c1 * 2", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="c2")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c2")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1"), (
@@ -1804,14 +1804,14 @@ async def test_dev1410_local_bare_ref_three_deep(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c1 + 10", datatype=DataType.DOUBLE),
-            DatasetField(name="c3", sql="c2 + 100", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c1 + 10", datatype=DataType.FLOAT),
+            DatasetField(name="c3", sql="c2 + 100", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="c3")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c3")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1")
@@ -1831,13 +1831,13 @@ async def test_dev1410_local_bare_ref_mixed_with_base(tmp_path) -> None:
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="derived_b", sql="raw_a * 2", datatype=DataType.DOUBLE),
-            DatasetField(name="mixed", sql="raw_a + derived_b", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="derived_b", sql="raw_a * 2", datatype=DataType.FLOAT),
+            DatasetField(name="mixed", sql="raw_a + derived_b", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="mixed")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="mixed")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "derived_b"), (
@@ -1857,28 +1857,28 @@ async def test_dev1410_local_bare_ref_inside_case_coalesce_nullif_cast(tmp_path)
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="x", sql="x", datatype=DataType.DOUBLE),
-            DatasetField(name="score", sql="x * 10", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="x", sql="x", datatype=DataType.FLOAT),
+            DatasetField(name="score", sql="x * 10", datatype=DataType.FLOAT),
             DatasetField(
                 name="case_use",
                 sql="CASE WHEN score > 50 THEN 1 ELSE 0 END",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="coalesce_use",
                 sql="COALESCE(score, 0)",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="nullif_use",
                 sql="NULLIF(score, 0)",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="cast_use",
                 sql="CAST(score AS REAL)",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
@@ -1904,20 +1904,20 @@ async def test_dev1410_local_bare_ref_to_derived_inside_subquery_left_alone(
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="score", sql="raw_a * 10", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="score", sql="raw_a * 10", datatype=DataType.FLOAT),
             # Bare ``score`` at root scope inlines; bare ``score`` inside the
             # subquery references the unrelated table's ``score`` column and
             # MUST be left alone.
             DatasetField(
                 name="mixed",
                 sql="(SELECT MAX(score) FROM unrelated_table) + score",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="mixed")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="mixed")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Root-scope ``score`` (rightmost operand) is inlined: A.raw_a * 10
@@ -1947,11 +1947,11 @@ async def test_dev1410_qualified_ref_to_derived_inside_subquery_left_alone(
                     "(SELECT 1 FROM some_other_table B "
                     "WHERE B.foo_normalized = 1) + bar"
                 ),
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="collide")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="collide")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Subquery-scope B.foo_normalized must NOT be rewritten to the inlined
@@ -1976,18 +1976,18 @@ async def test_dev1410_local_bare_ref_to_derived_inside_window_over_partition_in
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="bucket", sql="raw_a / 10", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="bucket", sql="raw_a / 10", datatype=DataType.FLOAT),
             # bare ``bucket`` used in the OVER PARTITION BY — root-scope.
             DatasetField(
                 name="rn",
                 sql="ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY id)",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="rn")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="rn")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "bucket"), (
@@ -2007,17 +2007,17 @@ async def test_dev1410_local_bare_ref_to_derived_inside_union_left_alone(
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="score", sql="raw_a + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="score", sql="raw_a + 1", datatype=DataType.FLOAT),
             DatasetField(
                 name="union_use",
                 sql="(SELECT score FROM other UNION SELECT 0) + score",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="union_use")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="union_use")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # The subquery's ``score`` (inside UNION) is left alone.
@@ -2039,9 +2039,9 @@ async def test_dev1410_local_bare_ref_to_derived_inside_values_left_alone(
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="score", sql="raw_a + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="score", sql="raw_a + 1", datatype=DataType.FLOAT),
             # Bare ``score`` inside a sub-SELECT with VALUES is a column of
             # the VALUES rowset, not A.score.
             DatasetField(
@@ -2050,11 +2050,11 @@ async def test_dev1410_local_bare_ref_to_derived_inside_values_left_alone(
                     "(SELECT score FROM (VALUES (1), (2)) AS v(score) LIMIT 1) "
                     "+ score"
                 ),
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="values_use")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="values_use")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Root-scope ``score`` is inlined.
@@ -2078,17 +2078,17 @@ async def test_dev1410_local_bare_ref_to_string_literal_lookalike_left_alone(
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
-            DatasetField(name="score", sql="raw_a + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
+            DatasetField(name="score", sql="raw_a + 1", datatype=DataType.FLOAT),
             DatasetField(
                 name="label",
                 sql="'score=' || CAST(score AS TEXT)",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="label")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="label")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # The literal 'score=' (with the equals sign) stays intact.
@@ -2111,8 +2111,8 @@ async def test_dev1410_local_bare_ref_with_double_underscore_name(tmp_path) -> N
         data_source="households",
         sql_table="infrastructure",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="dwelling_specs", sql="dwelling_specs", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="dwelling_specs", sql="dwelling_specs", datatype=DataType.STRING),
             DatasetField(
                 # The double-underscore in the NAME (path-from-leaf separator
                 # for auto-ingested JSON leaves) is the focus of this test.
@@ -2122,18 +2122,18 @@ async def test_dev1410_local_bare_ref_with_double_underscore_name(tmp_path) -> N
                 # the DEV-1410 exact-repro test through CASE-WHEN bodies.
                 name="dwelling_specs__Room_Count",
                 sql="dwelling_specs * 1.0",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="room_count_doubled",
                 sql="dwelling_specs__Room_Count * 2",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
     query = SlayerQuery(
         population="infrastructure",
-        dimensions=[FieldRef(name="room_count_doubled")],
+        dimensions=[QueryDimension(field="room_count_doubled")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -2157,12 +2157,12 @@ async def test_dev1410_local_bare_ref_cycle_raises_at_compile_time(tmp_path) -> 
         data_source="test",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[FieldRef(name="c1")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c1")])
     with pytest.raises(DatasetFieldCycleError) as exc_info:
         await _gen_sql(engine, query, model_a)
     # Backwards compat: existing call sites that catch ValueError still work.
@@ -2187,14 +2187,14 @@ async def test_dev1410_exact_repro(tmp_path) -> None:
         data_source="households",
         sql_table="infrastructure",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="wateraccess", sql="wateraccess", datatype=DataType.TEXT),
-            DatasetField(name="roadsurface", sql="roadsurface", datatype=DataType.TEXT),
-            DatasetField(name="parkavail", sql="parkavail", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="wateraccess", sql="wateraccess", datatype=DataType.STRING),
+            DatasetField(name="roadsurface", sql="roadsurface", datatype=DataType.STRING),
+            DatasetField(name="parkavail", sql="parkavail", datatype=DataType.STRING),
             DatasetField(
                 name="wateraccess_score",
                 sql="CASE WHEN LOWER(TRIM(wateraccess)) LIKE 'yes%' THEN 4 ELSE 1 END",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="roadsurface_score",
@@ -2202,12 +2202,12 @@ async def test_dev1410_exact_repro(tmp_path) -> None:
                     "CASE WHEN LOWER(roadsurface) LIKE '%asphalt%' "
                     "OR LOWER(roadsurface) LIKE '%concrete%' THEN 4 ELSE 1 END"
                 ),
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="parkavail_score",
                 sql="CASE WHEN LOWER(parkavail) LIKE '%not%' THEN 1 ELSE 4 END",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             DatasetField(
                 name="iqs",
@@ -2216,12 +2216,12 @@ async def test_dev1410_exact_repro(tmp_path) -> None:
                     "+ CAST(roadsurface_score AS REAL) "
                     "+ CAST(parkavail_score AS REAL)) / 3.0"
                 ),
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
     query = SlayerQuery(
-        population="infrastructure", dimensions=[FieldRef(name="iqs")]
+        population="infrastructure", dimensions=[QueryDimension(field="iqs")]
     )
     sql = await _gen_sql(engine, query, model)
     norm = _norm(sql)

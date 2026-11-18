@@ -74,7 +74,7 @@ class TestFormulaParser:
 
     def test_unknown_call_lists_date_functions(self) -> None:
         model = SlayerDataset(name="orders", sql_table="orders", data_source="t",
-                            fields=[DatasetField(name="revenue", datatype=DataType.DOUBLE)])
+                            fields=[DatasetField(name="revenue", datatype=DataType.FLOAT)])
         bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
         parsed, scope = parse_expr("bogus_fn(sum(revenue))"), DatasetScope(population=model)
         with pytest.raises(ValueError, match="date_diff"):
@@ -107,7 +107,7 @@ class TestReservedAggregationNames:
     def test_model_with_shadowing_aggregation_accepted(self) -> None:
         model = SlayerDataset.model_validate({
             "name": "orders", "sql_table": "orders", "data_source": "test",
-            "fields": [{"name": "amount", "datatype": "DOUBLE"}],
+            "fields": [{"name": "amount", "datatype": "Float"}],
             "aggregations": [{"name": "date_diff", "expression": "SUM({value})"}],
         })
         assert [a.name for a in model.aggregations] == ["date_diff"]

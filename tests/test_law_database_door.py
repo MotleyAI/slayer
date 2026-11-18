@@ -171,7 +171,7 @@ class TestListPathsUseTheEngineClient:
     async def test_re_type_on_re_ingest(self, tmp_path: Path) -> None:
         ds = _lists_datasource(tmp_path)
         stale = SlayerDataset(name="contractors", sql_table="contractors", data_source=LIST_DS, fields=[
-            DatasetField(name="id", datatype=DataType.INT), DatasetField(name="skills", datatype=DataType.TEXT, description="Skills")])
+            DatasetField(name="id", datatype=DataType.INTEGER), DatasetField(name="skills", datatype=DataType.STRING, description="Skills")])
         engine, _factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[stale])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
@@ -186,13 +186,13 @@ class TestListPathsUseTheEngineClient:
         assert model is not None
         skills = model.get_field("skills")
         assert skills is not None
-        assert (skills.datatype, skills.element_type, skills.description) == (DataType.ARRAY, DataType.TEXT, "Skills")
+        assert (skills.datatype, skills.element_type, skills.description) == (DataType.ARRAY, DataType.STRING, "Skills")
 
     async def test_list_profiling(self, tmp_path: Path) -> None:
         ds = _lists_datasource(tmp_path)
         model = SlayerDataset(name="contractors", sql_table="contractors", data_source=LIST_DS, fields=[
-            DatasetField(name="id", datatype=DataType.INT),
-            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)])
+            DatasetField(name="id", datatype=DataType.INTEGER),
+            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING)])
         engine, factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[model])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
@@ -211,8 +211,8 @@ class TestListPathsUseTheEngineClient:
     async def test_sql_mode_cursor_typing(self, tmp_path: Path) -> None:
         ds = _lists_datasource(tmp_path)
         model = SlayerDataset(name="picked", sql="SELECT id, skills FROM contractors", data_source=LIST_DS, fields=[
-            DatasetField(name="id", datatype=DataType.INT),
-            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)])
+            DatasetField(name="id", datatype=DataType.INTEGER),
+            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING)])
         engine, factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[model])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
@@ -259,8 +259,8 @@ class SnowflakeListClient:
         return ObjectListing(tables=["contractors"])
 
     async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
-        return [ReflectedColumn(name="id", type=DataType.INT),
-                ReflectedColumn(name="scores", type=DataType.ARRAY, element_type=DataType.UNKNOWN, db_type="ARRAY")]
+        return [ReflectedColumn(name="id", type=DataType.INTEGER),
+                ReflectedColumn(name="scores", type=DataType.ARRAY, element_type=DataType.OPAQUE, db_type="ARRAY")]
 
     async def reflect_table_keys(self, location: TableLocation) -> TableKeys:
         return TableKeys()
@@ -303,4 +303,4 @@ async def test_snowflake_element_inference_uses_the_engine_client(tmp_path: Path
     assert model is not None
     scores = model.get_field("scores")
     assert scores is not None
-    assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.INT)
+    assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.INTEGER)

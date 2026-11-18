@@ -51,8 +51,8 @@ import slayer.sql.generator as generator_module
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import SlayerError
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.dialects import _ALL_DIALECTS
 from slayer.sql.naming import (
     CASE_FOLDING_SQLGLOT_DIALECTS,
@@ -279,12 +279,12 @@ def _vehicle_dataset() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -295,9 +295,9 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="public.customers",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="Rev", sql="revx", datatype=DataType.DOUBLE),
-            DatasetField(name="rev", sql="revy", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="Rev", sql="revx", datatype=DataType.FLOAT),
+            DatasetField(name="rev", sql="revy", datatype=DataType.FLOAT),
         ],
     )
 
@@ -310,8 +310,8 @@ def _cm_vehicle_query() -> SlayerQuery:
             TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
         ],
         metrics=[
-            DatasetMetric(expression="sum(customers.Rev)", name="up"),
-            DatasetMetric(expression="sum(customers.rev)", name="down"),
+            QueryMetric(metric="sum(customers.Rev)", alias="up"),
+            QueryMetric(metric="sum(customers.rev)", alias="down"),
         ],
     )
 
@@ -334,8 +334,8 @@ def _case_only_result_names_query() -> SlayerQuery:
             )
         ],
         metrics=[
-            DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="Foo"),
-            DatasetMetric(expression="time_shift(max(revenue), -2, 'month')", name="foo"),
+            QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="Foo"),
+            QueryMetric(metric="time_shift(max(revenue), -2, 'month')", alias="foo"),
         ],
     )
 
@@ -432,11 +432,11 @@ class TestE2eCaseFoldingAllDialects:
                 )
             ],
             metrics=[
-                DatasetMetric(
-                    expression="consecutive_periods(sum(revenue) > 0)", name="Foo",
+                QueryMetric(
+                    metric="consecutive_periods(sum(revenue) > 0)", alias="Foo",
                 ),
-                DatasetMetric(
-                    expression="consecutive_periods(sum(revenue) > 100)", name="foo",
+                QueryMetric(
+                    metric="consecutive_periods(sum(revenue) > 100)", alias="foo",
                 ),
             ],
         )

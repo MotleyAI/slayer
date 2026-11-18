@@ -255,15 +255,15 @@ def test_multihop_ref_backed_by_real_join_graph():
     # driven by join_search.shortest_route (orders -> customers -> regions).
     models = [
         SlayerDataset(name="orders", sql_table="orders", data_source="d",
-                    fields=[DatasetField(name="customer_id", datatype=DataType.INT)],
+                    fields=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
                     relationships=[DatasetRelationship(to="customers",
-                                     join_pairs=[["customer_id", "customer_id"]])]),
+                                     from_columns=["customer_id"], to_columns=["customer_id"])]),
         SlayerDataset(name="customers", sql_table="customers", data_source="d",
-                    fields=[DatasetField(name="region_id", datatype=DataType.INT)],
+                    fields=[DatasetField(name="region_id", datatype=DataType.INTEGER)],
                     relationships=[DatasetRelationship(to="regions",
-                                     join_pairs=[["region_id", "region_id"]])]),
+                                     from_columns=["region_id"], to_columns=["region_id"])]),
         SlayerDataset(name="regions", sql_table="regions", data_source="d",
-                    fields=[DatasetField(name="population", datatype=DataType.INT)]),
+                    fields=[DatasetField(name="population", datatype=DataType.INTEGER)]),
     ]
     by_name = {m.name: m for m in models}
     anchor = "orders"

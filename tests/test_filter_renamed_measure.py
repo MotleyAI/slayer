@@ -18,8 +18,8 @@ Companion tickets surfaced during spec'ing:
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _dataset_where_text, _engine_generate, _having_text, _where_text
 
@@ -30,10 +30,10 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -54,9 +54,9 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
+                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
             ],
             filter=["count_distinct(customer_id) >= 5"],
         )
@@ -82,9 +82,9 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
+                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
             ],
             filter=["num_customers >= 5"],
         )
@@ -102,8 +102,8 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count_distinct(customer_id)")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count_distinct(customer_id)")],
             filter=["count_distinct(customer_id) >= 5"],
         )
         sql = await _generate(query, model)
@@ -121,10 +121,10 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="revenue"),
-                DatasetMetric(expression="count_distinct(customer_id)"),
+                QueryMetric(metric="sum(amount)", alias="revenue"),
+                QueryMetric(metric="count_distinct(customer_id)"),
             ],
             filter=["sum(amount) / count_distinct(customer_id) > 100"],
         )
@@ -154,9 +154,9 @@ class TestFilterRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
+                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
             ],
             filter=["count_distinct(customer_id) >= 5"],
         )
@@ -185,9 +185,9 @@ class TestOrderByRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
+                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
             ],
             order=[OrderItem.model_validate({"field": "count_distinct(customer_id)", "direction": "desc"})],
         )
@@ -207,11 +207,11 @@ class TestOrderByRenamedMeasureRemap:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
+                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
             ],
-            order=[OrderItem(field=FieldRef(name="num_customers"), direction="desc")],
+            order=[OrderItem(field="num_customers", direction="desc")],
         )
         sql = await _generate(query, model)
         assert "ORDER BY" in sql
@@ -238,15 +238,15 @@ class TestRemapEdgeCases:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="country", sql="country", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="country", sql="country", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(expression="first(country)", name="primary_country"),
+                QueryMetric(metric="first(country)", alias="primary_country"),
             ],
             filter=["first(country) = 'country_first'"],
         )
@@ -288,18 +288,18 @@ class TestRemapEdgeCases:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="profit", sql="profit", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="profit", sql="profit", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression=formula_a, name="metric"),
-                DatasetMetric(expression=formula_b, name="metric"),
+                QueryMetric(metric=formula_a, alias="metric"),
+                QueryMetric(metric=formula_b, alias="metric"),
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -323,20 +323,20 @@ class TestRemapEdgeCases:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
-                DatasetField(name="profit", sql="profit", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
+                DatasetField(name="profit", sql="profit", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
                 # Rename to a name that collides with the second measure's
                 # auto-canonical (``profit_avg``).
-                DatasetMetric(expression="sum(revenue)", name="profit_avg"),
-                DatasetMetric(expression="avg(profit)"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
+                QueryMetric(metric="sum(revenue)", alias="profit_avg"),
+                QueryMetric(metric="avg(profit)"),  # NOSONAR(S125) — canonical = "profit_avg" (explanatory note, not commented-out code)
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -357,20 +357,20 @@ class TestRemapEdgeCases:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 # Pathological: a real column whose name happens to equal
                 # the canonical alias of ``sum(amount)``.
-                DatasetField(name="amount_sum", sql="amount_sum", datatype=DataType.DOUBLE),
+                DatasetField(name="amount_sum", sql="amount_sum", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             # Rename triggers the collision check: canonical
             # ``amount_sum`` already names a source column.
-            metrics=[DatasetMetric(expression="sum(amount)", name="revenue")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="revenue")],
         )
         with pytest.raises(ValueError, match=r"shadows a source field"):
             await _generate(query, model)
@@ -390,21 +390,21 @@ class TestRemapEdgeCases:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="deleted_at", sql="deleted_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="deleted_at", sql="deleted_at", datatype=DataType.DATETIME),
             ],
             # Plain Mode A model filter.
             filters=["deleted_at IS NULL"],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
                 # Triggers the rename branch — populates canonical_to_user_name.
-                DatasetMetric(expression="count_distinct(customer_id)", name="num_customers"),
+                QueryMetric(metric="count_distinct(customer_id)", alias="num_customers"),
             ],
         )
         sql = await _generate(query, model)
@@ -433,8 +433,8 @@ class TestRemapEdgeCases:
         model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="id")],
-            metrics=[DatasetMetric(expression="sum(amount)", name="status")],
+            dimensions=[QueryDimension(field="id")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="status")],
         )
         with pytest.raises(ValueError, match=r"matches a source field"):
             await _generate(query, model)

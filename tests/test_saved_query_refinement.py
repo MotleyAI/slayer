@@ -11,8 +11,8 @@ from slayer.core.errors import RefinementConflictError
 from slayer.core.models import DatasetMetric
 from slayer.core.query import (
     FieldRef,
-    ComputedDimension,
     OrderItem,
+    QueryDimension,
     QueryRefinement,
     SlayerQuery,
     TimeDimension,
@@ -65,12 +65,12 @@ class TestQueryRefinementModel:
     def test_input_coercions_match_query(self) -> None:
         r = QueryRefinement.model_validate({
             "metrics": ["count(*)"],
-            "dimensions": ["region", {"expression": "amount * 2", "name": "dbl"}],
+            "dimensions": ["region", {"field": "amount * 2", "alias": "dbl"}],
             "order": [{"revenue": "desc"}],
         })
         assert r.metrics == [DatasetMetric(expression="count(*)")]
-        assert r.dimensions == [FieldRef(name="region"), ComputedDimension(expression="amount * 2", name="dbl")]
-        assert r.order == [OrderItem(field=FieldRef(name="revenue"), direction="desc")]
+        assert r.dimensions == [FieldRef(name="region"), QueryDimension(field="amount * 2", alias="dbl")]
+        assert r.order == [OrderItem(field="revenue", direction="desc")]
 
     def test_functional_granularity_in_dimensions_becomes_time_dimension(self) -> None:
         r = QueryRefinement.model_validate({"dimensions": ["region", "date_trunc('year', ordered_at)"]})
@@ -112,13 +112,13 @@ class TestDimensions:
         assert merged.dimensions == base.dimensions
 
     def test_same_column_different_label_conflicts(self) -> None:
-        message = conflict(saved(dimensions=["region"]), dimensions=[{"name": "region", "label": "Region"}])
+        message = conflict(saved(dimensions=["region"]), dimensions=[{"field": "region", "label": "Region"}])
         assert "dimensions" in message
         assert "region" in message
 
     def test_identical_computed_dimension_collapses(self) -> None:
-        base = saved(dimensions=[{"expression": "amount * 2", "name": "dbl"}])
-        assert merge(base, dimensions=[{"expression": "amount * 2", "name": "dbl"}]).dimensions == base.dimensions
+        base = saved(dimensions=[{"field": "amount * 2", "alias": "dbl"}])
+        assert merge(base, dimensions=[{"field": "amount * 2", "alias": "dbl"}]).dimensions == base.dimensions
 
     def test_unnamed_computed_dimension_collapses_on_expression(self) -> None:
         base = saved(dimensions=["amount * 2"])
@@ -126,8 +126,8 @@ class TestDimensions:
 
     def test_computed_dimension_name_clash_conflicts(self) -> None:
         message = conflict(
-            saved(dimensions=[{"expression": "amount * 2", "name": "dbl"}]),
-            dimensions=[{"expression": "amount * 3", "name": "dbl"}],
+            saved(dimensions=[{"field": "amount * 2", "alias": "dbl"}]),
+            dimensions=[{"field": "amount * 3", "alias": "dbl"}],
         )
         assert "dimensions" in message
         assert "dbl" in message
@@ -149,18 +149,18 @@ class TestMeasures:
         assert merge(base, metrics=["count(*)"]).metrics == base.metrics
 
     def test_same_formula_other_name_is_a_new_measure(self) -> None:
-        merged = merge(saved(metrics=[REVENUE]), metrics=[{"expression": "sum(amount)", "name": "rev2"}])
+        merged = merge(saved(metrics=[REVENUE]), metrics=[{"metric": "sum(amount)", "alias": "rev2"}])
         assert [m.name for m in merged.metrics or []] == ["revenue", "rev2"]
 
     def test_same_name_different_formula_conflicts(self) -> None:
-        message = conflict(saved(metrics=[REVENUE]), metrics=[{"expression": "count(*)", "name": "revenue"}])
+        message = conflict(saved(metrics=[REVENUE]), metrics=[{"metric": "count(*)", "alias": "revenue"}])
         for part in ("metrics", "revenue", "sum(amount)", "count(*)"):
             assert part in message
 
     @pytest.mark.parametrize("field, value", [
         ("label", "Revenue"),
         ("description", "Paid revenue"),
-        ("datatype", "DOUBLE"),
+        ("datatype", "Float"),
         ("meta", {"unit": "usd"}),
     ])
     def test_named_measure_metadata_mismatch_conflicts(self, field: str, value: Any) -> None:
@@ -169,7 +169,7 @@ class TestMeasures:
         assert "revenue" in message
 
     def test_unnamed_measure_metadata_mismatch_conflicts(self) -> None:
-        message = conflict(saved(metrics=["count(*)"]), metrics=[{"expression": "count(*)", "label": "Orders"}])
+        message = conflict(saved(metrics=["count(*)"]), metrics=[{"metric": "count(*)", "label": "Orders"}])
         assert "metrics" in message
         assert "count(*)" in message
         assert "Orders" in message
@@ -263,7 +263,7 @@ class TestReplacedSettings:
 
     def test_order_replaced(self) -> None:
         merged = merge(saved(**self.ORDERED), order=[{"field": "region", "direction": "asc"}])
-        assert merged.order == [OrderItem(field=FieldRef(name="region"), direction="asc")]
+        assert merged.order == [OrderItem(field="region", direction="asc")]
 
     @pytest.mark.parametrize("cleared", [[], None])
     def test_order_cleared(self, cleared: Any) -> None:
@@ -314,7 +314,7 @@ class TestWholeQuery:
 
     def test_non_refinable_fields_survive(self) -> None:
         base = SlayerQuery.model_validate({
-            "name": "final", "population": "orders", "extensions": [{"source_name": "orders"}], "metrics": [REVENUE],
+            "name": "final", "population": "orders", "extensions": [{"dataset": "orders"}], "metrics": [REVENUE],
             "variables": {"status": "paid"},
         })
         merged = merge(base, dimensions=["region"])

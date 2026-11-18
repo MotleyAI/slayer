@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import SlayerError
-from slayer.core.query import TimeDimension
+from slayer.core.query import QueryMetric, TimeDimension
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
@@ -61,9 +61,9 @@ class TestCrossModelPartitioned:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier", "status"],
-            metrics=[M, DatasetMetric(
-                expression="sum(customers.spend, partition_by=customers.tier)",
-                name="pt",
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="pt",
             )],
         )
         resp = await engine.execute(query)
@@ -84,10 +84,10 @@ class TestCrossModelRanked:
             dimensions=["customers.tier"],
             metrics=[
                 M,
-                DatasetMetric(expression="first(customers.spend, customers.signup_at)",
-                             name="f"),
-                DatasetMetric(expression="last(customers.spend, customers.signup_at)",
-                             name="l"),
+                QueryMetric(metric="first(customers.spend, customers.signup_at)",
+                             alias="f"),
+                QueryMetric(metric="last(customers.spend, customers.signup_at)",
+                             alias="l"),
             ],
         )
         resp = await engine.execute(query)
@@ -108,8 +108,8 @@ class TestCrossModelRanked:
         solo = await engine.execute(q(dimensions=["customers.tier"], metrics=[M]))
         both = await engine.execute(q(
             dimensions=["customers.tier"],
-            metrics=[M, DatasetMetric(
-                expression="last(customers.spend, customers.signup_at)", name="l",
+            metrics=[M, QueryMetric(
+                metric="last(customers.spend, customers.signup_at)", alias="l",
             )],
         ))
         solo_by = rows_by(solo, "orders.customers.tier")
@@ -125,8 +125,8 @@ class TestCrossModelWindowed:
         dialect, engine = exec_backend
         query = q(
             time_dimensions=signup_month_td(),
-            metrics=[DatasetMetric(expression="sum(customers.spend, window='1y')",
-                                   name="w")],
+            metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
+                                   alias="w")],
         )
         resp = await engine.execute(query)
         rows = [r for r in resp.data
@@ -144,9 +144,9 @@ class TestCrossModelWindowed:
         query = q(
             dimensions=["customers.tier"],
             time_dimensions=signup_month_td(),
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, window='1y', partition_by=customers.tier)",
-                name="w",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='1y', partition_by=customers.tier)",
+                alias="w",
             )],
         )
         resp = await engine.execute(query)
@@ -174,8 +174,8 @@ class TestCrossModelWindowed:
         _, engine = exec_backend
         query = q(
             time_dimensions=month_td(),
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, window='1y')", name="w",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='1y')", alias="w",
             )],
             to_many_handling="broadcast",
         )

@@ -51,7 +51,7 @@ def _assert_upgraded(query: SlayerQuery | None) -> None:
     (extension,) = query.extensions or []
     assert isinstance(extension, DatasetExtension)
     assert extension.source_name == "orders"
-    assert [(j.to, j.join_pairs) for j in extension.relationships or []] == [("customers", [["customer_id", "id"]])]
+    assert [(j.to, j.column_pairs) for j in extension.relationships or []] == [("customers", [("customer_id", "id")])]
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +108,7 @@ class TestStoredModels:
         assert model is not None
         _assert_upgraded((model.source_queries or [None])[0])
         resp = await run(storage, {"population": "rev2_q", "dimensions": ["customers__region"],
-                                   "metrics": [{"expression": "sum(rev2)", "name": "t"}]})
+                                   "metrics": [{"metric": "sum(rev2)", "alias": "t"}]})
         assert by_dimension(resp, dim_suffix="customers__region") == RECORDED
 
     async def test_a_saved_query_run_by_name_returns_its_rows(self, tmp_path, shop_ds) -> None:

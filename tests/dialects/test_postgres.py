@@ -72,7 +72,7 @@ def test_postgres_build_date_trunc_week_sunday_shift() -> None:
 def _date_add(count: int, unit: str) -> str:
     col = exp.column("created_at")
     out = PostgresDialect().build_date_add(
-        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.DATETIME,
     )
     return out.sql(dialect="postgres").upper()
 

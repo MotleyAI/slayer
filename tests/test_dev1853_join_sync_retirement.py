@@ -54,7 +54,7 @@ async def test_saving_an_inner_join_creates_no_mirror() -> None:
             fields=[DatasetField(name="id", primary_key=True),
                      DatasetField(name="customer_id")],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]],
+                             from_columns=["customer_id"], to_columns=["id"],
                              join_type=JoinType.INNER)]))
         customers = await storage.get_dataset("customers", data_source="ds")
         assert customers is not None

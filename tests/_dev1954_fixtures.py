@@ -55,7 +55,7 @@ def dev1954_datasets(*, named: bool = True) -> List[SlayerDataset]:
     models = dev1900_datasets()
     customers = _by_name(models, "customers")
     customers.relationships = [
-        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE,
                   name="hr" if named else None)
         if j.to == "regions" else j
@@ -66,17 +66,17 @@ def dev1954_datasets(*, named: bool = True) -> List[SlayerDataset]:
     regions = _by_name(models, "regions")
     regions.fields = [c.model_copy(update={"label": "Population"}) if c.name == "pop" else c
                        for c in regions.fields]
-    regions.fields.append(DatasetField(name="rname", datatype=DataType.TEXT, label="Region name"))
-    regions.fields.append(DatasetField(name="founded_at", datatype=DataType.TIMESTAMP,
+    regions.fields.append(DatasetField(name="rname", datatype=DataType.STRING, label="Region name"))
+    regions.fields.append(DatasetField(name="founded_at", datatype=DataType.DATETIME,
                                   label="Founded"))
     regions.metrics.append(DatasetMetric(name="maxpop", expression="max(pop)"))
 
     orders = _by_name(models, "orders")
     orders.fields.append(DatasetField(
-        name="north_amount", datatype=DataType.DOUBLE, sql="amount",
+        name="north_amount", datatype=DataType.FLOAT, sql="amount",
         filter="customers.regions.rname = 'North'"))
     orders.fields.append(DatasetField(
-        name="region_label", datatype=DataType.TEXT, sql="customers.regions.rname"))
+        name="region_label", datatype=DataType.STRING, sql="customers.regions.rname"))
     orders.metrics.append(DatasetMetric(name="rp", expression="max(customers.regions.pop)"))
     orders.aggregations.append(Aggregation(
         name="wpop", expression="SUM({value} * {weight})",

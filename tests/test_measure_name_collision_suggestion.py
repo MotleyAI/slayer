@@ -22,10 +22,10 @@ def _customers(*extra_columns: str) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="credit", datatype=DataType.INT),
-            *(DatasetField(name=c, datatype=DataType.INT) for c in extra_columns),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="credit", datatype=DataType.INTEGER),
+            *(DatasetField(name=c, datatype=DataType.INTEGER) for c in extra_columns),
         ],
     )
 

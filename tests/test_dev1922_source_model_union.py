@@ -30,11 +30,11 @@ from tests._dev1866_fixtures import make_chain_exec_engine
 from slayer.engine.query_engine import SlayerQueryEngine
 
 EXTENSION = {
-    "source_name": "orders",
+    "dataset": "orders",
     "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}],
 }
 EXTENSION_WITH_MEASURES = {
-    "source_name": "orders",
+    "dataset": "orders",
     "metrics": [{"expression": "sum(amount)", "name": "rev"}],
 }
 EXTENSION_WITH_FILTERS = {"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}
@@ -42,7 +42,7 @@ INLINE_MODEL = {
     "name": "ad_hoc",
     "sql_table": "things",
     "data_source": "ds",
-    "fields": [{"name": "x", "sql": "x", "datatype": "DOUBLE"}],
+    "fields": [{"name": "x", "sql": "x", "datatype": "Float"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
 ONE_MEASURE = [{"expression": "sum(amount)"}]
@@ -299,8 +299,8 @@ class TestStageOrdering:
             "name": "via_join",
             "population": "orders",
             "extensions": [{
-                "source_name": "orders",
-                "relationships": [{"to": "c", "join_pairs": [["id", "id"]]}],
+                "dataset": "orders",
+                "relationships": [{"to": "c", "from_columns": ["id"], "to_columns": ["id"]}],
             }],
         })
         assert isinstance((via_join.extensions or [])[0], DatasetExtension)

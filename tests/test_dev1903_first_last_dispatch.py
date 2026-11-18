@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from slayer.core.keys import AggregateKey, FieldKey, TransformKey
 from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
 from slayer.core.syntax import AggCall, parse_expr
@@ -61,7 +61,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _metric_key(expression: str, **kw):
     env = elaborate_query(
-        query=_q(metrics=[DatasetMetric(expression=expression, name="m")], **kw),
+        query=_q(metrics=[QueryMetric(metric=expression, alias="m")], **kw),
         bundle=_bundle(),
     )
     assert env.prebound is not None
@@ -196,7 +196,7 @@ class TestSavedMeasureOperand:
     def test_plans_identically(self, saved, inline):
         def plan(formula):
             return plan_query(
-                query=_q(metrics=[DatasetMetric(expression=formula, name="m")]),
+                query=_q(metrics=[QueryMetric(metric=formula, alias="m")]),
                 bundle=_bundle())
         assert plan(saved) == plan(inline)
 
@@ -219,9 +219,9 @@ class TestSavedMeasureExecution:
     ])
     async def test_values_match_inline(self, exec_engine: SlayerQueryEngine, saved, inline):
         got = await exec_engine.execute(
-            _q(metrics=[DatasetMetric(expression=saved, name="m")]))
+            _q(metrics=[QueryMetric(metric=saved, alias="m")]))
         want = await exec_engine.execute(
-            _q(metrics=[DatasetMetric(expression=inline, name="m")]))
+            _q(metrics=[QueryMetric(metric=inline, alias="m")]))
         assert got.data, "expected monthly rows"
         assert (got.columns, got.data, got.sql, got.warnings) == (
             want.columns, want.data, want.sql, want.warnings)
@@ -229,44 +229,44 @@ class TestSavedMeasureExecution:
 
 #: operand shape id -> query kwargs for ``fn(X)``.
 PARITY = {
-    "local_saved": lambda fn: {"metrics": [DatasetMetric(expression=f"{fn}(rev)", name="m")]},
+    "local_saved": lambda fn: {"metrics": [QueryMetric(metric=f"{fn}(rev)", alias="m")]},
     "dotted_cross_model_saved": lambda fn: {
-        "metrics": [DatasetMetric(expression=f"{fn}(regions.tf)", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(regions.tf)", alias="m")]},
     "saved_transform": lambda fn: {
-        "metrics": [DatasetMetric(expression=f"{fn}(cum_rev)", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(cum_rev)", alias="m")]},
     "saved_composite": lambda fn: {
-        "metrics": [DatasetMetric(expression=f"{fn}(rev2)", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(rev2)", alias="m")]},
     "recursive_saved": lambda fn: {
-        "metrics": [DatasetMetric(expression=f"{fn}(rev_twice)", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(rev_twice)", alias="m")]},
     "alias_in_filter": lambda fn: {
-        "metrics": [DatasetMetric(expression="sum(revenue)", name="r")],
+        "metrics": [QueryMetric(metric="sum(revenue)", alias="r")],
         "filter": [f"{fn}(r) > 0"]},
     "alias_in_order": lambda fn: {
-        "metrics": [DatasetMetric(expression="sum(revenue)", name="r")],
+        "metrics": [QueryMetric(metric="sum(revenue)", alias="r")],
         "order": [{"field": f"{fn}(r)", "direction": "desc"}]},
     "unselected_saved_in_filter": lambda fn: {
-        "metrics": [DatasetMetric(expression="sum(qty)", name="q")],
+        "metrics": [QueryMetric(metric="sum(qty)", alias="q")],
         "filter": [f"{fn}(rev) > 0"]},
     "unselected_saved_in_order": lambda fn: {
-        "metrics": [DatasetMetric(expression="sum(qty)", name="q")],
+        "metrics": [QueryMetric(metric="sum(qty)", alias="q")],
         "order": [{"field": f"{fn}(rev)", "direction": "desc"}]},
     "sibling_wrappers": lambda fn: {
-        "metrics": [DatasetMetric(expression="sum(revenue)", name="r"),
-                     DatasetMetric(expression="sum(qty)", name="s")],
+        "metrics": [QueryMetric(metric="sum(revenue)", alias="r"),
+                     QueryMetric(metric="sum(qty)", alias="s")],
         "filter": [f"{fn}(r) + {fn}(s) > 0"]},
     "wrapper_of_wrapper": lambda fn: {
-        "metrics": [DatasetMetric(expression=f"{fn}({fn}(sum(revenue)))", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}({fn}(sum(revenue)))", alias="m")]},
     "wrapper_beside_cumsum": lambda fn: {
-        "metrics": [DatasetMetric(
-            expression=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
-            name="m")]},
+        "metrics": [QueryMetric(
+            metric=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
+            alias="m")]},
     "partitioned_operand": lambda fn: {
         "dimensions": ["store"],
-        "metrics": [DatasetMetric(expression=f"{fn}(sum(revenue, partition_by=store))", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(sum(revenue, partition_by=store))", alias="m")]},
     "cross_model_composite": lambda fn: {
-        "metrics": [DatasetMetric(expression=f"{fn}(regions.tf * 2 + rev)", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(regions.tf * 2 + rev)", alias="m")]},
     "inner_cumsum_error": lambda fn: {
-        "metrics": [DatasetMetric(expression=f"{fn}(cumsum(weight))", name="m")]},
+        "metrics": [QueryMetric(metric=f"{fn}(cumsum(weight))", alias="m")]},
 }
 
 

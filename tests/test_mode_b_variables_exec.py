@@ -79,14 +79,14 @@ class TestQuerySurfaces:
 
     async def test_whole_in_rhs(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=[{"expression": "region in ({regions})", "name": "ns"}], metrics=["sum(amount)"],
+            dimensions=[{"field": "region in ({regions})", "alias": "ns"}], metrics=["sum(amount)"],
             variables={"regions": ["North", "South"]},
         ))
         assert {r["orders.ns"]: r["orders.amount_sum"] for r in resp.data} == {None: 60.0, True: 150.0}
 
     async def test_quoted_string_value_escaped(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=[{"expression": "concat(status, '{suffix}')", "name": "tagged"}], metrics=["count(*)"],
+            dimensions=[{"field": "concat(status, '{suffix}')", "alias": "tagged"}], metrics=["count(*)"],
             variables={"suffix": "'s"},
         ))
         assert {r["orders.tagged"]: r["orders._count"] for r in resp.data} == {"ok's": 6, "hold's": 1}
@@ -242,7 +242,7 @@ class TestSavedMeasures:
         await exec_engine.save_dataset(orders_dataset().model_copy(update={
             "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
-        assert (await exec_engine.get_result_column_types("orders"))["amount"].type in (DataType.INT, DataType.DOUBLE)
+        assert (await exec_engine.get_result_column_types("orders"))["amount"].type in (DataType.INTEGER, DataType.FLOAT)
 
 
 class TestErrors:
@@ -258,7 +258,7 @@ class TestErrors:
 
     @pytest.mark.parametrize("kw", [
         {"metrics": ["sum(amount) * {? {k} ?}"]},
-        {"dimensions": [{"expression": "amount * {? {k} ?}", "name": "d"}], "metrics": ["count(*)"]},
+        {"dimensions": [{"field": "amount * {? {k} ?}", "alias": "d"}], "metrics": ["count(*)"]},
     ])
     async def test_optional_block_rejected(self, exec_engine, kw) -> None:
         query = q(**kw, variables={"k": 1})

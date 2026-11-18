@@ -184,7 +184,7 @@ class TestNamesThatAreNotReachableDatasets:
         await engine.storage.save_datasource(DatasourceConfig(name="other", type="sqlite", database=":memory:"))
         await engine.storage.save_dataset(SlayerDataset(
             name="widgets", sql_table="widgets", data_source="other",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         q = query(metrics=[m("count(widgets.id)", "n")])
         with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
@@ -232,7 +232,7 @@ class TestStoredDefinitionsRefuse:
     @pytest.mark.parametrize("definition", ["column", "filter"])
     async def test_column_sql_and_model_filter(self, engine: SlayerQueryEngine, definition: str) -> None:
         if definition == "column":
-            model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql="events.amount")])
+            model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.FLOAT, sql="events.amount")])
             use, named = query(metrics=[m("sum(ev_amount)", "x")]), "ev_amount"
         else:
             model = customers_dataset(filters=["events.amount > 1"])
@@ -249,7 +249,7 @@ class TestStoredDefinitionsRefuse:
 
     @pytest.mark.parametrize("sql", ['"events".amount', '"events"."amount"'])
     async def test_quoted_qualifier(self, engine: SlayerQueryEngine, sql: str) -> None:
-        model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql=sql)])
+        model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.FLOAT, sql=sql)])
         await engine.storage.save_dataset(model, _validate=False)
         q = query(metrics=[m("sum(ev_amount)", "x")])
         with pytest.raises(SlayerError, match="no relationship path reaches 'events'"):
@@ -259,9 +259,9 @@ class TestStoredDefinitionsRefuse:
     async def test_stage_base_definition(self, engine: SlayerQueryEngine, source: str, formula: str) -> None:
         await engine.storage.save_dataset(SlayerDataset(
             name="logs", sql_table="orgs", data_source="test",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
         ))
-        stale = customers_dataset(fields=[DatasetField(name="lx", datatype=DataType.TEXT, sql="logs.name")])
+        stale = customers_dataset(fields=[DatasetField(name="lx", datatype=DataType.STRING, sql="logs.name")])
         await engine.storage.save_dataset(stale, _validate=False)
         await engine.storage.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], metrics=[m("count(lx)", "n")]),
@@ -282,7 +282,7 @@ class TestStoredDefinitionsRefuse:
         await engine.storage.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], metrics=[m("count(nope)", "n")]),
         ]), _validate=False)
-        edge = DatasetRelationship(to="orgs", join_pairs=[["id", "id"]], name="per_city")
+        edge = DatasetRelationship(to="orgs", from_columns=["id"], to_columns=["id"], name="per_city")
         await engine.storage.save_dataset(customers_dataset(relationships=[edge]), _validate=False)
         resp = await engine.execute(query(metrics=[m("count(per_city.id)", "n")]))
         assert only_row(resp, "n") == (2.0,)
@@ -352,7 +352,7 @@ class TestAggregates:
 
     async def test_explicitly_grained_computed_dimension(self, engine) -> None:
         resp = await engine.execute(grouped_query(
-            dimensions=["city", {"expression": "count(events.id, partition_by=[])", "name": "total_events"}],
+            dimensions=["city", {"field": "count(events.id, partition_by=[])", "alias": "total_events"}],
             metrics=[m("count(*)", "n")],
         ))
         assert rows(resp, "n", "total_events") == {"A": (2.0, 5.0), "B": (1.0, 5.0)}
@@ -390,7 +390,7 @@ class TestRowLevelRefusal:
 
     @pytest.mark.parametrize("fields, reference", [
         ({"time_dimensions": [{"field": "events.created_at", "granularity": "month"}]}, "events.created_at"),
-        ({"dimensions": ["city", {"expression": "events.amount * 2", "name": "a2"}]}, "events.amount"),
+        ({"dimensions": ["city", {"field": "events.amount * 2", "alias": "a2"}]}, "events.amount"),
         ({"order": [{"field": "events.amount", "direction": "asc"}]}, "events.amount"),
         ({"dimensions": ["city", "events.kind"], "metrics": [], "distinct_dimension_values": False}, "events.kind"),
     ], ids=["time_dimension", "computed_dimension", "order_key", "raw_rows"])
@@ -418,11 +418,11 @@ class TestRowLevelRefusal:
         with pytest.raises(pydantic.ValidationError) as exc:
             SlayerQuery.model_validate({
                 "population": "customers",
-                "extensions": [{"source_name": "customers", "relationships": [{"to": "events", "join_pairs": []}]}],
+                "extensions": [{"dataset": "customers", "relationships": [{"to": "events", "from_columns": [], "to_columns": []}]}],
                 "metrics": ["count(*)"],
             })
         msg = str(exc.value)
-        assert "join_pairs" in msg
+        assert "from_columns" in msg
         assert "aggregat" in msg.lower()
 
 

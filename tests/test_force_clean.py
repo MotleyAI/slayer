@@ -70,8 +70,8 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -81,11 +81,11 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(
-                    name="customer_id", sql="customer_id", datatype=DataType.DOUBLE
+                    name="customer_id", sql="customer_id", datatype=DataType.FLOAT
                 ),
             ],
         )

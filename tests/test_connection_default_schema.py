@@ -42,8 +42,8 @@ _TWO_DATASETS = [_URL_DATASET, "ds_b"]
 
 _Layout = dict[str, dict[str, dict[str, DataType]]]
 
-_ID_NAME = {"id": DataType.INT, "name": DataType.TEXT}
-_WITH_SKILLS = {**_ID_NAME, "skills": DataType.TEXT}
+_ID_NAME = {"id": DataType.INTEGER, "name": DataType.STRING}
+_WITH_SKILLS = {**_ID_NAME, "skills": DataType.STRING}
 
 
 class _Inspector:

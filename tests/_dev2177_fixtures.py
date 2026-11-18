@@ -47,7 +47,7 @@ def dev2177_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
                     params=[AggregationParam(name="flag", sql="TRUE")]),
     ]})
     regions = regions.model_copy(update={"fields": [
-        *regions.fields, DatasetField(name="rank", sql="id", datatype=DataType.INT),
+        *regions.fields, DatasetField(name="rank", sql="id", datatype=DataType.INTEGER),
     ], "aggregations": [
         Aggregation(name="weighted_avg", expression="SUM({value} * {weight}) * 1.0 / SUM({weight})",
                     params=[AggregationParam(name="weight", sql="1")]),
@@ -168,7 +168,7 @@ CONCAT_BRANCHES = [
 
 
 def dimension_query(expression: str) -> SlayerQuery:
-    return q(dimensions=[{"expression": expression, "name": "x"}])
+    return q(dimensions=[{"field": expression, "alias": "x"}])
 
 
 async def assert_branch_mismatch(engine: SlayerQueryEngine, query: SlayerQuery | list, *types: str,

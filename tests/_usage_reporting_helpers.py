@@ -301,8 +301,8 @@ def build_sentinel_storage(base_dir: Path) -> str:
             name=f"{SENT}_model", data_source=f"{SENT}_ds", sql_table=f"{SENT}_table",
             description=HOSTILE,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name=f"{SENT}_col", datatype=DataType.DOUBLE, description=HOSTILE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name=f"{SENT}_col", datatype=DataType.FLOAT, description=HOSTILE),
             ],
             aggregations=[Aggregation(name=f"{SENT}_agg", expression="SUM({value})")],
         ))
@@ -322,7 +322,7 @@ def save_datasets(storage_dir: str, *, count: int) -> None:
         for i in range(count):
             await storage.save_dataset(SlayerDataset(
                 name=f"extra_{i}", data_source="test", sql_table="orders",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             ))
 
     asyncio.run(build())

@@ -19,11 +19,11 @@ def _dataset_with_relationship() -> SlayerDataset:
         name="orders",
         sql_table="orders",
         data_source="testds",
-        fields=[DatasetField(name="customer_id", datatype=DataType.INT)],
+        fields=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
         relationships=[
             DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "customer_id"]],
+                from_columns=["customer_id"], to_columns=["customer_id"],
                 join_type=JoinType.LEFT,
                 description="Each order has one customer.",
                 meta={"osi_ai_context": {"instructions": "Each order has one customer."}},
@@ -33,7 +33,7 @@ def _dataset_with_relationship() -> SlayerDataset:
 
 
 def test_modeljoin_has_optional_description_and_meta_defaulting_none() -> None:
-    j = DatasetRelationship(to="c", join_pairs=[["a", "b"]])
+    j = DatasetRelationship(to="c", from_columns=["a"], to_columns=["b"])
     assert j.description is None
     assert j.meta is None
 
@@ -41,7 +41,7 @@ def test_modeljoin_has_optional_description_and_meta_defaulting_none() -> None:
 def test_modeljoin_accepts_description_and_meta() -> None:
     j = DatasetRelationship(
         to="c",
-        join_pairs=[["a", "b"]],
+        from_columns=["a"], to_columns=["b"],
         description="desc",
         meta={"k": "v"},
     )
@@ -51,7 +51,7 @@ def test_modeljoin_accepts_description_and_meta() -> None:
 
 def test_old_v7_join_without_new_fields_validates() -> None:
     # Data written before the fields existed omits them entirely.
-    j = DatasetRelationship.model_validate({"to": "c", "join_pairs": [["a", "b"]]})
+    j = DatasetRelationship.model_validate({"to": "c", "from_columns": ["a"], "to_columns": ["b"]})
     assert j.description is None
     assert j.meta is None
     # And a whole v7 model whose join lacks the fields still loads.

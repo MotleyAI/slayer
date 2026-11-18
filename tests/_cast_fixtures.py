@@ -28,7 +28,7 @@ LENGTHS = {1: 2, 2: 1, 3: None}
 def tags_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="tags", sql_table="tags", data_source=data_source,
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="codes", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="codes", datatype=DataType.STRING)],
     )
 
 
@@ -64,7 +64,7 @@ async def check_array_cast(engine: SlayerQueryEngine) -> None:
     """``contains`` / ``length`` over ``CAST(codes AS INT[])`` read it as a list of INT."""
     resp = await engine.execute(tags_query(dimensions=["id"], filter=["contains(CAST(codes AS INT[]), 3)"]))
     assert {int(r["tags.id"]) for r in resp.data} == CONTAINS_3, resp.sql
-    resp = await engine.execute(tags_query(dimensions=["id", {"expression": "length(codes::INT[])", "name": "n"}]))
+    resp = await engine.execute(tags_query(dimensions=["id", {"field": "length(codes::INT[])", "alias": "n"}]))
     got = {int(r["tags.id"]): (None if r["tags.n"] is None else int(r["tags.n"])) for r in resp.data}
     assert got == LENGTHS, resp.sql
 

@@ -146,7 +146,7 @@ class TestBucketCalls:
 
     def test_a_client_query_is_not_rewritten(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders",
-                                            "dimensions": [{"expression": "month(ordered_at)", "name": "m"}]})
+                                            "dimensions": [{"field": "month(ordered_at)", "alias": "m"}]})
         assert "date_trunc" not in dumped(query)
 
     def test_custom_aggregation_is_not_a_bucket(self) -> None:
@@ -181,7 +181,7 @@ class TestBucketCalls:
         assert "date_trunc('year', ordered_at) >= '2024'" in text
         assert not _BUCKET_CALL.search(text), text
         resp = await run(storage, {"population": "monthly_rev", "dimensions": ["ordered_at"],
-                                   "metrics": [{"expression": "sum(rev)", "name": "r"}]})
+                                   "metrics": [{"metric": "sum(rev)", "alias": "r"}]})
         assert by_month(resp, key="monthly_rev.ordered_at", value="monthly_rev.r") == MONTHLY_2024_ON
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -316,7 +316,7 @@ class TestAggRename:
         assert [a.name for a in model.aggregations] == ["agg_aggregation"]
         assert "agg_aggregation(amount)" in dumped(query_backed)
         assert any("agg_aggregation" in t and "orders" in t for t in texts), texts
-        resp = await run(storage, {"population": "doubled", "metrics": [{"expression": "sum(d)", "name": "t"}]})
+        resp = await run(storage, {"population": "doubled", "metrics": [{"metric": "sum(d)", "alias": "t"}]})
         assert float(resp.data[0]["doubled.t"]) == 420.0
 
     def test_any_case(self) -> None:

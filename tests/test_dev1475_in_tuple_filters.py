@@ -157,7 +157,7 @@ class TestParserGuards:
         )
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"expression": "count(*)"}], "filter": ["status in 'a'"],
+            "population": "orders", "metrics": [{"metric": "count(*)"}], "filter": ["status in 'a'"],
         })
         with pytest.raises(DateOperandTypeError, match="status"):
             engine.execute_sync(query=query, dry_run=True)
@@ -189,9 +189,9 @@ def _make_orders_with_status() -> SlayerDataset:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -202,8 +202,8 @@ def _make_orders_joined_to_stores() -> tuple[SlayerDataset, SlayerDataset]:
         sql_table="stores",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
     orders = SlayerDataset(
@@ -211,14 +211,14 @@ def _make_orders_joined_to_stores() -> tuple[SlayerDataset, SlayerDataset]:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", sql="store_id", datatype=DataType.INT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", sql="store_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
         relationships=[
             DatasetRelationship(
                 to="stores",
-                join_pairs=[["store_id", "id"]],
+                from_columns=["store_id"], to_columns=["id"],
             ),
         ],
     )
@@ -296,7 +296,7 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status in ('completed', 'pending')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -311,7 +311,7 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status not in ('cancelled', 'expired')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -333,7 +333,7 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": [
                 "status in ('completed', 'pending') and amount > 100",
             ],
@@ -352,7 +352,7 @@ class TestSQLEmission:
         engine, orders, stores = _make_engine_with_orders_and_stores()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "dimensions": ["stores.name"],
             "filter": ["stores.name in ('Brooklyn', 'Philadelphia')"],
         })

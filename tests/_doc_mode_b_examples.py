@@ -21,7 +21,7 @@ _JSON_LANGS = frozenset({"json", "jsonc"})
 _YAML_LANGS = frozenset({"yaml", "yml"})
 #: Keys only a dataset or a dataset extension carries.
 _DATASET_KEYS = frozenset({
-    "sql_table", "sql", "fields", "data_source", "relationships", "source_name", "default_time_dimension",
+    "sql_table", "sql", "fields", "data_source", "relationships", "dataset", "default_time_dimension",
     "source_queries", "aggregations",
 })
 #: Mode-A subtrees of a dataset: raw SQL, field filters, custom-aggregation templates.

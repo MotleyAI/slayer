@@ -80,10 +80,10 @@ class TestExpressionHomes:
     async def test_stage_scope_expression(self, engine) -> None:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["id", "shipped_at", "created_at"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
-            "population": "s1", "time_dimensions": [td(EFF)], "metrics": [{"expression": "sum(rev)", "name": "v"}],
+            "population": "s1", "time_dimensions": [td(EFF)], "metrics": [{"metric": "sum(rev)", "alias": "v"}],
         })
         resp = await engine.execute([inner, outer])
         assert by_bucket(resp, f"s1.{EFF_NAME}", "s1.v") == EFF_MONTH_SUM
@@ -92,7 +92,7 @@ class TestExpressionHomes:
 class TestExpressionTyping:
     async def test_leaf_across_a_fanning_hop_fails_closed(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "population": "accounts", "metrics": [{"expression": "count(*)", "name": "v"}],
+            "population": "accounts", "metrics": [{"metric": "count(*)", "alias": "v"}],
             "time_dimensions": [td("coalesce(orders.shipped_at, signup_ts)")],
         })
         msg = str(await _plan_fails(engine, query, UnsafeRelationshipInputError))
@@ -102,7 +102,7 @@ class TestExpressionTyping:
     async def test_non_temporal_expression_rejected(self, engine) -> None:
         msg = str(await _plan_fails(engine, _count(time_dimensions=[td("upper(status)")]), TimeDimensionFieldError))
         assert "upper_status" in msg or "upper(status)" in msg
-        assert "TEXT" in msg.upper()
+        assert "STRING" in msg.upper()
 
     async def test_undetermined_type_names_the_cast_remedy(self, engine) -> None:
         query = _count(time_dimensions=[td("CASE WHEN status = 'paid' THEN NULL END")])
@@ -200,13 +200,13 @@ class TestStageBuckets:
     def _inner(self) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "time_dimensions": [td(EFF)],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
 
     def _outer(self, granularity: str) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "s1", "time_dimensions": [td(EFF_NAME, granularity)],
-            "metrics": [{"expression": "sum(rev)", "name": "v"}],
+            "metrics": [{"metric": "sum(rev)", "alias": "v"}],
         })
 
     async def test_coarser_rebucket_sums_the_monthly_sums(self, engine) -> None:
@@ -223,7 +223,7 @@ class TestPerLeafRebucketing:
     def _monthly(self, dimension: str, granularity: str) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "monthly", "time_dimensions": [td(dimension, granularity)],
-            "metrics": [{"expression": "sum(rev)", "name": "v"}],
+            "metrics": [{"metric": "sum(rev)", "alias": "v"}],
         })
 
     async def test_cast_of_a_month_bucketed_column_at_day_rejected(self, engine) -> None:

@@ -14,8 +14,7 @@ import pytest
 
 from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.keys import AggregateKey
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
 
@@ -26,7 +25,6 @@ from tests._dev1908_fixtures import (
     CANCEL_FORWARD_POP,
     DOUBLE_CANCEL,
     EVENTS_CANCEL,
-    FieldRef,
     ORACLE_LITERALS,
     SECOND_ORDER,
     SELF,
@@ -56,7 +54,7 @@ def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple
     """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
-                       metrics=[DatasetMetric(expression=expression, name="m")]),
+                       metrics=[QueryMetric(metric=expression, alias="m")]),
         bundle=bundle1908())
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
@@ -70,7 +68,7 @@ async def _gen(expression: str, *, source_dataset="orders", **kw) -> str:
     models = dev1908_datasets()
     return await _engine_generate(
         query=SlayerQuery(population=source_dataset,
-                          metrics=[DatasetMetric(expression=expression, name="w")], **kw),
+                          metrics=[QueryMetric(metric=expression, alias="w")], **kw),
         dataset=models[0], extra_datasets=models[1:], dialect="sqlite", validate=False)
 
 
@@ -119,7 +117,7 @@ async def engine(request):
 
 async def _value(engine, expression: str) -> float:
     resp = await engine.execute(
-        orders_q(metrics=[DatasetMetric(expression=expression, name="w")]))
+        orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
     return float(resp.data[0]["orders.w"])
 
 
@@ -200,7 +198,7 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
         async with seeded_exec_engine(
             dialect=dialect, seed=seed, datasets=dev1908_datasets()) as (e, _db):
             query = SlayerQuery(population="orders", extensions=[ship_region_extension()],
-                                metrics=[DatasetMetric(expression=formula, name="w")])
+                                metrics=[QueryMetric(metric=formula, alias="w")])
             resp = await e.execute(query)
             dry = await e.execute(query, dry_run=True)
             assert dry.sql is not None
@@ -226,11 +224,11 @@ class TestKernelExpressionDefaults:
         base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
-            metrics=[DatasetMetric(expression=base, name="w")])))
+            metrics=[QueryMetric(metric=base, alias="w")])))
         explicit = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
-            metrics=[DatasetMetric(expression=f"{base[:-1]}, weight=customers.regions.pop)",
-                                   name="w")])))
+            metrics=[QueryMetric(metric=f"{base[:-1]}, weight=customers.regions.pop)",
+                                   alias="w")])))
         assert default == explicit
         assert {k[0]: float(v) for k, v in default.items()} == ASSOC_EXPR
 
@@ -238,11 +236,11 @@ class TestKernelExpressionDefaults:
         base = "wsum_cust_spend2_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            metrics=[DatasetMetric(expression=f"{base[:-1]}, window='1y')", name="w")])))
+            metrics=[QueryMetric(metric=f"{base[:-1]}, window='1y')", alias="w")])))
         explicit = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            metrics=[DatasetMetric(
-                expression=f"{base[:-1]}, window='1y', weight=customers.spend)", name="w")])))
+            metrics=[QueryMetric(
+                metric=f"{base[:-1]}, window='1y', weight=customers.spend)", alias="w")])))
         assert default == explicit
         months = {month_key(k[0]): float(v) for k, v in default.items()
                   if k[0] is not None}
@@ -262,9 +260,9 @@ class TestStageQueryUnaffected:
         """A later stage aggregating a stage's output resolves no definition
         default (a stage has no model host) — executes exactly as before."""
         stage1 = orders_q(name="stage1", dimensions=["status"],
-                          metrics=[DatasetMetric(expression="sum(amount)", name="amount_sum")])
-        root = SlayerQuery(population="stage1", dimensions=[FieldRef(name="status")],
-                           metrics=[DatasetMetric(expression="max(amount_sum)", name="mx")])
+                          metrics=[QueryMetric(metric="sum(amount)", alias="amount_sum")])
+        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="status")],
+                           metrics=[QueryMetric(metric="max(amount_sum)", alias="mx")])
         resp = await engine.execute([stage1, root])
         vals = sorted(float(next(v for k, v in r.items() if "mx" in k))
                       for r in resp.data)

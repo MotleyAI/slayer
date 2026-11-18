@@ -97,8 +97,8 @@ ROWS: dict[int, dict[str, Any]] = {r[0]: dict(zip(_NAMES, r)) for r in LIB.rows}
 
 
 def lib_dataset(*, data_source: str = "test") -> SlayerDataset:
-    types = {"INT": DataType.INT, "DOUBLE": DataType.DOUBLE, "TEXT": DataType.TEXT, "TIMESTAMP": DataType.TIMESTAMP,
-             "DECIMAL": DataType.DOUBLE}
+    types = {"INT": DataType.INTEGER, "DOUBLE": DataType.FLOAT, "TEXT": DataType.STRING, "TIMESTAMP": DataType.DATETIME,
+             "DECIMAL": DataType.FLOAT}
     return SlayerDataset(
         name="lib", sql_table="lib", data_source=data_source, default_time_dimension="ts",
         fields=[DatasetField(name=c, datatype=types[k], primary_key=c == "id", db_type=LIB_DECIMAL if k == "DECIMAL" else None)
@@ -255,7 +255,7 @@ class Case(BaseModel):
         if self.keeps is not None:
             body |= {"dimensions": ["id"], "filter": [self.expr]}
         else:
-            body |= {"dimensions": ["id", {"expression": self.expr, "name": "v"}]}
+            body |= {"dimensions": ["id", {"field": self.expr, "alias": "v"}]}
         if self.variables:
             body["variables"] = self.variables
         return SlayerQuery.model_validate(body)
@@ -795,7 +795,7 @@ async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs",
     ):
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": dataset, "distinct_dimension_values": False,
-            "dimensions": ["id", {"expression": expr, "name": "v"}],
+            "dimensions": ["id", {"field": expr, "alias": "v"}],
         }))
         got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in resp.data}
         assert set(got) == set(expected), (expr, resp.sql)
@@ -889,7 +889,7 @@ def stored_contractors(storage: ListStorage = ListStorage()) -> list[dict[str, A
 
 
 def contractors_dataset(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerDataset:
-    scalars = {"INT": DataType.INT, "TEXT": DataType.TEXT}
+    scalars = {"INT": DataType.INTEGER, "TEXT": DataType.STRING}
     columns = [
         DatasetField(name=c, datatype=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
         else DatasetField(name=c, datatype=scalars[k], primary_key=keyed and c == "id")

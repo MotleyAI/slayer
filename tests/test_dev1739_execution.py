@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1739_fixtures import (
-    DatasetMetric,
     SlayerQuery,
     approx_sum,
     make_exec_engine,
@@ -39,8 +40,8 @@ class TestCoarserRepeatAndShare:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="city_rev"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                QueryMetric(metric="sum(amount)", alias="city_rev"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -54,9 +55,9 @@ class TestCoarserRepeatAndShare:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(
-                    expression="sum(amount) / sum(amount, partition_by=region)",
-                    name="share",
+                QueryMetric(
+                    metric="sum(amount) / sum(amount, partition_by=region)",
+                    alias="share",
                 ),
             ],
         ))
@@ -71,9 +72,9 @@ class TestCoarserRepeatAndShare:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(
-                    expression="sum(amount) / sum(amount, partition_by=region)",
-                    name="share",
+                QueryMetric(
+                    metric="sum(amount) / sum(amount, partition_by=region)",
+                    alias="share",
                 ),
             ],
         ))
@@ -89,9 +90,9 @@ class TestCoarserRepeatAndShare:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(
-                    expression="sum(amount) / sum(amount, partition_by=[])",
-                    name="share",
+                QueryMetric(
+                    metric="sum(amount) / sum(amount, partition_by=[])",
+                    alias="share",
                 ),
             ],
         ))
@@ -103,7 +104,7 @@ class TestNullGrainSurvival:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -115,13 +116,13 @@ class TestCardinalityAndSiblingInvariance:
     async def test_adding_partition_measure_changes_nothing_else(self, exec_engine) -> None:
         base = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="city_rev")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="city_rev")],
         ))
         widened = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="city_rev"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                QueryMetric(metric="sum(amount)", alias="city_rev"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
             ],
         ))
         assert len(widened.data) == len(base.data)
@@ -139,8 +140,8 @@ class TestFullTotalUnderHavingAndPagination:
             dimensions=["region", "city"],
             filter=["sum(amount) > 30"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="city_rev"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                QueryMetric(metric="sum(amount)", alias="city_rev"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -153,8 +154,8 @@ class TestFullTotalUnderHavingAndPagination:
             order=[{"field": "city_rev", "direction": "asc"}],
             limit=1, offset=1,
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="city_rev"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                QueryMetric(metric="sum(amount)", alias="city_rev"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
             ],
         ))
         assert len(resp.data) == 1
@@ -169,8 +170,8 @@ class TestFilteredAggregateShare:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(ok_amount)", name="city_ok"),
-                DatasetMetric(expression="sum(ok_amount, partition_by=region)", name="region_ok"),
+                QueryMetric(metric="sum(ok_amount)", alias="city_ok"),
+                QueryMetric(metric="sum(ok_amount, partition_by=region)", alias="region_ok"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -185,7 +186,7 @@ class TestRowLevelFilterAppliesToTotal:
             dimensions=["region", "city"],
             filter=["status == 'ok'"],
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -199,7 +200,7 @@ class TestGrandTotal:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=[])", name="grand"),
+                QueryMetric(metric="sum(amount, partition_by=[])", alias="grand"),
             ],
         ))
         for r in resp.data:
@@ -211,9 +212,9 @@ class TestZeroSurvivingGrandTotal:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="city_rev"),
-                DatasetMetric(expression="sum(nomatch, partition_by=[])", name="nsum"),
-                DatasetMetric(expression="count(nomatch, partition_by=[])", name="ncount"),
+                QueryMetric(metric="sum(amount)", alias="city_rev"),
+                QueryMetric(metric="sum(nomatch, partition_by=[])", alias="nsum"),
+                QueryMetric(metric="count(nomatch, partition_by=[])", alias="ncount"),
             ],
         ))
         assert len(resp.data) == len(CITY_REV)
@@ -230,9 +231,9 @@ class TestTimeDimensionPartition:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="cell"),
-                DatasetMetric(
-                    expression="sum(amount, partition_by=ordered_at)", name="month_total",
+                QueryMetric(metric="sum(amount)", alias="cell"),
+                QueryMetric(
+                    metric="sum(amount, partition_by=ordered_at)", alias="month_total",
                 ),
             ],
         ))
@@ -252,7 +253,7 @@ class TestStarCountPartition:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="count(*, partition_by=region)", name="region_n"),
+                QueryMetric(metric="count(*, partition_by=region)", alias="region_n"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -266,8 +267,8 @@ class TestMultiKeyPartition:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "channel", "city"],
             metrics=[
-                DatasetMetric(
-                    expression="sum(amount, partition_by=[region, channel])", name="rc",
+                QueryMetric(
+                    metric="sum(amount, partition_by=[region, channel])", alias="rc",
                 ),
             ],
         ))
@@ -285,9 +286,9 @@ class TestDegeneratePartition:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="plain"),
-                DatasetMetric(
-                    expression="sum(amount, partition_by=[region, city])", name="deg",
+                QueryMetric(metric="sum(amount)", alias="plain"),
+                QueryMetric(
+                    metric="sum(amount, partition_by=[region, city])", alias="deg",
                 ),
             ],
         ))
@@ -300,11 +301,11 @@ class TestCrossModelNarrowedGrain:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="sp"),
-                DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
-                DatasetMetric(
-                    expression="sum(customers.spend) / sum(customers.spend, partition_by=[])",
-                    name="share",
+                QueryMetric(metric="sum(customers.spend)", alias="sp"),
+                QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total"),
+                QueryMetric(
+                    metric="sum(customers.spend) / sum(customers.spend, partition_by=[])",
+                    alias="share",
                 ),
             ],
         ))
@@ -319,10 +320,10 @@ class TestCrossModelNarrowedGrain:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="sp"),
-                DatasetMetric(
-                    expression="sum(customers.spend, partition_by=customers.tier)",
-                    name="deg",
+                QueryMetric(metric="sum(customers.spend)", alias="sp"),
+                QueryMetric(
+                    metric="sum(customers.spend, partition_by=customers.tier)",
+                    alias="deg",
                 ),
             ],
         ))
@@ -333,8 +334,8 @@ class TestCrossModelNarrowedGrain:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.regions.name"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="sp"),
-                DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
+                QueryMetric(metric="sum(customers.spend)", alias="sp"),
+                QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total"),
             ],
         ))
         by = rows_by(resp, "orders.customers.regions.name")
@@ -347,10 +348,10 @@ class TestCrossModelNarrowedGrain:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.regions.name", "customers.tier"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="sp"),
-                DatasetMetric(
-                    expression="sum(customers.spend, partition_by=customers.regions.name)",
-                    name="region_sp",
+                QueryMetric(metric="sum(customers.spend)", alias="sp"),
+                QueryMetric(
+                    metric="sum(customers.spend, partition_by=customers.regions.name)",
+                    alias="region_sp",
                 ),
             ],
         ))
@@ -369,7 +370,7 @@ class TestCrossModelFilterRouting:
             dimensions=["customers.tier"],
             filter=["region == 'North'"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
+                QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total"),
             ],
         ))
         assert len(resp.data) == 2
@@ -381,8 +382,8 @@ class TestCrossModelFilterRouting:
             dimensions=["customers.regions.name"],
             filter=["customers.tier == 'gold'"],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="sp"),
-                DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
+                QueryMetric(metric="sum(customers.spend)", alias="sp"),
+                QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total"),
             ],
         ))
         by = rows_by(resp, "orders.customers.regions.name")

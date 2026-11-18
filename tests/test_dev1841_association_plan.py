@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from slayer.engine.plan import plan_query
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import bundle, dev1840_datasets
 from tests._dev1841_fixtures import DatasetMetric, assoc_q
 
@@ -31,8 +33,8 @@ class TestAssociationKernel:
     def test_explicit_partition_by_builds_association_kernel(self) -> None:
         """An unattributable explicit partition key attributes under associate."""
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], metrics=[DatasetMetric(
-                expression="sum(customers.spend, partition_by=status)", name="cm")]),
+            query=assoc_q(dimensions=["status"], metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=status)", alias="cm")]),
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
 

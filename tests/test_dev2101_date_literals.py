@@ -80,14 +80,14 @@ class TestIntervalLiterals:
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_emits_everywhere(self, dialect: str) -> None:
-        await emit(q(dimensions=["id", {"expression": "order_date + INTERVAL '1 month'", "name": "x"}],
+        await emit(q(dimensions=["id", {"field": "order_date + INTERVAL '1 month'", "alias": "x"}],
                      filter=["created_at - INTERVAL 2 HOUR < CURRENT_TIMESTAMP"]), dialect=dialect)
 
 
 class TestTypedLiterals:
     async def test_typed_literals_bind_and_execute(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
-            dimensions=["id", {"expression": "date_diff('day', DATE '2024-01-01', created_at)", "name": "x"}],
+            dimensions=["id", {"field": "date_diff('day', DATE '2024-01-01', created_at)", "alias": "x"}],
             filter=["created_at >= TIMESTAMP '2024-01-20 00:00'"],
         ))
         assert {int(k): int(v) for k, v in by_key(resp, "id", "x").items()} == {2: 19, 3: 40, 4: 55, 5: 74}
@@ -105,7 +105,7 @@ class TestTypedLiterals:
         assert literal in str(info.value), str(info.value)
 
     async def test_typed_literal_outside_a_date_position(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id", {"expression": "DATE '2024-01-01'", "name": "d"}],
+        resp = await engine.execute(q(dimensions=["id", {"field": "DATE '2024-01-01'", "alias": "d"}],
                                       filter=["id = 1"]))
         assert str(resp.data[0]["orders.d"])[:10] == "2024-01-01"
 

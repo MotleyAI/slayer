@@ -15,8 +15,9 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1836_fixtures import (
-    DatasetMetric,
     dev1836_datasets,
     make_exec_engine,
     q,
@@ -53,8 +54,8 @@ class TestExplicitRejections:
     async def test_bare_aggregate_in_dimension_is_rejected(self, exec_backend):
         _, engine = exec_backend
         query = q(
-            dimensions=[{"expression": "sum(amount)", "name": "d"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            dimensions=[{"field": "sum(amount)", "alias": "d"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
             await engine.execute(query)
@@ -67,9 +68,9 @@ class TestExplicitRejections:
         _, engine = exec_backend
         query = q(
             dimensions=[LOCAL_BAND],
-            metrics=[DatasetMetric(expression="sum(amount, partition_by=band)",
-                                   name="x"),
-                      DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount, partition_by=band)",
+                                   alias="x"),
+                      QueryMetric(metric="sum(amount)", alias="s")],
         )
         resp = await engine.execute(query)
         assert resp.data
@@ -83,8 +84,8 @@ class TestExplicitRejections:
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(customers.spend)", name="cm"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ), bundle=bundle)
         generator = SQLGenerator(dialect="postgres")
@@ -105,8 +106,8 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(amount, partition_by=channel)",
-                                   name="pt")],
+            metrics=[QueryMetric(metric="sum(amount, partition_by=channel)",
+                                   alias="pt")],
         )
         bundle = _bundle()
         # D7: a raise, not an assert — AssertionError must not be the vehicle.
@@ -126,7 +127,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="cm")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")],
         )
         bundle = _bundle()
         with pytest.raises(expected_exception=ValueError, match="no routing disposition"):
@@ -149,7 +150,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             **role_kwargs,
         )
         bundle = _bundle()
@@ -164,10 +165,10 @@ class TestNoSilentDrops:
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(customers.spend)", name="cm"),
-                DatasetMetric(expression="sum(customers.spend) / sum(amount)",
-                             name="ratio"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
+                QueryMetric(metric="sum(customers.spend) / sum(amount)",
+                             alias="ratio"),
             ],
         ))
         for row in resp.data:

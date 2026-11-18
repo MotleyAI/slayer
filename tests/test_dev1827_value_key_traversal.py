@@ -17,8 +17,8 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import Grain
 from slayer.core.keys import KIND_POLICY, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, InKey, KindPolicy, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, _FrozenKey, reroot_value_key, substitute_value_keys, walk_value_keys
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.reference_closure import UnhandledValueKindError, aggregate_input_closure
 from slayer.core.keys import lower_sugar_transforms, rewrite_rank_partition_keys
 from slayer.engine.compile.projection import (
@@ -83,7 +83,7 @@ SAMPLES = {
     TimePointCmpKey: TP,
     InKey: IK,
     SqlFragmentKey: SqlFragmentKey(template="{r0} * {r1}", refs=(CITY, JOINED)),
-    CastKey: CastKey(source=JOINED, type_text="INT", data_type=DataType.INT),
+    CastKey: CastKey(source=JOINED, type_text="INT", data_type=DataType.INTEGER),
     ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
     ListSetKey: ListSetKey(source=JOINED),
 }
@@ -596,12 +596,12 @@ def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -610,8 +610,8 @@ def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
         ],
     )
 
@@ -688,9 +688,9 @@ def _status_orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -705,7 +705,7 @@ class TestHavingValidationWiring:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
             filter=["_count > 1 and status == 'completed'"],
         )
         sql = await _engine_generate(query=query, dataset=_status_orders_dataset())
@@ -720,7 +720,7 @@ class TestHavingValidationWiring:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
             filter=["_count > 1 or status == 'completed'"],
         )
         model = _status_orders_dataset()
@@ -730,8 +730,8 @@ class TestHavingValidationWiring:
     async def test_grouped_column_in_having_still_accepted(self) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(*)")],
             filter=["_count > 1 and status == 'completed'"],
         )
         sql = await _engine_generate(query=query, dataset=_status_orders_dataset())

@@ -16,8 +16,8 @@ RESTATEMENTS = {
     "unnamed": {"expression": "revenue"},
     "shorthand": "revenue",
 }
-FIELD_VALUES = {"label": "Rev", "datatype": "DOUBLE", "description": "Paid revenue", "meta": {"unit": "usd"}}
-OTHER_VALUES = {"label": "Revenue", "datatype": "INT", "description": "All revenue", "meta": {"unit": "eur"}}
+FIELD_VALUES = {"label": "Rev", "datatype": "Float", "description": "Paid revenue", "meta": {"unit": "usd"}}
+OTHER_VALUES = {"label": "Revenue", "datatype": "Integer", "description": "All revenue", "meta": {"unit": "eur"}}
 
 
 def saved(*measures: Any) -> SlayerQuery:
@@ -101,6 +101,6 @@ async def test_executed_restatement_equals_refinement_without_it(backend: str, f
 async def test_executed_restatement_with_differing_label_conflicts(backend: str) -> None:
     async with refine_engine(backend) as (eng, _):
         with pytest.raises(RefinementConflictError) as info:
-            await eng.execute("monthly_revenue", refine={"metrics": [{"expression": "revenue", "label": "Rev"}]})
+            await eng.execute("monthly_revenue", refine={"metrics": [{"metric": "revenue", "label": "Rev"}]})
     assert "metrics" in str(info.value)
     assert "revenue" in str(info.value)

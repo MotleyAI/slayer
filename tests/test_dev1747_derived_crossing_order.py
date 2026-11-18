@@ -30,7 +30,7 @@ import os
 import tempfile
 
 from slayer.core.errors import UnresolvableOrderFieldError
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import FieldRef, OrderItem, QueryDimension, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
@@ -76,7 +76,7 @@ async def _execute(query: SlayerQuery):
 def _grouped(direction: str, column: str = "cust_region") -> SlayerQuery:
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         metrics=_MEASURE,
         order=[OrderItem(field=FieldRef(name=column), direction=direction)],
     )
@@ -87,7 +87,7 @@ def _ungrouped(direction: str, column: str = "cust_region") -> SlayerQuery:
     row IS the grain and a bare reference to the sort key is legal."""
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         distinct_dimension_values=False,
         order=[OrderItem(field=FieldRef(name=column), direction=direction)],
     )
@@ -173,10 +173,10 @@ class TestUngroupedDerivedCrossing:
         derived_sql = await _sql(_ungrouped("asc"))
         bare_sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
             order=[OrderItem(
-                field=FieldRef(name="name", dataset="customers.regions"),
+                field="customers.regions.name",
                 direction="asc",
             )],
         ))
@@ -256,9 +256,9 @@ class TestDerivedOfDerivedSortKey:
         hidden_sql = await _sql(_ungrouped("asc", column="amount_x4"))
         projected_sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status"), FieldRef(name="amount_x4")],
+            dimensions=[QueryDimension(field="status"), QueryDimension(field="amount_x4")],
             distinct_dimension_values=False,
-            order=[OrderItem(field=FieldRef(name="amount_x4"), direction="asc")],
+            order=[OrderItem(field="amount_x4", direction="asc")],
         ))
         # The projected query sorts by the ALIAS, so compare the sort term
         # against the projected SELECT expression for the same column.
