@@ -256,7 +256,7 @@ class TestInspectModelEndToEnd:
         result = await self._call(server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 5})
 
         # Header + description + metadata
-        assert result.startswith("# Model: `orders`")
+        assert result.startswith("# Dataset: `orders`")
         assert "Orders model used in integration tests." in result
         assert "**data_source:** `test_sqlite`" in result
         assert "**sql_table:** `orders`" in result
@@ -266,10 +266,10 @@ class TestInspectModelEndToEnd:
         # The `sampled` column is folded in, so the same section now carries the
         # enumerated values for string/boolean cols and `min .. max` for numeric
         # and temporal cols.
-        assert "## Columns (7)" in result
+        assert "## Fields (7)" in result
         assert "| status |" in result
 
-        col_section = result.split("## Columns")[1].split("## Measures")[0]
+        col_section = result.split("## Fields")[1].split("## Metrics")[0]
         # The sampled column carries the profile data inline now.
         # status (string, 3 distinct) enumerates its values
         assert "completed" in col_section
@@ -285,12 +285,12 @@ class TestInspectModelEndToEnd:
         assert "| sampled |" in col_section
 
         # Measures table (formula list — empty by default in v2)
-        assert "## Measures (0)" in result
+        assert "## Metrics (0)" in result
         # Per-column description for revenue lives in the Columns table now.
         assert "Revenue per order" in result
 
         # Joins table (empty model has no joins but header always rendered)
-        assert "## Joins (0)" in result
+        assert "## Relationships (0)" in result
 
         # No standalone dim-profile section anymore
         assert "## Dimension profile" not in result
@@ -305,7 +305,7 @@ class TestInspectModelEndToEnd:
 
         # No leaked error artefacts from the old implementation
         assert "sample_data_error" not in result
-        assert "is not a saved measure" not in result
+        assert "is not a saved metric" not in result
 
     async def test_no_longer_json(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
@@ -336,8 +336,8 @@ class TestInspectModelSectionGatingIntegration:
         )
         # Columns full table is rendered — `sampled` column populated by the
         # live profile query (proves columns-section is fully included).
-        assert "## Columns (7)" in result
-        col_section = result.split("## Columns")[1]
+        assert "## Fields (7)" in result
+        col_section = result.split("## Fields")[1]
         # Profile data still in the columns table when columns is included
         assert "completed" in col_section
         # No sample data section; the removed reachable-via-joins heading must never appear.
@@ -346,7 +346,7 @@ class TestInspectModelSectionGatingIntegration:
         # Empty list-only headings for the rest are OK (model has no measures /
         # aggregations / joins, so they render nothing); footer should still
         # document what was omitted.
-        assert "> Sections shown: columns." in result
+        assert "> Sections shown: fields." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
 
     async def test_descriptions_max_chars_truncates_in_columns_table(self, env: InspectEnv) -> None:
@@ -409,8 +409,8 @@ class TestMeasureTypeInference:
             name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 0},
         )
         result = content[0].text
-        columns_section = result.split("## Columns")[1].split("##")[0]
-        assert "| type |" in columns_section
+        columns_section = result.split("## Fields")[1].split("##")[0]
+        assert "| datatype |" in columns_section
         assert "DOUBLE" in columns_section
 
     async def test_measure_sampled_shows_min_max(self, env: InspectEnv) -> None:
@@ -470,7 +470,7 @@ class TestStringAggregationRejection:
 
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
     async def test_numeric_only_aggregations_rejected_on_string(self, env: InspectEnv, agg: str) -> None:
-        with pytest.raises(ValueError, match="is not applicable to TEXT column"):
+        with pytest.raises(ValueError, match="is not applicable to TEXT field"):
             await self._run(env, f"{agg}(status)")
 
     async def test_min_max_allowed_on_string(self, env: InspectEnv) -> None:
@@ -511,7 +511,7 @@ class TestPrimaryKeyAggregationRule:
             "population": "orders",
             "metrics": [{"expression": "sum(id)"}],
         })
-        with pytest.raises(ValueError, match="primary-key column"):
+        with pytest.raises(ValueError, match="primary-key field"):
             await env["engine"].execute(query=q)
 
     async def test_count_on_pk_allowed(self, env: InspectEnv) -> None:
@@ -552,9 +552,9 @@ class TestIngestDatasourceModelsTool:
 
         # Idempotent ingest renders "Created N new model(s):" for new
         # tables (replaces the legacy "Ingested N model(s):" wording).
-        assert "Created 1 new model(s):" in text
+        assert "Created 1 new dataset(s):" in text
         assert "widgets" in text
-        assert "columns" in text  # v2 wording
+        assert "fields" in text
         assert "dims" not in text  # v1 leftover would crash before reaching here
 
 
@@ -579,7 +579,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         """JSON model inspect output carries both new fields per column."""
         server = create_mcp_server(storage=env["storage"])
         payload = await self._call_json(server, dataset_name="orders")
-        cols_by_name = {c["name"]: c for c in payload["columns"]}
+        cols_by_name = {c["name"]: c for c in payload["fields"]}
         # Categorical column: both new fields populated.
         status = cols_by_name["status"]
         assert "sampled_values" in status
@@ -601,7 +601,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
             arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
-        col_section = text.split("## Columns")[1].split("## Measures")[0]
+        col_section = text.split("## Fields")[1].split("## Metrics")[0]
         # No new column headers in the markdown table.
         assert "| sampled_values |" not in col_section
         assert "| distinct_count |" not in col_section
@@ -669,7 +669,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
             arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
-        notes = next(c for c in payload["columns"] if c["name"] == "notes")
+        notes = next(c for c in payload["fields"] if c["name"] == "notes")
         # All-NULL categorical column contract:
         assert notes["sampled_values"] == []
         assert notes["distinct_count"] == 0
@@ -711,10 +711,10 @@ class TestInspectModelSampledValuesAndDistinctCount:
             arguments={"entity_type": "dataset", "reference": "many_values", "compact": False},  # markdown
         )
         text = content[0].text
-        col_section = text.split("## Columns")[1]
+        col_section = text.split("## Fields")[1]
         kind_row_start = col_section.find("| kind ")
         if kind_row_start < 0:
-            pytest.fail("``kind`` row not found in markdown ## Columns table")
+            pytest.fail("``kind`` row not found in markdown ## Fields table")
         # Scan only the kind row (terminated by newline).
         kind_row = col_section[kind_row_start:col_section.find("\n", kind_row_start)]
         # Codex round-3 finding #9: positive AND negative assertions.
@@ -777,7 +777,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
             arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
-        col_section = text.split("## Columns")[1]
+        col_section = text.split("## Fields")[1]
         status_row_start = col_section.find("| status ")
         assert status_row_start >= 0
         status_row = col_section[status_row_start:col_section.find("\n", status_row_start)]
@@ -879,5 +879,5 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
             arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
-        notes = next(c for c in payload["columns"] if c["name"] == "notes")
+        notes = next(c for c in payload["fields"] if c["name"] == "notes")
         assert notes["sampled"] == ""

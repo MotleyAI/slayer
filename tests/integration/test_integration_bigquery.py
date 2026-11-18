@@ -323,7 +323,7 @@ class TestBigQueryDriftWithSecondDataset:
         assert [
             (type(e).__name__, e.dataset_name, e.remove.fields if isinstance(e, EditDatasetDelete) else None)
             for e in entries
-        ] == [("EditModelDelete", "plain", ["ghost"])]
+        ] == [("EditDatasetDelete", "plain", ["ghost"])]
 
 
 async def test_default_schema_is_the_url_dataset_without_a_request(bq_dataset, monkeypatch: pytest.MonkeyPatch) -> None:

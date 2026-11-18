@@ -16,7 +16,6 @@ from sqlalchemy.exc import DatabaseError
 from slayer import __version__, usage_reporting
 from slayer.core.errors import (
     AmbiguousDatasetError,
-    EntityResolutionError,
     MemoryNotFoundError,
     SlayerError,
 )
@@ -1645,7 +1644,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
         except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
-        except (ValueError, EntityResolutionError) as exc:
+        except ValueError as exc:
             return f"recommend_population failed: {exc}"
         if fmt == "json":
             return json.dumps(rec.model_dump(mode="json"), indent=2)
@@ -1779,11 +1778,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 id=id,
                 description=description,
             )
-        except (
-            EntityResolutionError,
-            AmbiguousDatasetError,
-            ValueError,
-        ) as exc:
+        except ValueError as exc:  # EntityResolutionError / AmbiguousDatasetError included
             return _format_resolution_error(exc)
         return response.model_dump_json(indent=2)
 
