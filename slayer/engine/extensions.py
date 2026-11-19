@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.enums import JoinType
 from slayer.core.errors import (
+    SlayerError,
     AmbiguousRelationshipPathError,
     AmbiguousReferenceError,
     CircularRelationshipPathError,
@@ -25,6 +26,7 @@ from slayer.core.scope import DatasetScope, StageSchema
 from slayer.core.syntax import drop_root_hop, drop_root_qualifier, text_paths
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population import dimension_routing
+from slayer.engine.population.anchors import anchor_route, find_anchor
 from slayer.ir.source_bundle import (
     InnerRestriction,
     ResolvedSourceBundle,
@@ -224,6 +226,26 @@ def resolve_path(
     return (hops, chain) if chain is not None else None
 
 
+def resolve_anchored_path(
+    hops: Sequence[str], *, reader: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Tuple[Tuple[str, ...], List[OrientedRelationship]]]:
+    """A query reference's ``hops`` from ``reader`` as the binder resolves them — the first an anchor reached by the
+    shared anchor resolver, the rest an explicit route — with the edges walked; ``None`` when refused."""
+    if not hops:
+        return (), []
+    universe = {**datasets_by_name, reader.name: reader}
+    try:
+        anchor = find_anchor(hops[0], quoted=False, reader=reader, datasets_by_name=universe)
+        if anchor is None:
+            return None
+        path = (*anchor_route(reader=reader, anchor=anchor, datasets_by_name=universe, rest=hops[1:]).route,
+                *hops[1:])
+        chain = walk(root=reader, path=path, datasets_by_name=universe)
+    except SlayerError:
+        return None
+    return (path, chain) if chain is not None else None
+
+
 class QueryScope(BaseModel):
     """One query object's datasets as the engine resolves them, for the static readers (decision 18).
 
@@ -257,6 +279,11 @@ class QueryScope(BaseModel):
         """``resolve_path`` over this scope, from ``root`` (default: the host)."""
         start = root if root is not None else self.host
         return None if start is None else resolve_path(hops, root=start, datasets_by_name=self.datasets)
+
+    def resolve_reference(self, hops: Sequence[str]):
+        """``resolve_anchored_path`` of the query's own reference ``hops`` from the host."""
+        return None if self.host is None else resolve_anchored_path(
+            hops, reader=self.host, datasets_by_name=self.datasets)
 
 
 def query_scopes(

@@ -1304,6 +1304,18 @@ class UnconvertibleStoredQueryError(SlayerError):
         )
 
 
+class UnqualifiableReferenceError(SlayerError):
+    """A stored query's reference whose pre-2.0 reading has no qualified spelling with the same meaning."""
+
+    def __init__(self, *, reference: str, reason: str) -> None:
+        self.reference = reference
+        self.reason = reason
+        super().__init__(
+            f"Stored query cannot be upgraded to qualified references: {reference!r} {reason}. Spell it as a "
+            f"reference starting at a dataset and save the document again."
+        )
+
+
 class StoredDocumentLoadError(SlayerError, ValueError):
     """One stored dataset or memory could not be loaded; the original failure is ``__cause__``."""
 

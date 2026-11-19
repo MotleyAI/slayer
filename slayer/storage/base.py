@@ -106,6 +106,7 @@ from slayer.database.client import SqlClient
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
+from slayer.storage.qualified_references import qualified_stages
 from slayer.sql.sql_template import check_aggregation_definition
 from slayer.live_schema.type_refinement import (
     has_refineable_fields,
@@ -135,6 +136,18 @@ _RAW_PASS: ContextVar[dict[tuple[object, str, str], asyncio.Future[dict | None]]
 _SETTLING: ContextVar[bool] = ContextVar("_SETTLING", default=False)
 # The stored datasets whose extension fields are being inlined (their own loads must not recurse into them).
 _INLINING: ContextVar[frozenset[tuple[str, str]]] = ContextVar("_INLINING", default=frozenset())
+#: The versions whose saves wrote qualified references.
+_QUALIFIED_AT = {"SlayerModel": 27, "SlayerQuery": 17, "Memory": 13}
+
+
+def _unqualified(query: Any, *, document_version: int, entity: str) -> bool:
+    """Whether a raw stored query was written before qualified references (a version-less one, by its document)."""
+    if not isinstance(query, dict):
+        return False
+    version = query.get("version")
+    if version is not None:
+        return int(version) < _QUALIFIED_AT["SlayerQuery"]
+    return document_version < _QUALIFIED_AT[entity]
 # The loading query engine's client source, set by its storage view around each call it delegates.
 CLIENT_SOURCE: ContextVar[ClientSource | None] = ContextVar("CLIENT_SOURCE", default=None)
 
@@ -1134,6 +1147,9 @@ class StorageBackend(ABC):
         """A stamped stored dataset dict migrated, repaired and validated; and whether a migration ran."""
         write_back = False
         pre_version = int(data["version"])
+        queries = data.get("source_queries")
+        pending = [_unqualified(q, document_version=pre_version, entity="SlayerModel")
+                   for q in queries] if isinstance(queries, list) else []
         if pre_version < _mig.CURRENT_VERSIONS["SlayerModel"]:
             data = _mig.migrate("SlayerModel", data)
             if pre_version < _RELATIONSHIP_TARGET_REPAIR_BELOW_VERSION:
@@ -1147,6 +1163,8 @@ class StorageBackend(ABC):
             await self._declare_relationship_keys(name=name, data=data, data_source=data_source)
             await self._repair_source_query_filters(name=name, data=data, data_source=data_source)
             data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
+            data = await self._qualified_source_queries(name=name, data=data, data_source=data_source,
+                                                        pending=pending)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_relationships(
                 name=name, data=data, data_source=data_source,
@@ -1249,6 +1267,14 @@ class StorageBackend(ABC):
         migrated = [_mig.migrate("SlayerQuery", _mig.stamp_stored(q)) for q in queries]
         if not any(holds_removed_forms(q) for q in migrated):
             return None
+        converted = inline_extension_fields(
+            migrated, datasets_by_ds=await self._converting_datasets(data_source), data_source=data_source,
+            priority=await self.get_datasource_priority(), document=document,
+        )
+        return [without_none(q.model_dump(mode="json")) for q in converted]
+
+    async def _converting_datasets(self, data_source: str | None) -> dict[str, dict[str, SlayerDataset]]:
+        """The loadable datasets a stored query's conversion reads, by datasource (the documents converting excluded)."""
         datasets_by_ds: dict[str, dict[str, SlayerDataset]] = {}
         for ds, dataset_name in await self._list_all_dataset_identities():
             if (data_source is not None and ds != data_source) or (ds, dataset_name) in _INLINING.get():
@@ -1259,9 +1285,31 @@ class StorageBackend(ABC):
                 continue
             if dataset is not None:
                 datasets_by_ds.setdefault(ds, {})[dataset.name] = dataset
-        converted = inline_extension_fields(
-            migrated, datasets_by_ds=datasets_by_ds, data_source=data_source,
-            priority=await self.get_datasource_priority(), document=document,
+        return datasets_by_ds
+
+    async def _qualified_source_queries(self, *, name: str, data: dict, data_source: str, pending: list[bool]) -> dict:
+        """``data`` with its pre-2.0 stages' references qualified (``qualified_references``)."""
+        queries = data.get("source_queries")
+        if not any(pending) or not isinstance(queries, list) or len(queries) != len(pending):
+            return data
+        token = _INLINING.set(_INLINING.get() | {(data_source, name)})
+        try:
+            qualified = await self._qualified_queries(queries=queries, pending=pending, data_source=data_source,
+                                                      document=name)
+        finally:
+            _INLINING.reset(token)
+        return {**data, "source_queries": qualified}
+
+    async def _qualified_queries(
+        self, *, queries: list[Any], pending: list[bool], data_source: str | None, document: str,
+    ) -> list[Any]:
+        """Raw stored ``queries`` with each ``pending`` one's references qualified, keeping their meaning."""
+        with _mig.migrating_document(document, stored=True):
+            validated = [q if isinstance(q, SlayerQuery) else SlayerQuery.model_validate(
+                _mig.stamp_stored(q) if isinstance(q, dict) else q) for q in queries]
+        converted = qualified_stages(
+            validated, pending=pending, datasets_by_ds=await self._converting_datasets(data_source),
+            data_source=data_source, priority=await self.get_datasource_priority(),
         )
         return [without_none(q.model_dump(mode="json")) for q in converted]
 
@@ -1619,6 +1667,8 @@ class StorageBackend(ABC):
                     data_sources=await self._memory_data_sources(data)),
                     keys=keys_for(entity="Memory", version=int(data["version"])))
             typing = await self._memory_typing(data) if needs_typing("Memory", data) else StoredDatasets()
+            unqualified = isinstance(data, dict) and _unqualified(
+                data.get("query"), document_version=int(data["version"]), entity="Memory")
             with typing_with(typing):
                 # Memories are never written back, so the repair repeats on every load of a pre-v4 document.
                 if isinstance(data, dict) and int(data["version"]) < _MEMORY_FILTER_REPAIR_BELOW_VERSION:
@@ -1628,6 +1678,11 @@ class StorageBackend(ABC):
                         data.get("query"), dict):
                     inlined = await self._inlined_queries(queries=[data["query"]], data_source=None, document=memory_id)
                     data = data if inlined is None else {**data, "query": inlined[0]}
+                # ...and so does the upgrade to qualified references.
+                if unqualified and isinstance(data, dict):
+                    qualified = await self._qualified_queries(queries=[data["query"]], pending=[True],
+                                                              data_source=None, document=memory_id)
+                    data = {**data, "query": qualified[0]}
                 return Memory.model_validate(data)
 
     @abstractmethod

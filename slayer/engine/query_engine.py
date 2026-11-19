@@ -123,7 +123,7 @@ from slayer.core.recommend import (
     ItemPath,
     PopulationRecommendation,
 )
-from slayer.core.syntax import split_entity_agg_ref
+from slayer.core.syntax import AggCall, Ref, StarSource, parse_expr, split_entity_agg_ref
 from slayer.engine.cache import (
     CacheConfig,
     NormalizedTable,
@@ -135,6 +135,7 @@ from slayer.engine.cache import (
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
 from slayer.engine.legacy_references import AnchorNames, Conversions, convert_query, convert_refinement
+from slayer.engine.population.anchors import anchor_route, unknown_metric, unqualified_count
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
 from slayer.ir.planned import (
     PlannedQuery,
@@ -280,9 +281,35 @@ class _ResolvedItem(BaseModel):
     attachment: bool = False
 
 
-def _emit_recommend_path(hops: list[str], item: "_ResolvedItem") -> str:
-    """Relationship-qualified path to ``item`` from a root over ``hops`` (root excluded), re-aggregated functionally."""
-    core = item.leaf if not hops else ".".join(hops) + "." + item.leaf
+def _anchored_route(
+    *, root: SlayerDataset, dataset: str, datasets_by_name: Dict[str, SlayerDataset],
+) -> Optional[Tuple[str, ...]]:
+    """The route a query rooted at ``root`` takes to the anchor ``dataset``; ``None`` when it refuses it."""
+    anchor = datasets_by_name.get(dataset)
+    if anchor is None:
+        return None
+    try:
+        return anchor_route(reader=root, anchor=anchor, datasets_by_name=datasets_by_name).route
+    except SlayerError:
+        return None
+
+
+def _attachment_route(
+    *, root: SlayerDataset, item: "_ResolvedItem", routed: Dict[str, Any], datasets_by_name: Dict[str, SlayerDataset],
+) -> Tuple[str, ...]:
+    """An attachment's route from ``root``: the anchor's route, else the tie-break-best route."""
+    anchored = _anchored_route(root=root, dataset=item.dataset, datasets_by_name=datasets_by_name)
+    return anchored if anchored is not None else routed[item.dataset].tokens
+
+
+def _emit_recommend_path(
+    hops: list[str], item: "_ResolvedItem", *, root: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
+) -> str:
+    """``item`` as written when a query rooted at ``root`` reads it along ``hops``, else its explicit route from the
+    root, re-aggregated functionally."""
+    if _anchored_route(root=root, dataset=item.dataset, datasets_by_name=datasets_by_name) == tuple(hops):
+        return item.input_item
+    core = ".".join((root.spelling, *hops, item.leaf))
     return core if item.suffix is None else functional_agg_text(source=core, suffix=item.suffix)
 
 
@@ -2310,9 +2337,13 @@ class SlayerQueryEngine:
     async def _resolve_recommend_item(
         self, *, raw: str, data_source: str | None
     ) -> "tuple[_ResolvedItem, list[str]]":
-        """Resolve + validate one recommend_population item; must be a field or metric."""
+        """Resolve + validate one recommend_population item; must be a qualified field, metric or row count."""
+        await self._refuse_unqualified_item(raw, data_source=data_source)
         entity_ref, suffix = split_entity_agg_ref(raw)
         warnings: list[str] = []
+        if entity_ref.endswith(".*"):
+            return await self._resolve_recommend_row_count(raw=raw, entity_ref=entity_ref, suffix=suffix,
+                                                           data_source=data_source), warnings
         if data_source and "." not in entity_ref:
             ds, dataset_name, leaf = await self._scope_bare_name_to_datasource(
                 raw=raw, name=entity_ref, data_source=data_source,
@@ -2360,6 +2391,35 @@ class SlayerQueryEngine:
             leaf=leaf, suffix=suffix, attachment=attachment,
         )
         return item, warnings
+
+    async def _refuse_unqualified_item(self, raw: str, *, data_source: str | None) -> None:
+        """A bare name or ``count(*)`` item is refused as a query refuses it, suggesting the qualified spellings."""
+        try:
+            node = parse_expr(raw)
+        except ValueError:
+            return
+        source = node.source if isinstance(node, AggCall) else node
+        if isinstance(source, StarSource):
+            raise unqualified_count()
+        if isinstance(source, Ref):
+            datasets: list[SlayerDataset] = []
+            for ds in [d for d in await self.storage.list_datasources() if data_source in (None, d)]:
+                datasets.extend(await _all_datasets_in_datasource(self.storage, ds))
+            raise unknown_metric(source.name, datasets=datasets)
+
+    async def _resolve_recommend_row_count(
+        self, *, raw: str, entity_ref: str, suffix: str | None, data_source: str | None,
+    ) -> "_ResolvedItem":
+        """``count(<dataset>.*)``: an attachment on its dataset."""
+        dataset_ref = entity_ref[:-2]
+        if data_source and dataset_ref.split(".")[0] != data_source:
+            dataset_ref = f"{data_source}.{dataset_ref}"
+        res = await resolve_entity(dataset_ref, storage=self.storage)
+        segs = res.canonical_forms[0].split(".")
+        if len(segs) != 2:
+            raise ValueError(f"'{raw}' is not a row count of one dataset; write count(<dataset>.*).")
+        return _ResolvedItem(input_item=raw, data_source=segs[0], dataset=segs[1], leaf="*", suffix=suffix,
+                             attachment=True)
 
     async def _recommend_resolve_items(
         self, *, items: list[str], data_source: str | None
@@ -2433,7 +2493,9 @@ class SlayerQueryEngine:
         unrelated: dict[str, set[str]] = {}
         for name in all_names:
             routed = shortest_routes(root=datasets_by_name[name], datasets_by_name=datasets_by_name)
-            paths = {r.input_item: routed[r.dataset].tokens for r in attach if r.dataset in routed}
+            paths = {r.input_item: _attachment_route(root=datasets_by_name[name], item=r, routed=routed,
+                                                     datasets_by_name=datasets_by_name)
+                     for r in attach if r.dataset in routed}
             unrelated[name] = {
                 r.input_item for r in attach
                 if det and r.dataset not in routed and unreachable_target(
@@ -2472,6 +2534,12 @@ class SlayerQueryEngine:
         hint_display = hint[1] if hint is not None else None
 
         valid = [n for n in all_names if is_valid(n)]
+        if det and valid:
+            # The population rule: a tie at the fewest determination hops picks no root, as inference fails.
+            fewest = min(det_hops(n) for n in valid)
+            if len([n for n in valid if det_hops(n) == fewest]) > 1 and not (
+                    hint_dataset is not None and valid_under(lenient, hint_dataset)):
+                valid = []
         if valid:
             # Objective: fewest determination hops; attachments never steer, so
             # they are absent from the key (only a mentioned-preference + name
@@ -2495,7 +2563,8 @@ class SlayerQueryEngine:
             item_paths = [
                 ItemPath(
                     input_item=r.input_item,
-                    path=_emit_recommend_path(list(reach[root][r.input_item]), r),
+                    path=_emit_recommend_path(list(reach[root][r.input_item]), r, root=datasets_by_name[root],
+                                              datasets_by_name=datasets_by_name),
                     attachment=r.attachment,
                     unrelated=r.input_item in unrelated[root],
                 )
