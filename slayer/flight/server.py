@@ -14,6 +14,7 @@ from pathlib import Path
 from collections.abc import Iterator
 
 import pyarrow.flight as fl
+from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.auth import (
@@ -46,8 +47,6 @@ def _parse_action_body(body_bytes: bytes, msg_cls: type):
     Any first and look for the Flight SQL type-URL prefix — if present,
     use the Any-wrapped decode; otherwise treat as raw.
     """
-    from google.protobuf.any_pb2 import Any as PbAny
-
     probe = PbAny()
     try:
         probe.ParseFromString(body_bytes)
