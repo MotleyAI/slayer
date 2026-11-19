@@ -367,9 +367,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
 ) -> PreboundQuery:
     """Parse and bind every text surface of a ``SlayerQuery`` (the only door into the parser); returns fully-normalized keys. Dataset filters excluded (scope-owned)."""
     if scope is None:
-        scope = resolve_scope(
-            query=query, bundle=bundle, stage_schemas=stage_schemas,
-        )
+        scope = resolve_scope(bundle=bundle)
     check_spine_clash(clash=bundle.spine_clash and is_spine_query(query))
     _check_field_granularities(bundle=bundle)
     _check_dimension_calls(query, bundle=bundle)

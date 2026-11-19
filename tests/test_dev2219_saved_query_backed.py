@@ -113,6 +113,11 @@ async def _seed(storage: YAMLStorage) -> None:
     await storage.save_dataset(_raw_saved("needs_var", {
         "population": "orders", "dimensions": ["customer_id"], "metrics": [m("sum(amount)", "revenue")],
         "filter": ["amount > {threshold_var}"]}))
+    await storage.save_dataset(SlayerDataset.model_validate({
+        "name": "stage_cycle", "data_source": DS,
+        "source_queries": [{"name": "a", "population": "b", "dimensions": ["customer_id"]},
+                           {"name": "b", "population": "a", "dimensions": ["customer_id"]},
+                           {"population": "a", "dimensions": ["customer_id"]}]}))
 
 
 def _seed_sync(storage: YAMLStorage) -> None:
@@ -147,7 +152,8 @@ def _check_absorbed(payload: dict) -> None:
     assert not to_customers[0].get("inherited")
 
 
-_FAILURE_TOKENS = {_CYCLE[0]: _CYCLE[0], "bad_key": "nope_column", "needs_var": "threshold_var"}
+_FAILURE_TOKENS = {_CYCLE[0]: _CYCLE[0], "bad_key": "nope_column", "needs_var": "threshold_var",
+                   "stage_cycle": "Cycle in query list"}
 
 
 def _check_failure(payload: dict, name: str) -> None:

@@ -3018,7 +3018,7 @@ class SlayerQueryEngine:
             return list(dataset.relationships), None
         try:
             expansion = await self._query_backed_expansion(dataset=dataset, prefer_data_source=dataset.data_source or None)
-        except SlayerError as exc:
+        except (SlayerError, ValueError) as exc:
             return list(dataset.relationships), str(exc)
         view = dataset_from_stage_schema(
             name=dataset.name, schema=expansion.stage_schema, data_source=dataset.data_source or "_stage", saved=dataset,

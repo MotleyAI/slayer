@@ -51,9 +51,7 @@ def elaborate_query(
     sub-phase. Splits host-rooted filter strings into per-conjunct masks."""
     stage_schemas = stage_schemas or {}
     if scope is None:
-        scope = resolve_scope(
-            query=query, bundle=bundle, stage_schemas=stage_schemas,
-        )
+        scope = resolve_scope(bundle=bundle)
     if prebound is None:
         prebound = bind_query_inputs(
             query=query, bundle=bundle, scope=scope,

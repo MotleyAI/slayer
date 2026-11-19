@@ -2400,7 +2400,6 @@ def _lookup_dataset(
     scope: DatasetScope,
     bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerDataset]:
-    if scope.population is not None:
-        if scope.population.name == name:
-            return scope.population
+    if scope.population is not None and scope.population.name == name:
+        return scope.population
     return bundle.get_referenced_dataset(name)

@@ -366,7 +366,7 @@ def _extract_cte_body(sql: str, cte_name_pattern: str) -> str:
 def plan_as_producer(*, query: SlayerQuery, bundle):
     """Compile ``query`` through the producer entry (``compile_synthesized``), with no
     inherited population."""
-    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    scope = resolve_scope(bundle=bundle)
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
     return stages.compile_synthesized(
         prebound, source_dataset=query.population if isinstance(query.population, str) else None,

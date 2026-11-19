@@ -207,29 +207,42 @@ def absorb_inherited(datasets: Mapping[str, SlayerDataset]) -> Dict[str, SlayerD
     same-named one on other keys replaces it; differently named edges on the same keys stay parallel."""
     out = dict(datasets)
     for name, dataset in datasets.items():
-        inherited = [j for j in dataset.relationships if j.inherited_from is not None]
-        if not inherited:
-            continue
-        declared = [j for j in dataset.relationships if j.inherited_from is None]
-        aliases: Dict[int, List[str]] = {}
-        dropped: set = set()
-        for j in inherited:
-            hit = next((d for d in declared if d.to == j.to and _absorbs(d, j, reverse=False)), None)
-            target = datasets.get(j.to)
-            backward = [d for d in (target.relationships if target is not None else [])
-                        if d.to == name and d.inherited_from is None]
-            if hit is not None and j.name is not None and hit.name is None:
-                aliases.setdefault(id(hit), []).append(j.name)
-            if hit is not None or any(_absorbs(d, j, reverse=True) for d in backward) or (
-                    j.name is not None and any(d.name == j.name for d in declared)):
-                dropped.add(id(j))
-        if not dropped:
-            continue
-        out[name] = dataset.model_copy(update={"relationships": [
-            j.with_aliases(tuple(dict.fromkeys((*j.aliases, *aliases[id(j)])))) if id(j) in aliases else j
-            for j in dataset.relationships if id(j) not in dropped
-        ]})
+        absorbed = _absorb_into(name=name, dataset=dataset, datasets=datasets)
+        if absorbed is not None:
+            out[name] = absorbed
     return out
+
+
+def _absorb_into(
+    *, name: str, dataset: SlayerDataset, datasets: Mapping[str, SlayerDataset],
+) -> Optional[SlayerDataset]:
+    """``dataset`` with its absorbed inherited edges dropped; ``None`` when none is."""
+    declared = [j for j in dataset.relationships if j.inherited_from is None]
+    aliases: Dict[int, List[str]] = {}
+    dropped: set = set()
+    for j in dataset.relationships:
+        if j.inherited_from is None:
+            continue
+        hit = next((d for d in declared if d.to == j.to and _absorbs(d, j, reverse=False)), None)
+        if hit is not None and j.name is not None and hit.name is None:
+            aliases.setdefault(id(hit), []).append(j.name)
+        if hit is not None or _declared_back(j, name=name, datasets=datasets) or (
+                j.name is not None and any(d.name == j.name for d in declared)):
+            dropped.add(id(j))
+    if not dropped:
+        return None
+    return dataset.model_copy(update={"relationships": [
+        j.with_aliases(tuple(dict.fromkeys((*j.aliases, *aliases[id(j)])))) if id(j) in aliases else j
+        for j in dataset.relationships if id(j) not in dropped
+    ]})
+
+
+def _declared_back(inherited: DatasetRelationship, *, name: str, datasets: Mapping[str, SlayerDataset]) -> bool:
+    """Whether ``inherited``'s target declares the identical edge back to ``name``."""
+    target = datasets.get(inherited.to)
+    return target is not None and any(
+        d.to == name and d.inherited_from is None and _absorbs(d, inherited, reverse=True)
+        for d in target.relationships)
 
 
 def _pair_set(pairs: Iterable[Sequence[str]]) -> FrozenSet[Tuple[str, str]]:
@@ -328,13 +341,6 @@ def stage_bundle_with_siblings(
     )
 
 
-
-
-def resolve_scope(
-    *,
-    query: SlayerQuery,
-    bundle: "ResolvedSourceBundle",
-    stage_schemas: Optional[Dict[str, "StageSchema"]],
-) -> DatasetScope:
+def resolve_scope(*, bundle: "ResolvedSourceBundle") -> DatasetScope:
     """The scope a query binds against: the bundle's population, a sibling stage's dataset included."""
     return DatasetScope(population=bundle.population)

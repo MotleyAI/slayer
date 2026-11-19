@@ -103,17 +103,7 @@ def inherited_edges(
     """Every edge touching a dataset the stage reads whose key the stage passes through, oriented from the stage."""
     if root is None:
         return ()
-    columns: Dict[_Position, Dict[str, str]] = {(): {}}
-    positions: Dict[_Position, Tuple[OrientedRelationship, ...]] = {(): ()}
-    for c in fields:
-        if c.pass_through is None:
-            continue
-        path = c.pass_through.path
-        for i in range(len(path) + 1):
-            key = tuple(_edge_id(e) for e in path[:i])
-            positions.setdefault(key, path[:i])
-            columns.setdefault(key, {})
-        columns[tuple(_edge_id(e) for e in path)].setdefault(c.pass_through.field, c.name)
+    positions, columns = _positions(fields)
     out: List[InheritedEdge] = []
     seen: set = set()
     with unobserved():
@@ -127,6 +117,24 @@ def inherited_edges(
                     seen.add(inherited.origin)
                     out.append(inherited)
     return tuple(out)
+
+
+def _positions(
+    fields: Sequence[StageField],
+) -> Tuple[Dict[_Position, Tuple[OrientedRelationship, ...]], Dict[_Position, Dict[str, str]]]:
+    """Every join path the pass-through fields traverse (prefixes included), and the stage column per field there."""
+    columns: Dict[_Position, Dict[str, str]] = {(): {}}
+    positions: Dict[_Position, Tuple[OrientedRelationship, ...]] = {(): ()}
+    for c in fields:
+        if c.pass_through is None:
+            continue
+        path = c.pass_through.path
+        for i in range(len(path) + 1):
+            key = tuple(_edge_id(e) for e in path[:i])
+            positions.setdefault(key, path[:i])
+            columns.setdefault(key, {})
+        columns[tuple(_edge_id(e) for e in path)].setdefault(c.pass_through.field, c.name)
+    return positions, columns
 
 
 def _inherit(

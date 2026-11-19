@@ -151,7 +151,7 @@ def _producer_env():
     bundle = _dev1836_bundle()
     query = dev1836_q(dimensions=["status"],
                       metrics=[QueryMetric(metric="sum(amount)", alias="s")])
-    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    scope = resolve_scope(bundle=bundle)
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
     return query, prebound, elaborate_mod.elaborate_synthesized(
         prebound, bundle=bundle, scope=scope, stage_schemas={})
@@ -250,7 +250,7 @@ class TestTopOnlySteps:
         top = elaborate_query(query=query, bundle=bundle)
         assert top.prebound is not None
         assert len(top.prebound.bound_filters) == 2
-        scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+        scope = resolve_scope(bundle=bundle)
         prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope,
                                      stage_schemas={})
         producer = elaborate_mod.elaborate_synthesized(

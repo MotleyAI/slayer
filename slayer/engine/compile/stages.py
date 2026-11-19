@@ -4406,7 +4406,6 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
         upstream=_upstream_respellings(scope),
-        scope=scope,
     )
 
     frame_bound_fields = _frame_bound_fields(grain=grain, registry=projection.registry)
@@ -4714,7 +4713,6 @@ def _emit_stage_schema(
     datasets_by_name: Dict[str, SlayerDataset],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
-    scope: DatasetScope | None = None,
 ) -> StageSchema:
     """Each grain slot's first public field names the schema grain; ``None`` in raw-row mode."""
     fields: List[StageField] = []
@@ -4734,7 +4732,7 @@ def _emit_stage_schema(
         )
         fields.append(_stage_field(
             slot=slot, alias=rk.removeprefix(f"{source_relation}."), flat=flat,
-            source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name, scope=scope),
+            source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,
                 datasets_by_name=datasets_by_name, upstream=upstream,
@@ -4768,7 +4766,6 @@ def _surviving_default(*, projection, fields: List[StageField], root: Optional[S
 
 def _source_field(
     *, key: ValueKey, root: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
-    scope: DatasetScope | None,
 ):
     """The field a row-level stage output reads (a dataset field or an upstream stage
     field), for the metadata it carries downstream; ``None`` for anything else."""
