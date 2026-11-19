@@ -11,7 +11,10 @@
 #                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error};
 #                 or steps (MCP tool calls {tool, args} and {sql} edits on a private database copy; "{db_path}" in
 #                 args is that copy) with setup: datasets | datasource | empty, and expect: match (last step a json
-#                 query) | {error} | {contains: [...], lacks: [...]} (substrings the last step's output has / lacks)
+#                 query) | {error} | {contains: [...], lacks: [...]} (substrings the last step's output has / lacks);
+#                 or osi_roundtrip {extensions (default true)}, optionally with a query: export-osi, then import-osi
+#                 into a fresh store, and expect: match (the query on the re-imported store) | {same_datasets: true}
+#                 (each dataset equals its re-imported twin, ignoring osi_* meta) | {contains, lacks} (the export report)
 #   malloy:       query (appended to malloy/model.malloy), flatten (nest name), keys/values overrides,
 #                 expect: match | {compile_error} | {db_error} | {warning} | {known_bug, buggy_rows, buggy_error, buggy_row_count}
 #   cube:         rest (a /load query) or sql (SQL API), planners (default [tesseract, legacy]), model_declared,
@@ -4964,6 +4967,57 @@ probes:
     slayer:
       query: {population: orders, filter: ["order_date + interval(7, 'day') > '2025-06-25'"],
               metrics: [{expression: "sum(amount)", name: v}]}
+
+  # ------------------------------------------------------------------ C23 Ossie round trip (SLayer)
+  # Each exports the probe datasets with `slayer export-osi` and re-imports them into a fresh store.
+  - id: C23-ossie-roundtrip-models
+    row: C23
+    title: an unedited Ossie export re-imports to the same datasets
+    slayer:
+      osi_roundtrip: {}
+      expect: {same_datasets: true}
+
+  - id: C23-ossie-roundtrip-transform
+    row: C23
+    title: the transform aov_chg by month and region after the round trip
+    truth_sql: |
+      with a as (
+        select r.name region, date_trunc('month', o.order_date) as month, sum(o.amount) / count(*) aov, sum(o.amount) rev
+        from orders o left join customers c on o.customer_id = c.id left join regions r on c.region_id = r.id
+        group by 1, 2)
+      select x.region, x.month, (x.aov - y.aov) / y.aov, x.rev from a x
+      left join a y on y.region is not distinct from x.region and y.month = x.month - interval 1 month
+    compare: {keys: [regions.name, order_date], values: [chg, rev]}
+    slayer:
+      osi_roundtrip: {extensions: true}
+      query: {population: orders, dimensions: [customers.regions.name],
+              time_dimensions: [{field: order_date, granularity: month}],
+              metrics: [{expression: "aov_chg", name: chg}, {expression: "sum(amount)", name: rev}]}
+
+  - id: C23-ossie-roundtrip-query-backed
+    row: C23
+    title: the query-backed dataset monthly_rev after the round trip
+    truth_sql: select status, date_trunc('month', order_date), sum(amount) from orders group by 1, 2
+    compare: {keys: [status, order_date], values: [v]}
+    slayer:
+      osi_roundtrip: {extensions: true}
+      query: {population: monthly_rev, dimensions: [status],
+              time_dimensions: [{field: order_date, granularity: month}],
+              metrics: [{expression: "sum(rev)", name: v}]}
+
+  - id: C23-ossie-report-extension
+    row: C23
+    title: the export report lists aov_chg as carried only in the SLAYER extension
+    slayer:
+      osi_roundtrip: {extensions: true}
+      expect: {contains: ["## extension_only (1)", "[info] aov_chg:"], lacks: ["[dropped]"]}
+
+  - id: C23-ossie-report-plain
+    row: C23
+    title: with --no-extensions the export report says aov_chg is not exported
+    slayer:
+      osi_roundtrip: {extensions: false}
+      expect: {contains: ["## slayer_only (1)", "[dropped] aov_chg:"], lacks: [extension_only]}
 
   # ------------------------------------------------------------------ C24-C29: MCP sessions (SLayer)
   # Each runs MCP tool calls on its own copy of the database; `setup` is what its storage starts with.
