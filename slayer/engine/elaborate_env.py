@@ -477,6 +477,21 @@ def check_combined_partition_keys(
                 )
 
 
+def _has_partitioned_ref(
+    vk: ValueKey, *, row_agg_set: frozenset, homes: Optional[AggregateHomes],
+    crossing_root: Optional[Callable[[ValueKey], bool]],
+) -> bool:
+    """ANY partitioned / cross-dataset / crossing aggregate ref forces the split so each conjunct lowers
+    to its own placement."""
+    return any(
+        is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
+        or is_local_partitioned_agg(k)
+        or (homes is not None and homes.target_rooted(k))
+        or (crossing_root is not None and crossing_root(k))
+        for k in walk_value_keys(vk)
+    )
+
+
 def type_and_split_filters(
     prebound: PreboundQuery,
     *,
@@ -490,17 +505,6 @@ def type_and_split_filters(
     old = list(prebound.bound_filters)
     dim_keys, row_agg_set = position_typing_context(prebound)
     has_metric_position = prebound.distinct_dimension_values is not False
-
-    def _has_partitioned_ref(vk: ValueKey) -> bool:
-        # ANY partitioned / cross-dataset / crossing aggregate ref forces the split so
-        # each conjunct lowers to its own placement.
-        return any(
-            is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
-            or is_local_partitioned_agg(k)
-            or (homes is not None and homes.target_rooted(k))
-            or (crossing_root is not None and crossing_root(k))
-            for k in walk_value_keys(vk)
-        )
 
     def _typed(cj: ValueKey) -> ConjunctTyping:
         return type_position_conjunct(
@@ -521,7 +525,9 @@ def type_and_split_filters(
         )
         conjunct_typings = [_typed(cj) for cj in conjuncts]
         if len(conjuncts) > 1 and (
-            _has_partitioned_ref(bf.value_key)
+            _has_partitioned_ref(
+                bf.value_key, row_agg_set=row_agg_set, homes=homes, crossing_root=crossing_root,
+            )
             or len(set(conjunct_typings)) > 1
         ):
             changed = True

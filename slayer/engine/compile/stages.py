@@ -4140,7 +4140,8 @@ def _strip_redundant_partitions(env: ElaboratedStage) -> Tuple[PreboundQuery, Ag
     }
     if not strip:
         return prebound, homes
-    return _substitute_prebound(prebound, strip), homes.carried(strip)
+    stripped = _substitute_prebound(prebound, strip)
+    return stripped, _carried_homes(homes, before=prebound, after=stripped)
 
 
 def _producer_nesting_rule(

@@ -32,6 +32,7 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHome, AggregateHomes
 from slayer.sql.dialects.base import ServerProfile
+from slayer.sql.dialects.postgres import PostgresDialect
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_engine, contractors_statements, emit_contractors
 from tests._dev2137_fixtures import (
     EXTRA,
@@ -205,6 +206,16 @@ async def test_the_position_renders(dialect: str, monkeypatch: pytest.MonkeyPatc
         assert re.search(POSITION[dialect], upper), sql
 
 
+async def test_clickhouse_builds_position_tuples_after_null_compaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(SlayerSQLClient, "server_profile", _correlating)
+    sql = await emit_contractors(ELEMENTS_PER_ASSIGNMENT, dialect="clickhouse", datasets=all_datasets())
+    tree = sqlglot.parse_one(sql, read="clickhouse")
+    cast = next(c for c in tree.find_all(exp.Cast) if c.to.is_type(exp.DataType.Type.STRUCT))
+    mapped = cast.find_ancestor(exp.Transform)  # ``arrayMap(lambda, array)``
+    assert mapped is not None, sql
+    assert isinstance(mapped.this, exp.ArrayFilter), sql
+
+
 @pytest.mark.parametrize("dialect", ["postgres", "trino", "bigquery", "duckdb", "snowflake"])
 @pytest.mark.parametrize("q", [
     SlayerQuery.model_validate(body("contractors", m("count(skills.*)", "n"), dimensions=["skills.value"])),
@@ -230,6 +241,15 @@ async def pg(postgresql, tmp_path) -> AsyncGenerator[SlayerQueryEngine]:
 async def test_elements_per_assignment_on_postgres(pg: SlayerQueryEngine) -> None:
     resp = await pg.execute(ELEMENTS_PER_ASSIGNMENT)
     assert per_assignment(resp, "n") == ELEMENTS
+
+
+def test_postgres_positions_a_json_list(postgresql) -> None:
+    # ``json`` has no equality operator; repeated elements keep separate positions, the NULL none.
+    cur = postgresql.cursor()
+    cur.execute("""CREATE TABLE docs AS SELECT ARRAY['{"a":1}', NULL, '{"a":1}']::json[] AS v""")
+    rows = PostgresDialect().positioned_elements(exp.column("v", table="docs")).sql(dialect="postgres")
+    cur.execute(f"SELECT COUNT(*), COUNT(DISTINCT p.__slayer_position) FROM docs CROSS JOIN LATERAL ({rows}) AS p")
+    assert cur.fetchone() == (2, 2)
 
 
 # --------------------------------------------------------------------------- #
@@ -286,6 +306,15 @@ class TestHomeBelowTheRoot:
         plain = await outcome(engine, body(population, m(f"w({q}rate)"), dimensions=dims))
         redundant = await outcome(engine, body(population, m(f"w({q}rate, partition_by={q}team)"), dimensions=dims))
         assert redundant == plain == {("A",): 130.0, ("B",): 100.0}
+
+    async def test_redundant_partition_inside_an_enclosing_aggregate(self, engine: SlayerQueryEngine) -> None:
+        # The stripped root's enclosing aggregate is rebuilt too, and keeps its home.
+        inner = "sum(rate * max(rate, partition_by=team){})"
+        plain = await outcome(engine, body("contractors", m(f"sum(rate * {inner.format('')})"), dimensions=["team"]))
+        redundant = await outcome(engine, body(
+            "contractors", m(f"sum(rate * {inner.format(', partition_by=team')})"), dimensions=["team"]))
+        assert isinstance(plain, dict), plain
+        assert redundant == plain
 
 
 #: kind → (expression and dimensions written from ``contractors``, the outcome from both populations: cells

@@ -58,7 +58,7 @@ from slayer.sql.dialects.reflection import (
 )
 
 #: Byte-based string functions and their character (UTF-8) counterparts.
-_INDEX, _ROW = "__slayer_i", "__slayer_r"
+_INDEX = "__slayer_i"
 _UTF8_FUNCTIONS = {exp.Substring: "substringUTF8", exp.Lower: "lowerUTF8", exp.Upper: "upperUTF8"}
 _JSON_SCALAR_TYPES = ("Int64", "UInt64", "Double", "Bool")
 #: Types ClickHouse refuses inside ``Nullable``.
@@ -73,19 +73,19 @@ def _compact(values: Expression) -> Expression:
 
 
 def _positioned_rows(values: Expression, *, kind: str) -> Expression:
-    """``arrayFilter(r -> r.value IS NOT NULL, arrayMap(i -> CAST(tuple(values[i], i) AS Tuple(value T, pos)),
-    arrayEnumerate(values)))``."""
-    index, row = exp.to_identifier(_INDEX), exp.to_identifier(_ROW)
+    """``arrayMap(i -> CAST(tuple(values[i], i) AS Tuple(value T, pos)), arrayFilter(i -> values[i] IS NOT NULL,
+    arrayEnumerate(values)))``: NULLs leave before the cast to the non-Nullable ``T``."""
+    index = exp.to_identifier(_INDEX)
     row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {kind}, {LIST_POSITION} BIGINT>")
+
+    def element(i: Expression) -> Expression:
+        return anon("arrayElement", values.copy(), i.copy())
+
     i = exp.Column(this=index.copy())
-    as_row = exp.Lambda(
-        this=exp.Cast(this=anon("tuple", anon("arrayElement", values.copy(), i), i.copy()), to=row_type),
-        expressions=[index],
-    )
-    rows = anon("arrayMap", as_row, anon("arrayEnumerate", values.copy()))
-    kept = exp.Lambda(this=is_not_null(anon("tupleElement", exp.Column(this=row.copy()), lit(LIST_VALUE))),
-                      expressions=[row])
-    return exp.Anonymous(this="arrayFilter", expressions=[kept, rows])
+    kept = exp.Lambda(this=is_not_null(element(i)), expressions=[index.copy()])
+    positions = exp.Anonymous(this="arrayFilter", expressions=[kept, anon("arrayEnumerate", values.copy())])
+    as_row = exp.Lambda(this=exp.Cast(this=anon("tuple", element(i), i.copy()), to=row_type), expressions=[index])
+    return anon("arrayMap", as_row, positions)
 
 
 def _utf8(node: Expression) -> Expression:

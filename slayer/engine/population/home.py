@@ -31,7 +31,7 @@ from slayer.engine.cardinality.relationship_safety import attributable_from_root
 from slayer.engine.reference_closure import key_closure
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.ir.terms import AggregateHome, AggregateHomes
+from slayer.ir.terms import AggregateHome, AggregateHomes, HomeKind
 
 Path = Tuple[str, ...]
 
@@ -132,13 +132,19 @@ def aggregate_home(
         if _determines_all(
             path=p, input_paths=input_paths, host_dataset=host_dataset, datasets_by_name=datasets_by_name, bundle=bundle,
         ):
-            return AggregateHome(kind="operand_dataset" if second_order else "physical_target" if p else "host", path=p)
+            return AggregateHome(kind=_resolved_kind(second_order=second_order, path=p), path=p)
     # No valid home: fall to the inputs' common prefix (never deeper than the
     # source anchor) so input safety walks each input forward from there and names
     # the fanning forward hop, not a cancelled reverse hop back onto the path.
     return AggregateHome(
         kind="operand_dataset" if second_order else "unresolved", path=_longest_common_prefix(input_paths),
     )
+
+
+def _resolved_kind(*, second_order: bool, path: Path) -> HomeKind:
+    if second_order:
+        return "operand_dataset"
+    return "physical_target" if path else "host"
 
 
 def resolve_aggregate_homes(
