@@ -78,4 +78,4 @@
 ## 6. Gates
 
 - [x] 6.1 Run the local test scope, ruff, `la-typecheck` (no new errors, baseline untouched), `la-arch-check` and `openspec validate dev-1607-ossie-shapes-on-top-of-the-vocabulary-rename --strict`. All pass.
-- [ ] 6.2 The PR description states that stores written by `main` between DEV-2318 and this change must be recreated, and that DEV-2318 archives first.
+- [x] 6.2 The PR description states that stores written by `main` between DEV-2318 and this change must be recreated, and that DEV-2318 archives first.
