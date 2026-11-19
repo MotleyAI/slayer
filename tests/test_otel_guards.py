@@ -348,6 +348,25 @@ def test_a_shutdown_thread_that_cannot_start_keeps_the_bound_and_stays_pending(m
     assert (elapsed < recorder.SHUTDOWN_WAIT_SECONDS + 1, len(recorder._lingering)) == (True, 1)
 
 
+def test_a_later_reset_retries_a_shutdown_thread_that_could_not_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = threading.Thread.start
+    refusals = [RuntimeError("can't start new thread")]
+
+    def refuse_once(self: threading.Thread) -> None:
+        if self.name == "slayer-otel-shutdown" and refusals:
+            raise refusals.pop()
+        original(self)
+
+    fast = _FastProvider()
+    monkeypatch.setattr(threading.Thread, "start", refuse_once)
+    monkeypatch.setattr(recorder, "_lingering", [])
+    monkeypatch.setattr(recorder, "_owned", [fast])
+    otel.reset()
+    closed_at_first = fast.closed.is_set()
+    otel.reset()
+    assert (closed_at_first, fast.closed.is_set(), recorder._lingering) == (False, True, [])
+
+
 class _IterHook(list):
     """A provider list that runs ``hook`` the first time it is iterated."""
 
