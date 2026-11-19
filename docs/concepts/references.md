@@ -50,21 +50,21 @@ SLayer has two distinct expression layers and the rules for what each one accept
 ## Aggregation syntax
 
 An aggregation is written `agg(col)` or `agg(col, args)` — for example
-`sum(revenue)`, `percentile(price, p=0.9)`, `sum(revenue, window='90d')`,
-`sum(amount, partition_by=city)`, `last(balance, updated_at)`,
-`weighted_avg(price, weight=quantity)`, `my_custom_agg(price)`. `*` counts
-rows: `count(*)`, `count(customers.*)`, and a bare field counts non-null
+`sum(orders.revenue)`, `percentile(orders.price, p=0.9)`, `sum(orders.revenue, window='90d')`,
+`sum(orders.amount, partition_by=orders.city)`, `last(accounts.balance, accounts.updated_at)`,
+`weighted_avg(orders.price, weight=orders.quantity)`, `my_custom_agg(orders.price)`. `*` counts
+rows: `count(orders.*)`, `count(customers.*)`, and a field counts non-null
 values: `count(customers.regions.name)`. This holds in **every** position that
 accepts aggregations (query metrics, filters, order, dataset metrics, dataset
 extensions, multi-stage expressions, computed-dimension
 expressions, transform and arithmetic operands) and for **every** aggregation
 — builtin, aliased (`countD(x)` = `count_distinct(x)`), and dataset-defined
 custom aggregations. Declared parameters may be passed positionally in
-declaration order — `percentile(price, 0.9)` means `p=0.9` (`first`/`last`
+declaration order — `percentile(orders.price, 0.9)` means `p=0.9` (`first`/`last`
 keep their positional ranking key instead). An aggregation that declares no
 parameters takes no positional value at all, and `first`/`last` at most one —
-their ranking key, a row-level expression (`last(balance, updated_at)`,
-`last(balance, CAST(updated_at AS DATE))`), never a literal or a nested aggregate.
+their ranking key, a row-level expression (`last(accounts.balance, accounts.updated_at)`,
+`last(accounts.balance, CAST(accounts.updated_at AS DATE))`), never a literal or a nested aggregate.
 
 Naming and matching read the parse tree, not the text: a metric declared
 `{"metric": "sum(orders.revenue)", "alias": "rev"}` is matched by a filter written
@@ -73,22 +73,22 @@ Naming and matching read the parse tree, not the text: a metric declared
 Disambiguation rules:
 
 * `first` / `last` are both aggregations and transforms: a call whose first
-  argument resolves to a row-level value is the aggregation (`last(balance)`),
+  argument resolves to a row-level value is the aggregation (`last(accounts.balance)`),
   one whose argument resolves to aggregated values — including a saved metric —
-  is the transform (`last(sum(revenue))`, `last(rev)`).
+  is the transform (`last(sum(orders.revenue))`, `last(orders.rev)`).
 * An unknown call name whose first argument is aggregatable defers to binding
   — custom aggregations resolve there, and genuinely unknown names get the
   "Unknown function" error.
-* Scalar-allowlist names always stay scalar calls (`round(price)` is the
+* Scalar-allowlist names always stay scalar calls (`round(orders.price)` is the
   scalar); a custom aggregation may not shadow a scalar-function name
   (rejected at dataset validation).
-* SQL's `DISTINCT` keyword is accepted only as `count(distinct user_id)`, which
-  means `count_distinct(user_id)`.
+* SQL's `DISTINCT` keyword is accepted only as `count(distinct orders.user_id)`, which
+  means `count_distinct(orders.user_id)`.
 * Mode-A surfaces are unchanged — `SUM(amount)` inside `DatasetField.sql` stays raw
   SQL.
 
 An aggregation also accepts a row-level **expression** over its dataset and its to-one relationships as its value —
-`sum(amount - cost)`, `sum(amount - customers.discount)`. See [Expression aggregation](formulas.md#expression-aggregation).
+`sum(orders.amount - orders.cost)`, `sum(orders.amount - customers.discount)`. See [Expression aggregation](formulas.md#expression-aggregation).
 
 ## `__` in identifiers
 
@@ -96,7 +96,7 @@ An aggregation also accepts a row-level **expression** over its dataset and its 
 
 The one reserved spelling is the **`__slayer_` prefix**: dataset / field / metric names and Mode-B tokens beginning with `__slayer_` are rejected, since that namespace is reserved for SLayer-internal identifiers.
 
-The query-backed dataset wrap (`_expand_query_backed_dataset`, via `flat_name` in `slayer/sql/naming.py`) still flattens joined-dataset fields into virtual-dataset column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table. A downstream stage references such a column by that exact flattened name; strict resolution at binding time raises `ReferenceError` for any bare name that doesn't resolve to a `DatasetField` / `DatasetMetric` / custom aggregation / canonical agg alias / query-level alias on the source dataset.
+The query-backed dataset wrap (`_expand_query_backed_dataset`, via `flat_name` in `slayer/sql/naming.py`) still flattens joined-dataset fields into virtual-dataset column names like `stores__name` or `customers__regions__name` — the entire dotted path becomes one SQL identifier on the synthetic table. A downstream stage references such a column by its stage name and that exact flattened name (`s1.customers__regions__name`); strict resolution at binding time raises `ReferenceError` for any bare name that doesn't resolve to a `DatasetField` / `DatasetMetric` / custom aggregation / canonical agg alias / query-level alias on the source dataset.
 
 ## Reference-resolution rules at a glance
 
@@ -197,7 +197,7 @@ Five consequences worth knowing:
   behaviour:
 
     ```json
-    {"filter": ["concat(ifnull(first_name, ''), ifnull(last_name, '')) = 'AdaLovelace'"]}
+    {"filter": ["concat(ifnull(customers.first_name, ''), ifnull(customers.last_name, '')) = 'AdaLovelace'"]}
     ```
 
 * **`greatest` / `least` ignore `NULL` arguments on every backend** (NULL only when every argument is NULL); on SQL Server they need 2022 or later.
@@ -250,7 +250,7 @@ Read as TEXT, a JSON boolean is `'true'` / `'false'` and a JSON number is the da
 
 ### Text beside a number
 
-A TEXT operand meeting a number in a comparison, `IN`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, arithmetic or `greatest` / `least` reads as `TRY_CAST(text AS DOUBLE)` (a non-number is `NULL`, or an error on Postgres before 16 or of unknown version; a TEXT literal converts at plan time or is an error), so `amount_txt > 100` compares numerically on every database with a numeric `TRY_CAST` (MariaDB and a MySQL server reporting a version before 8.0 refuse it at plan time) — integers beyond 2^53 lose precision, so compare those with `TRY_CAST(x AS BIGINT)`, and a number function or aggregation over TEXT (`sum(amount_txt)`) still needs an explicit `TRY_CAST`.
+A TEXT operand meeting a number in a comparison, `IN`, `BETWEEN`, `IS [NOT] DISTINCT FROM`, arithmetic or `greatest` / `least` reads as `TRY_CAST(text AS DOUBLE)` (a non-number is `NULL`, or an error on Postgres before 16 or of unknown version; a TEXT literal converts at plan time or is an error), so `orders.amount_txt > 100` compares numerically on every database with a numeric `TRY_CAST` (MariaDB and a MySQL server reporting a version before 8.0 refuse it at plan time) — integers beyond 2^53 lose precision, so compare those with `TRY_CAST(x AS BIGINT)`, and a number function or aggregation over TEXT (`sum(orders.amount_txt)`) still needs an explicit `TRY_CAST`.
 
 Arithmetic on TEXT is typed DOUBLE, a `CAST` you write is never rewritten (it fails at the database on a non-number), a number beside text in `||` / `concat` uses the database's own number-to-text cast (`-3.0` on DuckDB), and a BOOLEAN operand of `||` / `concat` / `concat_ws` is rejected with a `CASE WHEN flag THEN 'true' ELSE 'false' END` remedy.
 
@@ -260,7 +260,7 @@ Arithmetic on TEXT is typed DOUBLE, a `CAST` you write is never rewritten (it fa
 
 ### Lists
 
-Over a [list field](queries.md#list-fields) `contains(skills, 'go')`, `contains_any(skills, ['go', 'rust'])`, `contains_all(skills, {wanted})` and `length(skills)` (the number of distinct elements) read only its non-NULL elements and are `NULL` only for a `NULL` argument, and an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context). [Database support](../database-support.md) names the databases that run lists.
+Over a [list field](queries.md#list-fields) `contains(contractors.skills, 'go')`, `contains_any(contractors.skills, ['go', 'rust'])`, `contains_all(contractors.skills, {wanted})` and `length(contractors.skills)` (the number of distinct elements) read only its non-NULL elements and are `NULL` only for a `NULL` argument, and an array literal's elements are literals or `{variable}`s of one type family (`[]` takes the type of its context). [Database support](../database-support.md) names the databases that run lists.
 
 ## Date and time functions
 
@@ -297,7 +297,7 @@ case-insensitively):
   `date_add(start, date_diff('month', start, end), 'month') > end` means the last month is incomplete.
 * **`date_add` clamps at month-end**: `date_add('2024-01-31', 1, 'month')` is `2024-02-29`. A DATE
   stays a DATE for day-or-coarser units; the time of day is kept. A literal count must be an
-  integer; a computed count (`date_add(order_date, sla_days, 'day')`) is truncated toward zero.
+  integer; a computed count (`date_add(orders.order_date, orders.sla_days, 'day')`) is truncated toward zero.
 * **`interval` spelling.** `ts + interval(n, unit)`, `interval(n, unit) + ts` and
   `ts - interval(n, unit)` are exactly `date_add` (chains apply left to right), an `INTERVAL '…'`
   literal included; `interval` anywhere else is rejected.
@@ -326,7 +326,7 @@ returns an empty result instead of "everything except 'a'".
 Test for null separately:
 
 ```json
-{"filter": ["status not in ('new', 'old')", "status is not null"]}
+{"filter": ["orders.status not in ('new', 'old')", "orders.status is not null"]}
 ```
 
 ## See also

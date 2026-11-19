@@ -1,6 +1,6 @@
 # Auto-Ingestion
 
-SLayer can introspect a database schema and automatically generate datasets with a unified `fields` list and **direct FK-based relationships**. Aggregations are picked at query time (`sum(amount)`, `count(*)`); the dataset itself doesn't carry pre-baked aggregates.
+SLayer can introspect a database schema and automatically generate datasets with a unified `fields` list and **direct FK-based relationships**. Aggregations are picked at query time (`sum(orders.amount)`, `count(orders.*)`); the dataset itself doesn't carry pre-baked aggregates.
 
 SLayer has three ingestion paths:
 
@@ -49,9 +49,9 @@ SLayer introspects each table's column types and generates a dataset:
 - **Column and table comments** stored in the database become `DatasetField.description` and `SlayerDataset.description` (see [Comments and descriptions](#comments-and-descriptions) below).
 - **`unique=True`** for columns that alone form a `UNIQUE` constraint or unique index. PK columns are not stamped redundantly — a sole `primary_key` already implies uniqueness. Composite uniqueness is evaluated per key-set during relationship-cardinality inference rather than being flattened onto individual fields.
 - On DuckDB (1.1 or later), columns and keys (primary, foreign, `UNIQUE`, unique indexes over plain columns) are read from DuckDB's own catalog (`duckdb_columns()`, `duckdb_constraints()`, `duckdb_indexes()`); a key that cannot be read on any database is logged as a warning and the table is ingested without it.
-- **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(*)`.
-- **No auto-generated `metrics`** — `SlayerDataset.metrics` is the named-expression library and stays empty after ingestion. You can add named expressions later via the API/MCP if you want bare-name shortcuts (`"aov"`).
-- **`count(*)`** is always available without any dataset definition.
+- **A column literally named `count`** is renamed to `count_col` to avoid clashing with the always-available `count(<dataset>.*)`.
+- **No auto-generated `metrics`** — `SlayerDataset.metrics` is the named-expression library and stays empty after ingestion. You can add named expressions later via the API/MCP if you want named shortcuts (`"orders.aov"`).
+- **`count(<dataset>.*)`** is always available without any dataset definition.
 - The `allowed_aggregations` whitelist is left at the default for the field's data type. A sole PK field is restricted to `count`/`count_distinct`/`count_distinct_approx`/`min`/`max`/`collect` automatically.
 
 FK columns from referenced tables are excluded from the source dataset to avoid redundancy — they're reachable via the relationship graph as `customers.id` etc.
@@ -250,7 +250,7 @@ This avoids table alias collisions and allows querying both paths simultaneously
 
 ## Cycle Handling
 
-FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more relationships connect the same pair of datasets (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<dataset>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `billing_address.city`.
+FK cycles (e.g., `A → B → A`) are ingested as-is, and when two or more relationships connect the same pair of datasets (a 2-cycle, or `billing_address_id` and `shipping_address_id` both referencing `addresses`) ingestion names each unnamed one after its FK column with a trailing `_id`/`_fk` removed (`billing_address`, `shipping_address`) — falling back to `<dataset>_<stem>`, then a numeric suffix, on a name clash, and never renaming a name you set — so you address them as `orders.billing_address.city`.
 
 ## Ingesting at Startup
 

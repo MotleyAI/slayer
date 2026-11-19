@@ -38,12 +38,12 @@ Every persisted entity is exactly one of:
 
 Inputs that aren't already in this shape are normalised at save time:
 
-- **Aggregation suffixes are stripped.** `sum(revenue)`,
-  `weighted_avg(revenue, weight=qty)`, and `corr(revenue, other=qty)` all
-  canonicalise to `<ds>.<dataset>.revenue`. The aggregation itself is
+- **Aggregation suffixes are stripped.** `sum(orders.revenue)`,
+  `weighted_avg(orders.revenue, weight=orders.qty)`, and `corr(orders.revenue, other=orders.qty)` all
+  canonicalise to `<ds>.orders.revenue`. The aggregation itself is
   not an independent entity.
-- **`count(*)` collapses to the population.** It's "count of all rows
-  on this dataset," so the entity is the dataset.
+- **`count(orders.*)` collapses to its dataset.** It's "count of all rows
+  on this dataset," so the entity is the dataset (`count(*)` collapses to the population).
 - **Multi-hop dotted paths keep only the leaf.** A query referencing
   `orders.customers.regions.name` produces `{mydb.orders,
   <regions-ds>.regions.name}` — intermediate hops on the relationship path
@@ -53,7 +53,7 @@ Inputs that aren't already in this shape are normalised at save time:
   `aov` expression and tag every field it references.
 
 Equality is plain string equality on the canonical form, so two
-callers using `sum(revenue)` and `mydb.orders.revenue` reach the same
+callers using `sum(orders.revenue)` and `mydb.orders.revenue` reach the same
 record.
 
 ## The two write-side MCP tools

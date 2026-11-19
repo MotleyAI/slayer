@@ -24,13 +24,13 @@ These functions test what an array-valued field contains: `contains(list, x)` (a
 }
 ```
 
-Absence is `NOT contains(ingredients, 'bread')`, and you can use variables in the comparisons: `contains_any(item_skus, {wanted})` with `"variables": {"wanted": ["JAF-004", "JAF-005"]}`.
+Absence is `NOT contains(products.ingredients, 'bread')`, and you can use variables in the comparisons: `contains_any(orders.item_skus, {wanted})` with `"variables": {"wanted": ["JAF-004", "JAF-005"]}`.
 
-A whole list can also be grouped by, compared with another list and counted distinctly: each list is read as the set of its distinct elements (so `length(item_skus)` counts distinct SKUs, while `count(item_skus.*)` counts every unit). Comparing a list with a scalar, or `sum(item_skus)`, is refused with an error naming the alternative, and `contains` on a text field is a substring test.
+A whole list can also be grouped by, compared with another list and counted distinctly: each list is read as the set of its distinct elements (so `length(orders.item_skus)` counts distinct SKUs, while `count(orders.item_skus.*)` counts every unit). Comparing a list with a scalar, or `sum(orders.item_skus)`, is refused with an error naming the alternative, and `contains` on a text field is a substring test.
 
 ## Elements as rows
 
-`ingredients.value` is a virtual field with one row per element, and `count(ingredients.*)` counts them. `count(orders.*)` grouped by an element counts the parents holding it:
+`products.ingredients.value` is a virtual field with one row per element, and `count(products.ingredients.*)` counts them. `count(orders.*)` grouped by an element counts the parents holding it:
 
 ```json
 {

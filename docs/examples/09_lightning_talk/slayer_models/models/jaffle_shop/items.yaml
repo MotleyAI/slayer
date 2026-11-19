@@ -1,4 +1,4 @@
-version: 26
+version: 27
 name: items
 sql_table: items
 source_kind: table

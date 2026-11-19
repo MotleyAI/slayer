@@ -23,7 +23,7 @@ against the live service in CI when they are.
 | **Snowflake** | `tests/integration/test_integration_snowflake.py` (skips without `~/.snowflake/connections.toml`; profile name overridable via `$SLAYER_SNOWFLAKE_CONNECTION`) | `examples/snowflake/` (no Docker) |
 | **BigQuery** | `tests/integration/test_integration_bigquery.py` (live ingestion against a temp dataset in the billing project; skips without `GCP_PROJECT_ID` + ADC) plus `examples/bigquery/verify.py` driven by CI against `bigquery-public-data.thelook_ecommerce` (gated on `GCP_PROJECT_ID` / `GCP_SA_KEY_B64` repo secrets) | `examples/bigquery/` (no Docker — managed service) |
 
-A filter whose predicate can hold on a null-extended related row (`tier = 'gold'
+A filter whose predicate can hold on a null-extended related row (`customers.tier = 'gold'
 or orders.status = 'ok'`) renders its semi-join from a one-row derived table
 carrying the outer keys — supported on Postgres, SQLite, DuckDB and MySQL 8.0.14+;
 ClickHouse, BigQuery and older MySQL reject it with the engine's own error.

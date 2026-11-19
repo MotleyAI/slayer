@@ -116,7 +116,7 @@ slayer query '{"population": "orders", "metrics": ["count(orders.*)"]}' --dry-ru
 slayer query @query.json --explain
 
 # Run a saved query by name, refined
-slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
+slayer query monthly_revenue --refine '{"dimensions": ["regions.name"]}'
 
 # Pass runtime variables (always overrides query.variables / dataset.query_variables)
 slayer query monthly_revenue --variables region=US --variables threshold=100

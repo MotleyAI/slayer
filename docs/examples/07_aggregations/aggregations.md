@@ -33,13 +33,13 @@ At query time, you pick the aggregation with a function call:
 }
 ```
 
-`sum(subtotal)` means "take the `subtotal` field and SUM it." `min(order_total)` means "take the `order_total` field and find the MIN." One field definition, as many aggregations as you need.
+`sum(orders.subtotal)` means "take the `subtotal` field and SUM it." `min(orders.order_total)` means "take the `order_total` field and find the MIN." One field definition, as many aggregations as you need.
 
 ## Aggregating an expression
 
 An aggregation can also take a same-dataset **expression** as its value, not
 just a bare field. Declared parameters may be passed positionally in
-declaration order, so `percentile(price, 0.9)` means `p=0.9`:
+declaration order, so `percentile(orders.price, 0.9)` means `p=0.9`:
 
 ```json
 {
@@ -52,9 +52,9 @@ declaration order, so `percentile(price, 0.9)` means `p=0.9`:
 }
 ```
 
-The expression may use bare same-dataset fields, scalar functions, arithmetic,
+The expression may use same-dataset fields, scalar functions, arithmetic,
 and literals; an unnamed one derives its result key from the expression
-(`sum(order_total - tax_paid)` → `orders.order_total_tax_paid_sum`). Dotted
+(`sum(orders.order_total - orders.tax_paid)` → `orders.order_total_tax_paid_sum`). Dotted
 joined-dataset paths inside an expression, filtered fields, and nested
 aggregations are rejected with clear errors — see
 [Expressions → Expression aggregation](../../concepts/formulas.md#expression-aggregation).
@@ -73,7 +73,7 @@ COUNT(\*) doesn't aggregate a specific field — it counts rows. In SLayer, `*` 
 
 > **Note:** `*` can only be used with `count`. Combinations like `sum(*)` or `avg(*)` are invalid — use a named metric instead.
 
-You can also count non-null values of a specific field: `count(email)` produces `COUNT(email)`. And `count_distinct(customer_id)` gives you `COUNT(DISTINCT customer_id)`.
+You can also count non-null values of a specific field: `count(customers.email)` produces `COUNT(email)`. And `count_distinct(orders.customer_id)` gives you `COUNT(DISTINCT customer_id)`.
 
 ## Built-in aggregations
 
@@ -126,10 +126,10 @@ dimension:
 ```json
 {
   "metrics": [
-    {"metric": "sum(revenue, window='30d')", "alias": "revenue_30d"},
-    {"metric": "avg(revenue, window='1y2m3w5d6h7min8s')", "alias": "avg_window"}
+    {"metric": "sum(orders.revenue, window='30d')", "alias": "revenue_30d"},
+    {"metric": "avg(orders.revenue, window='1y2m3w5d6h7min8s')", "alias": "avg_window"}
   ],
-  "time_dimensions": [{"field": "created_at", "granularity": "month"}]
+  "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}]
 }
 ```
 
@@ -155,7 +155,7 @@ aggregations:
 `{value}` is the metric's SQL expression. `{lo}` and `{hi}` are parameters with defaults that can be overridden at query time:
 
 ```json
-"trimmed_mean(score, lo=10, hi=90)"
+"trimmed_mean(orders.score, lo=10, hi=90)"
 ```
 
 You can also override built-in aggregation defaults. If `weighted_avg` should default to a specific weight field in your dataset:
@@ -168,11 +168,11 @@ aggregations:
         sql: subtotal
 ```
 
-Now `weighted_avg(tax_rate)` uses `subtotal` as the weight without you specifying it every time. But you can still override: `weighted_avg(tax_rate, weight=order_total)`.
+Now `weighted_avg(orders.tax_rate)` uses `subtotal` as the weight without you specifying it every time. But you can still override: `weighted_avg(orders.tax_rate, weight=orders.order_total)`.
 
 ## Controlling which aggregations apply
 
-Not every aggregation makes sense for every field. `avg(customer_id)`? Probably not useful. The `allowed_aggregations` field lets you whitelist:
+Not every aggregation makes sense for every field. `avg(orders.customer_id)`? Probably not useful. The `allowed_aggregations` field lets you whitelist:
 
 ```yaml
 fields:
@@ -186,7 +186,7 @@ fields:
     allowed_aggregations: [sum, avg, min, max, weighted_avg]
 ```
 
-SLayer validates this at query time and at dataset creation — if you try `sum(customer_id)`, you get a clear error listing the valid options.
+SLayer validates this at query time and at dataset creation — if you try `sum(orders.customer_id)`, you get a clear error listing the valid options.
 
 ## first and last
 
@@ -194,20 +194,20 @@ SLayer validates this at query time and at dataset creation — if you try `sum(
 
 ```json
 {
-  "metrics": ["last(balance)", "first(balance)"],
-  "time_dimensions": [{"field": "updated_at", "granularity": "month"}]
+  "metrics": ["last(accounts.balance)", "first(accounts.balance)"],
+  "time_dimensions": [{"field": "accounts.updated_at", "granularity": "month"}]
 }
 ```
 
 If you want to use a specific time field (overriding the query's time dimension), pass it as an argument:
 
 ```json
-"last(balance, created_at)"
+"last(accounts.balance, accounts.created_at)"
 ```
 
 This explicit time argument takes priority over everything — query-level `time_dimensions`, `main_time_dimension`, and the dataset's `default_time_dimension`.
 
-Don't confuse the `last` *aggregation* (`last(balance)`) with the `last()` *transform* (`last(sum(revenue))`). The aggregation picks the latest record's value within each time bucket. The transform broadcasts the latest time bucket's aggregated value to every row. Different operations, different use cases.
+Don't confuse the `last` *aggregation* (`last(accounts.balance)`) with the `last()` *transform* (`last(sum(orders.revenue))`). The aggregation picks the latest record's value within each time bucket. The transform broadcasts the latest time bucket's aggregated value to every row. Different operations, different use cases.
 
 ## Percentiles
 
@@ -216,9 +216,9 @@ Don't confuse the `last` *aggregation* (`last(balance)`) with the `last()` *tran
 ```json
 {
   "metrics": [
-    "median(latency)",
-    "percentile(latency, p=0.95)",
-    "percentile(latency, p=0.25)"
+    "median(requests.latency)",
+    "percentile(requests.latency, p=0.95)",
+    "percentile(requests.latency, p=0.25)"
   ]
 }
 ```
@@ -234,9 +234,9 @@ Arithmetic:
 Transforms:
 
 ```json
-"cumsum(sum(revenue))"
-"change(sum(revenue))"
-"time_shift(sum(revenue), -1, 'year')"
+"cumsum(sum(orders.revenue))"
+"change(sum(orders.revenue))"
+"time_shift(sum(orders.revenue), -1, 'year')"
 ```
 
 Cross-dataset:
@@ -249,7 +249,7 @@ Cross-dataset:
 Conditionals — `CASE WHEN` (or `iif(cond, then, otherwise)`) can branch on an aggregated value; the branch runs after grouping:
 
 ```json
-{"metric": "CASE WHEN sum(revenue) >= 10000 THEN 'high' ELSE 'standard' END", "alias": "tier"}
+{"metric": "CASE WHEN sum(orders.revenue) >= 10000 THEN 'high' ELSE 'standard' END", "alias": "tier"}
 ```
 
 See [Expressions — Conditionals](../../concepts/formulas.md#conditionals-case-when-iif) for branch-typing rules, and [Queries — Expression dimensions](../../concepts/queries.md) for grouping by a computed expression.
@@ -269,11 +269,11 @@ Most aggregations take an optional `partition_by=` to compute over a subset of t
 }
 ```
 
-`partition_by=stores.regions.name` is the region total on every store row (so `share_of_region` sums to 1.0 per region); `partition_by=[]` is the grand total; a list (`[stores.regions.name, status]`) also works. The total is computed over rows passing row-level filters — filters on the metric (`having`) and pagination never change it.
+`partition_by=stores.regions.name` is the region total on every store row (so `share_of_region` sums to 1.0 per region); `partition_by=[]` is the grand total; a list (`[stores.regions.name, orders.status]`) also works. The total is computed over rows passing row-level filters — filters on the metric (`having`) and pagination never change it.
 
-A local `partition_by` aggregate also composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's time bucket), on `first`/`last`, nested inside a transform (`cumsum(sum(order_total, partition_by=stores.regions.name))`), and referenced in a filter or `order` target (`sum(order_total, partition_by=stores.regions.name) > 5000`) — for filters and `order` targets, cross-dataset included (`sum(customers.spend, partition_by=customers.regions.name) > 100`). A filter's top-level `AND` conjuncts route independently; a single predicate valid as neither a row-level field nor a metric (e.g. a partitioned aggregate OR-ed with a raw row field that isn't a query dimension) raises a typing error naming both failures. Cross-dataset `partition_by` composes the same way — with `window=` when the query's active time dimension is attributable from the aggregate's root, on `first`/`last` (`last(customers.spend, partition_by=customers.tier)`), and nested inside a transform.
+A local `partition_by` aggregate also composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's time bucket), on `first`/`last`, nested inside a transform (`cumsum(sum(orders.order_total, partition_by=stores.regions.name))`), and referenced in a filter or `order` target (`sum(orders.order_total, partition_by=stores.regions.name) > 5000`) — for filters and `order` targets, cross-dataset included (`sum(customers.spend, partition_by=customers.regions.name) > 100`). A filter's top-level `AND` conjuncts route independently; a single predicate valid as neither a row-level field nor a metric (e.g. a partitioned aggregate OR-ed with a raw row field that isn't a query dimension) raises a typing error naming both failures. Cross-dataset `partition_by` composes the same way — with `window=` when the query's active time dimension is attributable from the aggregate's root, on `first`/`last` (`last(customers.spend, partition_by=customers.tier)`), and nested inside a transform.
 
-A partitioned aggregate can itself be re-aggregated — `{"metric": "avg(sum(order_total, partition_by=[stores.name, stores.regions.name]))", "alias": "avg_store_total"}` grouped by `stores.regions.name` averages each region's **store totals** (one input per store cell, never a row-weighted value), and the outer aggregation can take a parameter at the same grain — `weighted_avg(sum(order_total, partition_by=[stores.name, stores.regions.name]), weight=count(id, partition_by=[stores.name, stores.regions.name]))` weights each store total by its row count; see [re-aggregation](../../concepts/formulas.md#re-aggregation-aggregate-over-an-attached-value).
+A partitioned aggregate can itself be re-aggregated — `{"metric": "avg(sum(orders.order_total, partition_by=[stores.name, stores.regions.name]))", "alias": "avg_store_total"}` grouped by `stores.regions.name` averages each region's **store totals** (one input per store cell, never a row-weighted value), and the outer aggregation can take a parameter at the same grain — `weighted_avg(sum(orders.order_total, partition_by=[stores.name, stores.regions.name]), weight=count(orders.id, partition_by=[stores.name, stores.regions.name]))` weights each store total by its row count; see [re-aggregation](../../concepts/formulas.md#re-aggregation-aggregate-over-an-attached-value).
 
 ## Result column naming
 

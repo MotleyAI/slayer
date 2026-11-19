@@ -63,10 +63,10 @@ Each OSI **dataset** becomes a SLayer dataset exposing its declared fields, with
 
 | Question | SLayer query | OSI feature shown |
 |----------|--------------|-------------------|
-| Total order value | `total_amount` | simple metric (`SUM(amount)` → `sum(amount)`) |
-| Total by region | `total_amount` by `customers.regions.name` | multi-hop relationship path inferred from relationships |
-| Average order value | `aov` | derived metric (`SUM(amount) / COUNT(*)`) |
-| Amount per distinct customer | `cust_reach` | cross-dataset metric through a relationship |
-| Amount plus region population | `rev_plus_pop` | multi-hop metric with sub-query isolation |
+| Total order value | `orders.total_amount` | simple metric (`SUM(amount)` → `sum(amount)`) |
+| Total by region | `orders.total_amount` by `customers.regions.name` | multi-hop relationship path inferred from relationships |
+| Average order value | `orders.aov` | derived metric (`SUM(amount) / COUNT(*)`) |
+| Amount per distinct customer | `orders.cust_reach` | cross-dataset metric through a relationship |
+| Amount plus region population | `orders.rev_plus_pop` | multi-hop metric with sub-query isolation |
 
 The region grouping and the last two metrics reach across the relationships the converter carried over from OSI — no manual SQL join is written. Every answer matches the gold SQL exactly.

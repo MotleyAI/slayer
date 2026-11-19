@@ -109,7 +109,7 @@ contradicting declarations import as two edges and surface as an ambiguous hop.
 ### Segments → boolean fields
 
 Each segment becomes a boolean field carrying the predicate, so it stays
-filterable (`completed = true`) and group-able.
+filterable (`orders.completed = true`) and group-able.
 
 ### Views → facade datasets
 

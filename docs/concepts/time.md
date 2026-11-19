@@ -42,26 +42,26 @@ A comparison of a temporal operand `x` with a period `P` reads the period as a w
 | `x = P`, `x in 'P'` | `start(P) <= x < next_start(P)` |
 | `x != P`, `x not in 'P'` | outside `[start(P), next_start(P))` |
 
-So `ordered_at <= '2024-12'` includes Dec 31 10:00, and `ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`code in ('2025-Q1',)`) keeps its value-list meaning.
+So `orders.ordered_at <= '2024-12'` includes Dec 31 10:00, and `orders.ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`orders.code in ('2025-Q1',)`) keeps its value-list meaning.
 
-A date-only string in a comparison is its midnight, as in SQL: `ordered_at <= '2024-12-31'` stops at `2024-12-31 00:00:00`. For the whole day write `ordered_at in '2024-12-31'`, or `ordered_at < '2025-01-01'` as an upper bound. Where this differs from the whole day (`<=`, `>`, `=`, `!=` or `BETWEEN` against a TIMESTAMP), the response carries a `date_only_midnight` warning naming that spelling; it is dropped in SLayer 3.0.
+A date-only string in a comparison is its midnight, as in SQL: `orders.ordered_at <= '2024-12-31'` stops at `2024-12-31 00:00:00`. For the whole day write `orders.ordered_at in '2024-12-31'`, or `orders.ordered_at < '2025-01-01'` as an upper bound. Where this differs from the whole day (`<=`, `>`, `=`, `!=` or `BETWEEN` against a TIMESTAMP), the response carries a `date_only_midnight` warning naming that spelling; it is dropped in SLayer 3.0.
 
 A temporal operand is anything typed DATE or TIMESTAMP: a declared field (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal field keeps its string meaning; a relative token or single-string `in` there is a type error naming the field — declare its `datatype`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
 ## Time buckets
 
-`date_trunc('<unit>', expr)` — `date_trunc('month', created_at)`, `date_trunc('week', ts)`, `date_trunc('fiscal_year', CAST(ts AS DATE))`, … — is the time bucket of the DATE / TIMESTAMP row-level expression `expr` for a built-in unit or a datasource granularity (any case), usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(date_trunc('month', created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `expr` exactly: `date_trunc('month', created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
+`date_trunc('<unit>', expr)` — `date_trunc('month', orders.created_at)`, `date_trunc('week', ts)`, `date_trunc('fiscal_year', CAST(ts AS DATE))`, … — is the time bucket of the DATE / TIMESTAMP row-level expression `expr` for a built-in unit or a datasource granularity (any case), usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(date_trunc('month', orders.created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `expr` exactly: `date_trunc('month', orders.created_at) >= '2024-03-15'` means `orders.created_at >= 2024-04-01`.
 
-`year(x)` … `second(x)` are integer extraction (`month(created_at)` is the month of year, 1–12), and comparing one with a date (`month(created_at) = '2025-03'`) is an error naming the `date_trunc` form.
+`year(x)` … `second(x)` are integer extraction (`month(orders.created_at)` is the month of year, 1–12), and comparing one with a date (`month(orders.created_at) = '2025-03'`) is an error naming the `date_trunc` form.
 
 ## `date_range`
 
 A time dimension's `date_range` is one time point, or a `[lower, upper]` pair where either bound may be `null` (open):
 
 ```json
-{"field": "created_at", "granularity": "month", "date_range": "last 3 months"}
-{"field": "created_at", "granularity": "month", "date_range": ["2025-01-15", "2025-03"]}
-{"field": "created_at", "granularity": "month", "date_range": ["2024-01-01", null]}
+{"field": "orders.created_at", "granularity": "month", "date_range": "last 3 months"}
+{"field": "orders.created_at", "granularity": "month", "date_range": ["2025-01-15", "2025-03"]}
+{"field": "orders.created_at", "granularity": "month", "date_range": ["2024-01-01", null]}
 ```
 
 A pair means `x >= lower` and `x <= upper` with each date-only bound read as its whole day, so `["2024-01-01", "2024-12-31"]` covers all of Dec 31; write an instant (`'2024-12-31 00:00:00'`) for a midnight-inclusive end. `[]`, three or more elements, `[null, null]` and unparseable bounds are rejected when the query is built; a relative unit the datasource does not define (`last fortnight`) fails when the query is planned.
@@ -71,11 +71,11 @@ A pair means `x >= lower` and `x <= upper` with each date-only bound read as its
 A trailing window has to read rows from *before* the earliest bucket you asked for — otherwise that bucket silently under-counts. So a **time bound narrows which buckets come back, not which rows the window may reach**. These return identical numbers:
 
 ```json
-{"time_dimensions": [{"field": "created_at", "granularity": "month", "date_range": "2025"}]}
+{"time_dimensions": [{"field": "orders.created_at", "granularity": "month", "date_range": "2025"}]}
 ```
 ```json
-{"time_dimensions": [{"field": "created_at", "granularity": "month"}],
- "filter": ["created_at in '2025'"]}
+{"time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+ "filter": ["orders.created_at in '2025'"]}
 ```
 
 A bound is a *frame* bound when it bounds a **time dimension's own expression** (a field or any temporal row-level expression) by a time point — `<`, `<=`, `>`, `>=`, a period `=` / `in`, a `date_range`, or `date_trunc('<unit>', expr)` against a point. Everything else restricts the window's input like any row filter:
@@ -85,7 +85,7 @@ A bound is a *frame* bound when it bounds a **time dimension's own expression** 
 - a bound wrapped in `or` or `not`;
 - `filters` declared on the **dataset**.
 
-Mixed filters are split: `"created_at >= '2025-01-01' and status = 'paid'"` restricts the window's input to paid rows while still reaching back before January. The same holds for [`time_shift`](formulas.md#transform-functions). To clip the underlying rows, apply the bound in an inner stage of a multi-stage query.
+Mixed filters are split: `"orders.created_at >= '2025-01-01' and orders.status = 'paid'"` restricts the window's input to paid rows while still reaching back before January. The same holds for [`time_shift`](formulas.md#transform-functions). To clip the underlying rows, apply the bound in an inner stage of a multi-stage query.
 
 ## `whole_periods_only`
 
@@ -111,4 +111,4 @@ An expression is never an axis: a time dimension whose expression reads `time_sp
 
 ## Custom granularities
 
-A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', order_date)`, `DatasetField.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.
+A datasource's `granularities` list defines named buckets `{name, base, multiple, origin}` — e.g. `{"name": "fiscal_year", "base": "month", "multiple": 12, "origin": "2024-04-01"}` or `{"name": "quarter_hour", "base": "minute", "multiple": 15}` — usable wherever a built-in granularity is (time dimensions, `date_trunc('fiscal_year', orders.order_date)`, `DatasetField.granularity`, transform units), each bucket starting at `origin + k × multiple × base`.

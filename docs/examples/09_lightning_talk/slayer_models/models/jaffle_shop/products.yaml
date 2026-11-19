@@ -1,4 +1,4 @@
-version: 26
+version: 27
 name: products
 sql_table: products
 source_kind: table

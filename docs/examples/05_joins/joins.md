@@ -6,15 +6,15 @@ In SQL, there are many kinds of joins serving various purposes; SLayer follows t
 
 If you think of left joins as edges of a graph whose vertices are datasets, then the metrics, dimensions, **and filters** in a dataset have access to the columns of not just the SQL expression underlying that dataset (the “sql” field of the dataset definition), but also of those underlying any dataset that is reachable from that dataset in the relationship graph.
 
-The graph may contain cycles; a path token always binds the edge it names, so from `x` in a cycle `x → y → z → x` the token `z` follows the direct edge between `x` and `z`, never the route through `y`.
+The graph may contain cycles; a route hop always binds the edge it names, so in a cycle `x → y → z → x` the route `x.z` follows the direct edge between `x` and `z`, never the route through `y`, while a reference starting at `z` (`z.amount`) is reached from `x` by its only to-one path, `x → y → z`.
 
 The data model for a SLayer relationship is covered in the [Datasets section](../../concepts/models.md#relationships), it consists of a target dataset plus list of column pairs (of the sql expressions underlying the datasets) to join on.
 
 ## Referencing joined datasets in queries
 
-SLayer refers to metrics and dimensions in joined datasets using a dot syntax. That is, if dataset_a has a relationship to dataset_b, and dataset_b has a relationship to dataset_c, then a query on dataset_a can refer to a dimension defined in dataset_c as “dataset_b.dataset_c.my_dimension”, and similarly for metrics. 
+SLayer refers to metrics and dimensions in queries using a dot syntax that starts at a dataset. That is, if dataset_a has a relationship to dataset_b, and dataset_b has a relationship to dataset_c, then a query on dataset_a can refer to a dimension defined in dataset_c as `dataset_c.my_dimension`, reached by its only to-one path, or spell the route explicitly as `dataset_a.dataset_b.dataset_c.my_dimension`, and similarly for metrics. 
 
-That may seem verbose, but avoids ambiguity when there are multiple ways of reaching a given dataset within the relationship graph. 
+The explicit route may seem verbose, but avoids ambiguity when there are multiple ways of reaching a given dataset within the relationship graph. 
 
 ## Referencing joined datasets in sql snippets
 

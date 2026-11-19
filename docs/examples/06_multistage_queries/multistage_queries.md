@@ -42,7 +42,7 @@ For the first example above, all you need to do is use the (revenue by store and
 ]
 ```
 
-The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `population`, groups by `stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(order_total_sum)` — aggregating the inner query's `order_total_sum` metric with `avg` at query time.
+The inner query produces (store, month, revenue) rows. The outer query uses the inner's name as `population`, groups by `monthly_store_revenue.stores__name` (the inner query's flat output column for `stores.name`) and requests `avg(monthly_store_revenue.order_total_sum)` — aggregating the inner query's `order_total_sum` metric with `avg` at query time.
 
 If you'd rather not type `order_total_sum` everywhere, give the inner metric an explicit `name` and reference that. The user-supplied `name` overrides the canonical `col_agg` naming for both simple aggregations and arithmetic/transform expressions, and downstream stages reference it directly:
 
@@ -63,9 +63,9 @@ If you'd rather not type `order_total_sum` everywhere, give the inner metric an 
 ]
 ```
 
-The outer stage can also re-bucket the inner stage's `ordered_at` column to a coarser granularity — add `"time_dimensions": [{"field": "ordered_at", "granularity": "year"}]` there to roll the monthly rows up to a yearly axis.
+The outer stage can also re-bucket the inner stage's `ordered_at` column to a coarser granularity — add `"time_dimensions": [{"field": "monthly_store_revenue.ordered_at", "granularity": "year"}]` there to roll the monthly rows up to a yearly axis.
 
-The inner stage emits a column called `rev`; the outer stage averages `avg(rev)`. Renaming an inner-stage metric (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
+The inner stage emits a column called `rev`; the outer stage averages `avg(monthly_store_revenue.rev)`. Renaming an inner-stage metric (or restructuring the stage shape) only requires editing the stage and re-saving — the cache is rebuilt from the updated stages on every save.
 
 The second example is more elaborate, as we have two logical steps: first, calculate the order count per customer; then, bucket it and use the bucketed value as a dimension in the parent query.
 
