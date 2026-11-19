@@ -6,8 +6,8 @@
 
 ## 2. Identifier guard
 
-- [ ] 2.1 Implement the binding-name extractor and the guard. The allowlist is parsed into a Pydantic model (`carve_outs: [{name, file, reason}]`, `stragglers: [{name, file}]`), with the reasons listed in decision 2. Verify that 1.1 passes.
-- [ ] 2.2 Build `tests/fixtures/vocabulary_identifier_allowlist.yaml` from the extractor's hits on `slayer/`. Judge each hit as a carve-out (with its reason) or a straggler, using DEV-2364's candidate list as a first cut. Show the owner the exact `x-vocabulary-stragglers: {baseline: N}` line for `architecture/index.yaml` and add it after the OK (decision 15). Verify that 1.2 passes and `la-arch-check` is green.
+- [x] 2.1 Implement the binding-name extractor and the guard. The allowlist is parsed into a Pydantic model (`carve_outs: [{name, file, reason}]`, `stragglers: [{name, file}]`), with the reasons listed in decision 2. Verify that 1.1 passes.
+- [x] 2.2 Build `tests/fixtures/vocabulary_identifier_allowlist.yaml` from the extractor's hits on `slayer/`. Judge each hit as a carve-out (with its reason) or a straggler, using DEV-2364's candidate list as a first cut. Show the owner the exact `x-vocabulary-stragglers: {baseline: N}` line for `architecture/index.yaml` and add it after the OK (decision 15). Verify that 1.2 passes and `la-arch-check` is green.
 - [ ] 2.3 Post a comment on DEV-2364 saying the guard's `stragglers` list (path and count) is now its authoritative work list.
 
 ## 3. Doc page and example path renames
