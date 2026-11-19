@@ -502,3 +502,12 @@ slayer usage-reporting show      # the report the next send would contain (sends
 slayer usage-reporting disable   # persist off; delete the install ID and unsent data
 slayer usage-reporting enable    # persist on
 ```
+
+### `slayer otel`
+
+Inspect and check the [OpenTelemetry](opentelemetry.md) setup.
+
+```bash
+slayer otel status   # on/off, the rule that decided it, where each signal goes (no network call)
+slayer otel test     # send one empty OTLP request per signal and one test span; exit 1 if any check fails
+```

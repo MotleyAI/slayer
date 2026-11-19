@@ -9,6 +9,7 @@ import sys
 import tempfile
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from filelock import FileLock
@@ -24,6 +25,9 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests import _statement_render_law as statement_render_law
 from tests._dev1824_fixtures import make_exec_engine
 from tests._usage_reporting_capture import CaptureServer
+
+if TYPE_CHECKING:
+    from tests._otel_helpers import OtelCapture
 
 pytest_plugins = ["tests._sharding", "pytester"]
 
@@ -148,6 +152,29 @@ def usage_reporting_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
         if usage_reporting is not None:
             usage_reporting.reset()
         capture.stop()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _otel_off_by_default() -> Iterator[None]:
+    """Our own test runs never export telemetry, and no ``OTEL_*`` setting of the shell reaches them."""
+    with pytest.MonkeyPatch.context() as mp:
+        for name in [name for name in os.environ if name.startswith("OTEL_")]:
+            mp.delenv(name)
+        mp.setenv("SLAYER_OTEL", "off")
+        yield
+
+
+@pytest.fixture
+def otel_env() -> Iterator["OtelCapture"]:
+    """The probe listener on private in-memory providers; removed again after the test."""
+    from tests._otel_helpers import OtelCapture  # ALLOW(import-not-top): optional extra
+
+    capture = OtelCapture.build()
+    capture.instrument()
+    try:
+        yield capture
+    finally:
+        capture.close()
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -4,11 +4,14 @@
 major version reaches a call's ``removal``.
 """
 
+import asyncio
 import contextlib
+import os
 import sys
 import warnings
 from collections.abc import Generator
 
+import pydantic
 from pydantic import BaseModel
 
 
@@ -18,6 +21,14 @@ class WarningLocation(BaseModel):
     filename: str
     lineno: int
     module: str
+
+
+# Frames under these directories are never the caller a warning names; asyncio's sit between run_sync and its caller.
+_INTERNAL_DIRS = (
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep,
+    os.path.abspath(pydantic.__path__[0]) + os.sep,
+    os.path.dirname(os.path.abspath(asyncio.__file__)) + os.sep,
+)
 
 
 def warn_deprecated(
@@ -35,6 +46,16 @@ def warn_deprecated(
         warnings.warn_explicit(
             message, FutureWarning, filename=location.filename, lineno=location.lineno, module=location.module,
         )
+
+
+def outside_stacklevel() -> int:
+    """``stacklevel``, counted from this function's caller, of the first frame outside SLayer and pydantic."""
+    frame = sys._getframe(1)
+    level = 1
+    while frame.f_back is not None and os.path.abspath(frame.f_code.co_filename).startswith(_INTERNAL_DIRS):
+        frame = frame.f_back
+        level += 1
+    return level
 
 
 @contextlib.contextmanager

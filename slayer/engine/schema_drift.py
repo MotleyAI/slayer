@@ -24,6 +24,7 @@ from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from slayer.async_utils import marked_coroutine_function
 from slayer.core.deprecation import warn_deprecated
+from slayer.core import probes
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Column,
@@ -234,6 +235,17 @@ class ModelAddition(BaseModel):
     model_described: bool = False
     # Self-heal that added a missing schema qualifier ("reports → openfda_rest.reports").
     sql_table_change: str | None = None
+    # A metadata-only fill (column unique, join cardinality) that was saved.
+    metadata_changed: bool = False
+
+    @property
+    def has_changes(self) -> bool:
+        """Whether this pass saved any change to an existing model."""
+        return bool(
+            self.new_columns or self.new_joins or self.named_joins or self.widened_columns
+            or self.kind_change or self.described_columns or self.model_described or self.sql_table_change
+            or self.metadata_changed
+        )
 
 
 class IngestionError(BaseModel):
@@ -2435,6 +2447,11 @@ async def _validate_short_lived(
         return await validate(client=engine.client_for(datasource))
 
 
+@probes.probe(
+    name="ingest.drift",
+    extract=lambda bound: {"datasource.name": bound.arguments["datasource"].name},
+    result=lambda entries: {"ingest.drift.entries": len(entries)},
+)
 async def _validate_datasource(
     *,
     datasource: DatasourceConfig,

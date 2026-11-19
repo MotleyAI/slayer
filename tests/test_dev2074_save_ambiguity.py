@@ -253,6 +253,14 @@ class TestEdgeSetChangeWarnings:
         assert "orders.addresses.city" in about[0]
         assert "no longer resolv" in about[0].lower()
 
+    async def test_warning_names_the_callers_line(self, tmp_path, door) -> None:
+        storage = await _world(tmp_path, _shipments())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await _save(door, storage, _orders(joins=[]))
+        about = [w for w in caught if issubclass(w.category, UserWarning) and "'shipments'" in str(w.message)]
+        assert [w.filename for w in about] == [__file__]
+
     async def test_dependent_several_hops_away(self, tmp_path, door) -> None:
         parcels = _m("parcels", _int("shipment_id"),
                      Column(name="city", type=DataType.TEXT, sql="shipments.orders.addresses.city"),

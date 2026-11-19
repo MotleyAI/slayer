@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from slayer import usage_reporting
+from slayer import otel
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
     AmbiguousModelError,
@@ -315,6 +316,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     app = FastAPI(title="SLayer", version=_slayer_version(), lifespan=lifespan)
     app.add_middleware(_UsageMiddleware, mounted=_MCP_MOUNT)
+    app.add_middleware(otel.RequestMiddleware, mounted=_MCP_MOUNT)
 
     # Mount MCP server over SSE at /mcp. The embedded server intentionally
     # does NOT receive `ingest_on_startup` — orchestration happens once,

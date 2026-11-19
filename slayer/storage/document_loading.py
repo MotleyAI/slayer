@@ -6,6 +6,7 @@ from collections.abc import Generator
 from typing import Literal, TypeVar
 
 from slayer.core.errors import StoredDocumentLoadError
+from slayer.core.deprecation import outside_stacklevel
 from slayer.core.warnings import SlayerUnloadableDocumentWarning, UnloadableDocumentWarning
 
 T = TypeVar("T")
@@ -48,7 +49,7 @@ class DocumentLoadFailures:
             data_source=error.data_source, name=error.name, cause=error.cause_text,
         )
         self.warnings.append(payload)
-        warnings.warn(SlayerUnloadableDocumentWarning(payload), stacklevel=3)
+        warnings.warn(SlayerUnloadableDocumentWarning(payload), stacklevel=outside_stacklevel())
 
     def skip(self, loaded: Loaded[T]) -> list[T]:
         """The loaded documents; each failure is recorded and skipped."""

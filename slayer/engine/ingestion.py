@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlglot import exp
 
 from slayer.async_utils import marked_coroutine_function, run_sync
+from slayer.core import probes
 from slayer.core.deprecation import warn_deprecated
 from slayer.core.enums import DataType, ObjectKind
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -592,6 +593,24 @@ def _resolve_scanned_collisions(
 # --- Main ingestion ---
 
 
+def _ingest_probe_attributes(bound: Any) -> dict[str, str]:
+    datasource = bound.arguments["datasource"]
+    return {"datasource.name": datasource.name, "datasource.type": datasource.type or ""}
+
+
+def _ingest_outcome(result: "schema_drift.IdempotentIngestResult") -> dict[str, int]:
+    added = sum(1 for addition in result.additions if addition.created)
+    return {
+        "ingest.objects": len(result.objects),
+        "ingest.datasets.added": added,
+        # The pass also lists unchanged models; count only the ones it changed.
+        "ingest.datasets.updated": sum(1 for a in result.additions if not a.created and a.has_changes),
+        "ingest.datasets.skipped": len(result.skipped),
+        "ingest.drift.entries": len(result.to_delete),
+        "ingest.errors": len(result.errors),
+    }
+
+
 async def _build_one_model(
     *,
     client: SqlClient,
@@ -674,6 +693,7 @@ async def _scan_listing(*, client: SqlClient, ref: SchemaRef, include_views: boo
         return []
 
 
+@probes.probe(name="ingest.scan.schema", params={"datasource.name": "data_source"})
 async def _scan_one_schema(
     *,
     client: SqlClient,
@@ -1558,10 +1578,12 @@ def _addition_fields(*, merge: _TableMerge, final: SlayerModel, plan: FkEdgePlan
         "kind_change": merge.kind_change,
         "described_columns": merge.merge.described_columns,
         "model_described": merge.merge.model_described,
+        "metadata_changed": merge.merge.metadata_changed,
         "sql_table_change": merge.sql_table_change,
     }
 
 
+@probes.probe(name="ingest.merge", extract=_ingest_probe_attributes)
 async def _run_additive_pass(
     *,
     fresh_by_name: dict[str, SlayerModel],
@@ -1661,6 +1683,7 @@ async def _ingest_idempotent_short_lived(
         )
 
 
+@probes.probe(name="ingest", extract=_ingest_probe_attributes, result=_ingest_outcome)
 async def _ingest_idempotent(
     *,
     datasource: DatasourceConfig,
@@ -1863,6 +1886,7 @@ def _updated_detail_lines(addition) -> list[str]:
         if getattr(addition, "kind_change", None) else None,
         f"+descriptions: {', '.join(described)}" if described else None,
         "+model description" if getattr(addition, "model_described", False) else None,
+        "+key metadata" if getattr(addition, "metadata_changed", False) else None,
     ]
     return [e for e in entries if e]
 
@@ -2223,6 +2247,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
     return warnings
 
 
+@probes.probe(name="ingest.embeddings", params={"datasource.name": "datasource_name"})
 async def _refresh_datasource_embeddings(
     *, datasource_name: str, storage: StorageBackend, failures: DocumentLoadFailures | None = None,
 ) -> list[tuple[str, str]]:

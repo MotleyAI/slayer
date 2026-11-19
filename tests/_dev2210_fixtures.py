@@ -133,6 +133,7 @@ async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> Async
                 await engine.save_model(query_backed_model())
                 yield engine
             finally:
+                await engine.aclose()  # this loop's async engine and its open connections
                 engine.close()
         return
     if backend == "duckdb":

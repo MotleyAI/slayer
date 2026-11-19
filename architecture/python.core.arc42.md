@@ -20,6 +20,7 @@ flowchart TD
   subgraph core["Core domain models"]
     core__query["Query"]
     core__models["Models"]
+    core__probes["Probes"]
   end
   subgraph sql["SQL generation"]
     sql__dialects["Dialects"]
@@ -40,6 +41,7 @@ flowchart TD
   subgraph usage_reporting["Usage reporting"]
     usage_reporting__features["Features"]
   end
+  otel["OpenTelemetry"]
   surfaces("User-facing surfaces")
   core__query -.-> engine__syntax
   core__models -.-> sql__dialects
@@ -60,8 +62,9 @@ flowchart TD
   storage --> core
   surfaces --> core
   usage_reporting__features --> core
+  otel --> core__probes
   classDef leaf fill:none;
-  class core__query,core__models,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,surfaces leaf;
+  class core__query,core__models,core__probes,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,otel,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->

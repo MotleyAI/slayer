@@ -6,16 +6,19 @@ import contextlib
 import json
 import warnings
 from collections.abc import Awaitable, Generator
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
+from slayer.async_utils import run_sync
 from slayer.core.models import SlayerModel
 from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine.query_engine import SlayerResponse
 from slayer.mcp.server import create_mcp_server
+from slayer.storage.yaml_storage import YAMLStorage
 from tests._library_names_fixtures import agg, measure, memory_doc, saved_query_doc, stored_engine, t_doc
 from tests._stored_upgrade_fixtures import DS
 
@@ -62,6 +65,15 @@ class TestSaveAndLoad:
             with _python_shadows() as raised:
                 await engine.save_model(model)
         assert _names(raised) == _SHADOW
+
+    def test_a_synchronous_save_names_the_callers_line(self, tmp_path: Path) -> None:
+        fresh = {k: v for k, v in t_doc(aggregations=[_UPPER]).items() if k != "version"}
+        storage = YAMLStorage(base_dir=str(tmp_path))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run_sync(storage.save_model(SlayerModel.model_validate(fresh)))
+        shadows = [w for w in caught if isinstance(getattr(w.message, "payload", None), LibraryNameShadowWarning)]
+        assert [w.filename for w in shadows] == [__file__]
 
     async def test_load(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_UPPER])]) as engine:

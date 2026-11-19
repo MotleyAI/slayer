@@ -10,7 +10,7 @@ import datetime as dt
 import struct
 import time
 import types
-from typing import List, Tuple
+from typing import TYPE_CHECKING, List, Tuple
 
 import pytest
 
@@ -24,6 +24,9 @@ from slayer.pg_facade.connection import (
     _PreparedStatement,
 )
 from slayer.pg_facade.probes import SESSION_SETTING_SEED
+
+if TYPE_CHECKING:
+    from tests._otel_helpers import OtelCapture
 
 
 # --- fakes -------------------------------------------------------------------
@@ -610,6 +613,13 @@ async def test_run_query_surfaces_driver_sqlstate_and_message() -> None:
     err = next(body for t, body in msgs if t == "E")
     assert _error_sqlstate(err) == "42501"
     assert _error_message(err) == "permission denied for table Item"
+
+
+async def test_a_failed_query_marks_its_request_span(otel_env: "OtelCapture") -> None:
+    inp = _startup(user="u", database="jaffle") + _query("SELECT revenue_sum FROM orders") + _terminate()
+    await _run(inp, engine=_RaisingEngine(ValueError("boom")))
+    span = otel_env.span("slayer.request")
+    assert (span.status.status_code.name, otel_env.attributes("slayer.request")["error.type"]) == ("ERROR", "ValueError")
 
 
 async def test_run_query_falls_back_to_internal_error_without_sqlstate() -> None:
