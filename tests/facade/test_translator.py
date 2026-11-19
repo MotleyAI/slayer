@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from slayer.core.enums import DataType, JoinType, PRE_2_0_DATATYPES, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import DatasetExtension
-from slayer.core.syntax import Cmp, Ref, parse_expr
+from slayer.core.syntax import Cmp, DottedRef, parse_expr
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import (
@@ -615,12 +615,12 @@ def test_simple_metric_and_dimension(dialect) -> None:
     assert result.query.population == "orders"
     assert result.query.metrics is not None
     assert len(result.query.metrics) == 1
-    assert result.query.metrics[0].metric == "sum(revenue)"
+    assert result.query.metrics[0].metric == "sum(orders.revenue)"
     assert result.query.dimensions is not None
-    assert [d.field for d in result.query.dimensions] == ["status"]
+    assert [d.field for d in result.query.dimensions] == ["orders.status"]
     mapping = dict(result.field_name_mapping)
     assert mapping == {
-        "orders.revenue_sum": "revenue_sum",
+        "revenue_sum": "revenue_sum",
         "orders.status": "status",
     }
 
@@ -629,7 +629,7 @@ def test_row_count_metric_maps_to_star_count(dialect) -> None:
     result = translate(sql="SELECT row_count FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].metric == "count(*)"
+    assert result.query.metrics[0].metric == "count(orders.*)"
 
 
 def test_saved_measure_aov_maps_to_bare_name(dialect) -> None:
@@ -637,7 +637,7 @@ def test_saved_measure_aov_maps_to_bare_name(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
     formulas = [m.metric for m in result.query.metrics]
-    assert "aov" in formulas
+    assert "orders.aov" in formulas
 
 
 def test_cross_model_dotted_dimension(dialect) -> None:
@@ -647,7 +647,7 @@ def test_cross_model_dotted_dimension(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.field for d in result.query.dimensions] == ["customers.region"]
+    assert [d.field for d in result.query.dimensions] == ["orders.customers.region"]
     mapping = dict(result.field_name_mapping)
     assert mapping["orders.customers.region"] == "customers.region"
 
@@ -662,7 +662,7 @@ def test_unknown_projection_item_errors(dialect) -> None:
 def test_as_alias_renames_projected_column(dialect) -> None:
     result = translate(sql="SELECT revenue_sum AS rs FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert dict(result.field_name_mapping) == {"orders.rs": "rs"}
+    assert dict(result.field_name_mapping) == {"rs": "rs"}
     assert result.query.metrics is not None
     assert result.query.metrics[0].alias == "rs"
 
@@ -674,23 +674,23 @@ def test_sum_of_column_maps_to_measure(dialect) -> None:
     result = translate(sql="SELECT SUM(revenue) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].metric == "sum(revenue)"
+    assert result.query.metrics[0].metric == "sum(orders.revenue)"
     # Default (unaliased) projected name mirrors the catalog metric name.
-    assert dict(result.field_name_mapping) == {"orders.revenue_sum": "revenue_sum"}
+    assert dict(result.field_name_mapping) == {"revenue_sum": "revenue_sum"}
 
 
 def test_count_star_maps_to_star_count(dialect) -> None:
     result = translate(sql="SELECT COUNT(*) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].metric == "count(*)"
+    assert result.query.metrics[0].metric == "count(orders.*)"
 
 
 def test_count_of_column_maps_to_count(dialect) -> None:
     result = translate(sql="SELECT COUNT(status) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].metric == "count(status)"
+    assert result.query.metrics[0].metric == "count(orders.status)"
 
 
 def test_count_distinct_maps_to_count_distinct(dialect) -> None:
@@ -700,7 +700,7 @@ def test_count_distinct_maps_to_count_distinct(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].metric == "count_distinct(status)"
+    assert result.query.metrics[0].metric == "count_distinct(orders.status)"
 
 
 def test_aggregate_over_joined_column_resolves_same_as_named_metric(dialect) -> None:
@@ -724,16 +724,16 @@ def test_avg_min_max_of_column_map(fn: str, agg: str, dialect) -> None:
     result = translate(sql=f"SELECT {fn}(revenue) FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].metric == f"{agg}(revenue)"
+    assert result.query.metrics[0].metric == f"{agg}(orders.revenue)"
 
 
 def test_aggregate_alias_renames_projection(dialect) -> None:
     result = translate(sql="SELECT SUM(revenue) AS rev FROM orders", catalog=_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert dict(result.field_name_mapping) == {"orders.rev": "rev"}
+    assert dict(result.field_name_mapping) == {"rev": "rev"}
     assert result.query.metrics is not None
     assert result.query.metrics[0].alias == "rev"
-    assert result.query.metrics[0].metric == "sum(revenue)"
+    assert result.query.metrics[0].metric == "sum(orders.revenue)"
 
 
 def test_aggregate_ineligible_for_column_errors(dialect) -> None:
@@ -776,7 +776,7 @@ def test_having_aggregate_maps_to_functional_filter(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["sum(revenue) > 1000"]
+    assert result.query.filter == ["sum(orders.revenue) > 1000"]
 
 
 def test_having_aggregate_literal_on_left_flips(dialect) -> None:
@@ -786,7 +786,7 @@ def test_having_aggregate_literal_on_left_flips(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["sum(revenue) > 1000"]
+    assert result.query.filter == ["sum(orders.revenue) > 1000"]
 
 
 def test_order_by_aggregate_expression_resolves(dialect) -> None:
@@ -814,7 +814,7 @@ def test_where_on_aggregate_alias_for_count_star_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["count(*) > 1"]
+    assert result.query.filter == ["count(orders.*) > 1"]
 
 
 def test_where_on_aggregate_alias_literal_on_left_flips(dialect) -> None:
@@ -824,7 +824,7 @@ def test_where_on_aggregate_alias_literal_on_left_flips(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["count(*) > 1"]
+    assert result.query.filter == ["count(orders.*) > 1"]
 
 
 def test_where_on_aggregate_alias_for_sum_resolves(dialect) -> None:
@@ -834,7 +834,7 @@ def test_where_on_aggregate_alias_for_sum_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["sum(revenue) > 1000"]
+    assert result.query.filter == ["sum(orders.revenue) > 1000"]
 
 
 def test_having_on_aggregate_alias_resolves(dialect) -> None:
@@ -844,7 +844,7 @@ def test_having_on_aggregate_alias_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["sum(revenue) > 1000"]
+    assert result.query.filter == ["sum(orders.revenue) > 1000"]
 
 
 def test_order_by_aggregate_alias_for_count_star(dialect) -> None:
@@ -880,7 +880,7 @@ def test_where_on_aggregate_alias_gte_comparator_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["count(*) >= 5"]
+    assert result.query.filter == ["count(orders.*) >= 5"]
 
 
 def test_where_on_aggregate_alias_count_distinct_resolves(dialect) -> None:
@@ -891,7 +891,7 @@ def test_where_on_aggregate_alias_count_distinct_resolves(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["count_distinct(id) > 1"]
+    assert result.query.filter == ["count_distinct(orders.id) > 1"]
 
 
 def test_where_aggregate_alias_against_another_aggregate_is_an_aggregate_filter(dialect) -> None:
@@ -903,7 +903,7 @@ def test_where_aggregate_alias_against_another_aggregate_is_an_aggregate_filter(
         catalog=catalog, dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["count(*) > sum(revenue)"]
+    assert result.query.filter == ["count(orders.*) > sum(orders.revenue)"]
 
 
 def test_where_aggregate_alias_match_is_case_sensitive(dialect) -> None:
@@ -932,11 +932,11 @@ def test_double_quoted_column_in_where_becomes_column_not_string_literal(dialect
     assert isinstance(result, QueryResult)
     filters = result.query.filter or []
     assert len(filters) == 1
-    assert filters[0] == "status = 'paid'"
+    assert filters[0] == "orders.status = 'paid'"
     # The Mode B DSL must read ``status`` as a column, not a literal.
     parsed = parse_expr(filters[0])
     assert isinstance(parsed, Cmp)
-    assert parsed.left == Ref(name="status")
+    assert isinstance(parsed.left, DottedRef) and parsed.left.parts == ("orders", "status")
 
 
 def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:
@@ -949,7 +949,7 @@ def test_double_quoted_qualified_column_in_where_unquotes(dialect) -> None:
     assert isinstance(result, QueryResult)
     filters = result.query.filter or []
     assert len(filters) == 1
-    assert filters[0] == "status = 'paid'"
+    assert filters[0] == "orders.status = 'paid'"
 
 
 def test_having_aggregate_alias_against_another_aggregate_is_an_aggregate_filter(dialect) -> None:
@@ -961,7 +961,7 @@ def test_having_aggregate_alias_against_another_aggregate_is_an_aggregate_filter
         catalog=catalog, dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["count(*) > sum(revenue)"]
+    assert result.query.filter == ["count(orders.*) > sum(orders.revenue)"]
 
 
 @pytest.mark.parametrize("alias_form", [
@@ -976,7 +976,7 @@ def test_where_on_qualified_aggregate_alias_resolves(alias_form, dialect) -> Non
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["count(*) > 1"]
+    assert result.query.filter == ["count(orders.*) > 1"]
 
 
 def test_where_on_dimension_alias_does_not_route_to_aggregate_path(dialect) -> None:
@@ -1004,7 +1004,7 @@ def test_month_wrapper_creates_extraction_dimension(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert not result.query.time_dimensions
     dims = result.query.dimensions or []
-    assert [d.field for d in dims if d.ref is None] == ["date_part('month', ordered_at)"]
+    assert [d.field for d in dims if d.ref is None] == ["date_part('month', orders.ordered_at)"]
 
 
 def test_date_trunc_creates_time_dimension(dialect) -> None:
@@ -1029,7 +1029,7 @@ def test_cast_wrapped_time_trunc_creates_time_dimension(dialect) -> None:
     assert len(result.query.time_dimensions) == 1
     td = result.query.time_dimensions[0]
     assert td.granularity == TimeGranularity.MONTH
-    assert td.field == "ordered_at"
+    assert td.field == "orders.ordered_at"
 
 
 def test_metabase_aliased_cast_time_trunc_group_by_validates(dialect) -> None:
@@ -1080,7 +1080,7 @@ def test_metabase_sunday_week_wrapper_recognised(dialect) -> None:
     assert result.query.time_dimensions is not None
     assert len(result.query.time_dimensions) == 1
     assert result.query.time_dimensions[0].granularity == TimeGranularity.WEEK_SUNDAY
-    assert result.query.time_dimensions[0].field == "ordered_at"
+    assert result.query.time_dimensions[0].field == "orders.ordered_at"
 
 
 def test_one_day_offset_on_non_week_is_preserved(dialect) -> None:
@@ -1231,7 +1231,7 @@ def test_one_sided_gte_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filter == ["ordered_at >= '2024-01-01 00:00:00'"]
+    assert result.query.filter == ["orders.ordered_at >= '2024-01-01 00:00:00'"]
 
 
 def test_one_sided_lte_is_verbatim_filter(dialect) -> None:
@@ -1243,7 +1243,7 @@ def test_one_sided_lte_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filter == ["ordered_at <= '2024-12-31 00:00:00'"]
+    assert result.query.filter == ["orders.ordered_at <= '2024-12-31 00:00:00'"]
 
 
 def test_strict_gt_is_verbatim_filter(dialect) -> None:
@@ -1255,7 +1255,7 @@ def test_strict_gt_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filter == ["ordered_at > '2024-01-01 00:00:00'"]
+    assert result.query.filter == ["orders.ordered_at > '2024-01-01 00:00:00'"]
 
 
 def test_strict_lt_is_verbatim_filter(dialect) -> None:
@@ -1267,7 +1267,7 @@ def test_strict_lt_is_verbatim_filter(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filter == ["ordered_at < '2025-01-01 00:00:00'"]
+    assert result.query.filter == ["orders.ordered_at < '2025-01-01 00:00:00'"]
 
 
 def test_paired_inclusive_comparators_do_not_lift(dialect) -> None:
@@ -1280,8 +1280,8 @@ def test_paired_inclusive_comparators_do_not_lift(dialect) -> None:
     td = result.query.time_dimensions[0]
     assert td.date_range is None
     assert result.query.filter == [
-        "ordered_at >= '2024-01-01 00:00:00'",
-        "ordered_at <= '2024-12-31 00:00:00'",
+        "orders.ordered_at >= '2024-01-01 00:00:00'",
+        "orders.ordered_at <= '2024-12-31 00:00:00'",
     ]
 
 
@@ -1296,8 +1296,8 @@ def test_paired_mixed_strictness_stays_verbatim(dialect) -> None:
     td = result.query.time_dimensions[0]
     assert td.date_range is None
     assert result.query.filter == [
-        "ordered_at >= '2024-01-01 00:00:00'",
-        "ordered_at < '2025-01-01 00:00:00'",
+        "orders.ordered_at >= '2024-01-01 00:00:00'",
+        "orders.ordered_at < '2025-01-01 00:00:00'",
     ]
 
 
@@ -1310,7 +1310,7 @@ def test_reversed_operand_comparator_stays_verbatim(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range is None
-    assert result.query.filter == ["'2024-01-01 00:00:00' <= ordered_at"]
+    assert result.query.filter == ["'2024-01-01 00:00:00' <= orders.ordered_at"]
 
 
 def test_between_plus_comparator_lifts_only_the_between(dialect) -> None:
@@ -1323,7 +1323,7 @@ def test_between_plus_comparator_lifts_only_the_between(dialect) -> None:
     assert isinstance(result, QueryResult)
     td = result.query.time_dimensions[0]
     assert td.date_range == ["2024-01-01 00:00:00", "2024-12-31 00:00:00"]
-    assert result.query.filter == ["ordered_at >= '2024-06-01 00:00:00'"]
+    assert result.query.filter == ["orders.ordered_at >= '2024-06-01 00:00:00'"]
 
 
 def test_non_time_filter_passes_through_verbatim(dialect) -> None:
@@ -1332,7 +1332,7 @@ def test_non_time_filter_passes_through_verbatim(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["status = 'completed'"]
+    assert result.query.filter == ["orders.status = 'completed'"]
 
 
 def test_not_equal_rewrites_to_dsl_neq(dialect) -> None:
@@ -1341,7 +1341,7 @@ def test_not_equal_rewrites_to_dsl_neq(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["status <> 'cancelled'"]
+    assert result.query.filter == ["orders.status <> 'cancelled'"]
 
 
 def test_metric_in_where_passes_through_for_having(dialect) -> None:
@@ -1351,7 +1351,7 @@ def test_metric_in_where_passes_through_for_having(dialect) -> None:
         catalog=_catalog(), dialect=dialect,
     )
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["sum(revenue) > 1000"]
+    assert result.query.filter == ["sum(orders.revenue) > 1000"]
 
 
 # --- GROUP BY / ORDER BY / LIMIT / OFFSET ------------------------------------
@@ -1440,7 +1440,7 @@ def test_cast_column_projection_admits_date_to_timestamp(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.field for d in result.query.dimensions] == ["delivered_at"]
+    assert [d.field for d in result.query.dimensions] == ["orders.delivered_at"]
     assert result.projection_types == [DataType.DATETIME]
     assert dict(result.field_name_mapping) == {
         "orders.delivered_at": "delivered_at",
@@ -1476,7 +1476,7 @@ def test_cast_joined_column_projection(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.field for d in result.query.dimensions] == ["customers.region"]
+    assert [d.field for d in result.query.dimensions] == ["orders.customers.region"]
     assert result.projection_types == [DataType.STRING]
 
 
@@ -1658,7 +1658,7 @@ def test_cast_order_by_via_alias_works(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].field == "delivered_at"
+    assert result.query.order[0].field == "orders.delivered_at"
     assert result.query.order[0].direction == "asc"
     assert result.projection_types == [DataType.DATETIME]
 
@@ -1820,7 +1820,7 @@ def test_cast_aliased_projection_order_by_via_alias_works(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].field == "delivered_at"
+    assert result.query.order[0].field == "orders.delivered_at"
     assert result.query.order[0].direction == "asc"
 
 
@@ -2008,7 +2008,7 @@ def test_cast_order_by_bare_column_does_not_shadow_cast_projection(dialect) -> N
     )
     assert isinstance(result, QueryResult)
     assert result.query.order is not None
-    assert result.query.order[0].field == "id"
+    assert result.query.order[0].field == "orders.id"
     assert result.query.order[0].direction == "asc"
     assert result.projection_types == [DataType.INTEGER, DataType.STRING]
 
@@ -2036,7 +2036,7 @@ def test_cast_joined_column_metabase_alias_resolves(dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.dimensions is not None
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
     assert result.projection_types == [DataType.STRING]
 
 
@@ -2048,7 +2048,7 @@ def test_cast_metric_projection_overrides_wire_type(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.metrics is not None
-    assert result.query.metrics[0].metric == "sum(revenue)"
+    assert result.query.metrics[0].metric == "sum(orders.revenue)"
     # Declared metric type is DOUBLE; CAST(<metric> AS TEXT) overrides.
     assert result.projection_types == [DataType.STRING]
 
@@ -2199,7 +2199,7 @@ def test_left_join_subquery_projects_joined_column(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
     assert result.query.dimensions is not None
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
     assert dict(result.field_name_mapping) == {"orders.stores.name": "Stores__name"}
     assert result.query.limit == 5
 
@@ -2213,7 +2213,7 @@ def test_left_join_subquery_inverted_on_accepted(dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
 
 
 def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
@@ -2226,7 +2226,7 @@ def test_left_join_subquery_filter_on_joined_col(dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert result.query.filter == ["stores.name = 'Acme'"]
+    assert result.query.filter == ["orders.stores.name = 'Acme'"]
 
 
 _STORES_WITH_METRIC_JOIN = (
@@ -2242,7 +2242,7 @@ def test_left_join_subquery_filter_on_joined_metric_groups(clause, dialect) -> N
     sql = _STORES_WITH_METRIC_JOIN + f'{clause} "Stores"."tax_rate_avg" > 0.1'
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert result.query.filter == ["avg(stores.tax_rate) > 0.1"]
+    assert result.query.filter == ["avg(orders.stores.tax_rate) > 0.1"]
     assert result.query.distinct_dimension_values is True
 
 
@@ -2272,17 +2272,17 @@ def test_left_join_subquery_case_only_alias_is_an_identity_projection(dialect) -
 
 
 @pytest.mark.parametrize(("sql", "expected"), [
-    ("SELECT status FROM orders WHERE (revenue_sum > 100)", "(sum(revenue) > 100)"),
-    ("SELECT status FROM orders WHERE revenue_sum BETWEEN 1 AND 2", "(sum(revenue) >= 1 AND sum(revenue) <= 2)"),
-    ("SELECT status FROM orders WHERE revenue_sum > -1", "sum(revenue) > -1"),
-    ("SELECT status FROM orders WHERE -1 < revenue_sum", "sum(revenue) > -1"),
-    ("SELECT status FROM orders GROUP BY status HAVING revenue_sum > 1", "sum(revenue) > 1"),
-    ("SELECT status FROM orders GROUP BY status HAVING SUM(revenue) > -1", "sum(revenue) > -1"),
-    ("SELECT status FROM orders GROUP BY status HAVING (SUM(revenue) > 1)", "sum(revenue) > 1"),
+    ("SELECT status FROM orders WHERE (revenue_sum > 100)", "(sum(orders.revenue) > 100)"),
+    ("SELECT status FROM orders WHERE revenue_sum BETWEEN 1 AND 2", "(sum(orders.revenue) >= 1 AND sum(orders.revenue) <= 2)"),
+    ("SELECT status FROM orders WHERE revenue_sum > -1", "sum(orders.revenue) > -1"),
+    ("SELECT status FROM orders WHERE -1 < revenue_sum", "sum(orders.revenue) > -1"),
+    ("SELECT status FROM orders GROUP BY status HAVING revenue_sum > 1", "sum(orders.revenue) > 1"),
+    ("SELECT status FROM orders GROUP BY status HAVING SUM(revenue) > -1", "sum(orders.revenue) > -1"),
+    ("SELECT status FROM orders GROUP BY status HAVING (SUM(revenue) > 1)", "sum(orders.revenue) > 1"),
     ("SELECT status FROM orders WHERE ordered_at >= DATE '2024-01-01' OR revenue_sum > 1",
-     "ordered_at >= '2024-01-01 00:00:00' OR sum(revenue) > 1"),
+     "orders.ordered_at >= '2024-01-01 00:00:00' OR sum(orders.revenue) > 1"),
     ("SELECT ordered_at FROM orders GROUP BY ordered_at HAVING ordered_at >= DATE '2024-01-01' OR revenue_sum > 1",
-     "ordered_at >= '2024-01-01 00:00:00' OR sum(revenue) > 1"),
+     "orders.ordered_at >= '2024-01-01 00:00:00' OR sum(orders.revenue) > 1"),
 ])
 def test_metric_reference_in_any_predicate_shape_is_an_aggregate_filter(sql, expected, dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
@@ -2315,7 +2315,7 @@ def test_left_join_subquery_order_by_joined_col(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
     assert result.query.order is not None
-    assert result.query.order[0].field == "stores.name"
+    assert result.query.order[0].field == "orders.stores.name"
     assert result.query.order[0].direction == "asc"
     mapping = dict(result.field_name_mapping)
     assert mapping["orders.stores.name"] == "Stores__name"
@@ -2330,7 +2330,7 @@ def test_left_join_subquery_group_by_joined_col(dialect) -> None:
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
     # The joined-col projection registers stores.name as a derived dim.
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
     mapping = dict(result.field_name_mapping)
     assert mapping["orders.stores.name"] == "Stores__name"
 
@@ -2369,7 +2369,7 @@ def test_left_join_parent_qualifier_bare_table_accepted(dialect) -> None:
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
 
 
 def test_left_join_uses_configured_join_emits_no_warning(dialect, caplog) -> None:
@@ -2391,7 +2391,7 @@ def test_left_join_on_hidden_fk_column_succeeds(dialect) -> None:
     )
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
 
 
 def test_left_join_on_column_case_insensitive(dialect) -> None:
@@ -2404,7 +2404,7 @@ def test_left_join_on_column_case_insensitive(dialect) -> None:
     assert isinstance(result, QueryResult)
     # Canonical-case lookup happens before the (target_model, join_pairs) check.
     assert result.query.population == "orders"
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
 
 
 def test_left_join_on_column_case_ambiguity_rejected(dialect) -> None:
@@ -2443,7 +2443,7 @@ def test_left_join_alias_different_from_target_name(dialect) -> None:
     )
     result = translate(sql=sql, catalog=_join_catalog(), dialect=dialect)
     assert isinstance(result, QueryResult)
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
 
 
 # --- Positive: dynamic-join fallback + WARN ----------------------------------
@@ -2466,7 +2466,7 @@ def test_left_join_dynamic_when_parent_has_no_join_to_target(dialect, caplog) ->
     assert j.to == "stores"
     assert j.column_pairs == [("store_id", "id")]
     assert j.join_type == JoinType.LEFT
-    assert [d.field for d in result.query.dimensions] == ["stores.name"]
+    assert [d.field for d in result.query.dimensions] == ["orders.stores.name"]
     assert dict(result.field_name_mapping) == {"orders.stores.name": "Stores__name"}
     warns = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("dynamic join" in m and "orders" in m and "stores" in m for m in warns)
@@ -2497,7 +2497,7 @@ def test_left_join_dynamic_supports_filter_on_joined_col(dialect, caplog) -> Non
     assert isinstance(result, QueryResult)
     assert result.query.population == "orders"
     assert [e.dataset for e in result.query.extensions or []] == ["orders"]
-    assert result.query.filter == ["stores.name = 'Acme'"]
+    assert result.query.filter == ["orders.stores.name = 'Acme'"]
 
 
 def test_left_join_configured_inner_with_matching_join_pairs_warns(

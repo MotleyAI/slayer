@@ -13,6 +13,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
+from slayer.core.errors import PopulationErrorReason, PopulationInferenceError
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -180,25 +181,29 @@ class TestInferredPopulationIsNeverAStage:
                      metrics=[m("sum(orders.amount)", "a")])
 
     async def test_rootless_stage_by_dimension(self, engine48) -> None:
-        t = query(name="t", dimensions=["tier"], metrics=[m("sum(customers.spend)", "sp")])
-        resp = await engine48.execute(
-            [self._customers_stage(), t,
-             query(population="t", dimensions=["t.tier"], metrics=[m("sum(t.sp)", "total")])],
-            data_source="test")
-        assert rows_by(resp.data, key="t.tier", value="t.total") == f48.SPEND_BY_TIER
+        t = query(name="t", dimensions=["customers.tier"], metrics=[m("sum(customers.spend)", "sp")])
+        with pytest.raises(PopulationInferenceError) as ei:
+            await engine48.execute(
+                [self._customers_stage(), t,
+                 query(population="t", dimensions=["t.tier"], metrics=[m("sum(t.sp)", "total")])],
+                data_source="test")
+        assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
 
     async def test_rootless_stage_by_filter(self, engine48) -> None:
-        t = query(name="t", filter=["tier = 'gold'"], metrics=[m("sum(customers.spend)", "sp")])
-        resp = await engine48.execute(
-            [self._customers_stage(), t, query(population="t", metrics=[m("sum(t.sp)", "total")])],
-            data_source="test")
-        assert resp.data == [{"t.total": 160.0}]
+        t = query(name="t", filter=["customers.tier = 'gold'"], metrics=[m("sum(customers.spend)", "sp")])
+        with pytest.raises(PopulationInferenceError) as ei:
+            await engine48.execute(
+                [self._customers_stage(), t, query(population="t", metrics=[m("sum(t.sp)", "total")])],
+                data_source="test")
+        assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
 
     async def test_rootless_root(self, engine48) -> None:
-        resp = await engine48.execute(
-            [self._customers_stage(), query(dimensions=["tier"], metrics=[m("sum(customers.spend)", "sp")])],
-            data_source="test")
-        assert rows_by(resp.data, key="customers.tier", value="sp") == f48.SPEND_BY_TIER
+        with pytest.raises(PopulationInferenceError) as ei:
+            await engine48.execute(
+                [self._customers_stage(),
+                 query(dimensions=["customers.tier"], metrics=[m("sum(customers.spend)", "sp")])],
+                data_source="test")
+        assert ei.value.reason is PopulationErrorReason.SIBLING_STAGE
 
 
 class TestIdentifierLimit:

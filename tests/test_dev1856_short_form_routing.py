@@ -502,14 +502,14 @@ class TestRejectionTaxonomy:
 # Requirement: Broken explicit chains are never auto-fixed
 
 class TestBrokenChains:
-    async def test_broken_first_hop_suggests_short_form(self, tmp_path) -> None:
-        """``Customer.Consumer.name`` from a root with no direct Customer join —
-        rejected, suggests the routable short form."""
+    async def test_dataset_anchor_with_route_resolves(self, tmp_path) -> None:
+        """``Customer.Consumer.name`` from a root with no direct Customer join: ``Customer`` is an anchor reached by
+        its only to-one path, then the explicit route."""
         engine = await _chain_engine(tmp_path)
         q = _q(dimensions=["Customer.Consumer.name"])
-        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
-            await _cols_sql(engine, q)
-        assert ei.value.suggested_path == "Consumer.name"
+        await _assert_equiv(engine, q, _q(dimensions=["Consumer.name"]))
+        cols, _ = await _cols_sql(engine, q)
+        assert "Customer.Consumer.name" in cols
 
     async def test_broken_later_hop_suggests_short_form(self, tmp_path) -> None:
         """``Subscription.Consumer.name`` — first hop is a real join, second is not;
@@ -614,8 +614,8 @@ class TestTypeAndOpaque:
         return {c.name: c.datatype for c in saved.fields}
 
     async def test_routed_dimension_type_preserved(self, tmp_path) -> None:
-        """A routed dimension's virtual column matches the full-path column, name
-        and type alike (email is TEXT)."""
+        """A routed dimension's virtual column has the full-path column's type (email is TEXT); its name follows its
+        key."""
         engine = await _chain_engine(tmp_path)
         short = await self._virtual_columns(engine, SlayerQuery.model_validate({
             "population": "Invoice",
@@ -627,8 +627,9 @@ class TestTypeAndOpaque:
             "dimensions": ["Subscription.Customer.Consumer.email"],
             "metrics": [{"metric": "count(Invoice.*)"}],
         }))
-        assert short == full
-        assert DataType.STRING in short.values()
+        assert short["Consumer__email"] == full["Subscription__Customer__Consumer__email"] == DataType.STRING
+        assert {k: v for k, v in short.items() if k != "Consumer__email"} == {
+            k: v for k, v in full.items() if k != "Subscription__Customer__Consumer__email"}
 
     async def test_opaque_routed_dimension_rejected(self, tmp_path) -> None:
         """A routed dimension onto an opaque (Opaque) column is rejected for
