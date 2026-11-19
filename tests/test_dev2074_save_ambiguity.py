@@ -3,6 +3,7 @@ both save doors, and an edge-set change warns about the definitions it breaks.""
 
 from __future__ import annotations
 
+import inspect
 import warnings
 
 import pytest
@@ -252,6 +253,16 @@ class TestEdgeSetChangeWarnings:
         assert "city" in about[0]
         assert "orders.addresses.city" in about[0]
         assert "no longer resolv" in about[0].lower()
+
+    async def test_warning_names_the_callers_line(self, tmp_path, door, monkeypatch) -> None:
+        # The reparse-law wrapper is a frame of its own outside slayer/; production has none.
+        monkeypatch.setattr(SlayerQueryEngine, "save_dataset", inspect.unwrap(SlayerQueryEngine.save_dataset))
+        storage = await _world(tmp_path, _shipments())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            await _save(door, storage, _orders(joins=[]))
+        about = [w for w in caught if issubclass(w.category, UserWarning) and "'shipments'" in str(w.message)]
+        assert [w.filename for w in about] == [__file__]
 
     async def test_dependent_several_hops_away(self, tmp_path, door) -> None:
         parcels = _m("parcels", _int("shipment_id"),
