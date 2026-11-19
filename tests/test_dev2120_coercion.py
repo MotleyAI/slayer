@@ -54,7 +54,7 @@ class TestScenarios:
 
     async def test_arithmetic_result_aggregates_as_a_number(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_metric("sum(num_txt * 2)", filter=["id IN (5, 7)"]))
-        assert float(resp.data[0]["lib.v"]) == 9.0
+        assert float(resp.data[0]["v"]) == 9.0
 
     async def test_in_list(self, engine: SlayerQueryEngine) -> None:
         assert lib_ids(await engine.execute(lib_query(filter=["num_txt IN (1, 2)"]))) == {8, 9}

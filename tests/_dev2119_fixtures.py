@@ -211,7 +211,7 @@ def monthly_dataset() -> SlayerDataset:
         name="monthly", data_source="test",
         source_queries=[SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["refunded_at"],
-            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
             "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })],
     )
@@ -297,7 +297,7 @@ def by_bucket(resp: SlayerResponse, key: str, value: str = "v", *, width: int = 
     return out
 
 
-def by_dims(resp: SlayerResponse, keys: Iterable[str], value: str = "orders.v") -> dict[tuple, Optional[float]]:
+def by_dims(resp: SlayerResponse, keys: Iterable[str], value: str = "v") -> dict[tuple, Optional[float]]:
     keys = list(keys)
     out = {tuple(r[k] for k in keys): num(r[value]) for r in resp.data}
     assert len(out) == len(resp.data), resp.data

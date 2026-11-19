@@ -180,7 +180,7 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
               read=lambda resp: {r["contractors.team"] for r in resp.data},
               expected={t for t in teams if "sql" in team_elements([r for r in rows if r["team"] == t])}),
         Probe(name="through-to-one",
-              query=SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+              query=SlayerQuery.model_validate({"population": "assignments", "dimensions": ["contractors.id"],
                                                 "filter": ["contractors.skills.value = 'sql'"]}),
               read=lambda resp: {int(r["assignments.id"]) for r in resp.data},
               expected={a for a, c in ASSIGNMENTS if c in sql_ids}),

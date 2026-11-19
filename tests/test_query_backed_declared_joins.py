@@ -29,7 +29,7 @@ async def test_saved_query_backed_join_filters_population(saved_totals_engine):
         metrics=[{"metric": "sum(amt)", "alias": "total"}],
         filter=["customers.tier = 'gold'"],
     ))
-    assert response.data == [{"customer_totals.total": 120.0}]
+    assert response.data == [{"total": 120.0}]
 
 
 async def test_saved_query_backed_join_traverses_multihop_for_aggregate(saved_totals_engine):

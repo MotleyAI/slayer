@@ -58,7 +58,7 @@ class TestCompositeMeasureLift:
             dimensions=["region", "city"],
             metrics=[
                 QueryMetric(metric=MEASURE_DIFF, alias="d"),
-                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
             ],
         )
         resp = await engine.execute(query)
@@ -66,8 +66,8 @@ class TestCompositeMeasureLift:
         assert set(by) == set(MIXED_DIFF_OF)
         assert len(resp.data) == len(MIXED_DIFF_OF)
         for key, r in by.items():
-            assert float(r["orders.d"]) == pytest.approx(MIXED_DIFF_OF[key]), f"{key}"
-            assert float(r["orders.s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
+            assert float(r["d"]) == pytest.approx(MIXED_DIFF_OF[key]), f"{key}"
+            assert float(r["s"]) == pytest.approx(CITY_TOTAL[key]), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_same_grain_partitioned_arithmetic_as_measure(
@@ -82,7 +82,7 @@ class TestCompositeMeasureLift:
         by = rows_by(resp, "orders.region")
         assert len(resp.data) == len(SAMEGRAIN_DIFF_OF)
         for key, r in by.items():
-            assert float(r["orders.d"]) == pytest.approx(
+            assert float(r["d"]) == pytest.approx(
                 SAMEGRAIN_DIFF_OF[key[0]]
             ), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
@@ -101,7 +101,7 @@ class TestCompositeMeasureLift:
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(CITY_TOTAL)
         for key, r in by.items():
-            assert float(r["orders.d"]) == pytest.approx(
+            assert float(r["d"]) == pytest.approx(
                 REGION_TOTAL[key[0]] - GRAND_TOTAL
             ), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
@@ -116,7 +116,7 @@ class TestCompositeMeasureLift:
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(MIXED_DIFF_OF)
         for key, r in by.items():
-            assert float(r["orders.d"]) == pytest.approx(
+            assert float(r["d"]) == pytest.approx(
                 abs(MIXED_DIFF_OF[key])
             ), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
@@ -134,7 +134,7 @@ class TestCompositeMeasureLift:
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(MIXED_DIFF_OF)
         for key, r in by.items():
-            assert int(r["orders.d"]) == (1 if MIXED_DIFF_OF[key] > 0 else 0), f"{key}"
+            assert int(r["d"]) == (1 if MIXED_DIFF_OF[key] > 0 else 0), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
 
 
@@ -144,14 +144,14 @@ class TestConformingSurfaces:
         query = q(
             dimensions=["region", "city"],
             metrics=[QueryMetric(
-                metric="sum(amount) - sum(amount, partition_by=region)", alias="d",
+                metric="sum(orders.amount) - sum(orders.amount, partition_by=orders.region)", alias="d",
             )],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(CITY_TOTAL)
         for key, r in by.items():
-            assert float(r["orders.d"]) == pytest.approx(
+            assert float(r["d"]) == pytest.approx(
                 CITY_TOTAL[key] - REGION_TOTAL[key[0]]
             ), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
@@ -165,24 +165,24 @@ class TestConformingSurfaces:
             dimensions=["region", "city"],
             metrics=[
                 QueryMetric(metric=MIXED_RANK, alias="r"),
-                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
             ],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(MIXED_RANK_OF)
         for key, r in by.items():
-            assert int(r["orders.r"]) == MIXED_RANK_OF[key], f"{key}"
+            assert int(r["r"]) == MIXED_RANK_OF[key], f"{key}"
 
         solo = await engine.execute(q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         solo_by = rows_by(solo, "orders.region", "orders.city")
         assert set(solo_by) == set(by)
         for key, r in by.items():
-            assert float(r["orders.s"]) == pytest.approx(
-                float(solo_by[key]["orders.s"])
+            assert float(r["s"]) == pytest.approx(
+                float(solo_by[key]["s"])
             ), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
 
@@ -190,19 +190,19 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         unfiltered = rows_by(await engine.execute(q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region", "orders.city")
         query = q(
             dimensions=["region", "city"],
             filter=[f"{MEASURE_DIFF} > 0"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {k for k, v in MIXED_DIFF_OF.items() if v > 0}
         for key, r in by.items():
-            assert float(r["orders.s"]) == pytest.approx(
-                float(unfiltered[key]["orders.s"])
+            assert float(r["s"]) == pytest.approx(
+                float(unfiltered[key]["s"])
             ), f"{key}"
         await _dry_scope_closed(engine, query, dialect)
 
@@ -212,7 +212,7 @@ class TestConformingSurfaces:
         # the unfiltered run. Needs D10, so this variant is TDD, not locking.
         _, engine = exec_backend
         measures = [
-            QueryMetric(metric="sum(amount)", alias="s"),
+            QueryMetric(metric="sum(orders.amount)", alias="s"),
             QueryMetric(metric=MEASURE_DIFF, alias="d"),
         ]
         unfiltered = rows_by(await engine.execute(q(
@@ -226,7 +226,7 @@ class TestConformingSurfaces:
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {k for k, v in MIXED_DIFF_OF.items() if v > 0}
         for key, r in by.items():
-            assert float(r["orders.d"]) == pytest.approx(MIXED_DIFF_OF[key]), f"{key}"
-            assert float(r["orders.d"]) == pytest.approx(
-                float(unfiltered[key]["orders.d"])
+            assert float(r["d"]) == pytest.approx(MIXED_DIFF_OF[key]), f"{key}"
+            assert float(r["d"]) == pytest.approx(
+                float(unfiltered[key]["d"])
             ), f"{key}"

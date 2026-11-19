@@ -41,7 +41,7 @@ def test_unproven_arity_remedy() -> None:
 
 async def test_cross_hop_source_remedy() -> None:
     query = orders_q(metrics=[
-        QueryMetric(metric="sum(amount - customers.regions.bad_pop)", alias="m")])
+        QueryMetric(metric="sum(orders.amount - customers.regions.bad_pop)", alias="m")])
     with pytest.raises(ValueError, match="Aggregate the target field directly") as ei:
         await gen(query)
     msg = str(ei.value)

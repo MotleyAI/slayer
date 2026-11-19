@@ -36,7 +36,7 @@ class TestProducerOutputAlias:
         sql = await gen(_q(
             dimensions=["region", "city"],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=region)", alias="region_rev",
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -48,7 +48,7 @@ class TestProducerOutputAlias:
         sql = await gen(_q(
             dimensions=["region", "city"],
             metrics=[QueryMetric(
-                metric="sum(amount) / sum(amount, partition_by=region)", alias="sh",
+                metric="sum(orders.amount) / sum(orders.amount, partition_by=orders.region)", alias="sh",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -65,7 +65,7 @@ async def test_filtered_measure_predicate_lives_in_producer(dialect: str) -> Non
     sql = await gen(_q(
         dimensions=["region", "city"],
         metrics=[QueryMetric(
-            metric="sum(ok_amount, partition_by=region)", alias="o",
+            metric="sum(orders.ok_amount, partition_by=orders.region)", alias="o",
         )],
     ), dialect=dialect)
     body = cm_cte_bodies(sql)

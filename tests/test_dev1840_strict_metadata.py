@@ -53,7 +53,7 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 SM = QueryMetric(metric="sum(agents.score)", alias="sm")
 RV = QueryMetric(metric="sum(reviews.stars)", alias="rv")
@@ -96,9 +96,9 @@ class TestStrictNarrows:
             to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
             filter=["channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, spend in SPEND_APP_BY_TIER.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend), tier
 
     async def test_strict_passes_on_a_pushable_forward_hop(
         self, exec_backend_weak,
@@ -108,9 +108,9 @@ class TestStrictNarrows:
             to_many_handling="error", dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.plans.level = 'basic'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, spend in SPEND_BASIC_BY_TIER.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend), tier
 
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
         """DEV-1935: a mixed disjunction no longer errors in error mode — the
@@ -120,8 +120,8 @@ class TestStrictNarrows:
             to_many_handling="error", dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.tier = 'bronze' OR channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        by = rows_by(resp, "customers.tier")
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
 
     async def test_strict_still_errors_on_an_ambiguous_path(
         self, exec_backend_amb,
@@ -160,8 +160,8 @@ class TestBooleanTotalPushdownReplacesTheWarning:
                 dimensions=["customers.tier"], metrics=[CM],
                 filter=["customers.tier = 'bronze' OR channel = 'app'"],
             ))
-        by = rows_by(resp, "orders.customers.tier")
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        by = rows_by(resp, "customers.tier")
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
         hits = [c for c in caught
                 if issubclass(c.category, (BroadcastGrainWarning, AssociatedGrainWarning))]
         assert hits == []

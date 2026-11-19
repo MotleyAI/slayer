@@ -94,7 +94,7 @@ def _needs_td(meas: str) -> bool:
 
 
 def _cell_query(family: str, meas: str, *, include_x: bool = True):
-    measures = [QueryMetric(metric="sum(amount)", alias="m")]
+    measures = [QueryMetric(metric="sum(orders.amount)", alias="m")]
     if include_x:
         measures.append(QueryMetric(metric=_expression(meas), alias="x"))
     kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "metrics": measures}
@@ -224,8 +224,8 @@ class TestCoexistenceTriples:
 
     async def _assert_triple(self, exec_backend, *, family: str, op: str) -> None:
         dialect, engine = exec_backend
-        m = QueryMetric(metric="sum(amount)", alias="m")
-        rt = QueryMetric(metric="sum(amount, partition_by=region)", alias="rt")
+        m = QueryMetric(metric="sum(orders.amount)", alias="m")
+        rt = QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt")
         x = QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x")
         query = self._triple_query(family, metrics=[m, rt, x])
         m_map = GROUP_M_MONTH[family]
@@ -294,7 +294,7 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
                 QueryMetric(metric=TRANSFORM_FORMULAS[op], alias="x"),
             ],
         )
@@ -319,8 +319,8 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ), dry_run=True)
         body = _extract_cte_body(dry.sql, r"shifted_\w+")
@@ -372,15 +372,15 @@ class TestConsecutivePeriodsReset:
             dimensions=[DIM_FAMILY_DIMS["band"][1]],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(
-                    metric="consecutive_periods(sum(amount) != 40)", alias="x",
+                    metric="consecutive_periods(sum(orders.amount) != 40)", alias="x",
                 ),
             ],
         ))
         got = {
-            (int(r["orders.band"]), str(r["orders.ordered_at"])[:7]):
-                int(r["orders.x"])
+            (int(r["band"]), str(r["orders.ordered_at"])[:7]):
+                int(r["x"])
             for r in resp.data
         }
         assert got == {
@@ -398,14 +398,14 @@ class TestExplicitTransformPartition:
         resp = await engine.execute(q(
             dimensions=DIM_FAMILY_DIMS["band"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(
-                    metric="rank(sum(amount), partition_by=region, direction='desc')", alias="x",
+                    metric="rank(sum(orders.amount), partition_by=orders.region, direction='desc')", alias="x",
                 ),
             ],
         ))
         got = {
-            dim_key(r, family="band", with_month=False): int(r["orders.x"])
+            dim_key(r, family="band", with_month=False): int(r["x"])
             for r in resp.data
         }
         # Within-region rank of the band totals: North 60, 40 → 1, 2; the

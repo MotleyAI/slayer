@@ -111,7 +111,7 @@ def _q(expression: str, **extra: Any) -> SlayerQuery:
 
 async def _value(engine: SlayerQueryEngine, expression: str) -> float:
     resp = await engine.execute(_q(expression))
-    return float(resp.data[0]["orders.m"])
+    return float(resp.data[0]["m"])
 
 
 class TestStringArgumentIsModeB:
@@ -148,7 +148,7 @@ class TestStringArgumentIsModeB:
         resp = await engine.execute(_q(
             "sum(amount, window='60d')", time_dimensions=[{"field": "created_at", "granularity": "month"}],
         ))
-        assert [float(r["orders.m"]) for r in sorted(resp.data, key=lambda r: str(r["orders.created_at"]))] == [
+        assert [float(r["m"]) for r in sorted(resp.data, key=lambda r: str(r["orders.created_at"]))] == [
             10.0, 30.0, 50.0, 70.0,
         ]
 

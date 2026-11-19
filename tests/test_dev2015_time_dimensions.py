@@ -46,7 +46,7 @@ class TestUnknownCalleeAtBinding:
     @pytest.mark.parametrize(("fields", "names_partition_by"), [
         ({"time_dimensions": ["date_trunc('mnth', order_date)"]}, False),
         ({"dimensions": ["date_trunc('mnth', order_date)"]}, False),
-        ({"dimensions": ["mnth(order_date)"]}, True),
+        ({"dimensions": ["mnth(orders.order_date)"]}, True),
     ], ids=["time-dimensions-string", "dimension", "dimension-bare-call"])
     async def test_fails_at_binding_listing_granularities(self, engine, fields, names_partition_by) -> None:
         query = _q(**fields)  # construction no longer rejects it
@@ -82,6 +82,6 @@ class TestUnknownCalleeAtBinding:
 
     def test_bare_column_string_still_rejected_at_construction(self) -> None:
         with pytest.raises(ValueError) as exc:
-            SlayerQuery.model_validate({"population": "orders", "time_dimensions": ["order_date"]})
+            SlayerQuery.model_validate({"population": "orders", "time_dimensions": ["orders.order_date"]})
         assert "month" in str(exc.value)
         assert "date_trunc(" in str(exc.value)

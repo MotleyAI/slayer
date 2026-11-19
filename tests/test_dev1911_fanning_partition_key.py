@@ -129,7 +129,7 @@ def _status_xmodel_q(mode: str) -> SlayerQuery:
     unattributable only from the cross-model ``customers`` root — the mode-aware case."""
     return orders_q(
         dimensions=["status"],
-        metrics=[QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="w")],
+        metrics=[QueryMetric(metric="sum(customers.spend, partition_by=orders.status)", alias="w")],
         to_many_handling=mode)
 
 
@@ -140,7 +140,7 @@ class TestPathlessDerivedFanningEveryMode:
     async def test_repro_raises_naming_the_hop(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")],
+            metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.bad_pop)", alias="w")],
             to_many_handling=mode))
 
 
@@ -151,7 +151,7 @@ class TestChainedDerived:
     async def test_chained_raises_naming_the_hop(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop2"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop2)", alias="w")],
+            metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.bad_pop2)", alias="w")],
             to_many_handling=mode))
 
 
@@ -162,28 +162,28 @@ class TestEveryPosition:
     async def test_transform_partition_set(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="rank(sum(pop), partition_by=bad_pop, direction='desc')", alias="w")],
+            metrics=[QueryMetric(metric="rank(sum(regions.pop), partition_by=regions.bad_pop, direction='desc')", alias="w")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_reaggregation_inner(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["name"],
-            metrics=[QueryMetric(metric="avg(sum(pop, partition_by=bad_pop))", alias="w")],
+            metrics=[QueryMetric(metric="avg(sum(regions.pop, partition_by=regions.bad_pop))", alias="w")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_computed_dimension(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["CASE WHEN sum(pop, partition_by=bad_pop) > 150 THEN 1 ELSE 0 END"],
-            metrics=[QueryMetric(metric="sum(pop)", alias="p")],
+            metrics=[QueryMetric(metric="sum(regions.pop)", alias="p")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_filter_position(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop)", alias="p")],
+            metrics=[QueryMetric(metric="sum(regions.pop)", alias="p")],
             filter=["sum(pop, partition_by=bad_pop) > 150"],
             to_many_handling=mode))
 
@@ -191,7 +191,7 @@ class TestEveryPosition:
     async def test_order_position(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop)", alias="p")],
+            metrics=[QueryMetric(metric="sum(regions.pop)", alias="p")],
             order=[{"field": "sum(pop, partition_by=bad_pop)", "direction": "asc"}],
             to_many_handling=mode))
 
@@ -201,7 +201,7 @@ class TestEveryPosition:
             dimensions=["bad_amt"],
             time_dimensions=["date_trunc('month', ordered_at)"],
             metrics=[QueryMetric(
-                metric="sum(amount, window='90d', partition_by=bad_amt)", alias="w")],
+                metric="sum(orders.amount, window='90d', partition_by=orders.bad_amt)", alias="w")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
@@ -209,7 +209,7 @@ class TestEveryPosition:
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
             metrics=[QueryMetric(
-                metric="sum(region_events.value, partition_by=bad_pop)", alias="w")],
+                metric="sum(region_events.value, partition_by=regions.bad_pop)", alias="w")],
             to_many_handling=mode))
 
 
@@ -221,7 +221,7 @@ class TestUnanalysableKey:
         query = _regions_q(
             dimensions=["name"],
             metrics=[QueryMetric(
-                metric="sum(pop, partition_by=unparseable)", alias="w")],
+                metric="sum(regions.pop, partition_by=regions.unparseable)", alias="w")],
             to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(query)
@@ -235,7 +235,7 @@ class TestHostSafeKeyStaysModeAware:
 
     async def test_associate_succeeds(self, engine):
         resp = await engine.execute(_status_xmodel_q("associate"))
-        assert _rows(resp, "orders.status", "orders.w") == pytest.approx(
+        assert _rows(resp, "orders.status", "w") == pytest.approx(
             {"new": 290.0, "ok": 420.0})
 
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
@@ -250,8 +250,8 @@ class TestHostSafeKeyStaysModeAware:
         """A local derived key (``derived_pop = pop * 2``) crosses no hop — it still runs."""
         resp = await engine.execute(_regions_q(
             dimensions=["derived_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=derived_pop)", alias="w")]))
-        assert _rows(resp, "regions.derived_pop", "regions.w") == pytest.approx(
+            metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.derived_pop)", alias="w")]))
+        assert _rows(resp, "regions.derived_pop", "w") == pytest.approx(
             {200.0: 100.0, 400.0: 200.0})
 
 
@@ -264,13 +264,13 @@ class TestDiagnosticNamesHop:
         await _assert_fails_naming_hop(engine, orders_q(
             dimensions=[BAD_POP],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=customers.regions.bad_pop)", alias="w")],
+                metric="sum(orders.amount, partition_by=customers.regions.bad_pop)", alias="w")],
             to_many_handling=mode))
 
     async def test_error_names_the_remedy(self, engine):
         msg = await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")]))
+            metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.bad_pop)", alias="w")]))
         assert "cardinality" in msg, msg
         assert "unique key" in msg, msg
 
@@ -284,7 +284,7 @@ class TestUnreachableAndAmbiguousFailClosed:
         query = _regions_q(
             dimensions=["name"],
             metrics=[QueryMetric(
-                metric="sum(pop, partition_by=island.value)", alias="w")])
+                metric="sum(regions.pop, partition_by=island.value)", alias="w")])
         with pytest.raises(UnrelatedDatasetError) as ei:
             await island_engine.execute(query)
         assert HOP not in str(ei.value), str(ei.value)
@@ -293,7 +293,7 @@ class TestUnreachableAndAmbiguousFailClosed:
         query = _regions_q(
             dimensions=["name"],
             metrics=[QueryMetric(
-                metric="sum(pop, partition_by=region_events.value)", alias="w")])
+                metric="sum(regions.pop, partition_by=region_events.value)", alias="w")])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await ambig_engine.execute(query)
         assert len(ei.value.candidates) == 2  # named, not silently picked
@@ -308,10 +308,10 @@ class TestAxiom8Clause:
     async def test_fanning_from_host_fails_in_every_mode(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")],
+            metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.bad_pop)", alias="w")],
             to_many_handling=mode))
 
     async def test_unattributable_from_further_root_still_associates(self, engine):
         resp = await engine.execute(_status_xmodel_q("associate"))
-        assert _rows(resp, "orders.status", "orders.w") == pytest.approx(
+        assert _rows(resp, "orders.status", "w") == pytest.approx(
             {"new": 290.0, "ok": 420.0})

@@ -35,27 +35,27 @@ MONTHLY_REVENUE: Dict[str, Any] = {
     "population": "orders",
     "time_dimensions": [MONTH_TD],
     "metrics": [REVENUE],
-    "filter": ["status = 'paid'"],
+    "filter": ["orders.status = 'paid'"],
 }
 MONTHLY_REVENUE_Q1: Dict[str, Any] = {
     "population": "orders",
     "time_dimensions": [{**MONTH_TD, "date_range": Q1_RANGE}],
     "metrics": [REVENUE],
-    "filter": ["status = 'paid'"],
+    "filter": ["orders.status = 'paid'"],
     "order": [{"field": "revenue", "direction": "desc"}],
     "limit": 2,
 }
 AVG_CUSTOMER_REVENUE: List[Dict[str, Any]] = [
     {
         "name": "per_customer", "population": "orders",
-        "dimensions": ["customer_id", "region"], "metrics": [REVENUE],
-        "filter": ["status = 'paid'"],
+        "dimensions": ["orders.customer_id", "orders.region"], "metrics": [REVENUE],
+        "filter": ["orders.status = 'paid'"],
     },
-    {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]},
+    {"population": "per_customer", "metrics": [{"metric": "avg(per_customer.revenue)", "alias": "avg_revenue"}]},
 ]
 REVENUE_BY_STATUS: Dict[str, Any] = {
-    "population": "orders", "dimensions": ["region"], "metrics": [REVENUE],
-    "filter": ["status = '{status}'"],
+    "population": "orders", "dimensions": ["orders.region"], "metrics": [REVENUE],
+    "filter": ["orders.status = '{status}'"],
 }
 
 MONTHLY = {"2025-01": 100.0, "2025-02": 105.0, "2025-03": 50.0}
@@ -161,6 +161,6 @@ def month(value: Any) -> str:
     return str(value)[:7]
 
 
-def by_month(rows: List[Dict[str, Any]], *, value: str = "orders.revenue",
+def by_month(rows: List[Dict[str, Any]], *, value: str = "revenue",
              key: str = "orders.ordered_at") -> Dict[str, Any]:
     return {month(r[key]): r[value] for r in rows}

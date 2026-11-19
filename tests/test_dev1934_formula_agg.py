@@ -206,7 +206,7 @@ class TestFormulaExecution:
             dialect=dialect, seed=_seed, datasets=[_orders((_SUMSQ, _SCALED))],
         ) as (engine, _db):
             resp = await engine.execute(_q(formula))
-        assert resp.data[0]["orders.m"] == pytest.approx(expected)
+        assert resp.data[0]["m"] == pytest.approx(expected)
 
 
 class TestPlaceholderRecognition:
@@ -428,15 +428,15 @@ class TestPickedValueExecution:
             dialect=dialect, seed=seed, datasets=dev1900_datasets(),
         ) as (engine, _db):
             resp = await engine.execute(_picked_q(measure))
-        assert float(bad_pop_vals(resp, "orders.wa")[230.0]) == pytest.approx(south)
+        assert float(bad_pop_vals(resp, "wa")[230.0]) == pytest.approx(south)
 
     async def test_filtered_weight_oracle(self) -> None:
         async with seeded_exec_engine(
             dialect="sqlite", seed=seed_1832_sqlite, datasets=dev1832_datasets(),
         ) as (engine, _db):
             resp = await engine.execute(sales_q(metrics=[QueryMetric(
-                metric="weighted_avg(amount, weight=q_amount)", alias="m")]))
-        assert resp.data[0]["sales.m"] == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
+                metric="weighted_avg(sales.amount, weight=sales.q_amount)", alias="m")]))
+        assert resp.data[0]["m"] == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 
 
 _XOR = Aggregation(name="masked", expression="SUM({value}) # {mask}")
@@ -458,7 +458,7 @@ async def _windowed_sql(expression: str, agg: Aggregation) -> str:
     ]})
     query = SlayerQuery(
         population="orders", metrics=[QueryMetric(metric=expression, alias="m")],
-        time_dimensions=[TimeDimension(field="ordered_at", granularity=TimeGranularity.MONTH)],
+        time_dimensions=[TimeDimension(field="orders.ordered_at", granularity=TimeGranularity.MONTH)],
     )
     return " ".join((await _engine_generate(query=query, dataset=model)).split())
 
@@ -548,7 +548,7 @@ async def _associated_star_sql(expression: str) -> str:
     host = _orders().model_copy(update={"relationships": [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]})
     query = SlayerQuery(
         population="orders", metrics=[QueryMetric(metric=expression, alias="m")],
-        dimensions=[QueryDimension(field="quantity")], to_many_handling="associate",
+        dimensions=[QueryDimension(field="orders.quantity")], to_many_handling="associate",
     )
     return " ".join((await _engine_generate(query=query, dataset=host, extra_datasets=[customers])).split())
 

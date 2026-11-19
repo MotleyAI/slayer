@@ -225,7 +225,7 @@ class TestUniqueRoute:
         engine = await _chain_engine(tmp_path)
         cols, _ = await _cols_sql(engine, _q(dimensions=["Consumer.name"]))
         assert "Invoice.Subscription.Customer.Consumer.name" in cols
-        assert "Invoice.Consumer.name" not in cols
+        assert "Consumer.name" not in cols
 
     async def test_unique_route_that_fans_out_still_resolves(self, tmp_path) -> None:
         """The sole route crosses a one-to-many hop — the fan-out tie-break applies
@@ -245,9 +245,9 @@ class TestUniqueRoute:
             query=_q(dimensions=["Subscription.Customer.Consumer.name"]),
             dry_run=False)
         key = "Invoice.Subscription.Customer.Consumer.name"
-        got = {r[key]: r["Invoice.amt"] for r in short.data}
+        got = {r[key]: r["amt"] for r in short.data}
         assert got == {"Ann": 30.0, "Bob": 30.0}
-        assert {r[key]: r["Invoice.amt"] for r in full.data} == got
+        assert {r[key]: r["amt"] for r in full.data} == got
 
 
 # Requirement: Fan-out-free tie-break among ambiguous routes
@@ -462,7 +462,7 @@ class TestAdjacentParallelParity:
         resolver must not route an adjacent parallel `Target.aov` in a filter."""
         engine = await self._engine(tmp_path)
         q = SlayerQuery(
-            population="Root", dimensions=["tgt_grp"],
+            population="Root", dimensions=["Root.tgt_grp"],
             filter=["Target.aov > 0"], distinct_dimension_values=False,
         )
         with pytest.raises(AmbiguousRelationshipPathError):
@@ -472,7 +472,7 @@ class TestAdjacentParallelParity:
         """Same for an adjacent parallel `Target.aov` in raw-rows ORDER BY."""
         engine = await self._engine(tmp_path)
         q = SlayerQuery(
-            population="Root", dimensions=["tgt_grp"],
+            population="Root", dimensions=["Root.tgt_grp"],
             order=[{"Target.aov": "asc"}], distinct_dimension_values=False,
         )
         with pytest.raises(AmbiguousRelationshipPathError):
@@ -622,12 +622,12 @@ class TestTypeAndOpaque:
         short = await self._virtual_columns(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(Invoice.*)"}],
         }))
         full = await self._virtual_columns(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(Invoice.*)"}],
         }))
         assert short == full
         assert DataType.STRING in short.values()
@@ -660,7 +660,7 @@ class TestSavedMeasureRouting:
     async def test_routed_unnamed_saved_measure_type_via_saved_model(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
-            "population": "Invoice", "dimensions": ["status"],
+            "population": "Invoice", "dimensions": ["Invoice.status"],
             "metrics": [{"metric": "Consumer.aov"}],
         })])
         saved = await engine.save_dataset(qb)
@@ -673,11 +673,11 @@ class TestSavedMeasureRouting:
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.name"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(Invoice.*)"}],
         })])
         await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(qb.*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -688,12 +688,12 @@ class TestSavedMeasureRouting:
         ``sum(amount) / count(*)`` formula) persists and re-resolves on reload."""
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
-            "population": "Invoice", "dimensions": ["status"],
+            "population": "Invoice", "dimensions": ["Invoice.status"],
             "metrics": [{"metric": "Consumer.aov", "alias": "a"}],
         })])
         await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"metric": "count(qb.*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -730,12 +730,12 @@ class TestScoping:
             "name": "s1",
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(Invoice.*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(s1.*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -789,7 +789,7 @@ class TestSchemaDriftRouting:
         return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(Invoice.*)"}],
         })])
 
     def _drops(self, datasets: list[SlayerDataset]):

@@ -34,7 +34,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 def _assert_clear(ei, *needles: str, remedy: bool = False) -> None:
@@ -80,7 +80,7 @@ class TestUnsafeInputs:
         _, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            metrics=[QueryMetric(metric="last(customers.spend, ordered_at)",
+            metrics=[QueryMetric(metric="last(customers.spend, orders.ordered_at)",
                                    alias="x")],
         )
         with pytest.raises(RAISES) as ei:
@@ -98,7 +98,7 @@ class TestUnsafeExplicitPartitionKeys:
         query = q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="x",
+                metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
             to_many_handling="broadcast",
         )
@@ -132,7 +132,7 @@ class TestUnsafeExplicitPartitionKeys:
         query = q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=customers.segments.label)",
+                metric="sum(orders.amount, partition_by=customers.segments.label)",
                 alias="x",
             )],
         )
@@ -164,7 +164,7 @@ class TestUnsafeExplicitPartitionKeys:
         query = q(
             to_many_handling="error", dimensions=["status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="x",
+                metric="sum(customers.spend, partition_by=orders.status)", alias="x",
             )],
         )
         with pytest.raises(RAISES) as ei:
@@ -180,14 +180,14 @@ class TestSafeJoinedPartitionKey:
         query = q(
             dimensions=["customers.tier", "status"],
             metrics=[M, QueryMetric(
-                metric="sum(amount, partition_by=customers.tier)", alias="pt",
+                metric="sum(orders.amount, partition_by=customers.tier)", alias="pt",
             )],
         )
         resp = await engine.execute(query)
-        by = rows_by(resp, "orders.customers.tier", "orders.status")
+        by = rows_by(resp, "customers.tier", "orders.status")
         assert set(by) == set(AMOUNT_BY_TIER_STATUS)
         for (tier, status), row in by.items():
-            assert float(row["orders.pt"]) == pytest.approx(
+            assert float(row["pt"]) == pytest.approx(
                 AMOUNT_BY_TIER[tier],
             ), (tier, status)
         dry = await engine.execute(query, dry_run=True)

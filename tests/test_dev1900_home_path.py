@@ -39,13 +39,13 @@ class TestDefinitionDefaultJoinsHomeCandidates:
         """Reference: an explicit weight=customers.spend already roots the
         aggregate at the shallower customers home."""
         resp = await engine.execute(orders_q(metrics=[EXPLICIT]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
+        assert float(resp.data[0]["w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
     async def test_definition_default_matches_the_explicit(self, engine):
         """Subject: the non-overridden default must join the home candidates the
         same way — identical value to spelling it explicitly."""
         resp = await engine.execute(orders_q(metrics=[DEFAULT]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
+        assert float(resp.data[0]["w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
 
 class TestReverseHopDefaultFailsClosed:
@@ -55,6 +55,6 @@ class TestReverseHopDefaultFailsClosed:
         no forward home."""
         q = SlayerQuery(
             population="regions",
-            metrics=[QueryMetric(metric="wsum_cust_spend(pop)", alias="w")])
+            metrics=[QueryMetric(metric="wsum_cust_spend(regions.pop)", alias="w")])
         with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(q)

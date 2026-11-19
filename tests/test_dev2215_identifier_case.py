@@ -79,7 +79,7 @@ class TestFolding:
     @pytest.mark.parametrize("dimension", ['"customers".REGION', 'CUSTOMERS."region"'])
     async def test_quoting_per_segment(self, engine: SlayerQueryEngine, dimension: str) -> None:
         resp = await engine.execute(q(dimensions=[dimension], metrics=[m("count(*)", "n")]))
-        assert "orders.customers.region" in resp.columns
+        assert "customers.region" in resp.columns
 
     async def test_quoted_segment_with_wrong_case_fails(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=['"Customers".region'], metrics=[m("count(*)", "n")])
@@ -130,7 +130,7 @@ class TestFolding:
     ])
     async def test_a_list_element_reference_follows_quoting(self, ref: str, error: type[SlayerError] | None) -> None:
         stages: list[Any] = [
-            {"name": "s", "population": "orders", "dimensions": ["status"], "metrics": [m("collect(note)", "items")]},
+            {"name": "s", "population": "orders", "dimensions": ["orders.status"], "metrics": [m("collect(note)", "items")]},
             {"population": "s", "metrics": [m(f"count({ref})", "c")]},
         ]
         async with dev2215_engine("duckdb") as eng:
@@ -149,7 +149,7 @@ class TestFolding:
     async def test_stage_names_fold(self, engine: SlayerQueryEngine) -> None:
         stages: list[Any] = [
             {"name": "Monthly", "population": "orders",
-             "time_dimensions": [{"field": "created_at", "granularity": "month"}], "metrics": [m("count(*)", "n")]},
+             "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}], "metrics": [m("count(*)", "n")]},
             {"population": "monthly", "metrics": [m("sum(n)", "t")]},
         ]
         resp = await engine.execute(stages)
@@ -157,7 +157,7 @@ class TestFolding:
 
     async def test_model_names_fold(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(population="ORDERS", metrics=[m("count(*)", "n")]))
-        assert resp.columns == ["orders.n"]
+        assert resp.columns == ["n"]
 
     @pytest.mark.parametrize(("folded", "plain"), [
         ("RANK(SUM(amount), direction = 'desc')", "rank(sum(amount), direction = 'desc')"),
@@ -210,7 +210,7 @@ class TestCanonicalKeys:
 
     async def test_dimension_key_uses_the_declared_spelling(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["CUSTOMERS.REGION"], metrics=[m("count(*)", "n")]))
-        assert "orders.customers.region" in resp.columns
+        assert "customers.region" in resp.columns
 
 
 # --------------------------------------------------------------------------- #
@@ -248,11 +248,11 @@ class TestSaveCollisions:
         assert "Buyer" in str(err.value)
 
     @pytest.mark.parametrize("source_queries", [
-        [{"name": "Monthly", "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]},
-         {"name": "monthly", "population": "Monthly", "metrics": [{"metric": "sum(n)", "alias": "t"}]},
+        [{"name": "Monthly", "population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
+         {"name": "monthly", "population": "Monthly", "metrics": [{"metric": "sum(monthly.n)", "alias": "t"}]},
          {"population": "monthly", "metrics": [{"metric": "sum(t)", "alias": "u"}]}],
-        [{"population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "Total"},
-                                                 {"metric": "count(*)", "alias": "total"}]}],
+        [{"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "Total"},
+                                                 {"metric": "count(orders.*)", "alias": "total"}]}],
     ], ids=["stage-names", "result-names"])
     async def test_a_saved_query_collision_is_refused(self, storage: StorageBackend,
                                                       source_queries: list[dict[str, Any]]) -> None:
@@ -331,8 +331,8 @@ async def test_result_names_colliding_by_case_are_refused_on_every_dialect(diale
 
 async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
     saved = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": [
-        {"population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "Total"},
-                                                {"metric": "count(*)", "alias": "total"}]}]})
+        {"population": "orders", "metrics": [{"metric": "sum(orders.amount)", "alias": "Total"},
+                                                {"metric": "count(orders.*)", "alias": "total"}]}]})
     async with dev2215_engine("sqlite", datasets=[*dev2215_datasets(), saved]) as eng:
         resp = await eng.execute(q(population="saved", metrics=[m("sum(Total)", "a")]))
     assert num(single(resp, "a", dataset="saved")) == 160.0

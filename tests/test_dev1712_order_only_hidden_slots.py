@@ -160,9 +160,9 @@ class TestUngroupedRowColumnSplit:
     async def test_ungrouped_row_column_order_emits_split(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="created_at", direction="desc")],
+            order=[OrderItem(field="orders.created_at", direction="desc")],
         )
         sql = await _sql(engine, query)
         cols = _outer_order_by_columns(sql)
@@ -177,9 +177,9 @@ class TestUngroupedRowColumnSplit:
     async def test_ungrouped_mixed_case_row_column_split_quoted(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="activity_ts", direction="desc")],
+            order=[OrderItem(field="orders.activity_ts", direction="desc")],
         )
         sql = await _sql(engine, query)
         assert '"ActivityTs"' in sql, f"mixed-case leaf must be quoted.\nSQL:\n{sql}"
@@ -193,9 +193,9 @@ class TestUngroupedRowColumnSplit:
     async def test_split_key_preserves_asc_and_limit(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
             limit=10,
         )
         sql = await _sql(engine, query)
@@ -213,8 +213,8 @@ class TestGroupedLocalRowColumnMaxWrapped:
     async def test_dedup_on_row_column_order_max_wraps(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],  # dedup ON (default) -> GROUP BY
-            order=[OrderItem(field="created_at", direction="desc")],
+            dimensions=[QueryDimension(field="orders.status")],  # dedup ON (default) -> GROUP BY
+            order=[OrderItem(field="orders.created_at", direction="desc")],
         )
         sql = await _sql(engine, query)
         assert re.search(r"MAX\(\s*orders\.created_at\s*\)", sql), sql
@@ -225,9 +225,9 @@ class TestGroupedLocalRowColumnMaxWrapped:
     async def test_measures_present_row_column_order_max_wraps(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
-            order=[OrderItem(field="created_at", direction="desc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            order=[OrderItem(field="orders.created_at", direction="desc")],
         )
         sql = await _sql(engine, query)
         assert re.search(r"MAX\(\s*orders\.created_at\s*\)", sql), sql
@@ -240,11 +240,11 @@ class TestGroupedLocalRowColumnMaxWrapped:
         """A ``TimeTruncKey`` is not a legal aggregate source, so the wrap targets the underlying column; ``DATE_TRUNC`` is monotonic, so ``MAX(col)`` orders identically."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[
                 OrderItem(
-                    field="created_at", direction="desc",
+                    field="orders.created_at", direction="desc",
                 ),
             ],
         )
@@ -257,10 +257,10 @@ class TestGroupedLocalRowColumnMaxWrapped:
         """The wrap is interned by structural key, so a column used by a filter and the sort key mints one MAX slot, not two."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
-            filter=["created_at > '2024-01-01'"],
-            order=[OrderItem(field="created_at", direction="desc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            filter=["orders.created_at > '2024-01-01'"],
+            order=[OrderItem(field="orders.created_at", direction="desc")],
         )
         sql = await _sql(engine, query)
         assert len(re.findall(r"MAX\(\s*orders\.created_at\s*\)", sql)) == 1, sql
@@ -268,24 +268,24 @@ class TestGroupedLocalRowColumnMaxWrapped:
     async def test_two_order_terms_wrap_independently(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             order=[
-                OrderItem(field="created_at", direction="desc"),
+                OrderItem(field="orders.created_at", direction="desc"),
                 OrderItem(field="rev", direction="asc"),
             ],
         )
         sql = await _sql(engine, query)
         order_cols = [name for _, name in _outer_order_by_columns(sql)]
-        assert order_cols == ["orders.created_at_max", "orders.rev"], sql
+        assert order_cols == ["orders.created_at_max", "rev"], sql
 
     async def test_wrap_bypasses_the_aggregation_gate(self, engine) -> None:
         """The hidden sort wrap is interned post-bind, so a column not whitelisting ``max`` (``id``, a primary key) can still be sorted on."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
-            order=[OrderItem(field="id", direction="asc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            order=[OrderItem(field="orders.id", direction="asc")],
         )
         sql = await _sql(engine, query)
         assert re.search(r"MIN\(\s*orders\.id\s*\)", sql), sql
@@ -298,7 +298,7 @@ class TestJoinedRowColumnResolved:
         """In a raw-rows query a joined sort key is legal; Law 1 pulls its join into the base FROM and the ORDER BY emits the split ``customers.region`` form."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
             order=[OrderItem(field="customers.region", direction="desc")],
         )
@@ -315,8 +315,8 @@ class TestJoinedRowColumnResolved:
         """A GROUPED joined sort key resolves via a HOST-rooted CTE (per-group extreme joined back), not the old scalar-CROSS-JOIN rejection; still not projected."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem(field="customers.region", direction="desc")],
         )
         sql = await _sql(engine, query)
@@ -331,7 +331,7 @@ class TestJoinedRowColumnResolved:
         def _q(column: str) -> SlayerQuery:
             return SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 distinct_dimension_values=False,
                 order=[OrderItem(field=column, direction="desc")],
             )
@@ -377,8 +377,8 @@ class TestJoinedRowColumnResolved:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],  # local status
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],  # local status
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem(field="owners.status", direction="desc")],  # joined
         )
         resp = await engine.execute(query, dry_run=True)
@@ -395,8 +395,8 @@ class TestLocalAggregateHiddenOrder:
     async def test_local_aggregate_order_only_hidden_and_ordered(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
             limit=3,
         )
@@ -414,7 +414,7 @@ class TestLocalAggregateHiddenOrder:
         """Raw rows (``distinct_dimension_values=False``) ordered by an aggregate is a contradiction, rejected; it would otherwise silently re-dedup."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
             order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
         )
@@ -426,13 +426,13 @@ class TestLocalAggregateHiddenOrder:
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.region")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount)"})],
             limit=10,
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
-        assert outer == ["orders.customers.region", "orders._count"], (
+        assert outer == ["customers.region", "orders._count"], (
             f"got: {outer}\nSQL:\n{sql}"
         )
         assert "orders.amount_sum" in _all_aliases_in_sql(sql)
@@ -440,26 +440,26 @@ class TestLocalAggregateHiddenOrder:
     async def test_order_matches_declared_measure_no_hidden_slot(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             order=[OrderItem(field="rev", direction="desc")],
             limit=5,
         )
         sql = await _sql(engine, query)
         assert '"orders.rev"' in sql
-        assert _outer_select_columns(sql) == ["orders.status", "orders.rev"]
+        assert _outer_select_columns(sql) == ["orders.status", "rev"]
 
     async def test_declared_transform_plus_hidden_agg_order(self, engine) -> None:
         """A declared rank() transform must not disable a valid order-only hidden aggregate: it threads through the chain and orders at the outer wrap."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="rank(sum(amount), direction='desc')", alias="rk")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="rank(sum(orders.amount), direction='desc')", alias="rk")],
             order=[OrderItem.model_validate({"field": "count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
-        assert outer == ["orders.status", "orders.rk"], (
+        assert outer == ["orders.status", "rk"], (
             f"hidden id_count must not project.\ngot: {outer}\nSQL:\n{sql}"
         )
         assert _outer_order_by_names(sql) == ["orders.id_count"]
@@ -468,14 +468,14 @@ class TestLocalAggregateHiddenOrder:
         """An order-only CROSS-MODEL aggregate inside a transform chain threads through the step CTEs (which carry it) and the outer wrap does the hidden trim."""
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity="month")],
-            metrics=[QueryMetric(metric="cumsum(sum(amount))", alias="cs")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
+            metrics=[QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs")],
             order=[OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"})],
             to_many_handling="broadcast",
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
-        assert outer == ["orders.created_at", "orders.cs"], (
+        assert outer == ["orders.created_at", "cs"], (
             f"hidden cross-model agg must not project.\ngot: {outer}\nSQL:\n{sql}"
         )
         assert _outer_order_by_names(sql) == ["customers.revenue_sum"], sql
@@ -484,13 +484,13 @@ class TestLocalAggregateHiddenOrder:
         """Same contract over a ``change`` self-join chain (``sjoin_`` carries the hidden alias); the order target is a LOCAL aggregate since time_shift + cross-model is a separate deferral."""
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity="month")],
-            metrics=[QueryMetric(metric="change(sum(amount))", alias="ch")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
+            metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
             order=[OrderItem.model_validate({"field": "count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
-        assert outer == ["orders.created_at", "orders.ch"], (
+        assert outer == ["orders.created_at", "ch"], (
             f"hidden local agg must not project.\ngot: {outer}\nSQL:\n{sql}"
         )
         assert _outer_order_by_names(sql) == ["orders.id_count"], sql
@@ -501,13 +501,13 @@ class TestLocalAggregateHiddenOrder:
         """A hidden LOCAL order aggregate must thread through a chain rooted on a cross-model combined SELECT."""
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity="month")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
             metrics=[QueryMetric(metric="cumsum(sum(customers.revenue))", alias="ccr")],
             order=[OrderItem.model_validate({"field": "count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
         outer = _outer_select_columns(sql)
-        assert outer == ["orders.created_at", "orders.ccr"], (
+        assert outer == ["orders.created_at", "ccr"], (
             f"hidden local agg must not project.\ngot: {outer}\nSQL:\n{sql}"
         )
         assert _outer_order_by_names(sql) == ["orders.id_count"], sql
@@ -517,8 +517,8 @@ class TestExecutionHiddenOrder:
     async def test_execute_top_n_by_hidden_aggregate(self, exec_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -533,9 +533,9 @@ class TestExecutionHiddenOrder:
         """Executed: the MAX wrap orders by latest ``created_at`` per status (open before paid, desc) without leaking into the response or changing row count."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
-            order=[OrderItem(field="created_at", direction="desc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
+            order=[OrderItem(field="orders.created_at", direction="desc")],
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
@@ -550,11 +550,11 @@ class TestExecutionHiddenOrder:
         """A raw-rows query sorted by a joined column orders by its real values (Law-1 pull) without projecting it."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="id"), QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.id"), QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
             order=[
                 OrderItem(field="customers.region", direction="asc"),
-                OrderItem(field="id", direction="asc"),
+                OrderItem(field="orders.id", direction="asc"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -565,8 +565,8 @@ class TestExecutionHiddenOrder:
     async def test_hidden_order_slot_absent_from_attributes(self, exec_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -579,7 +579,7 @@ class TestCrossModelHiddenOrder:
         """Two order-only cross-model aggregates over the same leaf but different aggs get distinct hidden CTE aliases; neither leaks; the ORDER BY names both."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             order=[
                 OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"}),
                 OrderItem.model_validate({"field": "max(customers.revenue)", "direction": "asc"}),
@@ -605,7 +605,7 @@ class TestCrossModelHiddenOrder:
         """Postgres shape: the hidden cross-model aggregate lives in a CTE, absent from the outer projection, named in the ORDER BY with no inline aggregate."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             order=[OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"})],
             limit=3,
         )
@@ -620,7 +620,7 @@ class TestCrossModelHiddenOrder:
         """Two targets exposing the same leaf+agg (``sum(customers.revenue)`` vs ``sum(suppliers.revenue)``): target-path identity keeps them distinct CTEs, both hidden."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             order=[
                 OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"}),
                 OrderItem.model_validate({"field": "sum(suppliers.revenue)", "direction": "asc"}),
@@ -644,7 +644,7 @@ class TestCrossModelHiddenOrder:
         """The raw-rows contradiction via a cross-model aggregate: a measure sort key is rejected, not silently re-grouped."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
             order=[OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"})],
         )
@@ -655,8 +655,8 @@ class TestCrossModelHiddenOrder:
         """Executed: an order-only cross-model aggregate is absent from response columns, row keys, and attributes."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -670,8 +670,8 @@ class TestPartitionByGuard:
     async def test_partition_by_bare_dim_accepted(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="rank(sum(amount), partition_by=status, direction='desc')", alias="rk")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="rank(sum(orders.amount), partition_by=orders.status, direction='desc')", alias="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -680,8 +680,8 @@ class TestPartitionByGuard:
     async def test_partition_by_qualified_dim_accepted(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="rank(sum(amount), partition_by=orders.status, direction='desc')", alias="rk")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="rank(sum(orders.amount), partition_by=orders.status, direction='desc')", alias="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -691,7 +691,7 @@ class TestPartitionByGuard:
             population="orders",
             dimensions=[QueryDimension(field="customers.region")],
             metrics=[QueryMetric(
-                metric="rank(sum(amount), partition_by=customers.region, direction='desc')", alias="rk")],
+                metric="rank(sum(orders.amount), partition_by=customers.region, direction='desc')", alias="rk")],
         )
         sql = await _sql(engine, query)
         assert "PARTITION BY" in sql.upper()
@@ -700,9 +700,9 @@ class TestPartitionByGuard:
         """partition_by naming a query time-dimension partitions by the truncated bucket, not the raw column, without widening GROUP BY or duplicating an alias."""
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity="month")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
             metrics=[QueryMetric(
-                metric="rank(sum(amount), partition_by=created_at, direction='desc')", alias="rk")],
+                metric="rank(sum(orders.amount), partition_by=orders.created_at, direction='desc')", alias="rk")],
         )
         sql = await _sql(engine, query)
         # (a) No raw bare-column projection of created_at alongside the bucket (grain widening).
@@ -743,10 +743,10 @@ class TestPartitionByGuard:
     async def test_partition_by_non_dim_raises_rank(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="sum(amount)"),
-                QueryMetric(metric="rank(sum(amount), partition_by=customer_id, direction='desc')", alias="rk"),
+                QueryMetric(metric="sum(orders.amount)"),
+                QueryMetric(metric="rank(sum(orders.amount), partition_by=orders.customer_id, direction='desc')", alias="rk"),
             ],
         )
         with pytest.raises(ValueError) as ei:
@@ -762,11 +762,11 @@ class TestPartitionByGuard:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at", granularity="month"),
-                TimeDimension(field="created_at", granularity="day"),
+                TimeDimension(field="orders.created_at", granularity="month"),
+                TimeDimension(field="orders.created_at", granularity="day"),
             ],
             metrics=[QueryMetric(
-                metric="rank(sum(amount), partition_by=created_at, direction='desc')", alias="rk")],
+                metric="rank(sum(orders.amount), partition_by=orders.created_at, direction='desc')", alias="rk")],
         )
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
@@ -777,21 +777,21 @@ class TestPartitionByGuard:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="created_at", granularity="month"),
-                TimeDimension(field="created_at", granularity="month"),
+                TimeDimension(field="orders.created_at", granularity="month"),
+                TimeDimension(field="orders.created_at", granularity="month"),
             ],
             metrics=[QueryMetric(
-                metric="rank(sum(amount), partition_by=created_at, direction='desc')", alias="rk")],
+                metric="rank(sum(orders.amount), partition_by=orders.created_at, direction='desc')", alias="rk")],
         )
         sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.created_at", "orders.rk"]
+        assert _outer_select_columns(sql) == ["orders.created_at", "rk"]
 
     async def test_partition_by_non_dim_raises_ntile(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[QueryMetric(
-                metric="ntile(sum(amount), n=4, partition_by=customer_id)", alias="q")],
+                metric="ntile(sum(orders.amount), n=4, partition_by=orders.customer_id)", alias="q")],
         )
         with pytest.raises(ValueError) as ei:
             await _sql(engine, query)
@@ -805,8 +805,8 @@ class TestTransformOrderSupported:
         """The change() value is materialised hidden and referenced by the outermost ORDER BY: not dropped, not projected."""
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity="month")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "change(sum(amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -816,8 +816,8 @@ class TestTransformOrderSupported:
     async def test_cumsum_order_only_materializes(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity="month")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity="month")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "cumsum(sum(amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -841,8 +841,8 @@ class TestHostRootedIsolatedHiddenOrder:
         """A local aggregate whose ``Column.filter`` crosses a join is host-rooted isolated; order-only it stays hidden while still driving the ORDER BY."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(flagged_amount)", "direction": "desc"})],
             limit=3,
         )

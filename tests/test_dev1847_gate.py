@@ -140,15 +140,15 @@ class TestCrossModelAndFilteredOperandNowAccepted:
         """A dotted joined-model leaf inside the expression now compiles."""
         query = SlayerQuery(
             population="corders",
-            dimensions=[QueryDimension(field="customer_id")],
-            metrics=[QueryMetric(metric="sum(amount - customers.region_id)",
+            dimensions=[QueryDimension(field="corders.customer_id")],
+            metrics=[QueryMetric(metric="sum(corders.amount - customers.region_id)",
                                    alias="x")])
         assert "SELECT" in (await gen(query)).upper()
 
     async def test_filtered_column_operand_accepted(self):
         """A filtered column operand desugars to CASE WHEN, not a rejection."""
         query = sales_q(dimensions=["region"],
-                        metrics=[QueryMetric(metric="sum(q_amount - 1)",
+                        metrics=[QueryMetric(metric="sum(sales.q_amount - 1)",
                                                alias="x")])
         assert "CASE WHEN" in (await gen(query)).upper()
 

@@ -29,7 +29,7 @@ from tests._dev1900_fixtures import (
 from slayer.core.query import QueryMetric
 
 MODES = ["broadcast", "associate", "error"]
-SPEND_SUM_LOCAL = QueryMetric(metric="sum(spend)", alias="w")   # local on customers
+SPEND_SUM_LOCAL = QueryMetric(metric="sum(customers.spend)", alias="w")   # local on customers
 ORDERS_AMOUNT_PRODUCER = QueryMetric(metric="sum(orders.amount)", alias="oa")  # cross-model producer
 
 #: producer-only orders.amount:sum over ok orders = 82 (EXISTS pushdown, no guard).
@@ -56,7 +56,7 @@ class TestFanningPopulationFilterRestrictsByAssociation:
         resp = await engine.execute(cust_q(
             metrics=[SPEND_SUM_LOCAL], filter=["orders.status = 'ok'"],
             to_many_handling=mode))
-        assert float(resp.data[0]["customers.w"]) == pytest.approx(
+        assert float(resp.data[0]["w"]) == pytest.approx(
             POP_FILTER_STRUCTURAL_ASSOC)
 
     @pytest.mark.parametrize("mode", MODES)
@@ -66,7 +66,7 @@ class TestFanningPopulationFilterRestrictsByAssociation:
         resp = await engine.execute(orders_q(
             metrics=[AMOUNT_SUM], filter=["customers.regions.bad_pop > 0"],
             to_many_handling=mode))
-        assert float(resp.data[0]["orders.amt"]) == pytest.approx(
+        assert float(resp.data[0]["amt"]) == pytest.approx(
             POP_FILTER_DERIVED_ASSOC)
 
     @pytest.mark.parametrize("mode", MODES)
@@ -100,7 +100,7 @@ class TestToOneFilterStaysInline:
     async def test_to_one_filter_executes(self, engine):
         resp = await engine.execute(orders_q(
             metrics=[AMOUNT_SUM], filter=["customers.tier = 'gold'"]))
-        assert float(resp.data[0]["orders.amt"]) == pytest.approx(TO_ONE_FILTER_AMOUNT)
+        assert float(resp.data[0]["amt"]) == pytest.approx(TO_ONE_FILTER_AMOUNT)
 
 
 class TestUnaffectedShapes:
@@ -112,4 +112,4 @@ class TestUnaffectedShapes:
     async def test_producer_only_query_unaffected(self, engine):
         resp = await engine.execute(cust_q(
             metrics=[ORDERS_AMOUNT_PRODUCER], filter=["orders.status = 'ok'"]))
-        assert float(resp.data[0]["customers.oa"]) == pytest.approx(PRODUCER_ONLY_AMOUNT)
+        assert float(resp.data[0]["oa"]) == pytest.approx(PRODUCER_ONLY_AMOUNT)

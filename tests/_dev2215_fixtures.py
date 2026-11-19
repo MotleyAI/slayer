@@ -212,7 +212,7 @@ def events_query() -> SlayerQuery:
 
 async def check_events(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(events_query())
-    got = {int(r["events.customer_id"]): (r["events.f"], r["events.l"]) for r in resp.data}
+    got = {int(r["events.customer_id"]): (r["f"], r["l"]) for r in resp.data}
     assert got == FIRST_LAST_BY_CUSTOMER
 
 

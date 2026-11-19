@@ -125,7 +125,7 @@ async def test_query_engine_execute_sync_inside_a_running_loop(pg_ds: Datasource
         fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
     ), _validate=False)
     engine = SlayerQueryEngine(storage=storage)
-    query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"]})
+    query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"]})
     try:
         awaited = await engine.execute(query)
         bridged = engine.execute_sync(query)

@@ -230,7 +230,7 @@ async def _binding_error(
     expression: str, *, dataset: SlayerDataset, extra_datasets: list | None = None
 ) -> ValueError:
     query = SlayerQuery(
-        population="orders", metrics=[expression], dimensions=["status"]
+        population="orders", metrics=[expression], dimensions=["orders.status"]
     )
     with pytest.raises(ValueError) as ei:
         await _engine_generate(query=query, dataset=dataset, extra_datasets=extra_datasets)
@@ -243,7 +243,7 @@ class TestCustomAggregationBinding:
             aggregations=[Aggregation(name="my_agg", expression="AVG({value})")]
         )
         sql_f = await _engine_generate(
-            query=SlayerQuery(population="orders", metrics=["my_agg(price)"]),
+            query=SlayerQuery(population="orders", metrics=["my_agg(orders.price)"]),
             dataset=model,
         )
         assert "AVG(" in sql_f
@@ -309,7 +309,7 @@ class TestModeAUnchanged:
             }
         )
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(grand_total)"]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(orders.grand_total)"]}),
             dataset=model,
         )
         assert "SUM(orders.revenue)" in sql
@@ -344,9 +344,9 @@ class TestFunctionalIsFirstClass:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery(
                 population="orders",
-                metrics=["sum(revenue)", "count(*)"],
-                dimensions=["status"],
-                filter=["sum(revenue) > 0"],
+                metrics=["sum(orders.revenue)", "count(orders.*)"],
+                dimensions=["orders.status"],
+                filter=["sum(orders.revenue) > 0"],
             )
             with warnings_mod.catch_warnings():
                 warnings_mod.simplefilter("error", SlayerNormalizationWarning)
@@ -420,7 +420,7 @@ class TestEntityRefsFunctional:
 
     async def test_extract_entities(self, refs_storage) -> None:
         q_func = SlayerQuery(
-            population="orders", metrics=["sum(amount)"], dimensions=["status"]
+            population="orders", metrics=["sum(orders.amount)"], dimensions=["orders.status"]
         )
         e_func = await extract_entities_from_query(q_func, storage=refs_storage)
         assert e_func.canonical_forms == ["mydb.orders", "mydb.orders.status", "mydb.orders.amount"]
@@ -463,8 +463,8 @@ class TestCrossSpellingMatching:
     )
     async def test_filter_resolves_to_renamed_measure(self, exec_engine: SlayerQueryEngine, measure, filter_) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["channel"],
+            "population": "orders", "dimensions": ["orders.channel"],
             "metrics": [{"metric": measure, "alias": "rev"}], "filter": [filter_],
         }))
-        assert resp.columns == ["orders.channel", "orders.rev"]
-        assert [(r["orders.channel"], float(r["orders.rev"])) for r in resp.data] == [("web", 165.0)]
+        assert resp.columns == ["orders.channel", "rev"]
+        assert [(r["orders.channel"], float(r["rev"])) for r in resp.data] == [("web", 165.0)]

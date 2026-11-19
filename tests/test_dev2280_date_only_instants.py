@@ -76,7 +76,7 @@ class TestInstantReading:
             query=q(dimensions=["id"], filter=["created_at <= '{cutoff}'"]), name="early",
             variables={"cutoff": "2024-04-10"},
         )
-        resp = await engine.execute({"population": "early", "dimensions": ["id"]})
+        resp = await engine.execute({"population": "early", "dimensions": ["early.id"]})
         assert ids(resp, dataset="early") == {1}
 
 

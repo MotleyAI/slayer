@@ -95,7 +95,7 @@ class TestForwardDerivedGrainShape:
         assert "CROSS JOIN" not in sql, sql
         # Null-safe join-back on the dotted alias.
         on_pred = _joinback_on_predicate(sql)
-        assert "orders_x.customers_v2.ltv_x2" in on_pred, on_pred
+        assert "customers_v2.ltv_x2" in on_pred, on_pred
         assert "IS NOT DISTINCT FROM" in on_pred, on_pred
 
     async def test_crossing_one_hop_derived_grain_pulls_join(self) -> None:
@@ -429,8 +429,8 @@ class TestSiblingPathsDerivedGrain:
         # predicate null-safe-compares each (asserting on the extracted ON
         # clause, not a loose whole-SQL scan — Codex F-rerooted).
         on_pred = _joinback_on_predicate(sql)
-        assert "orders_x.customers_v2.deep_pop" in on_pred, on_pred
-        assert "orders_x.customers_v2.regions.name" in on_pred, on_pred
+        assert "customers_v2.deep_pop" in on_pred, on_pred
+        assert "customers_v2.regions.name" in on_pred, on_pred
         assert on_pred.count("IS NOT DISTINCT FROM") >= 2, on_pred
 
     async def test_filtered_local_with_derived_grain(self) -> None:
@@ -446,14 +446,14 @@ class TestSiblingPathsDerivedGrain:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[QueryMetric(metric="sum(amt_hi)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amt_hi)")],
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
         assert '"orders_x.customers_v2.deep_pop"' in sql, sql
         # Null-safe join-back on the derived grain.
         on_pred = _joinback_on_predicate(sql)
-        assert "orders_x.customers_v2.deep_pop" in on_pred, on_pred
+        assert "customers_v2.deep_pop" in on_pred, on_pred
         assert "IS NOT DISTINCT FROM" in on_pred, on_pred
         # The filtered-local branch was selected: the measure's Column.filter
         # (referencing the joined customers_v2) rides into the isolated CTE.
@@ -475,7 +475,7 @@ class TestUnchangedBehaviourGuards:
             name="amt_bucket", sql="amount * 2", datatype=DataType.FLOAT)]
         query = SlayerQuery(
             population="orders_x",
-            dimensions=["amt_bucket"],
+            dimensions=["orders_x.amt_bucket"],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
             to_many_handling="broadcast",
         )
@@ -632,14 +632,14 @@ class TestDerivedGrainExecution:
             dimensions=["customers_v2.ltv_x2"],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
-        by_grain = {r["orders_x.customers_v2.ltv_x2"]: r for r in resp.data}
+        by_grain = {r["customers_v2.ltv_x2"]: r for r in resp.data}
         # Four distinct grains, one per customer — no group swallowed.
         assert len(resp.data) == 4, resp.data
         # ltv 10→grain 20 (customer 1), 30→60 (cust 2), 20→40 (cust 3), 40→80 (cust 4).
-        assert by_grain[20.0]["orders_x.customers_v2.lifetime_value_sum"] == 10.0, resp.data
-        assert by_grain[60.0]["orders_x.customers_v2.lifetime_value_sum"] == 30.0, resp.data
-        assert by_grain[40.0]["orders_x.customers_v2.lifetime_value_sum"] == 20.0, resp.data
-        assert by_grain[80.0]["orders_x.customers_v2.lifetime_value_sum"] == 40.0, resp.data
+        assert by_grain[20.0]["customers_v2.lifetime_value_sum"] == 10.0, resp.data
+        assert by_grain[60.0]["customers_v2.lifetime_value_sum"] == 30.0, resp.data
+        assert by_grain[40.0]["customers_v2.lifetime_value_sum"] == 20.0, resp.data
+        assert by_grain[80.0]["customers_v2.lifetime_value_sum"] == 40.0, resp.data
 
     async def test_crossing_grain_per_group_values(self, sqlite_engine) -> None:
         """Group a cross-model sum by a crossing derived grain (``deep_pop`` =
@@ -649,9 +649,9 @@ class TestDerivedGrainExecution:
             dimensions=["customers_v2.deep_pop"],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
-        by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
-        assert by_pop[100.0]["orders_x.customers_v2.lifetime_value_sum"] == 40.0, resp.data
-        assert by_pop[200.0]["orders_x.customers_v2.lifetime_value_sum"] == 20.0, resp.data
+        by_pop = {r["customers_v2.deep_pop"]: r for r in resp.data}
+        assert by_pop[100.0]["customers_v2.lifetime_value_sum"] == 40.0, resp.data
+        assert by_pop[200.0]["customers_v2.lifetime_value_sum"] == 20.0, resp.data
 
     async def test_null_grain_retains_aggregate(self, sqlite_engine) -> None:
         """A NULL derived-grain group (region 3, population NULL) retains its
@@ -661,10 +661,10 @@ class TestDerivedGrainExecution:
             dimensions=["customers_v2.deep_pop"],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
-        by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
+        by_pop = {r["customers_v2.deep_pop"]: r for r in resp.data}
         assert None in by_pop, resp.data
         # customer 4 (region 3, NULL pop) has lifetime_value 40.
-        assert by_pop[None]["orders_x.customers_v2.lifetime_value_sum"] == 40.0, resp.data
+        assert by_pop[None]["customers_v2.lifetime_value_sum"] == 40.0, resp.data
 
     async def test_typed_grain_cast_consistency_no_drop(self, sqlite_engine) -> None:
         """A typed INT derived grain (``ltv_third = lifetime_value / 3.0``): the
@@ -675,13 +675,13 @@ class TestDerivedGrainExecution:
             dimensions=["customers_v2.ltv_third"],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
-        by_grain = {r["orders_x.customers_v2.ltv_third"]: r for r in resp.data}
+        by_grain = {r["customers_v2.ltv_third"]: r for r in resp.data}
         # ltv 10 → 10/3.0 = 3.33 → INT 3; the group must survive the join-back.
         assert 3 in by_grain, resp.data
-        assert by_grain[3]["orders_x.customers_v2.lifetime_value_sum"] == 10.0, resp.data
+        assert by_grain[3]["customers_v2.lifetime_value_sum"] == 10.0, resp.data
         # No group's aggregate silently dropped to NULL.
         for grain, row in by_grain.items():
-            assert row["orders_x.customers_v2.lifetime_value_sum"] is not None, (grain, resp.data)
+            assert row["customers_v2.lifetime_value_sum"] is not None, (grain, resp.data)
 
     async def test_first_last_crossing_grain_per_group_values(self, sqlite_engine) -> None:
         """first/last over a crossing derived grain returns correct per-group
@@ -692,8 +692,8 @@ class TestDerivedGrainExecution:
             dimensions=["customers_v2.deep_pop"],
             metrics=[QueryMetric(metric="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
-        by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
-        key = "orders_x.customers_v2.lifetime_value_last_customers_v2_signup_at"
+        by_pop = {r["customers_v2.deep_pop"]: r for r in resp.data}
+        key = "customers_v2.lifetime_value_last_customers_v2_signup_at"
         # region 1 (pop 100): customers 1 (2024-01) & 2 (2024-03) → latest = 30.
         assert by_pop[100.0][key] == 30.0, resp.data
         # region 2 (pop 200): single customer → 20.
@@ -709,8 +709,8 @@ class TestDerivedGrainExecution:
             dimensions=["customers_v2.deep_pop"],
             metrics=[QueryMetric(metric="first(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
-        by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
-        key = "orders_x.customers_v2.lifetime_value_first_customers_v2_signup_at"
+        by_pop = {r["customers_v2.deep_pop"]: r for r in resp.data}
+        key = "customers_v2.lifetime_value_first_customers_v2_signup_at"
         # region 1 (pop 100): earliest customer is customer 1 (2024-01) → 10.
         assert by_pop[100.0][key] == 10.0, resp.data
         assert by_pop[200.0][key] == 20.0, resp.data
@@ -725,9 +725,9 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[QueryMetric(metric="sum(amt_hi)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amt_hi)")],
         ))
-        by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
+        by_pop = {r["customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.amt_hi_sum"
         # region 1 (pop 100): only customer 2 (ltv 30) survives → order amt 7.
         assert by_pop[100.0][key] == 7.0, resp.data
@@ -750,8 +750,8 @@ class TestDerivedGrainExecution:
             metrics=[QueryMetric(metric="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
             filter=["customers_v2.lifetime_value < 25"],
         ))
-        by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
-        key = "orders_x.customers_v2.lifetime_value_last_customers_v2_signup_at"
+        by_pop = {r["customers_v2.deep_pop"]: r for r in resp.data}
+        key = "customers_v2.lifetime_value_last_customers_v2_signup_at"
         # region 1: customer 2 (ltv 30) filtered out; only customer 1 (ltv 10)
         # remains → last = 10 (NOT 30, which broken post-rank filtering gives).
         assert by_pop[100.0][key] == 10.0, resp.data

@@ -185,7 +185,7 @@ class TestBandedDimensionOpacity:
         planned = plan_query(
             query=sales_q(
                 dimensions=[{"field": MIXED_BAND_EXPR, "alias": "mixed_band"}],
-                metrics=[QueryMetric(metric="sum(amount)", alias="tot")]),
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 

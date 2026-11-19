@@ -32,7 +32,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 
@@ -73,11 +73,11 @@ class TestPushedFilterEntryIdentity:
         pushed = pushed_filter_infos(resp)
         assert {w.filter_text for w in pushed} == {_EXCLUDED_APP}
         assert len({w.metric for w in pushed}) == 2, pushed
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         # Spine: app orders only (o2, o4, o5 — all gold customers → band hi).
         assert set(by) == {("hi",)}
-        assert float(by[("hi",)]["orders.m"]) == pytest.approx(30.0)
-        assert float(by[("hi",)]["orders.cm"]) == pytest.approx(160.0)
+        assert float(by[("hi",)]["m"]) == pytest.approx(30.0)
+        assert float(by[("hi",)]["cm"]) == pytest.approx(160.0)
 
     async def test_entry_arising_only_in_a_nested_producer_surfaces(
         self, exec_backend,
@@ -98,11 +98,11 @@ class TestPushedFilterEntryIdentity:
         ))
         (pushed,) = pushed_filter_infos(resp)
         assert "tier" in pushed.filter_text
-        by = rows_by(resp, "orders.pband")
+        by = rows_by(resp, "pband")
         # Gold orders: o1/o2 (c1, North pop 100 → lo), o4/o5 (c3, South → hi).
         assert set(by) == {("hi",), ("lo",)}
-        assert float(by[("lo",)]["orders.m"]) == pytest.approx(30.0)
-        assert float(by[("hi",)]["orders.m"]) == pytest.approx(10.0)
+        assert float(by[("lo",)]["m"]) == pytest.approx(30.0)
+        assert float(by[("hi",)]["m"]) == pytest.approx(10.0)
 
 
 class TestBroadcastDedup:
@@ -149,12 +149,12 @@ class TestBroadcastDedup:
             metrics=[M, CM],
         ))
         assert broadcast_warnings(resp) == []
-        by = rows_by(resp, "orders.sband")
+        by = rows_by(resp, "sband")
         for band in ("hi", "lo"):
-            assert float(by[(band,)]["orders.m"]) == pytest.approx(
+            assert float(by[(band,)]["m"]) == pytest.approx(
                 AMOUNT_BY_BAND[band],
             )
-            assert float(by[(band,)]["orders.cm"]) == pytest.approx(
+            assert float(by[(band,)]["cm"]) == pytest.approx(
                 SPEND_BY_BAND[band],
             )
 
@@ -182,10 +182,10 @@ class TestCollectorIdentityUnits:
         """D6 identity is per stage: same-labeled aggregates in different DAG
         stages are distinct — dimensions must not union across stages."""
         stage_one = _planned([_attach(
-            broadcast_metric="orders.cm", broadcast_dimensions=[("d1", "r1")],
+            broadcast_metric="cm", broadcast_dimensions=[("d1", "r1")],
         )])
         stage_two = _planned([_attach(
-            broadcast_metric="orders.cm", broadcast_dimensions=[("d2", "r2")],
+            broadcast_metric="cm", broadcast_dimensions=[("d2", "r2")],
         )])
         out = _collect_broadcast_warnings(
             planned_list=[stage_one, stage_two],
@@ -199,9 +199,9 @@ class TestCollectorIdentityUnits:
 
     def test_same_stage_same_measure_still_unions_dimensions(self):
         plans = _planned([
-            _attach(broadcast_metric="orders.cm",
+            _attach(broadcast_metric="cm",
                     broadcast_dimensions=[("d1", "r1")]),
-            _attach(broadcast_metric="orders.cm",
+            _attach(broadcast_metric="cm",
                     broadcast_dimensions=[("d1", "r1"), ("d2", "r2")]),
         ])
         (w,) = _collect_broadcast_warnings(
@@ -212,7 +212,7 @@ class TestCollectorIdentityUnits:
     def test_broadcast_human_message_names_location_and_reasons(self):
         (w,) = _collect_broadcast_warnings(
             planned_list=[_planned([_attach(
-                broadcast_metric="orders.cm",
+                broadcast_metric="cm",
                 broadcast_dimensions=[("status", "crosses an unproven join hop to x")],
             )])],
             stages=[SimpleNamespace(name=None)],

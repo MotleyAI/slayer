@@ -45,7 +45,7 @@ def _keyed_engine(resp, *, with_month: bool) -> dict:
         key: tuple = (row["orders.region"],)
         if with_month:
             key += (month_key(row["orders.ordered_at"]),)
-        out[key] = float(row["orders.m"])
+        out[key] = float(row["m"])
     assert len(out) == len(resp.data), "duplicate group keys"
     return out
 
@@ -59,7 +59,7 @@ class TestAssocInline:
         resp = await engine.execute(q(
             **kwargs,
             filter=["customers.tier = 'gold'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ))
         month_col = f", {_MONTH_EXPR[dialect]}" if with_month else ""
         oracle = raw_rows(dialect=dialect, db_path=db_path, sql=(
@@ -95,7 +95,7 @@ class TestFusionParity:
         )
         query = q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         return plan_query(query=query, bundle=bundle), bundle
 

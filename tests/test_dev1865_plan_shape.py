@@ -45,7 +45,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filter=["sum(amount) > 100", "status = 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert hasattr(planned, "masks"), "PlannedQuery must carry typed mask entries"
         masks = planned.masks
@@ -61,7 +61,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filter=["sum(amount) > 100", "status = 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert hasattr(planned, "masks")
         slots = _slots_by_id(planned)
@@ -74,7 +74,7 @@ class TestMaskEntries:
         query = q(
             dimensions=["region"],
             filter=["sum(amount) > 100", "status = 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         first, second = plan(query), plan(query)
         assert hasattr(first, "masks")
@@ -84,7 +84,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filter=["status = 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert hasattr(planned, "masks")
         (mask,) = planned.masks

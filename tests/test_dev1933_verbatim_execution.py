@@ -316,8 +316,8 @@ class TestRegexExpressionDimensionEndToEnd:
             population="orders",
             dimensions=[QueryDimension(field=f"CASE WHEN status = '{_REGEX_LITERAL}' THEN 1 ELSE 0 END",
                                           alias="rx")],
-            metrics=[QueryMetric(metric="count(*)")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
         )
         result = await engine.execute(query=query)
-        by_rx = {int(row["orders.rx"]): row["orders._count"] for row in result.data}
+        by_rx = {int(row["rx"]): row["orders._count"] for row in result.data}
         assert by_rx == {0: 4}

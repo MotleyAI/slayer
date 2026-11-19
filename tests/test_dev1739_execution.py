@@ -40,14 +40,14 @@ class TestCoarserRepeatAndShare:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="city_rev"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount)", alias="city_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         for key, city_rev in CITY_REV.items():
-            assert float(by[key]["orders.city_rev"]) == pytest.approx(city_rev)
-            assert float(by[key]["orders.region_rev"]) == pytest.approx(
+            assert float(by[key]["city_rev"]) == pytest.approx(city_rev)
+            assert float(by[key]["region_rev"]) == pytest.approx(
                 REGION_TOTAL[key[0]]
             )
 
@@ -56,7 +56,7 @@ class TestCoarserRepeatAndShare:
             dimensions=["region", "city"],
             metrics=[
                 QueryMetric(
-                    metric="sum(amount) / sum(amount, partition_by=region)",
+                    metric="sum(orders.amount) / sum(orders.amount, partition_by=orders.region)",
                     alias="share",
                 ),
             ],
@@ -64,7 +64,7 @@ class TestCoarserRepeatAndShare:
         per_region: dict = {}
         for r in resp.data:
             per_region.setdefault(r["orders.region"], 0.0)
-            per_region[r["orders.region"]] += float(r["orders.share"])
+            per_region[r["orders.region"]] += float(r["share"])
         for total in per_region.values():
             assert total == pytest.approx(1.0)
 
@@ -73,7 +73,7 @@ class TestCoarserRepeatAndShare:
             dimensions=["region", "city"],
             metrics=[
                 QueryMetric(
-                    metric="sum(amount) / sum(amount, partition_by=region)",
+                    metric="sum(orders.amount) / sum(orders.amount, partition_by=orders.region)",
                     alias="share",
                 ),
             ],
@@ -82,7 +82,7 @@ class TestCoarserRepeatAndShare:
         assert len(resp.data) == len(CITY_REV)
         assert set(by) == set(CITY_REV)
         for key, city_rev in CITY_REV.items():
-            assert float(by[key]["orders.share"]) == pytest.approx(
+            assert float(by[key]["share"]) == pytest.approx(
                 city_rev / REGION_TOTAL[key[0]]
             )
 
@@ -91,12 +91,12 @@ class TestCoarserRepeatAndShare:
             dimensions=["region", "city"],
             metrics=[
                 QueryMetric(
-                    metric="sum(amount) / sum(amount, partition_by=[])",
+                    metric="sum(orders.amount) / sum(orders.amount, partition_by=[])",
                     alias="share",
                 ),
             ],
         ))
-        assert approx_sum(resp, "orders.share") == pytest.approx(1.0)
+        assert approx_sum(resp, "share") == pytest.approx(1.0)
 
 
 class TestNullGrainSurvival:
@@ -104,33 +104,33 @@ class TestNullGrainSurvival:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert (None, "CityD") in by
-        assert float(by[(None, "CityD")]["orders.region_rev"]) == pytest.approx(60.0)
+        assert float(by[(None, "CityD")]["region_rev"]) == pytest.approx(60.0)
 
 
 class TestCardinalityAndSiblingInvariance:
     async def test_adding_partition_measure_changes_nothing_else(self, exec_engine) -> None:
         base = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="city_rev")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="city_rev")],
         ))
         widened = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="city_rev"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount)", alias="city_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
             ],
         ))
         assert len(widened.data) == len(base.data)
         b = rows_by(base, "orders.region", "orders.city")
         w = rows_by(widened, "orders.region", "orders.city")
         for key in b:
-            assert float(w[key]["orders.city_rev"]) == pytest.approx(
-                float(b[key]["orders.city_rev"])
+            assert float(w[key]["city_rev"]) == pytest.approx(
+                float(b[key]["city_rev"])
             )
 
 
@@ -140,13 +140,13 @@ class TestFullTotalUnderHavingAndPagination:
             dimensions=["region", "city"],
             filter=["sum(amount) > 30"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="city_rev"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount)", alias="city_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert ("North", "CityA") not in by  # 30, removed by HAVING
-        assert float(by[("North", "CityB")]["orders.region_rev"]) == pytest.approx(100.0)
+        assert float(by[("North", "CityB")]["region_rev"]) == pytest.approx(100.0)
 
     async def test_pagination_does_not_shrink_parent_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
@@ -154,13 +154,13 @@ class TestFullTotalUnderHavingAndPagination:
             order=[{"field": "city_rev", "direction": "asc"}],
             limit=1, offset=1,
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="city_rev"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount)", alias="city_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
             ],
         ))
         assert len(resp.data) == 1
         row = resp.data[0]
-        assert float(row["orders.region_rev"]) == pytest.approx(
+        assert float(row["region_rev"]) == pytest.approx(
             REGION_TOTAL[row["orders.region"]]
         )
 
@@ -170,14 +170,14 @@ class TestFilteredAggregateShare:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(ok_amount)", alias="city_ok"),
-                QueryMetric(metric="sum(ok_amount, partition_by=region)", alias="region_ok"),
+                QueryMetric(metric="sum(orders.ok_amount)", alias="city_ok"),
+                QueryMetric(metric="sum(orders.ok_amount, partition_by=orders.region)", alias="region_ok"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
-        assert float(by[("South", "CityC")]["orders.region_ok"]) == pytest.approx(25.0)
-        assert float(by[("North", "CityB")]["orders.region_ok"]) == pytest.approx(100.0)
-        assert float(by[(None, "CityD")]["orders.region_ok"]) == pytest.approx(60.0)
+        assert float(by[("South", "CityC")]["region_ok"]) == pytest.approx(25.0)
+        assert float(by[("North", "CityB")]["region_ok"]) == pytest.approx(100.0)
+        assert float(by[(None, "CityD")]["region_ok"]) == pytest.approx(60.0)
 
 
 class TestRowLevelFilterAppliesToTotal:
@@ -186,13 +186,13 @@ class TestRowLevelFilterAppliesToTotal:
             dimensions=["region", "city"],
             filter=["status == 'ok'"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
-        assert float(by[("North", "CityB")]["orders.region_rev"]) == pytest.approx(100.0)
-        assert float(by[("South", "CityC")]["orders.region_rev"]) == pytest.approx(25.0)
-        assert float(by[(None, "CityD")]["orders.region_rev"]) == pytest.approx(60.0)
+        assert float(by[("North", "CityB")]["region_rev"]) == pytest.approx(100.0)
+        assert float(by[("South", "CityC")]["region_rev"]) == pytest.approx(25.0)
+        assert float(by[(None, "CityD")]["region_rev"]) == pytest.approx(60.0)
 
 
 class TestGrandTotal:
@@ -200,11 +200,11 @@ class TestGrandTotal:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=[])", alias="grand"),
+                QueryMetric(metric="sum(orders.amount, partition_by=[])", alias="grand"),
             ],
         ))
         for r in resp.data:
-            assert float(r["orders.grand"]) == pytest.approx(210.0)
+            assert float(r["grand"]) == pytest.approx(210.0)
 
 
 class TestZeroSurvivingGrandTotal:
@@ -212,17 +212,17 @@ class TestZeroSurvivingGrandTotal:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="city_rev"),
-                QueryMetric(metric="sum(nomatch, partition_by=[])", alias="nsum"),
-                QueryMetric(metric="count(nomatch, partition_by=[])", alias="ncount"),
+                QueryMetric(metric="sum(orders.amount)", alias="city_rev"),
+                QueryMetric(metric="sum(orders.nomatch, partition_by=[])", alias="nsum"),
+                QueryMetric(metric="count(orders.nomatch, partition_by=[])", alias="ncount"),
             ],
         ))
         assert len(resp.data) == len(CITY_REV)
         by = rows_by(resp, "orders.region", "orders.city")
         for key, city_rev in CITY_REV.items():
-            assert float(by[key]["orders.city_rev"]) == pytest.approx(city_rev)
-            assert by[key]["orders.nsum"] is None
-            assert int(by[key]["orders.ncount"]) == 0
+            assert float(by[key]["city_rev"]) == pytest.approx(city_rev)
+            assert by[key]["nsum"] is None
+            assert int(by[key]["ncount"]) == 0
 
 
 class TestTimeDimensionPartition:
@@ -231,21 +231,21 @@ class TestTimeDimensionPartition:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="cell"),
+                QueryMetric(metric="sum(orders.amount)", alias="cell"),
                 QueryMetric(
-                    metric="sum(amount, partition_by=ordered_at)", alias="month_total",
+                    metric="sum(orders.amount, partition_by=orders.ordered_at)", alias="month_total",
                 ),
             ],
         ))
         month_total = {"2024-01": 55.0, "2024-02": 70.0, "2024-03": 85.0}
         for r in resp.data:
             mk = month_key(r["orders.ordered_at"])
-            assert float(r["orders.month_total"]) == pytest.approx(month_total[mk])
+            assert float(r["month_total"]) == pytest.approx(month_total[mk])
         by = {
             (r["orders.region"], month_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
-        assert float(by[(None, "2024-03")]["orders.month_total"]) == pytest.approx(85.0)
+        assert float(by[(None, "2024-03")]["month_total"]) == pytest.approx(85.0)
 
 
 class TestStarCountPartition:
@@ -253,13 +253,13 @@ class TestStarCountPartition:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="count(*, partition_by=region)", alias="region_n"),
+                QueryMetric(metric="count(orders.*, partition_by=orders.region)", alias="region_n"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
-        assert int(by[("North", "CityA")]["orders.region_n"]) == 4
-        assert int(by[("South", "CityC")]["orders.region_n"]) == 2
-        assert int(by[(None, "CityD")]["orders.region_n"]) == 1
+        assert int(by[("North", "CityA")]["region_n"]) == 4
+        assert int(by[("South", "CityC")]["region_n"]) == 2
+        assert int(by[(None, "CityD")]["region_n"]) == 1
 
 
 class TestMultiKeyPartition:
@@ -268,7 +268,7 @@ class TestMultiKeyPartition:
             dimensions=["region", "channel", "city"],
             metrics=[
                 QueryMetric(
-                    metric="sum(amount, partition_by=[region, channel])", alias="rc",
+                    metric="sum(orders.amount, partition_by=[orders.region, orders.channel])", alias="rc",
                 ),
             ],
         ))
@@ -278,7 +278,7 @@ class TestMultiKeyPartition:
         }
         for r in resp.data:
             key = (r["orders.region"], r["orders.channel"])
-            assert float(r["orders.rc"]) == pytest.approx(expect[key])
+            assert float(r["rc"]) == pytest.approx(expect[key])
 
 
 class TestDegeneratePartition:
@@ -286,14 +286,14 @@ class TestDegeneratePartition:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="plain"),
+                QueryMetric(metric="sum(orders.amount)", alias="plain"),
                 QueryMetric(
-                    metric="sum(amount, partition_by=[region, city])", alias="deg",
+                    metric="sum(orders.amount, partition_by=[orders.region, orders.city])", alias="deg",
                 ),
             ],
         ))
         for r in resp.data:
-            assert float(r["orders.deg"]) == pytest.approx(float(r["orders.plain"]))
+            assert float(r["deg"]) == pytest.approx(float(r["plain"]))
 
 
 class TestCrossModelNarrowedGrain:
@@ -309,12 +309,12 @@ class TestCrossModelNarrowedGrain:
                 ),
             ],
         ))
-        by = rows_by(resp, "orders.customers.tier")
-        assert float(by[("gold",)]["orders.sp"]) == pytest.approx(150.0)
-        assert float(by[("silver",)]["orders.sp"]) == pytest.approx(200.0)
+        by = rows_by(resp, "customers.tier")
+        assert float(by[("gold",)]["sp"]) == pytest.approx(150.0)
+        assert float(by[("silver",)]["sp"]) == pytest.approx(200.0)
         for r in resp.data:
-            assert float(r["orders.total"]) == pytest.approx(350.0)
-        assert approx_sum(resp, "orders.share") == pytest.approx(1.0)
+            assert float(r["total"]) == pytest.approx(350.0)
+        assert approx_sum(resp, "share") == pytest.approx(1.0)
 
     async def test_degenerate_equals_plain(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
@@ -328,7 +328,7 @@ class TestCrossModelNarrowedGrain:
             ],
         ))
         for r in resp.data:
-            assert float(r["orders.deg"]) == pytest.approx(float(r["orders.sp"]))
+            assert float(r["deg"]) == pytest.approx(float(r["sp"]))
 
     async def test_rerooted_grand_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
@@ -338,11 +338,11 @@ class TestCrossModelNarrowedGrain:
                 QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total"),
             ],
         ))
-        by = rows_by(resp, "orders.customers.regions.name")
-        assert float(by[("RegN",)]["orders.sp"]) == pytest.approx(300.0)
-        assert float(by[("RegS",)]["orders.sp"]) == pytest.approx(50.0)
+        by = rows_by(resp, "customers.regions.name")
+        assert float(by[("RegN",)]["sp"]) == pytest.approx(300.0)
+        assert float(by[("RegS",)]["sp"]) == pytest.approx(50.0)
         for r in resp.data:
-            assert float(r["orders.total"]) == pytest.approx(350.0)
+            assert float(r["total"]) == pytest.approx(350.0)
 
     async def test_rerooted_partition_key_narrows_grain(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
@@ -357,8 +357,8 @@ class TestCrossModelNarrowedGrain:
         ))
         region_total = {"RegN": 300.0, "RegS": 50.0}
         for r in resp.data:
-            assert float(r["orders.region_sp"]) == pytest.approx(
-                region_total[r["orders.customers.regions.name"]]
+            assert float(r["region_sp"]) == pytest.approx(
+                region_total[r["customers.regions.name"]]
             )
 
 
@@ -375,7 +375,7 @@ class TestCrossModelFilterRouting:
         ))
         assert len(resp.data) == 2
         for r in resp.data:
-            assert float(r["orders.total"]) == pytest.approx(300.0)
+            assert float(r["total"]) == pytest.approx(300.0)
 
     async def test_target_reachable_filter_applies_to_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
@@ -386,8 +386,8 @@ class TestCrossModelFilterRouting:
                 QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total"),
             ],
         ))
-        by = rows_by(resp, "orders.customers.regions.name")
-        assert float(by[("RegN",)]["orders.sp"]) == pytest.approx(100.0)
-        assert float(by[("RegS",)]["orders.sp"]) == pytest.approx(50.0)
+        by = rows_by(resp, "customers.regions.name")
+        assert float(by[("RegN",)]["sp"]) == pytest.approx(100.0)
+        assert float(by[("RegS",)]["sp"]) == pytest.approx(50.0)
         for r in resp.data:
-            assert float(r["orders.total"]) == pytest.approx(150.0)
+            assert float(r["total"]) == pytest.approx(150.0)

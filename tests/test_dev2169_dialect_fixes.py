@@ -68,7 +68,7 @@ def _amounts_dataset() -> SlayerDataset:
 async def test_collect_over_exact_numerics_on_duckdb() -> None:
     async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, datasets=[_amounts_dataset()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "amounts", "dimensions": ["team"],
+            "population": "amounts", "dimensions": ["amounts.team"],
             "metrics": [metric("collect(n)", "cn"), metric("collect(big)", "cbig")],
         }))
     for name in ("cn", "cbig"):
@@ -79,7 +79,7 @@ async def test_collect_over_exact_numerics_on_duckdb() -> None:
 async def test_collect_over_uuid_on_duckdb() -> None:
     async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, datasets=[_amounts_dataset()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "amounts", "dimensions": ["team"], "metrics": [metric("collect(u)", "cu")],
+            "population": "amounts", "dimensions": ["amounts.team"], "metrics": [metric("collect(u)", "cu")],
         }))
     got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "cu", dataset="amounts").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql

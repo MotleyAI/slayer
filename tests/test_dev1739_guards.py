@@ -29,7 +29,7 @@ class TestGrainGuards:
     async def test_non_dimension_partition_key_raises(self) -> None:
         q = _q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=city)")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)")],
         )
         with pytest.raises(ValueError, match=r"partition_by.*not a query dimension") as ei:
             await gen(q)
@@ -38,12 +38,12 @@ class TestGrainGuards:
     async def test_ambiguous_time_granularity_raises(self) -> None:
         q = _q(
             time_dimensions=[
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.DAY),
             ],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=ordered_at)")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.ordered_at)")],
         )
         with pytest.raises(ValueError, match=r"ambiguous"):
             await gen(q)
@@ -54,7 +54,7 @@ class TestGrainGuards:
         q = _q(
             dimensions=["region", "customers.tier"],
             metrics=[
-                QueryMetric(metric="sum(customers.spend, partition_by=region)"),
+                QueryMetric(metric="sum(customers.spend, partition_by=orders.region)"),
             ],
             to_many_handling="broadcast",
         )
@@ -74,7 +74,7 @@ class TestDeferredShapeGuards:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, window='90d', partition_by=region)"),
+                QueryMetric(metric="sum(orders.amount, window='90d', partition_by=orders.region)"),
             ],
         )
         assert "__regroup__" not in await gen(q)
@@ -100,7 +100,7 @@ class TestDeferredShapeGuards:
             dimensions=["region"],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount, partition_by=region))"),
+                QueryMetric(metric="cumsum(sum(orders.amount, partition_by=orders.region))"),
             ],
         )
         assert "__regroup__" not in await gen(q)
@@ -112,7 +112,7 @@ class TestDeferredShapeGuards:
         q = _q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50"],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -143,7 +143,7 @@ class TestDriveByNonRankTransform:
     async def test_partition_by_still_accepted_on_rank(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="rank(sum(amount), partition_by=region, direction='desc')")],
+            metrics=[QueryMetric(metric="rank(sum(orders.amount), partition_by=orders.region, direction='desc')")],
         ))
         upper = sql.upper()
         assert "RANK()" in upper
@@ -252,10 +252,10 @@ class TestNamingCollision:
         )
         q = SlayerQuery(
             population="t",
-            dimensions=["region", "channel", "channel_region"],
+            dimensions=["t.region", "t.channel", "t.channel_region"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=[channel, region])"),
-                QueryMetric(metric="sum(amount, partition_by=channel_region)"),
+                QueryMetric(metric="sum(t.amount, partition_by=[t.channel, t.region])"),
+                QueryMetric(metric="sum(t.amount, partition_by=t.channel_region)"),
             ],
         )
         with pytest.raises(ValueError):

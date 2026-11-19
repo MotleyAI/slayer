@@ -50,7 +50,7 @@ class TestQuerySurfaces:
     @pytest.mark.parametrize("dimension", ["amount * {k}", {"field": "amount * {k}"}])
     async def test_computed_dimension(self, exec_engine, dimension) -> None:
         resp = await exec_engine.execute(q(dimensions=[dimension], metrics=["count(*)"], variables={"k": 10}))
-        got = {float(r["orders.amount_k"]): r["orders._count"] for r in resp.data}
+        got = {float(r["amount_k"]): r["orders._count"] for r in resp.data}
         assert got == {100.0: 1, 200.0: 1, 250.0: 2, 300.0: 1, 400.0: 1, 600.0: 1}
 
     async def test_order_expression(self, exec_engine) -> None:
@@ -82,14 +82,14 @@ class TestQuerySurfaces:
             dimensions=[{"field": "region in ({regions})", "alias": "ns"}], metrics=["sum(amount)"],
             variables={"regions": ["North", "South"]},
         ))
-        assert {r["orders.ns"]: r["orders.amount_sum"] for r in resp.data} == {None: 60.0, True: 150.0}
+        assert {r["ns"]: r["orders.amount_sum"] for r in resp.data} == {None: 60.0, True: 150.0}
 
     async def test_quoted_string_value_escaped(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=[{"field": "concat(status, '{suffix}')", "alias": "tagged"}], metrics=["count(*)"],
             variables={"suffix": "'s"},
         ))
-        assert {r["orders.tagged"]: r["orders._count"] for r in resp.data} == {"ok's": 6, "hold's": 1}
+        assert {r["tagged"]: r["orders._count"] for r in resp.data} == {"ok's": 6, "hold's": 1}
 
     async def test_quoted_string_value_in_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
@@ -165,13 +165,13 @@ class TestTemplateNaming:
         resp = await exec_engine.execute(q(
             dimensions=["amount * {k}"], metrics=["count(*)"], filter=["amount_k > 450"], variables={"k": 10},
         ))
-        assert {float(r["orders.amount_k"]) for r in resp.data} == {600.0}
+        assert {float(r["amount_k"]) for r in resp.data} == {600.0}
 
     async def test_multi_stage_reads_template_name(self, exec_engine) -> None:
         stage1 = SlayerQuery.model_validate({
-            "name": "s1", "population": "orders", "dimensions": ["region"], "metrics": ["sum(amount) * {k}"],
+            "name": "s1", "population": "orders", "dimensions": ["orders.region"], "metrics": ["sum(orders.amount) * {k}"],
         })
-        root = SlayerQuery.model_validate({"population": "s1", "metrics": ["sum(amount_sum_k)"]})
+        root = SlayerQuery.model_validate({"population": "s1", "metrics": ["sum(s1.amount_sum_k)"]})
         resp = await exec_engine.execute([stage1, root], variables={"k": 10})
         assert only_value(resp) == pytest.approx(2100.0)
 
@@ -184,7 +184,7 @@ class TestTemplateNaming:
         runs = {}
         for k in (10, 20):
             resp = await exec_engine.execute(SlayerQuery.model_validate({
-                "population": "scaled_by_region", "dimensions": ["region", "amount_sum_k"], "variables": {"k": k},
+                "population": "scaled_by_region", "dimensions": ["scaled_by_region.region", "scaled_by_region.amount_sum_k"], "variables": {"k": k},
             }))
             runs[k] = resp
         assert {tuple(r) for r in runs[10].data} == {tuple(r) for r in runs[20].data}
@@ -216,9 +216,9 @@ class TestSavedMeasures:
             "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
         stage1 = SlayerQuery.model_validate({
-            "name": "s1", "population": "orders", "dimensions": ["region"], "metrics": ["amt_scaled"],
+            "name": "s1", "population": "orders", "dimensions": ["orders.region"], "metrics": ["orders.amt_scaled"],
         })
-        root = SlayerQuery.model_validate({"population": "s1", "metrics": ["sum(amt_scaled)"]})
+        root = SlayerQuery.model_validate({"population": "s1", "metrics": ["sum(s1.amt_scaled)"]})
         resp = await exec_engine.execute([stage1, root], variables={"k": 10})
         assert only_value(resp) == pytest.approx(2100.0)
 
@@ -247,9 +247,9 @@ class TestSavedMeasures:
 
 class TestErrors:
     @pytest.mark.parametrize("kw", [
-        {"metrics": ["sum(amount) * {k}"]},
-        {"dimensions": ["amount * {k}"], "metrics": ["count(*)"]},
-        {"dimensions": ["region"], "metrics": ["sum(amount)"], "order": [{"field": "sum(amount) * {k}"}]},
+        {"metrics": ["sum(orders.amount) * {k}"]},
+        {"dimensions": ["orders.amount * {k}"], "metrics": ["count(orders.*)"]},
+        {"dimensions": ["orders.region"], "metrics": ["sum(orders.amount)"], "order": [{"field": "sum(orders.amount) * {k}"}]},
     ])
     async def test_undefined_variable(self, exec_engine, kw) -> None:
         query = q(**kw)
@@ -258,7 +258,7 @@ class TestErrors:
 
     @pytest.mark.parametrize("kw", [
         {"metrics": ["sum(amount) * {? {k} ?}"]},
-        {"dimensions": [{"field": "amount * {? {k} ?}", "alias": "d"}], "metrics": ["count(*)"]},
+        {"dimensions": [{"field": "amount * {? {k} ?}", "alias": "d"}], "metrics": ["count(orders.*)"]},
     ])
     async def test_optional_block_rejected(self, exec_engine, kw) -> None:
         query = q(**kw, variables={"k": 1})
@@ -285,11 +285,11 @@ class TestErrors:
 
 class TestSave:
     @pytest.mark.parametrize(("kw", "name"), [
-        ({"dimensions": ["region"], "metrics": ["sum(amount) * {k}"]}, "k"),
-        ({"dimensions": ["amount * {k}"], "metrics": ["count(*)"]}, "k"),
-        ({"dimensions": ["region"], "metrics": ["sum(amount)"], "order": [{"field": "sum(amount) * {k}"}]}, "k"),
-        ({"metrics": ["sum(amount)"], "filter": ["amount > {k}"]}, "k"),
-        ({"metrics": ["sum(amount)"], "time_dimensions": [{**MONTH_TD, "date_range": ["{start}", None]}]}, "start"),
+        ({"dimensions": ["orders.region"], "metrics": ["sum(orders.amount) * {k}"]}, "k"),
+        ({"dimensions": ["orders.amount * {k}"], "metrics": ["count(orders.*)"]}, "k"),
+        ({"dimensions": ["orders.region"], "metrics": ["sum(orders.amount)"], "order": [{"field": "sum(orders.amount) * {k}"}]}, "k"),
+        ({"metrics": ["sum(orders.amount)"], "filter": ["orders.amount > {k}"]}, "k"),
+        ({"metrics": ["sum(orders.amount)"], "time_dimensions": [{**MONTH_TD, "date_range": ["{start}", None]}]}, "start"),
     ])
     async def test_undefaulted_variable_refuses_save(self, exec_engine: SlayerQueryEngine, kw, name: str) -> None:
         query = q(**kw)

@@ -33,7 +33,7 @@ from tests._dev1838_fixtures import (
 )
 
 RAISES = (SlayerError, ValueError, NotImplementedError)
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -62,7 +62,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(alpha_amount)", alias="a")],
+            metrics=[QueryMetric(metric="sum(orders.alpha_amount)", alias="a")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -72,7 +72,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(rush_amount)", alias="r")],
+            metrics=[QueryMetric(metric="sum(orders.rush_amount)", alias="r")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -82,7 +82,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="last(alpha_amount)", alias="al")],
+            metrics=[QueryMetric(metric="last(orders.alpha_amount)", alias="al")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -92,7 +92,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(rush_amount, window='90d')",
+            metrics=[QueryMetric(metric="sum(orders.rush_amount, window='90d')",
                                    alias="rw")],
         )
         with pytest.raises(RAISES) as ei:
@@ -107,7 +107,7 @@ class TestCrossedArgumentFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="tscaled_sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="tscaled_sum(orders.amount)", alias="t")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -118,7 +118,7 @@ class TestCrossedArgumentFailsClosed:
         query = q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="last(amount, customers.segments.updated_at)",
+                metric="last(orders.amount, customers.segments.updated_at)",
                 alias="lu")],
         )
         with pytest.raises(RAISES) as ei:
@@ -134,11 +134,11 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            metrics=[M, QueryMetric(metric="sum(gold_amount)", alias="g")],
+            metrics=[M, QueryMetric(metric="sum(orders.gold_amount)", alias="g")],
         ))
         by = rows_by(resp, "orders.status")
         for status, expected in GOLD_BY_STATUS.items():
-            assert float(by[(status,)]["orders.g"]) == pytest.approx(expected)
+            assert float(by[(status,)]["g"]) == pytest.approx(expected)
 
     async def test_ranked_filtered_over_proven_hop(self, exec_backend):
         # DEV-1832: Column.filter masks the value; it never restricts the ranking.
@@ -149,11 +149,11 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="last(gold_amount)", alias="gl")],
+            metrics=[QueryMetric(metric="last(orders.gold_amount)", alias="gl")],
         ))
         by = rows_by(resp, "orders.status")
-        assert by[("ok",)]["orders.gl"] is None
-        assert by[("new",)]["orders.gl"] is None
+        assert by[("ok",)]["gl"] is None
+        assert by[("new",)]["gl"] is None
 
     async def test_ranked_filtered_picks_masked_value_when_newest_matches(self, exec_backend):
         # CityA's newest order (#2, gold c1) → gold_amount:last = 20; every other
@@ -161,33 +161,33 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["city"],
-            metrics=[QueryMetric(metric="last(gold_amount)", alias="gl")],
+            metrics=[QueryMetric(metric="last(orders.gold_amount)", alias="gl")],
         ))
         by = rows_by(resp, "orders.city")
-        assert float(by[("CityA",)]["orders.gl"]) == pytest.approx(20.0)
-        assert by[("CityB",)]["orders.gl"] is None
-        assert by[("CityD",)]["orders.gl"] is None
+        assert float(by[("CityA",)]["gl"]) == pytest.approx(20.0)
+        assert by[("CityB",)]["gl"] is None
+        assert by[("CityD",)]["gl"] is None
 
     async def test_aggregation_param_over_proven_hops(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            metrics=[M, QueryMetric(metric="wscaled_sum(amount)", alias="w")],
+            metrics=[M, QueryMetric(metric="wscaled_sum(orders.amount)", alias="w")],
         ))
         by = rows_by(resp, "orders.status")
         for status, expected in WSCALED_BY_STATUS.items():
-            assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
+            assert float(by[(status,)]["w"]) == pytest.approx(expected)
 
     async def test_ranking_arg_over_proven_hop(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="last(amount, customers.signup_at)",
+            metrics=[QueryMetric(metric="last(orders.amount, customers.signup_at)",
                                    alias="ls")],
         ))
         by = rows_by(resp, "orders.status")
         for status, expected in LAST_BY_SIGNUP_BY_STATUS.items():
-            assert float(by[(status,)]["orders.ls"]) == pytest.approx(expected)
+            assert float(by[(status,)]["ls"]) == pytest.approx(expected)
 
 
 class TestHostGrainWrapStaysLegal:
@@ -229,5 +229,5 @@ class TestHostGrainWrapStaysLegal:
         statuses = [r["orders.status"] for r in resp.data]
         assert statuses == ["ok", "new"], statuses
         by = rows_by(resp, "orders.status")
-        assert float(by[("ok",)]["orders.m"]) == pytest.approx(57.0)
-        assert float(by[("new",)]["orders.m"]) == pytest.approx(60.0)
+        assert float(by[("ok",)]["m"]) == pytest.approx(57.0)
+        assert float(by[("new",)]["m"]) == pytest.approx(60.0)

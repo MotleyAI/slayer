@@ -126,7 +126,7 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_mixed_composite_rejected_by_plan_query(self) -> None:
         query = _q46(
-            metrics=[QueryMetric(metric="time_shift(sum(revenue) * weight, -1)",
+            metrics=[QueryMetric(metric="time_shift(sum(sales.revenue) * sales.weight, -1)",
                                    alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:
@@ -138,7 +138,7 @@ class TestRowLeafRejectionAtPlanTime:
 
     def test_row_predicate_rejected_by_plan_query(self) -> None:
         query = _q46(
-            metrics=[QueryMetric(metric="time_shift(store in ('A', 'B'), -1)",
+            metrics=[QueryMetric(metric="time_shift(sales.store in ('A', 'B'), -1)",
                                    alias="t")])
         bundle = _bundle46()
         with pytest.raises(ValueError) as ei:

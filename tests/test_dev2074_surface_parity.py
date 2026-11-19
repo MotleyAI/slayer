@@ -275,7 +275,7 @@ class TestDirectedCycle:
         assert ei.value.reason == PopulationErrorReason.NO_VIABLE_CANDIDATE
 
     async def test_the_named_population_executes(self, cycle_engine) -> None:
-        resp = await cycle_engine.execute(SlayerQuery.model_validate({"population": "x", "dimensions": ["v", "y.v", "y.z.v"]}))
+        resp = await cycle_engine.execute(SlayerQuery.model_validate({"population": "x", "dimensions": ["x.v", "y.v", "y.z.v"]}))
         assert len(resp.data) == 1
         assert sorted(resp.data[0].values()) == ["x1", "y1", "z1"]
 

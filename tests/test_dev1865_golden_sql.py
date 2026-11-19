@@ -41,12 +41,12 @@ def _cases() -> dict:
         "filter/computed_dim_mix_field": _q(
             dimensions=["region", "city", band],
             filter=["band == 1 or channel == 'app'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "filter/computed_dim_mix_measure": _q(
             dimensions=["region", "city", band],
             filter=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ),
         "order/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],

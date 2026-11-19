@@ -14,13 +14,13 @@ from tests._dev2210_fixtures import render
 DIALECTS = ["postgres", "duckdb", "sqlite", "clickhouse", "bigquery", "tsql", "trino", "mysql", "snowflake"]
 
 SHAPES: dict[str, dict[str, Any]] = {
-    "filtered-root": {"population": "done_orders", "dimensions": ["id"]},
-    "inlined-to-one-filter": {"population": "returns_of_done", "dimensions": ["id"]},
-    "association-filter": {"population": "ups_orders", "dimensions": ["id"]},
-    "join-target": {"population": "returns", "dimensions": ["id", "done_orders.status"]},
-    "association-join-target": {"population": "returns", "dimensions": ["id", "ups_orders.id"]},
-    "pushed-down": {"population": "orders", "dimensions": ["id"], "filter": ["late_returns.id is null"]},
-    "forced-association": {"population": "returns_of_done", "dimensions": ["id"]},
+    "filtered-root": {"population": "done_orders", "dimensions": ["done_orders.id"]},
+    "inlined-to-one-filter": {"population": "returns_of_done", "dimensions": ["returns_of_done.id"]},
+    "association-filter": {"population": "ups_orders", "dimensions": ["ups_orders.id"]},
+    "join-target": {"population": "returns", "dimensions": ["returns.id", "done_orders.status"]},
+    "association-join-target": {"population": "returns", "dimensions": ["returns.id", "ups_orders.id"]},
+    "pushed-down": {"population": "orders", "dimensions": ["orders.id"], "filter": ["late_returns.id is null"]},
+    "forced-association": {"population": "returns_of_done", "dimensions": ["returns_of_done.id"]},
 }
 
 

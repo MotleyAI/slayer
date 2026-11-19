@@ -58,7 +58,7 @@ class TestStoredEdgeReuse:
         async with shop(dialect) as engine:
             resp = await engine.execute(repeat)
             assert await _sql(engine, repeat) == await _sql(engine, q(**_tier_amounts()))
-        assert by_key(resp, "orders.customers.tier", "orders.a") == AMOUNT_BY_TIER
+        assert by_key(resp, "orders.customers.tier", "a") == AMOUNT_BY_TIER
 
     async def test_a_differing_unnamed_join_stays_parallel_and_fails_closed(self, dialect) -> None:
         query = q(**_tier_amounts(extensions=[ext("orders", relationships=[join("customers", [["referrer_id", "id"]])])]))
@@ -73,7 +73,7 @@ class TestStoredEdgeReuse:
         async with shop(dialect) as engine:
             resp = await engine.execute(reversed_)
             assert await _sql(engine, reversed_) == await _sql(engine, q(**plain))
-        assert rows(resp, "customers.name", "customers.n") == [
+        assert rows(resp, "customers.name", "n") == [
             ("Ann", 2), ("Bob", 1), ("Cid", 1), ("Dee", 1), ("Eve", 1)]
 
     @pytest.mark.parametrize("cardinality", ["many_to_one", None])
@@ -90,7 +90,7 @@ class TestStoredEdgeReuse:
             join("customers", CUSTOMER_PAIRS, join_type="inner")])]))
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
-        assert by_key(resp, "orders.customers.tier", "orders.a") == {
+        assert by_key(resp, "orders.customers.tier", "a") == {
             tier: amount for tier, amount in AMOUNT_BY_TIER.items() if tier is not None}
 
 
@@ -127,7 +127,7 @@ class TestAliases:
                   extensions=[ext("customers", relationships=[join("regions", REGION_PAIRS, name="regions")])])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
-        assert resp.columns == ["customers.name", "customers.regions.name"]
+        assert resp.columns == ["customers.name", "regions.name"]
 
 
 class TestConflicts:
@@ -242,7 +242,7 @@ class TestNewEdges:
         ])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
-        assert rows(resp, "customers.name", "customers.regions.countries.name") == [
+        assert rows(resp, "customers.name", "regions.countries.name") == [
             ("Ann", "Norland"), ("Bob", "Southia"), ("Cid", None), ("Dee", None), ("Eve", None)]
 
     async def test_cyclic_query_local_chain_fails_like_a_stored_cycle(self, dialect) -> None:
@@ -272,5 +272,5 @@ class TestNewEdges:
                  extensions=[ext("orders", relationships=[join("customers", [["customer_id", "customer_id"]])])])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])
-        assert by_key(resp, "orders.customers.spent", "orders.a") == {
+        assert by_key(resp, "customers.spent", "a") == {
             30.0: 60.0, 5.0: 5.0, 40.0: 40.0, 15.0: 15.0, None: 7.0}

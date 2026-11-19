@@ -102,7 +102,7 @@ class TestModeBOverDunderModels:
         )
         dunder = dunder_target()  # raises today — the flip must let it through
         sql = await _engine_generate(
-            query=SlayerQuery(population="orders", metrics=["crc"]),
+            query=SlayerQuery(population="orders", metrics=["orders.crc"]),
             dataset=host,
             extra_datasets=[dunder],
             validate=False,
@@ -132,7 +132,7 @@ class TestModeBOverDunderModels:
         )
         sql = await _engine_generate(
             query=SlayerQuery(population="stores",
-                              dimensions=["stores__name"]),
+                              dimensions=["stores.stores__name"]),
             dataset=model,
             validate=False,
         )

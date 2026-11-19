@@ -58,7 +58,7 @@ class TestOrderOnlyPartitionedAggregate:
         # which silently sorts by the plain per-city total instead).
         sql = await gen(_q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="cell")],
             order=[{"field": "sum(amount, partition_by=region)", "direction": "asc"}],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -66,20 +66,20 @@ class TestOrderOnlyPartitionedAggregate:
     async def test_order_only_sorts_by_region_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="cell")],
             order=[{"field": "sum(amount, partition_by=region)", "direction": "asc"}],
         ))
         totals = [REGION_TOTAL[r["orders.region"]] for r in resp.data]
         assert totals == sorted(totals)
         # The hidden order target does not surface in the result.
         assert set(resp.data[0].keys()) == {
-            "orders.region", "orders.city", "orders.cell",
+            "orders.region", "orders.city", "cell",
         }
 
     async def test_composite_only_in_order_by_isolates(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="cell")],
             order=[{
                 "field": "sum(amount) / sum(amount, partition_by=region)",
                 "direction": "asc",
@@ -92,7 +92,7 @@ class TestOrderOnlyPartitionedAggregate:
         # attached partitioned leaf, so rows come back in share order.
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="cell")],
             order=[{
                 "field": "sum(amount) / sum(amount, partition_by=region)",
                 "direction": "asc",
@@ -101,7 +101,7 @@ class TestOrderOnlyPartitionedAggregate:
         shares = [SHARE[(r["orders.region"], r["orders.city"])] for r in resp.data]
         assert shares == sorted(shares)
         assert set(resp.data[0].keys()) == {
-            "orders.region", "orders.city", "orders.cell",
+            "orders.region", "orders.city", "cell",
         }
 
 
@@ -114,7 +114,7 @@ class TestInFilterOverComposite:
         q = _q(
             dimensions=["region", "city"],
             filter=["sum(amount) / sum(amount, partition_by=region) > 0.5"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="cell")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -124,16 +124,16 @@ class TestDuplicateAliases:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="a"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="b"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="a"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="b"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         for key, row in by.items():
-            assert float(row["orders.a"]) == pytest.approx(REGION_TOTAL[key[0]])
-            assert float(row["orders.b"]) == pytest.approx(REGION_TOTAL[key[0]])
+            assert float(row["a"]) == pytest.approx(REGION_TOTAL[key[0]])
+            assert float(row["b"]) == pytest.approx(REGION_TOTAL[key[0]])
         keys = set(resp.data[0].keys())
-        assert keys == {"orders.region", "orders.city", "orders.a", "orders.b"}
+        assert keys == {"orders.region", "orders.city", "a", "b"}
 
 
 class TestPaginationWithHiddenOrdering:
@@ -144,7 +144,7 @@ class TestPaginationWithHiddenOrdering:
         # the plain per-city total) instead pages into two North rows → [100, 100].
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="cell")],
             order=[{"field": "sum(amount, partition_by=region)", "direction": "asc"}],
             limit=2, offset=1,
         ))
@@ -152,7 +152,7 @@ class TestPaginationWithHiddenOrdering:
         totals = [REGION_TOTAL[r["orders.region"]] for r in resp.data]
         assert totals == [60.0, 100.0]
         assert set(resp.data[0].keys()) == {
-            "orders.region", "orders.city", "orders.cell",
+            "orders.region", "orders.city", "cell",
         }
 
 
@@ -161,7 +161,7 @@ class TestResponseContractNoLeak:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=region)", alias="region_rev",
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
             )],
         ))
         data_keys = set(resp.data[0].keys())
@@ -172,7 +172,7 @@ class TestResponseContractNoLeak:
         for names in (data_keys, col_names, attr_keys):
             assert not any("__regroup__" in n for n in names)
             assert not any(n.endswith("amount_sum_partition_by_region") for n in names)
-        assert data_keys == {"orders.region", "orders.city", "orders.region_rev"}
+        assert data_keys == {"orders.region", "orders.city", "region_rev"}
         # This shape drops no filter and synthesizes no warning.
         assert not resp.warnings
 
@@ -208,10 +208,10 @@ class TestReservedPrefixAcrossStages:
         # stage1 emits a column whose name collides with the reserved regroup
         # prefix; it flows through untouched (stage1 has no regroup).
         stage1 = SlayerQuery(
-            name="stage1", population="orders", dimensions=["region"],
+            name="stage1", population="orders", dimensions=["orders.region"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="__regroup__0__amount_sum"),
-                QueryMetric(metric="sum(amount)", alias="total"),
+                QueryMetric(metric="sum(orders.amount)", alias="__regroup__0__amount_sum"),
+                QueryMetric(metric="sum(orders.amount)", alias="total"),
             ],
         )
         # stage2's computed dimension activates the regroup desugar, whose
@@ -219,10 +219,10 @@ class TestReservedPrefixAcrossStages:
         root = SlayerQuery(
             population="stage1",
             dimensions=[
-                QueryDimension(field="region"),
-                QueryDimension(field="CASE WHEN sum(total, partition_by=region) > 5 THEN 1 ELSE 0 END", alias="band"),
+                QueryDimension(field="stage1.region"),
+                QueryDimension(field="CASE WHEN sum(stage1.total, partition_by=stage1.region) > 5 THEN 1 ELSE 0 END", alias="band"),
             ],
-            metrics=[QueryMetric(metric="sum(total)", alias="s")],
+            metrics=[QueryMetric(metric="sum(stage1.total)", alias="s")],
         )
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1},

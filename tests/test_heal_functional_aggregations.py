@@ -38,7 +38,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def by_region(*measures: str) -> dict[str, Any]:
-    return {"population": "orders", "dimensions": ["region"], "metrics": list(measures)}
+    return {"population": "orders", "dimensions": ["orders.region"], "metrics": list(measures)}
 
 
 class TestUnknownFunction:
@@ -115,7 +115,7 @@ class TestCountDistinctExecuted:
 
     async def test_expression_with_partition(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
-            return {"population": "orders", "dimensions": ["region", "status"], "metrics": [formula]}
+            return {"population": "orders", "dimensions": ["orders.region", "orders.status"], "metrics": [formula]}
 
         await assert_equivalent(
             engine, query("count(distinct coalesce(customer_id, 0), partition_by=region)"),
@@ -126,7 +126,7 @@ class TestCountDistinctExecuted:
         orders = orders_dataset()
         orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INTEGER))
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(orders.n_customers)"]}),
             dataset=orders, extra_datasets=[customers_dataset(), order_items_dataset(), products_dataset()],
         )
         assert "COUNT(DISTINCT" in sql.upper()

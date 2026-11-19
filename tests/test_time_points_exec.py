@@ -179,9 +179,9 @@ class TestSingleStringIn:
 class TestTemporalOperands:
     async def test_temporal_aggregate_in_measure_filter(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "dimensions": ["code"],
-            "metrics": [{"metric": "count(*)", "alias": "n"}],
-            "filter": ["max(ts) >= 'last month'"],
+            "population": "ev", "dimensions": ["ev.code"],
+            "metrics": [{"metric": "count(ev.*)", "alias": "n"}],
+            "filter": ["max(ev.ts) >= 'last month'"],
         }))
         latest = {c: max(ev_dt(i) for i in EV_TS if code_of(i) == c) for c in map(code_of, EV_TS)}
         expected = {c for c, t in latest.items() if t >= D(2026, 8, 1)}
@@ -194,16 +194,16 @@ class TestTemporalOperands:
     ])
     async def test_min_first_last_are_temporal(self, engine, filt, expected) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "dimensions": ["code"],
-            "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": [filt],
+            "population": "ev", "dimensions": ["ev.code"],
+            "metrics": [{"metric": "count(ev.*)", "alias": "n"}], "filter": [filt],
         }))
         assert {r["ev.code"] for r in resp.data} == expected
 
     async def test_temporal_aggregate_below_a_period(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "dimensions": ["code"],
-            "metrics": [{"metric": "count(*)", "alias": "n"}],
-            "filter": ["max(ts) < '2024-06'"],
+            "population": "ev", "dimensions": ["ev.code"],
+            "metrics": [{"metric": "count(ev.*)", "alias": "n"}],
+            "filter": ["max(ev.ts) < '2024-06'"],
         }))
         assert {r["ev.code"] for r in resp.data} == {"2025", "2025-Q1"}
 
@@ -216,10 +216,10 @@ class TestTemporalOperands:
 
     async def test_stage_column(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "daily", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-            "filter": ["ts = '2025-Q1'"],
+            "population": "daily", "metrics": [{"metric": "sum(daily.rev)", "alias": "r"}],
+            "filter": ["daily.ts = '2025-Q1'"],
         }))
-        assert resp.data[0]["daily.r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
+        assert resp.data[0]["r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
 
     async def test_date_column_takes_periods(self, engine) -> None:
         assert await ids(engine, "d = '2025-Q1'") == ids_in(D(2025, 1, 1), D(2025, 4, 1))
@@ -273,8 +273,8 @@ class TestTypingErrors:
 
     async def test_temporal_aggregate_with_partition(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "dimensions": ["id", "code"],
-            "filter": ["max(ts, partition_by=[code]) >= 'last month'"],
+            "population": "ev", "dimensions": ["ev.id", "ev.code"],
+            "filter": ["max(ev.ts, partition_by=[ev.code]) >= 'last month'"],
         }))
         assert {r["ev.id"] for r in resp.data} == {i for i in ALL if code_of(i) == "y"}
 
@@ -347,16 +347,16 @@ class TestGranularityCalls:
 
     async def test_count_distinct_months(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "metrics": [{"metric": "count_distinct(date_trunc('month', ts))", "alias": "m"}],
+            "population": "ev", "metrics": [{"metric": "count_distinct(date_trunc('month', ev.ts))", "alias": "m"}],
         }))
-        assert resp.data[0]["ev.m"] == len({(t.year, t.month) for t in map(ev_dt, EV_TS)})
+        assert resp.data[0]["m"] == len({(t.year, t.month) for t in map(ev_dt, EV_TS)})
 
     async def test_computed_dimension_groups_by_year_bucket(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "dimensions": [{"field": "date_trunc('year', ts)", "alias": "y"}],
-            "metrics": [{"metric": "count(*)", "alias": "n"}],
+            "population": "ev", "dimensions": [{"field": "date_trunc('year', ev.ts)", "alias": "y"}],
+            "metrics": [{"metric": "count(ev.*)", "alias": "n"}],
         }))
-        got = {bucket_text(r["ev.y"])[:10]: r["ev.n"] for r in resp.data}
+        got = {bucket_text(r["y"])[:10]: r["n"] for r in resp.data}
         assert got == {f"{y}-01-01": n for y, n in Counter(t.year for t in map(ev_dt, EV_TS)).items()}
 
     async def test_inside_arithmetic(self, engine) -> None:
@@ -385,7 +385,7 @@ class TestGranularityCalls:
 
     async def test_non_temporal_operand_rejected_in_measure(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "population": "ev", "metrics": [{"metric": "count_distinct(date_trunc('month', code))", "alias": "m"}],
+            "population": "ev", "metrics": [{"metric": "count_distinct(date_trunc('month', ev.code))", "alias": "m"}],
         })
         with pytest.raises(DateOperandTypeError):
             await engine.execute(query)
@@ -413,7 +413,7 @@ class TestGranularityCalls:
 class TestDateFunctionGrammar:
     async def test_minute_precision_instant_in_a_date_position(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "dimensions": ["id", {"field": "date_add('2024-01-31 10:15', 1, 'month')", "alias": "v"}],
-            "filter": ["id = 1"],
+            "population": "ev", "dimensions": ["ev.id", {"field": "date_add('2024-01-31 10:15', 1, 'month')", "alias": "v"}],
+            "filter": ["ev.id = 1"],
         }))
-        assert bucket_text(resp.data[0]["ev.v"]) == "2024-02-29 10:15:00"
+        assert bucket_text(resp.data[0]["v"]) == "2024-02-29 10:15:00"

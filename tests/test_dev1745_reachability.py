@@ -465,8 +465,8 @@ class TestCoordinateSystemInvariant:
             query=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": [{"field": "amount", "alias": "amount"}],
-                "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
-                "filter": ["sum(eu_amount) > 100"],
+                "metrics": [{"metric": "sum(orders.eu_amount)", "alias": "eu"}],
+                "filter": ["sum(orders.eu_amount) > 100"],
             }),
             bundle=bundle,
         )

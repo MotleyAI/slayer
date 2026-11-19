@@ -53,7 +53,7 @@ class TestParallelFksAreAddressable:
             await lv.ingest()
             assert await lv.edges() == {("orders", "customers", (("customer_id", "id"),)): None}
             resp = await lv.query(population="orders", dimensions=["id", "customers.name"])
-            assert rows_set(resp, "orders.id", "orders.customers.name") == {
+            assert rows_set(resp, "orders.id", "customers.name") == {
                 (1, "Alice"), (2, "Alice"), (3, "Bob"),
             }
 

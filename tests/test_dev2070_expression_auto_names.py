@@ -61,7 +61,7 @@ def by(resp: SlayerResponse, *, dim: str, key: str) -> dict:
 # Date comparisons
 # --------------------------------------------------------------------------- #
 REPRO = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
-REPRO_KEY = "regions.customers.orders.iif_order_date_2025_01_01_1_0_sum"
+REPRO_KEY = "customers.orders.iif_order_date_2025_01_01_1_0_sum"
 
 
 async def test_repro_date_comparison_inside_a_scalar_call(engine) -> None:
@@ -145,18 +145,18 @@ async def test_null_literal_spelled_null(engine) -> None:
 @pytest.mark.parametrize(
     ("formula", "key", "value"),
     [
-        ("sum(customers.spend - 1)", "orders.customers.spend_1_sum", 347),
-        ("sum(customers.spend - customers.regions.weight)", "orders.customers.spend_regions_weight_sum", 343),
-        ("sum(customers.spend_x2 + 1)", "orders.customers.spend_x2_1_sum", 703),
+        ("sum(customers.spend - 1)", "customers.spend_1_sum", 347),
+        ("sum(customers.spend - customers.regions.weight)", "customers.spend_regions_weight_sum", 343),
+        ("sum(customers.spend_x2 + 1)", "customers.spend_x2_1_sum", 703),
         (
             "sum(iif(date_trunc('month', customers.signup_at) >= '2024-02', 1, 0))",
-            "orders.customers.iif_date_trunc_month_signup_at_2024_02_1_0_sum", 2,
+            "customers.iif_date_trunc_month_signup_at_2024_02_1_0_sum", 2,
         ),
         (
             "sum(iif(customers.region_id in (1, 3), customers.spend, 0))",
-            "orders.customers.iif_region_id_in_1_3_spend_0_sum", 150,
+            "customers.iif_region_id_in_1_3_spend_0_sum", 150,
         ),
-        ("sum(amount - customers.spend)", "orders.amount_customers_spend_sum", -525),
+        ("sum(amount - customers.spend)", "sum_orders_amount_customers_spend", -525),
     ],
 )
 async def test_home_relative_operand_spelling(engine, formula, key, value) -> None:
@@ -215,14 +215,14 @@ def test_constituents_differing_only_in_locus_never_share_a_slot() -> None:
 # --------------------------------------------------------------------------- #
 _REFERENCED = [
     pytest.param(
-        {"population": "regions", "dimensions": ["name"],
+        {"population": "regions", "dimensions": ["regions.name"],
          "metrics": ["sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"]},
         "name", "customers.orders.iif_order_date_2024_02_01_1_0_sum",
         {"north": 3, "south": 2}, id="pathed-date-comparison",
     ),
     pytest.param(
-        {"population": "orders", "dimensions": ["status"],
-         "metrics": ["sum(iif(ordered_at >= 'last month', 1, 0))"]},
+        {"population": "orders", "dimensions": ["orders.status"],
+         "metrics": ["sum(iif(orders.ordered_at >= 'last month', 1, 0))"]},
         "status", "iif_ordered_at_last_month_1_0_sum",
         {"paid": 3, "pending": 2}, id="relative-point",
     ),
@@ -274,10 +274,10 @@ async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, sp
     models[0].relationships[0].name = "buyer"
     inner = SlayerQuery.model_validate({
         "population": "orders", "name": "s",
-        "dimensions": ["buyer.regions.name"], "metrics": ["sum(buyer.spend - 1)"],
+        "dimensions": ["orders.buyer.regions.name"], "metrics": ["sum(orders.buyer.spend - 1)"],
     })
     outer = SlayerQuery.model_validate({
-        "population": "s", "dimensions": ["buyer__regions__name"], "metrics": [f"max({spelling})"],
+        "population": "s", "dimensions": ["s.buyer__regions__name"], "metrics": [f"max({spelling})"],
     })
     async for e in make_exec_engine(dialect, datasets=models):
         resp = await e.execute([inner, outer])

@@ -86,7 +86,7 @@ class TestBroadcastHomeRule:
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric=_C_BROADCAST, alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for v in vals.values():
             assert float(v) == pytest.approx(CBCAST_ALL_CUSTOMERS)
         [w] = broadcast_warnings(resp)
@@ -97,8 +97,8 @@ class TestBroadcastHomeRule:
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="weighted_avg(customers.spend, weight=amount)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+                metric="weighted_avg(customers.spend, weight=orders.amount)", alias="w")]))
+        vals = _vals(resp, "w")
         for status, expected in HOST_HOME_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
         assert not broadcast_warnings(resp)
@@ -110,8 +110,8 @@ class TestHostLocusSourceRendering:
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="wsum(customers.north_spend, weight=amount)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+                metric="wsum(customers.north_spend, weight=orders.amount)", alias="w")]))
+        vals = _vals(resp, "w")
         for status, expected in FILTERED_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -120,8 +120,8 @@ class TestHostLocusSourceRendering:
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="wsum4(customers.spend, weight=amount)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+                metric="wsum4(customers.spend, weight=orders.amount)", alias="w")]))
+        vals = _vals(resp, "w")
         for status, expected in WSUM4_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -155,7 +155,7 @@ class TestDerivedColumnEdgeCases:
         resp = await derived_default_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum5(customers.spend)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in DERIVED_DEFAULT_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -163,7 +163,7 @@ class TestDerivedColumnEdgeCases:
         """A host-locus source whose Column.sql crosses a fanning hop is rejected,
         never emitted as a multiplying join."""
         query = bcast_q(dimensions=["status"], metrics=[QueryMetric(
-            metric="weighted_avg(customers.bad_spend, weight=amount)", alias="w")])
+            metric="weighted_avg(customers.bad_spend, weight=orders.amount)", alias="w")])
         models = fanning_derived_source_datasets()
         with pytest.raises(ValueError, match="unproven relationship hop"):
             await gen(query, datasets=models)
@@ -174,13 +174,13 @@ class TestCardinalityInvariant:
         """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (semantics Law 7)."""
         base = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="tot")]))
         withw = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="tot"),
                       QueryMetric(metric=_C_BROADCAST, alias="w")]))
-        a = _vals(base, "orders.tot")
-        b = _vals(withw, "orders.tot")
+        a = _vals(base, "tot")
+        b = _vals(withw, "tot")
         assert set(a) == set(b)
         for k in a:
             assert float(a[k]) == pytest.approx(float(b[k]))

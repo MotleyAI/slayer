@@ -264,6 +264,6 @@ async def test_source_columns_round_trip(tmp_path: Path) -> None:
     assert {c.name for c in orders_model.fields if not c.hidden} == {"order_id", "amount"}
     assert [c for c in orders_model.fields if c.hidden]
     assert not [e for e in entries(convert_document(env, exported)) if e.category == "extension"]
-    payload = {"population": "orders", "metrics": ["units", "total"]}
+    payload = {"population": "orders", "metrics": ["orders.units", "orders.total"]}
     assert normalized(await rows(second, payload)) == normalized(await rows(first, payload))
     assert normalized(await rows(first, payload)) == normalized([{"orders.units": 11, "orders.total": 46}])

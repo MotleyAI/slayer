@@ -24,7 +24,7 @@ class TestMixedGrainOr:
         query = q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises(PositionTypingError) as ei:
             await exec_engine.execute(query)

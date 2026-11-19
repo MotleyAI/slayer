@@ -27,7 +27,7 @@ async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None)
     base = {"dimensions": dims}
     if td is not None:
         base["time_dimensions"] = td
-    display = [QueryMetric(metric="sum(amount)", alias="s")]
+    display = [QueryMetric(metric="sum(orders.amount)", alias="s")]
     filtered = (await engine.execute(q(
         **base, metrics=display, filter=[f"{value_expression} > {threshold}"],
     ))).data
@@ -35,7 +35,7 @@ async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None)
         **base, metrics=display + [QueryMetric(metric=value_expression, alias="e")],
     ))).data
     assert filtered, "threshold kept no rows — the law would be vacuous"
-    dim_cols = sorted(set(filtered[0]) - {"orders.s"})
+    dim_cols = sorted(set(filtered[0]) - {"s"})
     (e_col,) = set(twin[0]) - set(filtered[0])
     twin_by = {_rowkey(r, dim_cols): r for r in twin}
     expected = {
@@ -45,7 +45,7 @@ async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None)
     assert {_rowkey(r, dim_cols) for r in filtered} == expected
     for r in filtered:
         twin_row = twin_by[_rowkey(r, dim_cols)]
-        assert float(r["orders.s"]) == pytest.approx(float(twin_row["orders.s"]))
+        assert float(r["s"]) == pytest.approx(float(twin_row["s"]))
 
 
 _SHAPES = [
@@ -81,15 +81,15 @@ class TestNullPredicateDropsRow:
         twin = (await exec_engine.execute(q(
             dimensions=["region"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="sum(nomatch)", alias="e"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="sum(orders.nomatch)", alias="e"),
             ],
         ))).data
         assert twin
-        assert all(r["orders.e"] is None for r in twin)
+        assert all(r["e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             filter=["sum(nomatch) > 0"],
         ))).data
         assert filtered == []
@@ -120,5 +120,5 @@ class TestPositionSupportCannotLag:
         # Sorted by the region partition total desc (RegN=300 before RegS=50);
         # the value itself stays hidden.
         rank = {"RegN": 0, "RegS": 1}
-        regions = [r["orders.customers.regions.name"] for r in ordered]
+        regions = [r["customers.regions.name"] for r in ordered]
         assert regions == sorted(regions, key=lambda r: rank[r])

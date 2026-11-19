@@ -307,7 +307,7 @@ def _cm_vehicle_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         time_dimensions=[
-            TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
+            TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)
         ],
         metrics=[
             QueryMetric(metric="sum(customers.Rev)", alias="up"),
@@ -329,7 +329,7 @@ def _case_only_result_names_query() -> SlayerQuery:
         population="orders",
         time_dimensions=[
             TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
@@ -371,7 +371,7 @@ def _assert_result_keys_survive(sql: str, *, dialect: str) -> None:
     if dialect in ("bigquery", "tsql"):
         expected = {"orders___up", "orders___down"}
     else:
-        expected = {"orders.up", "orders.down"}
+        expected = {"up", "down"}
     assert expected <= aliases, (aliases, sql)
 
 
@@ -427,7 +427,7 @@ class TestE2eCaseFoldingAllDialects:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],

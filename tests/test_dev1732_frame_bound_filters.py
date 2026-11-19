@@ -372,7 +372,7 @@ def _joined_orders() -> SlayerDataset:
 
 
 _MONTHLY_CREATED_AT = TimeDimension(
-    field="created_at", granularity=TimeGranularity.MONTH,
+    field="orders.created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -380,7 +380,7 @@ def _windowed_query(**kw) -> SlayerQuery:
     base = dict(
         population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        metrics=[QueryMetric(metric="sum(revenue, window='90d')", alias="rev_90d")],
+        metrics=[QueryMetric(metric="sum(orders.revenue, window='90d')", alias="rev_90d")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -580,7 +580,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    field="ship_date",
+                    field="orders.ship_date",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -707,8 +707,8 @@ class TestWindowedSrcFrameBounds:
     async def test_two_windowed_measures_share_the_residual(self) -> None:
         query = _windowed_query(
             metrics=[
-                QueryMetric(metric="sum(revenue, window='90d')", alias="rev_90d"),
-                QueryMetric(metric="avg(revenue, window='30d')", alias="rev_30d"),
+                QueryMetric(metric="sum(orders.revenue, window='90d')", alias="rev_90d"),
+                QueryMetric(metric="avg(orders.revenue, window='30d')", alias="rev_30d"),
             ],
             filter=["created_at >= '2024-06-01' and status = 'paid'"],
         )
@@ -736,7 +736,7 @@ class TestWindowedSrcFrameBounds:
         assertions so the test is not merely a SQL-validity check that would
         pass without any stripping."""
         query = _windowed_query(
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             filter=["created_at >= '2024-06-01' and status = 'paid'"],
         )
         sql = await _wm_sql(query, _orders())
@@ -773,7 +773,7 @@ class TestWindowedSrcFrameBounds:
         query = _windowed_query(
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-06-01", "2024-12-31"],
                 ),
@@ -803,7 +803,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        field="ship_date",
+                        field="orders.ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -830,7 +830,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        field="ship_date",
+                        field="orders.ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -865,7 +865,7 @@ def _shift_query(**kw) -> SlayerQuery:
     base = dict(
         population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        metrics=[QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="prev")],
+        metrics=[QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'month')", alias="prev")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -921,7 +921,7 @@ class TestTimeShiftFrameBounds:
             _shift_query(
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at",
+                        field="orders.created_at",
                         granularity=TimeGranularity.MONTH,
                         date_range=["2024-06-01", "2024-12-31"],
                     ),

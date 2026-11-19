@@ -129,9 +129,9 @@ class TestFlavorAOrderByUnprojected:
         ``"orders.created_at"`` (a nonexistent output column on Postgres)."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="created_at", direction="desc")],
+            order=[OrderItem(field="orders.created_at", direction="desc")],
         )
         sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert "ORDER BY orders.created_at DESC" in sql
@@ -145,8 +145,8 @@ class TestFlavorAOrderByUnprojected:
         column name via ``AS "orders.rev"``)."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [QueryDimension(field="status")],
-            "metrics": [{"metric": "sum(revenue)", "alias": "rev"}],
+            "dimensions": [QueryDimension(field="orders.status")],
+            "metrics": [{"metric": "sum(orders.revenue)", "alias": "rev"}],
             "order": [OrderItem(field="rev", direction="desc")],
         })
         sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
@@ -161,9 +161,9 @@ class TestFlavorAOrderByUnprojected:
         model.fields.append(DatasetField(name="CreatedAt", sql="CreatedAt", datatype=DataType.DATETIME))
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="CreatedAt", direction="desc")],
+            order=[OrderItem(field="orders.CreatedAt", direction="desc")],
         )
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert 'ORDER BY orders."CreatedAt" DESC' in sql
@@ -176,9 +176,9 @@ class TestFlavorAOrderByUnprojected:
         fallback sort key."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
             limit=10,
             offset=5,
         )
@@ -210,7 +210,7 @@ class TestFlavorAOrderByUnprojected:
         )
         query = SlayerQuery.model_validate({
             "population": "accts",
-            "dimensions": [QueryDimension(field="status")],
+            "dimensions": [QueryDimension(field="accts.status")],
             "metrics": [{"metric": "sum(clusters.score)", "alias": "sc"}],
             "order": [OrderItem(field="sc", direction="desc")],
             "to_many_handling": "broadcast",
@@ -242,7 +242,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
@@ -264,7 +264,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
@@ -283,8 +283,8 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}],  # windowed -> combined CTE path
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],  # windowed -> combined CTE path
             "filter": ["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
@@ -303,7 +303,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "last(amount, created_at)", "alias": "latest"}],
+            "metrics": [{"metric": "last(orders.amount, orders.created_at)", "alias": "latest"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
@@ -333,7 +333,7 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
@@ -350,7 +350,7 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
         sql = _norm(await _engine_generate(
@@ -363,8 +363,8 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}],
+            "time_dimensions": [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field="customers.regions.name", direction="desc")],
         })
@@ -392,7 +392,7 @@ class TestFlavorBMixedCaseQuoting:
         """
         query = SlayerQuery(
             population="accounts",
-            dimensions=[QueryDimension(field="is_inactive"), QueryDimension(field="acct_form")],
+            dimensions=[QueryDimension(field="accounts.is_inactive"), QueryDimension(field="accounts.acct_form")],
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(query=query, dataset=accounts_dataset))
@@ -411,8 +411,8 @@ class TestFlavorBMixedCaseQuoting:
         ``_parse_predicate`` and must emit the quoted form in the WHERE."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"metric": "count(*)", "alias": "cnt"}],
-            "filter": ["is_inactive == True"],
+            "metrics": [{"metric": "count(accounts.*)", "alias": "cnt"}],
+            "filter": ["accounts.is_inactive == True"],
         })
         sql = _norm(await _engine_generate(query=query, dataset=accounts_dataset))
         assert "WHERE" in sql
@@ -427,7 +427,7 @@ class TestFlavorBMixedCaseQuoting:
             filters=["StateFlag IS NOT NULL"],
             fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(accounts.*)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert "WHERE" in sql
         assert '"StateFlag"' in sql
@@ -449,7 +449,7 @@ class TestFlavorBMixedCaseQuoting:
                 ),
             ],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(amount)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(accounts.amount)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert '"StateFlag"' in sql
 
@@ -504,7 +504,7 @@ class TestFlavorBMixedCaseQuoting:
         )
         query = SlayerQuery(
             population="accounts",
-            dimensions=[QueryDimension(field="StateFlag")],
+            dimensions=[QueryDimension(field="accounts.StateFlag")],
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(query=query, dataset=model))
@@ -528,8 +528,8 @@ class TestFlavorBMixedCaseQuoting:
         )
         query = SlayerQuery.model_validate({
             "population": "events",
-            "dimensions": [QueryDimension(field="RegionCode")],
-            "metrics": [{"metric": "last(amount, ts)", "alias": "latest"}],
+            "dimensions": [QueryDimension(field="events.RegionCode")],
+            "metrics": [{"metric": "last(events.amount, events.ts)", "alias": "latest"}],
         })
         sql = _norm(await _engine_generate(query=query, dataset=model))
         # The OUTER group-by / projection reference must be quoted so it
@@ -556,7 +556,7 @@ class TestFlavorBMixedCaseQuoting:
         )
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"metric": "sum(MixedAmt)", "alias": "s"}],
+            "metrics": [{"metric": "sum(accounts.MixedAmt)", "alias": "s"}],
         })
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert 'SUM(accounts."MixedAmt")' in sql
@@ -597,13 +597,13 @@ class TestFlavorBMixedCaseQuoting:
             data_source="test",
             fields=[DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "count(accounts.*)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert '"MyAccounts"' in sql
 
     async def test_lowercase_only_expression_unchanged(self, orders_dataset: SlayerDataset) -> None:
         """No spurious quoting: an all-lowercase expression emits unchanged."""
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(revenue)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.revenue)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert "SUM(orders.amount)" in sql
         assert '"amount"' not in sql
@@ -620,7 +620,7 @@ class TestFlavorBMixedCaseQuoting:
                 DatasetField(name="j", sql="COALESCE(RawVal, 0)", datatype=DataType.FLOAT),
             ],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(j)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"metric": "sum(accounts.j)"}]})
         sql = _norm(await _engine_generate(query=query, dataset=model))
         assert "COALESCE" in sql
         assert '"COALESCE"' not in sql
@@ -727,7 +727,7 @@ class TestMixedCaseQuotingMultiDialect:
         )
         query = SlayerQuery(
             population="accounts",
-            dimensions=[QueryDimension(field="is_inactive")],
+            dimensions=[QueryDimension(field="accounts.is_inactive")],
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(query=query, dataset=model, dialect=dialect))

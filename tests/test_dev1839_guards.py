@@ -46,7 +46,7 @@ class TestMixedWindowedRankedDeferred:
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "x"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -59,7 +59,7 @@ class TestMixedWindowedRankedDeferred:
         )
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -76,7 +76,7 @@ class TestTransformKwargAgainstUnion:
         )
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -92,7 +92,7 @@ class TestUnchangedGuards:
         )
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             to_many_handling="broadcast",
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
@@ -104,7 +104,7 @@ class TestUnchangedGuards:
         band = "rank(sum(amount) - sum(amount, partition_by=city), direction='desc')"
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "x"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -126,7 +126,7 @@ class TestTemporalAxisContainment:
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "cs"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -138,7 +138,7 @@ class TestTemporalAxisContainment:
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "cs"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -151,12 +151,12 @@ class TestTemporalAxisContainment:
         query = q(
             dimensions=["region", {"field": band, "alias": "cs"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):
-                (float(r["orders.cs"]), float(r["orders.s"]))
+                (float(r["cs"]), float(r["s"]))
             for r in resp.data
         }
         assert set(got) == set(REGION_MONTH_TOTAL)
@@ -179,15 +179,15 @@ class TestSameGrainMultiAggregateLocking:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", {"field": SAMEGRAIN_RANK, "alias": "gr"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")
         assert len(resp.data) == len(SAMEGRAIN_RANK_OF)
-        got = {key[0]: int(r["orders.gr"]) for key, r in by.items()}
+        got = {key[0]: int(r["gr"]) for key, r in by.items()}
         assert got == SAMEGRAIN_RANK_OF
         for key, r in by.items():
-            assert float(r["orders.s"]) == pytest.approx(REGION_TOTAL[key[0]])
+            assert float(r["s"]) == pytest.approx(REGION_TOTAL[key[0]])
         dry = await engine.execute(query, dry_run=True)
         assert "__regroup__" not in dry.sql
         assert_scope_closed(dry.sql, dialect=dialect)

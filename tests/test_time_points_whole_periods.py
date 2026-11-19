@@ -82,7 +82,7 @@ class TestSubDay:
         async with tp_engine("duckdb", clock=PinnedClock(D(2026, 9, 29, 12, 30))) as engine:
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "ev", "metrics": [PLAIN],
-                "time_dimensions": [{"field": "ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
+                "time_dimensions": [{"field": "ev.ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
                 "whole_periods_only": True,
             }))
         buckets = {bucket_text(r["ev.ts"]) for r in resp.data}
@@ -92,7 +92,7 @@ class TestSubDay:
         async with tp_engine("sqlite", clock=PinnedClock(D(2026, 9, 29, 12, 30))) as engine:
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "ev", "metrics": [PLAIN],
-                "time_dimensions": [{"field": "ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
+                "time_dimensions": [{"field": "ev.ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
                 "whole_periods_only": True,
             }))
         assert "2026-09-29 12:00:00" not in {bucket_text(r["ev.ts"]) for r in resp.data}
@@ -103,7 +103,7 @@ def _two_grain_query(order: list[str]) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "ev", "metrics": [PLAIN],
         "time_dimensions": [{"field": "ts", "granularity": g} for g in order],
-        "filter": ["ts >= '2025-01-15'"], "whole_periods_only": True,
+        "filter": ["ev.ts >= '2025-01-15'"], "whole_periods_only": True,
     })
 
 

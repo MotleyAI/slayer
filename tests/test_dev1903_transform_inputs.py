@@ -90,7 +90,7 @@ class TestMessagesMatchTheLedger:
         _check(formula)
 
     def test_planner_raises_the_same_message(self):
-        measures = [QueryMetric(metric="cumsum(weight)", alias="m")]
+        measures = [QueryMetric(metric="cumsum(sales.weight)", alias="m")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
@@ -108,7 +108,7 @@ class TestInnermostTransformNamed:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_first_over_row_leaf_transform_is_not_the_expression_error(self):
-        measures = [QueryMetric(metric="first(cumsum(weight))", alias="m")]
+        measures = [QueryMetric(metric="first(cumsum(sales.weight))", alias="m")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures)
         assert "not supported over an expression" not in str(ei.value)
@@ -131,7 +131,7 @@ class TestTraversal:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_filter_position(self):
-        measures = [QueryMetric(metric="sum(revenue)", alias="r")]
+        measures = [QueryMetric(metric="sum(sales.revenue)", alias="r")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures, filter=["cumsum(weight) > 0"])
         assert _row_leaf_op(str(ei.value)) == "cumsum"

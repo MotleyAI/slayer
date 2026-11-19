@@ -59,8 +59,8 @@ class TestSqliteJsonExtractInGenerator:
     ) -> None:
         query = SlayerQuery(
             population="users",
-            dimensions=[QueryDimension(field="tier")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="users.tier")],
+            metrics=[QueryMetric(metric="count(users.*)")],
         )
         sql = await _engine_generate(
             query=query, dataset=dataset_with_json_dim, dialect="sqlite",
@@ -74,7 +74,7 @@ class TestSqliteJsonExtractInGenerator:
     ) -> None:
         query = SlayerQuery(
             population="users",
-            metrics=[QueryMetric(metric="sum(is_gold)")],
+            metrics=[QueryMetric(metric="sum(users.is_gold)")],
         )
         sql = await _engine_generate(
             query=query, dataset=dataset_with_json_dim, dialect="sqlite",
@@ -97,8 +97,8 @@ class TestSqliteJsonExtractInGenerator:
         )
         query = SlayerQuery(
             population="users",
-            dimensions=[QueryDimension(field="tier")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="users.tier")],
+            metrics=[QueryMetric(metric="count(users.*)")],
         )
         sql = await _engine_generate(query=query, dataset=model, dialect="sqlite")
         assert "JSON_EXTRACT(" in sql, sql
@@ -116,8 +116,8 @@ class TestSqliteJsonExtractInGenerator:
         """
         query = SlayerQuery(
             population="users",
-            dimensions=[QueryDimension(field="tier")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="users.tier")],
+            metrics=[QueryMetric(metric="count(users.*)")],
         )
         sql = await _engine_generate(
             query=query, dataset=dataset_with_json_dim, dialect="postgres",
@@ -671,8 +671,8 @@ class TestTsqlDialect:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(revenue)")],
-            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(orders.*)"), QueryMetric(metric="sum(orders.revenue)")],
+            dimensions=[QueryDimension(field="orders.status")],
         )
         sql = await _engine_generate(
             query=query, dataset=orders_dataset, dialect="tsql",
@@ -685,9 +685,9 @@ class TestTsqlDialect:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="sum(revenue)")],
+            metrics=[QueryMetric(metric="sum(orders.revenue)")],
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
         )
@@ -703,12 +703,12 @@ class TestTsqlDialect:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(revenue)"),
-                QueryMetric(metric="time_shift(sum(revenue), -1, 'year')", alias="rev_prev_year"),
+                QueryMetric(metric="sum(orders.revenue)"),
+                QueryMetric(metric="time_shift(sum(orders.revenue), -1, 'year')", alias="rev_prev_year"),
             ],
         )
         sql = await _engine_generate(

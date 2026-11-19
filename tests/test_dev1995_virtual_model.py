@@ -85,18 +85,18 @@ class TestOrphanNullCell:
             "population": "customers", "dimensions": ["regions.name"],
             "metrics": _cross(), "to_many_handling": mode}))
         dim = "customers.regions.name"
-        assert float(cells(resp, dim, "customers.s")[None]) == pytest.approx(
+        assert float(cells(resp, dim, "s")[None]) == pytest.approx(
             ORPHAN_NULL_REGION_SUM)
-        assert cells(resp, dim, "customers.n")[None] == ORPHAN_NULL_REGION_COUNT
+        assert cells(resp, dim, "n")[None] == ORPHAN_NULL_REGION_COUNT
 
     async def test_inferred_population(self, base_engine):
         resp = await base_engine.execute(q({
             "dimensions": ["customers.regions.name"], "metrics": _cross()}))
         assert resp.population == "customers"
         dim = "customers.regions.name"
-        assert float(cells(resp, dim, "customers.s")[None]) == pytest.approx(
+        assert float(cells(resp, dim, "s")[None]) == pytest.approx(
             ORPHAN_NULL_REGION_SUM)
-        assert cells(resp, dim, "customers.n")[None] == ORPHAN_NULL_REGION_COUNT
+        assert cells(resp, dim, "n")[None] == ORPHAN_NULL_REGION_COUNT
 
 
 def _case(payload, dim, grain, population, source, id_):
@@ -105,17 +105,17 @@ def _case(payload, dim, grain, population, source, id_):
 
 
 PARITY_CASES = [
-    _case({"population": "customers", "dimensions": ["plan_code"], "metrics": _cross()},
+    _case({"population": "customers", "dimensions": ["customers.plan_code"], "metrics": _cross()},
           "customers.plan_code", "customers.plan_code",
           (SUM_BY_PLAN, COUNT_BY_PLAN), (SUM_BY_PLAN, COUNT_BY_PLAN), "single-hop-dangling"),
     _case({"population": "customers", "dimensions": ["regions.name"], "metrics": _cross()},
           "customers.regions.name", "customers.regions.name",
           (SUM_BY_REGION, COUNT_BY_REGION), (SUM_BY_REGION, COUNT_BY_REGION), "multi-hop-grain"),
-    _case({"population": "regions", "dimensions": ["name"], "metrics": _cross("customers.")},
+    _case({"population": "regions", "dimensions": ["regions.name"], "metrics": _cross("customers.")},
           "regions.name", "customers.regions.name",
           (SUM_BY_REGION, COUNT_BY_REGION), (SUM_BY_REGION, COUNT_BY_REGION),
           "multi-hop-source-null-name"),
-    _case({"population": "stores", "dimensions": ["city"], "metrics": _cross()},
+    _case({"population": "stores", "dimensions": ["stores.city"], "metrics": _cross()},
           "stores.city", "stores.city",
           (STORE_SUM_BY_CITY, STORE_COUNT_BY_CITY), (SUM_BY_CITY, COUNT_BY_CITY),
           "partial-composite"),
@@ -147,8 +147,8 @@ class TestParityWithMaterialisedAggregate:
         grain = case["grain"]
         vm = await materialise(vm_engine, name="vm", payload=_local(grain))
         resp = await vm_engine.execute(q(_local(grain)))
-        s = cells(resp, f"orders.{grain}", "orders.s")
-        n = cells(resp, f"orders.{grain}", "orders.n")
+        s = cells(resp, f"orders.{grain}", "s")
+        n = cells(resp, f"orders.{grain}", "n")
         assert None in s
         assert_parity(s, vm["s"], empty=None)
         assert_parity(n, vm["n"], empty=0)
@@ -162,7 +162,7 @@ AMOUNT = {"metric": "sum(amount)", "alias": "a"}
 
 def _orders_assoc(**kw) -> dict:
     return {"population": "orders", "to_many_handling": "associate",
-            "dimensions": ["status"], **kw}
+            "dimensions": ["orders.status"], **kw}
 
 
 class TestSpellingInvariantAssociation:
@@ -175,14 +175,14 @@ class TestSpellingInvariantAssociation:
         """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every measure spelling."""
         resp = await null_engine.execute(q(_orders_assoc(
             metrics=[{"metric": formula, "alias": "c"}])))
-        _assert_cells(cells(resp, "orders.status", "orders.c"), SPEND_BY_STATUS)
+        _assert_cells(cells(resp, "orders.status", "c"), SPEND_BY_STATUS)
 
     async def test_customers_rooted_twin_agrees(self, null_engine):
         resp = await null_engine.execute(q({
             "population": "customers", "to_many_handling": "associate",
             "dimensions": ["orders.status"],
-            "metrics": [{"metric": "sum(spend)", "alias": "c"}]}))
-        _assert_cells(cells(resp, "customers.orders.status", "customers.c"),
+            "metrics": [{"metric": "sum(customers.spend)", "alias": "c"}]}))
+        _assert_cells(cells(resp, "orders.status", "c"),
                       SPEND_BY_STATUS)
 
     async def test_filter_only_reads_the_same_null_cell(self, null_engine):
@@ -205,7 +205,7 @@ class TestRowFilterNarrowsTheVirtualModel:
         """channel='app': NULL-status cell = c5 only (80), never c7's null-extended row (135)."""
         resp = await app_null_engine.execute(q(_orders_assoc(
             metrics=[SPEND], filter=["channel = 'app'"])))
-        _assert_cells(cells(resp, "orders.status", "orders.c"), APP_SPEND_BY_STATUS)
+        _assert_cells(cells(resp, "orders.status", "c"), APP_SPEND_BY_STATUS)
 
 
 class TestCompositeGrainNullCell:
@@ -214,4 +214,4 @@ class TestCompositeGrainNullCell:
         resp = await app_null_engine.execute(q(_orders_assoc(
             dimensions=["customers.regions.name", "status"], metrics=[SPEND])))
         by = rows_by(resp, "orders.customers.regions.name", "orders.status")
-        _assert_cells({k: v["orders.c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)
+        _assert_cells({k: v["c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)

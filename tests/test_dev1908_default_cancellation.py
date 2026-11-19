@@ -46,7 +46,7 @@ from tests._dev1908_fixtures import (
 
 def _cells(resp) -> dict:
     """`{dimension-value tuple: measure value}` over a response's rows."""
-    return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"): r["orders.w"]
+    return {tuple(v for k, v in sorted(r.items()) if k != "w"): r["w"]
             for r in resp.data}
 
 
@@ -118,7 +118,7 @@ async def engine(request):
 async def _value(engine, expression: str) -> float:
     resp = await engine.execute(
         orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
-    return float(resp.data[0]["orders.w"])
+    return float(resp.data[0]["w"])
 
 
 class TestExecutedValues:
@@ -202,7 +202,7 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
             resp = await e.execute(query)
             dry = await e.execute(query, dry_run=True)
             assert dry.sql is not None
-            return float(resp.data[0]["orders.w"]), dry.sql
+            return float(resp.data[0]["w"]), dry.sql
 
     ev, explicit_sql = await run(
         "wsum_region_pop(ship_region.countries.gdp, weight=ship_region.pop)")
@@ -260,9 +260,9 @@ class TestStageQueryUnaffected:
         """A later stage aggregating a stage's output resolves no definition
         default (a stage has no model host) — executes exactly as before."""
         stage1 = orders_q(name="stage1", dimensions=["status"],
-                          metrics=[QueryMetric(metric="sum(amount)", alias="amount_sum")])
-        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="status")],
-                           metrics=[QueryMetric(metric="max(amount_sum)", alias="mx")])
+                          metrics=[QueryMetric(metric="sum(orders.amount)", alias="amount_sum")])
+        root = SlayerQuery(population="stage1", dimensions=[QueryDimension(field="stage1.status")],
+                           metrics=[QueryMetric(metric="max(stage1.amount_sum)", alias="mx")])
         resp = await engine.execute([stage1, root])
         vals = sorted(float(next(v for k, v in r.items() if "mx" in k))
                       for r in resp.data)

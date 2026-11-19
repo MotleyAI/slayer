@@ -357,8 +357,8 @@ CITY_ORDER = {
 
 def discount_rows_query(*, direction: str, nulls: str) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["id"], "distinct_dimension_values": False,
-        "order": [{"field": "discount", "direction": direction, "nulls": nulls}, {"field": "id"}],
+        "population": "orders", "dimensions": ["orders.id"], "distinct_dimension_values": False,
+        "order": [{"field": "orders.discount", "direction": direction, "nulls": nulls}, {"field": "orders.id"}],
     })
 
 

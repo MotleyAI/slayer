@@ -55,7 +55,7 @@ def _relation(dataset: SlayerDataset, *, dialect: str) -> list[str]:
 
 
 async def _generated_relation(dataset: SlayerDataset, *, dialect: str) -> list[tuple[str, bool]]:
-    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": dataset.name, "dimensions": ["qty"]}),
+    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": dataset.name, "dimensions": ["items.qty"]}),
                                  dataset=dataset, dialect=dialect)
     (table,) = parse_query(sql=sql, target_dialect=get_dialect(dialect)).find_all(exp.Table)
     return [(p.name, p.quoted) for p in cast(list[exp.Identifier], table.parts)]

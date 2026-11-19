@@ -34,7 +34,7 @@ class TestAssociationKernel:
         """An unattributable explicit partition key attributes under associate."""
         planned = plan_query(
             query=assoc_q(dimensions=["status"], metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="cm")]),
+                metric="sum(customers.spend, partition_by=orders.status)", alias="cm")]),
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
 

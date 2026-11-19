@@ -130,7 +130,7 @@ class TestSingleColumnUnchanged:
 
     async def test_single_column_value(self, exec_backend) -> None:
         resp = await exec_backend.execute(sales_q(metrics=[_metric("sum(q_amount)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(QAMT_SUM)
+        assert float(resp.data[0]["m"]) == pytest.approx(QAMT_SUM)
 
     async def test_ranked_over_filtered_picks_masked_value_sql(self) -> None:
         # q_amount:last needs a ranking time column; the masked value is picked.
@@ -149,7 +149,7 @@ class TestSingleColumnUnchanged:
         ])
         resp = await engine.execute(
             SlayerQuery(population="tsales", metrics=[_metric("last(q_amount)")]))
-        assert resp.data[0]["tsales.m"] is None
+        assert resp.data[0]["m"] is None
 
     @pytest.mark.parametrize("position", ["measure", "dimension", "filter", "last"])
     async def test_filtered_physical_column_masked_once(self, position: str) -> None:
@@ -160,10 +160,10 @@ class TestSingleColumnUnchanged:
         query = {
             "measure": SlayerQuery(population="tsales", metrics=[_metric("sum(amt)")]),
             "dimension": SlayerQuery(
-                population="tsales", dimensions=[QueryDimension(field="amt")],
+                population="tsales", dimensions=[QueryDimension(field="tsales.amt")],
                 metrics=[_metric("count(id)")]),
             "filter": SlayerQuery(
-                population="tsales", metrics=[_metric("count(id)")], filter=["amt > 0"]),
+                population="tsales", metrics=[_metric("count(id)")], filter=["tsales.amt > 0"]),
             "last": SlayerQuery(population="tsales", metrics=[_metric("last(amt)")]),
         }[position]
         sql = await gen(query, datasets=[model])
@@ -179,7 +179,7 @@ class TestSingleColumnUnchanged:
         ])
         resp = await engine.execute(
             SlayerQuery(population="tsales", metrics=[_metric("last(q_amount)")]))
-        assert float(resp.data[0]["tsales.m"]) == pytest.approx(70.0)
+        assert float(resp.data[0]["m"]) == pytest.approx(70.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -192,19 +192,19 @@ class TestBehaviourChanges:
         weighted_avg skips the masked (NULL) values' weights, like any NULL value."""
         resp = await exec_backend.execute(
             sales_q(metrics=[_metric("wavg(q_amount, weight=quantity)")]))
-        got = float(resp.data[0]["sales.m"])
+        got = float(resp.data[0]["m"])
         assert got == pytest.approx(WAVG_QAMT_WEIGHT_QTY)
         assert got != pytest.approx(WAVG_QAMT_WEIGHT_QTY_WRONG)
         builtin = await exec_backend.execute(
             sales_q(metrics=[_metric("weighted_avg(q_amount, weight=quantity)")]))
-        assert float(builtin.data[0]["sales.m"]) == pytest.approx(WEIGHTED_AVG_QAMT_WEIGHT_QTY)
+        assert float(builtin.data[0]["m"]) == pytest.approx(WEIGHTED_AVG_QAMT_WEIGHT_QTY)
 
     async def test_filtered_column_used_as_parameter_is_masked(self, exec_backend) -> None:
         """#2: weighted_avg(amount, weight=q_amount) masks the weight (NULL on
         non-Q rows), not the former silently-unfiltered weight."""
         resp = await exec_backend.execute(
             sales_q(metrics=[_metric("weighted_avg(amount, weight=q_amount)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
+        assert float(resp.data[0]["m"]) == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 
     async def test_filtered_column_as_dimension_groups_non_matching_under_null(
         self, exec_backend,
@@ -213,7 +213,7 @@ class TestBehaviourChanges:
         NULL group, each Q amount its own cell."""
         resp = await exec_backend.execute(
             sales_q(dimensions=["q_amount"], metrics=[_metric("count(*)", "n")]))
-        counts = {k[0]: int(v["sales.n"]) for k, v in rows_by(resp, "sales.q_amount").items()}
+        counts = {k[0]: int(v["n"]) for k, v in rows_by(resp, "sales.q_amount").items()}
         assert counts == COUNT_BY_QAMOUNT
 
 
@@ -226,12 +226,12 @@ class TestFilteredColumnPositions:
                        if r[3] == "Q" and r[4] is not None and r[4] > 10)
         resp = await exec_backend.execute(
             sales_q(metrics=[_metric("sum(amount)")], filter=["q_amount > 10"]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(expected)
+        assert float(resp.data[0]["m"]) == pytest.approx(expected)
 
     async def test_order_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
             dimensions=["q_amount"], metrics=[_metric("sum(amount)")],
-            order=[OrderItem(field="q_amount", direction="asc")])
+            order=[OrderItem(field="sales.q_amount", direction="asc")])
         resp = await exec_backend.execute(query)
         ordered = [row["sales.q_amount"] for row in resp.data]
         # Only the masked Q amounts are cells, in ascending order; non-Q rows
@@ -261,12 +261,12 @@ class TestFilteredLeafInExpression:
     async def test_sum_over_filtered_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(
             sales_q(metrics=[_metric("sum(q_amount - 1)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(SUM_QAMT_MINUS_1)
+        assert float(resp.data[0]["m"]) == pytest.approx(SUM_QAMT_MINUS_1)
 
     async def test_count_over_filtered_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(
             sales_q(metrics=[_metric("count(q_amount - 1)")]))
-        assert int(resp.data[0]["sales.m"]) == COUNT_QAMT_MINUS_1
+        assert int(resp.data[0]["m"]) == COUNT_QAMT_MINUS_1
 
 
 # --------------------------------------------------------------------------- #
@@ -277,7 +277,7 @@ class TestFilteredLeafOnJoinedModel:
         resp = await exec_backend.execute(orders_q(
             dimensions=["status"],
             metrics=[_metric("sum(amount - customers.north_spend)")]))
-        got = {s: float(v["orders.m"]) for s, v in status_key(resp).items()}
+        got = {s: float(v["m"]) for s, v in status_key(resp).items()}
         for status, expected in NORTH_SPEND_EXPR_BY_STATUS.items():
             assert got[status] == pytest.approx(expected)
 
@@ -371,7 +371,7 @@ class TestDerivedOverFiltered:
         # q_double = q_amount * 2, so sum over Q rows = 2 * QAMT_SUM; a wrong
         # expansion (raw amount) would sum every row and miss this value.
         resp = await exec_qdouble.execute(sales_q(metrics=[_metric("sum(q_double)")]))
-        assert float(resp.data[0]["sales.m"]) == pytest.approx(2 * QAMT_SUM)
+        assert float(resp.data[0]["m"]) == pytest.approx(2 * QAMT_SUM)
 
 
 # --------------------------------------------------------------------------- #

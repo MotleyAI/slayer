@@ -159,13 +159,13 @@ class TestDualPhaseExecution:
         _, engine = exec_backend
         alone = await engine.execute(monthly_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="cumsum(sum(amount))", alias="c")],
+            metrics=[QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
             time_dimensions=month_td()))
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
-                      QueryMetric(metric="cumsum(sum(amount))", alias="c")],
+                      QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
             time_dimensions=month_td()))
         assert _region_month(resp, "a") == pytest.approx(A_BY_REGION_MONTH)
         assert _region_month(resp, "b") == pytest.approx(B_BY_REGION_MONTH)

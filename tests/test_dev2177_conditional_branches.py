@@ -77,7 +77,7 @@ def inferred_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
 def stage_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
     """The type a later stage's schema reports for ``x``."""
     first = SlayerQuery.model_validate({"name": "s1", "population": "orders", **item})
-    second = SlayerQuery.model_validate({"population": "s1", "dimensions": ["x"]})
+    second = SlayerQuery.model_validate({"population": "s1", "dimensions": ["s1.x"]})
     planned = plan_stages(queries=[first, second], bundle=_bundle(dialect))
     (column,) = [
         c for p in planned if p.stage_schema is not None and p.stage_schema.relation_name == "s1"
@@ -184,13 +184,13 @@ class TestScenarios:
 
     async def test_unknown_column_is_not_a_mismatch(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(dimension_query("CASE WHEN amount > 1 THEN opaque ELSE amount END"))
-        assert sorted(int(r["orders.x"]) for r in resp.data) == [10, 20, 40, 50, 60, 90, 100, 120, 140, 150, 200]
+        assert sorted(int(r["x"]) for r in resp.data) == [10, 20, 40, 50, 60, 90, 100, 120, 140, 150, 200]
 
     async def test_inside_a_stage(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(engine, [
             {"name": "s1", "population": "orders",
-             "dimensions": [{"field": "status", "alias": "s"}, {"field": "amount", "alias": "n"}]},
-            {"population": "s1", "dimensions": [{"field": "coalesce(s, n)", "alias": "x"}]},
+             "dimensions": [{"field": "orders.status", "alias": "s"}, {"field": "orders.amount", "alias": "n"}]},
+            {"population": "s1", "dimensions": [{"field": "coalesce(s1.s, s1.n)", "alias": "x"}]},
         ], "String", "Integer", call=("coalesce",))
 
 

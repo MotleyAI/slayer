@@ -40,7 +40,7 @@ POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 MED = QueryMetric(metric="median(customers.spend)", alias="med")
 RENT = QueryMetric(metric="sum(stores.rent)", alias="rent")
 GS = QueryMetric(metric="sum(customers.gold_spend)", alias="gs")
-PART = QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="cm")
+PART = QueryMetric(metric="sum(customers.spend, partition_by=orders.status)", alias="cm")
 
 
 def _cases() -> dict:

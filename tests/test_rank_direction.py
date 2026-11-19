@@ -198,7 +198,7 @@ class TestDirectionInEveryPosition:
         dim = {"field": "rank(sum(amount, partition_by=region), direction='asc')", "alias": "rk"}
         resp = await engine.execute(sales_q(
             dimensions=["region", dim], metrics=[_m("sum(amount)", "a")]))
-        got = {k[0]: k[1] for k in rows_by(resp, "sales.region", "sales.rk")}
+        got = {k[0]: k[1] for k in rows_by(resp, "sales.region", "rk")}
         assert got == RANK_ASC
 
     @pytest.mark.parametrize(("direction", "want"), [("asc", 1340 / 32), ("desc", 810 / 33)])
@@ -207,7 +207,7 @@ class TestDirectionInEveryPosition:
             f"weighted_avg(amount, weight=rank(sum(amount, partition_by=region), "
             f"direction='{direction}'))", "w")]))
         [row] = resp.data
-        assert float(row["sales.w"]) == pytest.approx(want)
+        assert float(row["w"]) == pytest.approx(want)
 
     async def test_saved_model_measure(self, saved_asc_engine):
         resp = await saved_asc_engine.execute(sales_q(dimensions=["region"], metrics=["saved_rank"]))

@@ -202,26 +202,26 @@ class TestExecutedPositions:
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[UREG, "city"], metrics=[QueryMetric(metric=RANK_UREG, alias="r")]))
-        got = {k: v["sales.r"] for k, v in rows_by(resp, "sales.ureg", "sales.city").items()}
+        got = {k: v["r"] for k, v in rows_by(resp, "ureg", "sales.city").items()}
         assert got == MEASURE_RANKS
 
     async def test_aggregation_parameter(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[UREG], metrics=[QueryMetric(metric=PARAM_UREG, alias="w")]))
-        got = {k[0]: v["sales.w"] for k, v in rows_by(resp, "sales.ureg").items()}
+        got = {k[0]: v["w"] for k, v in rows_by(resp, "ureg").items()}
         approx_map(got=got, want=PARAM_BY_UREG)
 
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[UREG, "city"], metrics=[AMOUNT],
             filter=[f"{RANK_UREG} <= 1"]))
-        assert set(rows_by(resp, "sales.ureg", "sales.city")) == FILTER_RANK1
+        assert set(rows_by(resp, "ureg", "sales.city")) == FILTER_RANK1
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[UREG, "city"], metrics=[AMOUNT],
             order=[{"field": RANK_UREG, "direction": "asc"}]))
-        keys = [(r["sales.ureg"], r["sales.city"]) for r in resp.data]
+        keys = [(r["ureg"], r["sales.city"]) for r in resp.data]
         pos = {MEASURE_RANKS[k]: [] for k in keys}
         for i, k in enumerate(keys):
             pos[MEASURE_RANKS[k]].append(i)
@@ -230,7 +230,7 @@ class TestExecutedPositions:
 
     async def test_dimension_position_member_key(self, engine):
         resp = await engine.execute(sales_q(dimensions=[UREG, DIM_R], metrics=[AMOUNT]))
-        got = {k: v["sales.a"] for k, v in rows_by(resp, "sales.ureg", "sales.r").items()}
+        got = {k: v["a"] for k, v in rows_by(resp, "ureg", "r").items()}
         approx_map(got=got, want=DIM_CELLS)
 
     async def test_undeclared_name_stays_unknown(self, engine):
@@ -247,21 +247,21 @@ class TestAttachCarryingKey:
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[BAND, "city"], metrics=[AMOUNT], filter=[f"{RANK_BAND} <= 1"]))
-        got = {k: v["sales.a"] for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
+        got = {k: v["a"] for k, v in rows_by(resp, "spend_band", "sales.city").items()}
         approx_map(got=got, want=BAND_RANK1)
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[BAND, "city"], metrics=[AMOUNT],
             order=[{"field": RANK_BAND, "direction": "asc"}]))
-        keys = [(r["sales.spend_band"], r["sales.city"]) for r in resp.data]
+        keys = [(r["spend_band"], r["sales.city"]) for r in resp.data]
         assert set(keys[:2]) == set(BAND_RANK1)
 
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[BAND, "city"], metrics=[QueryMetric(metric=RANK_BAND, alias="r")]))
-        got = {k: v["sales.r"]
-               for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
+        got = {k: v["r"]
+               for k, v in rows_by(resp, "spend_band", "sales.city").items()}
         assert got == _band_city_ranks()
         assert {k for k, r in got.items() if r is not None and r <= 1} == set(BAND_RANK1)
 
@@ -270,5 +270,5 @@ class TestAttachCarryingKey:
             dimensions=[BAND],
             metrics=[QueryMetric(
                 metric=f"weighted_avg(amount, weight={PARAM_BAND})", alias="w")]))
-        approx_map(got={r["sales.spend_band"]: r["sales.w"] for r in resp.data},
+        approx_map(got={r["spend_band"]: r["w"] for r in resp.data},
                    want=_param_by_band())

@@ -65,7 +65,7 @@ class TestPredicateInEveryPosition:
     @pytest.mark.parametrize(("pred", "expected"), PREDICATES, ids=PRED_IDS)
     async def test_dimension(self, engine: SlayerQueryEngine, pred: str, expected: frozenset[int]) -> None:
         resp = await engine.execute(q(dimensions=["id", {"field": pred, "alias": "p"}]))
-        assert {int(r["orders.id"]) for r in resp.data if r["orders.p"]} == expected
+        assert {int(r["orders.id"]) for r in resp.data if r["p"]} == expected
 
     @pytest.mark.parametrize(("pred", "expected"), PREDICATES, ids=PRED_IDS)
     async def test_order_target(self, engine: SlayerQueryEngine, pred: str, expected: frozenset[int]) -> None:
@@ -110,7 +110,7 @@ class TestValueInEveryPosition:
 class TestAggregateForms:
     async def test_count_distinct_measure(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m("count(distinct region)"), m("count_distinct(region)", "w")]))
-        assert resp.data[0]["orders.v"] == resp.data[0]["orders.w"] == 2
+        assert resp.data[0]["v"] == resp.data[0]["w"] == 2
 
     async def test_count_distinct_in_post_aggregate_filter(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["status"], metrics=[m("count(*)")],
@@ -128,7 +128,7 @@ class TestAggregateForms:
             m("sum(iif(status == 'paid' and amount is not None, amount, 0))", "py"),
         ]))
         row = resp.data[0]
-        assert num(row["orders.sql"]) == num(row["orders.py"]) == 70.0
+        assert num(row["sql"]) == num(row["py"]) == 70.0
 
     async def test_order_by_sql_spelled_measure(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["status"], metrics=[m("count(*)")],

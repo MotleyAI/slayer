@@ -130,7 +130,7 @@ async def test_a_longer_name_is_no_root_qualifier(engine: SlayerQueryEngine) -> 
 # --------------------------------------------------------------------------- #
 async def test_computed_dimension_auto_name_keeps_its_text(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(dimensions=[{"field": "orders.amount * 2"}], metrics=["count(*)"]))
-    assert resp.columns == ["orders.orders_amount_2", "orders._count"]
+    assert resp.columns == ["orders.amount_2", "orders._count"]
 
 
 async def test_expression_time_dimension_auto_name_keeps_its_text(engine: SlayerQueryEngine) -> None:
@@ -138,7 +138,7 @@ async def test_expression_time_dimension_auto_name_keeps_its_text(engine: Slayer
         time_dimensions=[{"field": "coalesce(orders.shipped_at, orders.created_at)", "granularity": "month"}],
         metrics=["count(*)"],
     ))
-    assert resp.columns == ["orders.coalesce_orders_shipped_at_orders_created_at", "orders._count"]
+    assert resp.columns == ["orders.coalesce_shipped_at_created_at", "orders._count"]
 
 
 # --------------------------------------------------------------------------- #
@@ -160,12 +160,12 @@ async def test_query_backed_root_measure(engine: SlayerQueryEngine) -> None:
     await assert_same(
         engine,
         {"population": "qb", "dimensions": ["qb.status"], "metrics": ["sum(qb.tot)"], "filter": ["qb.tot > 25"]},
-        {"population": "qb", "dimensions": ["status"], "metrics": ["sum(tot)"], "filter": ["tot > 25"]},
+        {"population": "qb", "dimensions": ["qb.status"], "metrics": ["sum(qb.tot)"], "filter": ["qb.tot > 25"]},
     )
 
 
-S1 = {"name": "s1", "population": "orders", "dimensions": ["status"],
-      "metrics": [{"metric": "sum(amount)", "alias": "tot"}]}
+S1 = {"name": "s1", "population": "orders", "dimensions": ["orders.status"],
+      "metrics": [{"metric": "sum(orders.amount)", "alias": "tot"}]}
 
 STAGE_POSITIONS = {
     "computed-dimension": (
@@ -190,25 +190,25 @@ async def test_a_stage_root_takes_its_own_name(engine: SlayerQueryEngine, positi
 
 
 async def test_a_stage_root_qualifies_a_list_columns_elements() -> None:
-    stage = {"name": "s", "population": "contractors", "dimensions": ["team"],
+    stage = {"name": "s", "population": "contractors", "dimensions": ["contractors.team"],
              "metrics": [metric("collect(skills.value)", "team_skills")]}
     async with list_engine() as eng:
         await assert_same(
             eng,
             [stage, {"population": "s", "dimensions": ["s.team_skills.value"],
                      "metrics": [metric("count(s.team_skills.*)", "n")]}],
-            [stage, {"population": "s", "dimensions": ["team_skills.value"],
+            [stage, {"population": "s", "dimensions": ["s.team_skills.value"],
                      "metrics": [metric("count(team_skills.*)", "n")]}],
         )
 
 
 async def test_downstream_keys_of_a_qualified_dimension(engine: SlayerQueryEngine) -> None:
-    final = {"population": "s1", "dimensions": ["status"], "metrics": ["sum(amount_sum)"]}
+    final = {"population": "s1", "dimensions": ["s1.status"], "metrics": ["sum(s1.amount_sum)"]}
     await assert_same(
         engine,
         [{"name": "s1", "population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"]},
          final],
-        [{"name": "s1", "population": "orders", "dimensions": ["status"], "metrics": ["sum(amount)"]}, final],
+        [{"name": "s1", "population": "orders", "dimensions": ["orders.status"], "metrics": ["sum(orders.amount)"]}, final],
     )
 
 
@@ -346,7 +346,7 @@ async def test_a_root_qualified_entry_is_the_saved_entry(refine: SlayerQueryEngi
 ], ids=["named", "unnamed", "shorthand", "root-qualified", "root-qualified-named"])
 async def test_restating_a_saved_measure_by_name(refine: SlayerQueryEngine, measures: list) -> None:
     refined = await refine.execute("monthly_revenue", refine={"metrics": measures})
-    expected = await refine.execute("monthly_revenue", refine={"metrics": ["count(*)"]})
+    expected = await refine.execute("monthly_revenue", refine={"metrics": ["count(orders.*)"]})
     assert refined.sql == expected.sql
     assert refined.columns == expected.columns
     assert by_month(refined.data) == MONTHLY
@@ -360,7 +360,7 @@ async def test_a_root_qualified_restatement_with_another_label_conflicts(refine:
 
 
 async def test_a_root_qualified_unnamed_formula_is_the_saved_formula(refine: SlayerQueryEngine) -> None:
-    await refine.create_dataset_from_query(query={"population": "orders", "metrics": ["sum(amount)"]}, name="total")
+    await refine.create_dataset_from_query(query={"population": "orders", "metrics": ["sum(orders.amount)"]}, name="total")
     plain = await refine.execute("total")
     refined = await refine.execute("total", refine={"metrics": ["sum(orders.amount)"]})
     assert refined.sql == plain.sql
@@ -369,8 +369,8 @@ async def test_a_root_qualified_unnamed_formula_is_the_saved_formula(refine: Sla
 
 async def test_refinement_literals_are_never_conflated(refine: SlayerQueryEngine) -> None:
     await refine.create_dataset_from_query(
-        query={"population": "orders", "metrics": ["sum(iif(status = 'paid', amount, 0))"]}, name="paid_total",
+        query={"population": "orders", "metrics": ["sum(iif(orders.status = 'paid', orders.amount, 0))"]}, name="paid_total",
     )
-    resp = await refine.execute("paid_total", refine={"metrics": ["sum(iif(status = 'orders.paid', amount, 0))"]})
+    resp = await refine.execute("paid_total", refine={"metrics": ["sum(iif(orders.status = 'orders.paid', orders.amount, 0))"]})
     assert len(resp.columns) == 2
     assert sorted(float(v) for v in resp.data[0].values()) == [0.0, 255.0]

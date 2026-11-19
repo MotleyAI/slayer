@@ -47,7 +47,7 @@ from tests._gateway_harness import (
 from tests._stored_upgrade_fixtures import raw_store
 
 REVENUE_BY_STATUS = {
-    "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+    "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 }
 ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],
@@ -163,7 +163,7 @@ class TestGatewayServesEveryFeature:
         )
         assert twin.attempts == []
         assert twin.default == [
-            {"orders.status": "new", "orders.rev": 20.0}, {"orders.status": "paid", "orders.rev": 40.5},
+            {"orders.status": "new", "rev": 20.0}, {"orders.status": "paid", "rev": 40.5},
         ]
         assert twin.gateway == twin.default
 

@@ -169,7 +169,7 @@ class TestEachRouteIsRefused:
 
     async def test_a_hostile_variable_is_refused_before_sql_runs(self, shop: _Shop, executed: list[str]) -> None:
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"metric": "sum(scaled)"}],
+            "population": "orders", "metrics": [{"metric": "sum(orders.scaled)"}],
             "variables": {"k": "(SELECT count(*) FROM secrets)"},
         })
         with pytest.raises(ValueError, match="literal values"):
@@ -181,7 +181,7 @@ class TestEachRouteIsRefused:
     ) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "weighted_avg(amount, weight='length(sqlite_version())')"}],
+            "metrics": [{"metric": "weighted_avg(orders.amount, weight='length(sqlite_version())')"}],
         })
         with pytest.raises(UnanalyzableAggregationParameterError):
             await shop.engine.execute(query)
@@ -208,7 +208,7 @@ class TestSurfaces:
         server = create_mcp_server(storage=shop.storage)
         with pytest.raises(ToolError, match="literal values"):
             await server.call_tool(name="query", arguments={"query": {
-                "population": "orders", "metrics": [{"metric": "sum(scaled)"}],
+                "population": "orders", "metrics": [{"metric": "sum(orders.scaled)"}],
                 "variables": {"k": "(SELECT count(*) FROM secrets)"},
             }})
         assert not any("secrets" in sql or "sqlite_version" in sql for sql in executed)
@@ -219,15 +219,15 @@ class TestModeBSpellingsRun:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"field": "upper(customers.tier)", "alias": "tier_label"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }))
-        assert {r["orders.tier_label"]: r["orders.rev"] for r in resp.data} == {"GOLD": 70.0, "SILVER": 30.0}
+        assert {r["tier_label"]: r["rev"] for r in resp.data} == {"GOLD": 70.0, "SILVER": 30.0}
 
     async def test_a_literal_variable_binds_into_stored_mode_a(self, shop: _Shop) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"metric": "sum(scaled)", "alias": "s"}], "variables": {"k": 2},
+            "population": "orders", "metrics": [{"metric": "sum(orders.scaled)", "alias": "s"}], "variables": {"k": 2},
         }))
-        assert resp.data[0]["orders.s"] == pytest.approx(200.0)
+        assert resp.data[0]["s"] == pytest.approx(200.0)
 
     @pytest.mark.parametrize("formula", [
         "weighted_avg(amount, weight='id * 2')",
@@ -238,4 +238,4 @@ class TestModeBSpellingsRun:
             "population": "orders", "metrics": [{"metric": formula, "alias": "w"}],
         }))
         # sum(amount * id * 2) / sum(id * 2) = 600 / 20
-        assert resp.data[0]["orders.w"] == pytest.approx(30.0)
+        assert resp.data[0]["w"] == pytest.approx(30.0)

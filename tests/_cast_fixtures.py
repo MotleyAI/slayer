@@ -65,7 +65,7 @@ async def check_array_cast(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(tags_query(dimensions=["id"], filter=["contains(CAST(codes AS INT[]), 3)"]))
     assert {int(r["tags.id"]) for r in resp.data} == CONTAINS_3, resp.sql
     resp = await engine.execute(tags_query(dimensions=["id", {"field": "length(codes::INT[])", "alias": "n"}]))
-    got = {int(r["tags.id"]): (None if r["tags.n"] is None else int(r["tags.n"])) for r in resp.data}
+    got = {int(r["tags.id"]): (None if r["n"] is None else int(r["n"])) for r in resp.data}
     assert got == LENGTHS, resp.sql
 
 

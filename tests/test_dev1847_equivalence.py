@@ -34,11 +34,11 @@ def _sq_dataset(outer: str) -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name=f"s1_{outer}", population="sales",
-                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="ct")]),
+                dimensions=[QueryDimension(field="sales.region"), QueryDimension(field="sales.city")],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="ct")]),
             SlayerQuery(
                 population=f"s1_{outer}",
-                dimensions=[QueryDimension(field="region")],
+                dimensions=[QueryDimension(field="sales.region")],
                 metrics=[QueryMetric(metric=f"{outer}(ct)", alias="v")]),
         ])
 

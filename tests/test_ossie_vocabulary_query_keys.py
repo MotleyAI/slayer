@@ -43,7 +43,7 @@ EXTENSION: dict[str, Any] = {
 TWO_STAGES: list[dict[str, Any]] = [
     {"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "buyer.name"],
      "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-     "metrics": [{"metric": "sum(amount)", "alias": "total"}, "aov"],
+     "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}, "aov"],
      "filter": ["amount > 5"], "order": [{"field": "total", "direction": "desc"}],
      "extensions": [EXTENSION]},
     {"population": "per_customer", "metrics": [{"metric": "avg(total)", "alias": "avg_total"}],
@@ -85,7 +85,7 @@ class TestDump:
         assert dumped[0]["metrics"][0]["metric"] == "sum(amount)"
 
     def test_a_field_reference_names_its_dataset(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"],
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"],
                                             "dimensions": [{"field": "customers.name"}]})
         [dim] = query.dimensions or []
         assert isinstance(dim, QueryDimension)
@@ -126,7 +126,7 @@ async def test_a_nested_query_is_stored_in_ossie_keys(backend: str, tmp_path: Pa
     await storage.save_dataset(SlayerDataset.model_validate(shop_orders()))
     saved = SlayerDataset.model_validate({"name": "by_region", "data_source": "shop", "source_queries": [
         {"population": "orders", "dimensions": ["customers.region"],
-         "metrics": [{"metric": "sum(amount)", "alias": "total"}], "filter": ["amount > 0"],
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}], "filter": ["orders.amount > 0"],
          "order": [{"field": "total"}]}]})
     await storage.save_dataset(saved)
     doc = stored_document(backend=backend, base=str(tmp_path), name="by_region")
@@ -141,9 +141,9 @@ async def test_a_refinement_in_ossie_keys_applies_as_before(backend: str) -> Non
         with recorded() as caught:
             refined = await engine.execute(SAVED_QUERY, refine=fresh(refine))
         expected = await engine.execute({
-            "population": "orders", "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "revenue"}, {"metric": "count(*)", "alias": "n"}],
-            "filter": ["status = 'paid'", "region = 'US'"],
+            "population": "orders", "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}, {"metric": "count(orders.*)", "alias": "n"}],
+            "filter": ["orders.status = 'paid'", "orders.region = 'US'"],
         })
     assert deprecations(caught) == []
     assert normal(refined)["rows"] == normal(expected)["rows"]
@@ -156,7 +156,7 @@ async def test_rest_runs_a_query_in_ossie_keys(tmp_path: Path) -> None:
     await storage.save_dataset(SlayerDataset.model_validate(shop_orders()))
     resp = TestClient(create_app(storage=storage)).post("/query", json={
         "population": "orders", "dimensions": ["customers.region"],
-        "metrics": [{"metric": "sum(amount)", "alias": "total"}], "filter": ["amount > 0"],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}], "filter": ["orders.amount > 0"],
         "order": [{"field": "total", "direction": "desc"}],
     })
     assert resp.status_code == 200, resp.text

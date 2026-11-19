@@ -33,7 +33,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 def _bundle() -> ResolvedSourceBundle:
@@ -58,7 +58,7 @@ class TestKernelSynthesis:
     def test_bare_windowed_attach_carries_trailing_window_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -78,7 +78,7 @@ class TestKernelSynthesis:
         planned = _plan(q(
             dimensions=["status", BAND],
             metrics=[M, QueryMetric(
-                metric="sum(amount, partition_by=status)", alias="rm")],
+                metric="sum(orders.amount, partition_by=orders.status)", alias="rm")],
         ))
         assert planned.regroup_attach_plans
         for attach in planned.regroup_attach_plans:
@@ -89,7 +89,7 @@ class TestKernelSynthesis:
         partly-frame-bound one keeps its id and gains the population residual."""
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")],
             filter=["ordered_at >= '2024-02-01' and status = 'ok'"],
         ))
         (attach,) = _combined_attaches(planned)
@@ -102,7 +102,7 @@ class TestKernelSynthesis:
     def test_wholly_frame_bound_filter_is_excluded_from_src(self) -> None:
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")],
             filter=["ordered_at >= '2024-02-01'"],
         ))
         (attach,) = _combined_attaches(planned)
@@ -133,7 +133,7 @@ class TestRankedKernelSynthesis:
     def test_bare_last_attach_carries_ranked_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="last(amount)", alias="lb")],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="lb")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -146,7 +146,7 @@ class TestRankedKernelSynthesis:
         planned = _plan(q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="last(amount, customers.signup_at)", alias="ls")],
+                metric="last(orders.amount, customers.signup_at)", alias="ls")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -239,8 +239,8 @@ class TestRankingKeyPrecedence:
         bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
         query = SlayerQuery.model_validate({
             "population": "untimed",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "last(amount)", "alias": "l"}],
+            "dimensions": ["untimed.status"],
+            "metrics": [{"metric": "last(untimed.amount)", "alias": "l"}],
         })
         with pytest.raises(ValueError) as excinfo:
             plan.plan_query(query=query, bundle=bundle)
@@ -353,7 +353,7 @@ class TestKernelIdentity:
 class TestKernelModel:
     def test_default_kernel_is_plain(self) -> None:
         planned = _plan(q(dimensions=["status"], metrics=[M, QueryMetric(
-            metric="sum(amount, partition_by=status)", alias="rm")]))
+            metric="sum(orders.amount, partition_by=orders.status)", alias="rm")]))
         (attach,) = _combined_attaches(planned)
         assert isinstance(attach.kernel, PlainProducerKernel)
 

@@ -288,6 +288,6 @@ async def test_transform_measure_restored(env) -> None:
     imported, _ = await reimport(env, (await export_datasets(env, customers(), model)).document)
     restored = await stored(imported, "orders")
     assert {"revenue", "revenue_growth"} <= {m.name for m in restored.metrics}
-    payload = {"population": "orders", "metrics": ["revenue_growth"],
-               "time_dimensions": [{"field": "ordered_on", "granularity": "month"}]}
+    payload = {"population": "orders", "metrics": ["orders.revenue_growth"],
+               "time_dimensions": [{"field": "orders.ordered_on", "granularity": "month"}]}
     assert normalized(await rows(imported, payload)) == normalized(await rows(env, payload))

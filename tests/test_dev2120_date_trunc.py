@@ -76,7 +76,7 @@ class TestPositions:
 
     async def test_aggregation_source(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_q(metrics=[{"metric": "max(date_trunc('month', ts))", "alias": "v"}]))
-        assert str(resp.data[0]["lib.v"])[:10] == "2025-06-01"
+        assert str(resp.data[0]["v"])[:10] == "2025-06-01"
 
     async def test_arithmetic(self, engine: SlayerQueryEngine) -> None:
         values = lib_values(await engine.execute(lib_query("date_diff('day', date_trunc('month', ts), ts)",

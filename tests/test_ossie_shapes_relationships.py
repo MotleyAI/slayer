@@ -113,7 +113,7 @@ class TestShape:
             dataset_name="lines", relationship=reordered)
 
     def test_an_extension_relationship_takes_the_same_shape(self) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)"], "extensions": [
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(lines.*)"], "extensions": [
             {"dataset": "orders", "relationships": [{**REL, "name": "buyer"}]}]})
         [ext] = query.model_dump(mode="json")["extensions"]
         [rel] = ext["relationships"]
@@ -143,7 +143,7 @@ class TestOrderKept:
     async def test_the_join_condition_pairs_in_order(self) -> None:
         lines, parts = composite_pair()
         sql = await _engine_generate(query=SlayerQuery.model_validate(
-            {"population": "lines", "dimensions": ["parts.label"], "metrics": ["count(*)"]}),
+            {"population": "lines", "dimensions": ["parts.label"], "metrics": ["count(lines.*)"]}),
             dataset=lines, extra_datasets=[parts])
         joins = [j for j in sqlglot.parse_one(sql, read="postgres").find_all(exp.Join) if j.args.get("on")]
         [on] = [j.args["on"] for j in joins if "parts" in j.sql(dialect="postgres")]

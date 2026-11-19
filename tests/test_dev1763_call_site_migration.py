@@ -131,7 +131,7 @@ async def _generate(query: SlayerQuery, *, dialect: str = "postgres") -> str:
 
 
 _MONTH = TimeDimension(
-    field="created_at", granularity=TimeGranularity.MONTH,
+    field="orders.created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -161,8 +161,8 @@ _FILTER_SHAPES = {
         population="orders",
         time_dimensions=[_MONTH],
         metrics=[
-            QueryMetric(metric="sum(amount)", alias="amt"),
-            QueryMetric(metric="time_shift(sum(amount), -1, 'month')", alias="prev"),
+            QueryMetric(metric="sum(orders.amount)", alias="amt"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1, 'month')", alias="prev"),
         ],
         filter=["status = 'new'"],
     ),
@@ -170,10 +170,10 @@ _FILTER_SHAPES = {
         population="orders",
         time_dimensions=[_MONTH],
         metrics=[
-            QueryMetric(metric="sum(amount)", alias="amt"),
-            QueryMetric(metric="time_shift(sum(amount), -1, 'month')", alias="prev"),
+            QueryMetric(metric="sum(orders.amount)", alias="amt"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1, 'month')", alias="prev"),
         ],
-        filter=["MixedCol > 5"],
+        filter=["orders.MixedCol > 5"],
     ),
 }
 

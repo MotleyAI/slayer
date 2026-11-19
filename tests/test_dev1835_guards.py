@@ -96,7 +96,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g8_malformed_duration(self) -> None:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='90x')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90x')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -105,7 +105,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g2_no_resolvable_time_dimension(self) -> None:
         query = q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -120,7 +120,7 @@ class TestPreservedGuardsVerbatim:
         })
         query = q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="last(amount)", alias="l")],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query, datasets=models)

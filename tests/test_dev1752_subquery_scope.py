@@ -276,7 +276,7 @@ class TestExecution:
                 dataset_filter="amount IN (SELECT amount FROM other_tbl)",
             )
             resp = await engine.execute(
-                SlayerQuery(population="orders", dimensions=[QueryDimension(field="id")]),
+                SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.id")]),
             )
             assert _ids(resp) == {1, 3}, resp.data
 
@@ -300,7 +300,7 @@ class TestExecution:
                 ),
             )
             query = SlayerQuery(
-                population="orders", dimensions=[QueryDimension(field="id")],
+                population="orders", dimensions=[QueryDimension(field="orders.id")],
             )
             resp = await engine.execute(query)
             assert _ids(resp) == {1, 3}, resp.data

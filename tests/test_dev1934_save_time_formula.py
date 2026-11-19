@@ -157,7 +157,7 @@ class TestEngineCheck:
         monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
         model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
             aggregations=[Aggregation(name="custom_agg", expression=_BROKEN)],
         )
         with pytest.raises(SqlTemplateError, match="custom_agg"):
@@ -177,7 +177,7 @@ class TestEngineCheck:
         # `#` is a comment in MySQL, so `{mask}` is never read there (it is on SQLite).
         model = SlayerDataset(
             name="obs", data_source=_DS,
-            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
+            source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
             aggregations=[Aggregation.model_validate({
                 "name": "masked", "expression": "SUM({value}) # {mask}",
                 "params": [{"name": "mask", "sql": "1"}],
@@ -356,9 +356,9 @@ class TestMcp:
         assert saved is not None
         assert [a.name for a in saved.aggregations] == ["sum_sq"]
         resp = await engine.execute(SlayerQuery(
-            population="orders", metrics=[QueryMetric(metric="sum_sq(amount)", alias="m")],
+            population="orders", metrics=[QueryMetric(metric="sum_sq(orders.amount)", alias="m")],
         ))
-        assert resp.data[0]["orders.m"] == pytest.approx(13.0)
+        assert resp.data[0]["m"] == pytest.approx(13.0)
 
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
@@ -444,7 +444,7 @@ async def test_ranked_formula_rejected_before_backing_query_expansion(
     monkeypatch.setattr(SlayerQueryEngine, "_validate_and_populate_cache", _spy_expand)
     model = SlayerDataset(
         name="obs", data_source=_DS,
-        source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])],
+        source_queries=[SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(orders.amount)")])],
         aggregations=[Aggregation(name="last", expression="MAX({value})")],
     )
     with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take an expression"):

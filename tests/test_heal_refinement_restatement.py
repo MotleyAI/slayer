@@ -90,8 +90,8 @@ class TestNotARestatement:
 @pytest.mark.parametrize("form", sorted(RESTATEMENTS))
 async def test_executed_restatement_equals_refinement_without_it(backend: str, form: str) -> None:
     async with refine_engine(backend) as (eng, _):
-        healed = await eng.execute("monthly_revenue", refine={"metrics": [RESTATEMENTS[form], "count(*)"]})
-        expected = await eng.execute("monthly_revenue", refine={"metrics": ["count(*)"]})
+        healed = await eng.execute("monthly_revenue", refine={"metrics": [RESTATEMENTS[form], "count(orders.*)"]})
+        expected = await eng.execute("monthly_revenue", refine={"metrics": ["count(orders.*)"]})
     assert healed.columns == expected.columns
     assert table(healed, ordered=False) == table(expected, ordered=False)
     assert healed.sql == expected.sql

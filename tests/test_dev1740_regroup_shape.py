@@ -31,7 +31,7 @@ class TestFilterRoutingAcrossStageBoundary:
         sql = await gen(_q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
             filter=["band == 1", "status == 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="band_total")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="band_total")],
         ))
         cte = cm_cte_bodies(sql)
         # The base-row predicate reaches the partition CTE (DEV-1739 rule)...
@@ -47,7 +47,7 @@ class TestOneStagePerDistinctPartitionSet:
                 "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 2
 
@@ -58,6 +58,6 @@ class TestOneStagePerDistinctPartitionSet:
                 "THEN sum(amount, partition_by=city) ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 1

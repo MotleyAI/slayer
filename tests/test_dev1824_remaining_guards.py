@@ -44,7 +44,7 @@ class TestCrossModelPartitionedStillGuarded:
         query = q(
             dimensions=["region"],
             metrics=[QueryMetric(
-                metric="last(customers.spend, partition_by=region)", alias="l",
+                metric="last(customers.spend, partition_by=orders.region)", alias="l",
             )],
             to_many_handling="broadcast",
         )
@@ -60,7 +60,7 @@ class TestCrossModelPartitionedStillGuarded:
         query = q(
             dimensions=["customers.tier"],
             filter=["sum(customers.spend, partition_by=customers.tier) > 100"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)
         assert "__regroup__" not in sql
@@ -72,7 +72,7 @@ class TestMeasureGrainRulePreserved:
         # discovery; only ROW attaches may use finer-than-query partitions.
         query = q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=city)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)", alias="m")],
         )
         with pytest.raises(ValueError, match=r"not a query dimension"):
             await gen(query)
@@ -86,8 +86,8 @@ class TestMeasureGrainRulePreserved:
         query = q(
             dimensions=["region", {"field": band, "alias": "band"}],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="sum(amount, partition_by=city)", alias="ct"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.city)", alias="ct"),
             ],
         )
         with pytest.raises(ValueError, match=r"not a query dimension"):
@@ -101,7 +101,7 @@ class TestMeasureGrainRulePreserved:
         query = q(
             dimensions=["region", {"field": band, "alias": "band"}],
             filter=["sum(amount, partition_by=city) > 100"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise
         assert "__regroup__" not in sql
@@ -117,7 +117,7 @@ class TestDimensionGrainSelfContainment:
         query = q(
             dimensions=["region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -128,7 +128,7 @@ class TestDimensionGrainSelfContainment:
         query = q(
             dimensions=["region", {"field": band, "alias": "b"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -138,7 +138,7 @@ class TestDimensionGrainSelfContainment:
         band = "CASE WHEN last(amount) > 50 THEN 1 ELSE 0 END"
         query = q(
             dimensions=["region", {"field": band, "alias": "b"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -151,7 +151,7 @@ class TestDimensionGrainSelfContainment:
         band = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
         query = q(
             dimensions=["region", "city", {"field": band, "alias": "rk"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)  # must not raise
         assert "__regroup__" not in sql

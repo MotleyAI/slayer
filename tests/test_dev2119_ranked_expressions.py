@@ -47,7 +47,7 @@ async def sqlite_engine():
         yield e
 
 
-def _by_region(resp: SlayerResponse, value: str = "orders.v") -> dict:
+def _by_region(resp: SlayerResponse, value: str = "v") -> dict:
     return {k[0]: v for k, v in by_dims(resp, ["orders.region"], value).items()}
 
 
@@ -77,7 +77,7 @@ class TestDefaultRankingKey:
     async def test_expression_time_dimension_source(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(time_dimensions=[td(EFF)], metrics=[m("last(amount)")]))
         key = "orders.coalesce_shipped_at_created_at"
-        assert by_bucket(resp, key, "orders.v") == {"2025-01": 10.0, "2025-02": 30.0, "2025-03": 60.0, "2025-04": 50.0}
+        assert by_bucket(resp, key, "v") == {"2025-01": 10.0, "2025-02": 30.0, "2025-03": 60.0, "2025-04": 50.0}
 
 
 # --------------------------------------------------------------------------- #
@@ -86,10 +86,10 @@ class TestDefaultRankingKey:
 class TestExpressionRankingKey:
     async def test_coalesced_ranking_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "balances", "dimensions": ["customer_id"],
-            "metrics": [{"metric": "last(balance, coalesce(updated_at, created_at))", "alias": "v"}],
+            "population": "balances", "dimensions": ["balances.customer_id"],
+            "metrics": [{"metric": "last(balances.balance, coalesce(balances.updated_at, balances.created_at))", "alias": "v"}],
         }))
-        assert by_dims(resp, ["balances.customer_id"], "balances.v") == {(1,): 150.0, (2,): 70.0}
+        assert by_dims(resp, ["balances.customer_id"], "v") == {(1,): 150.0, (2,): 70.0}
 
     async def test_cross_model_ranked_aggregate(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
@@ -97,12 +97,12 @@ class TestExpressionRankingKey:
             metrics=[m("last(customers.spend, coalesce(customers.updated_at, customers.signup_ts), "
                         "partition_by=customers.region)")],
         ))
-        assert by_dims(resp, ["orders.customers.region"]) == {("North",): 300.0, ("South",): 200.0}
+        assert by_dims(resp, ["customers.region"]) == {("North",): 300.0, ("South",): 200.0}
 
     async def test_fanning_leaf_local_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"metric": "last(spend, coalesce(orders.created_at, signup_ts))", "alias": "v"}],
+            "metrics": [{"metric": "last(accounts.spend, coalesce(orders.created_at, accounts.signup_ts))", "alias": "v"}],
         })
         with pytest.raises(UnsafeRelationshipInputError) as ei:
             await sqlite_engine.execute(query)
@@ -125,7 +125,7 @@ class TestExpressionRankingKey:
         assert (await _sql(engine, query)).upper().count("ROW_NUMBER") == 2
         resp = await engine.execute(query)
         assert _by_region(resp) == {"EU": 50.0, "US": 60.0}
-        assert _by_region(resp, "orders.c") == {"EU": 50.0, "US": 40.0}
+        assert _by_region(resp, "c") == {"EU": 50.0, "US": 40.0}
 
     async def test_equal_ranking_keys_share_one_producer(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=["region"], metrics=[
@@ -133,7 +133,7 @@ class TestExpressionRankingKey:
         ])
         assert (await _sql(engine, query)).upper().count("ROW_NUMBER") == 1
         resp = await engine.execute(query)
-        assert _by_region(resp) == _by_region(resp, "orders.c") == {"EU": 50.0, "US": 60.0}
+        assert _by_region(resp) == _by_region(resp, "c") == {"EU": 50.0, "US": 60.0}
 
     @pytest.mark.parametrize("formula", [
         "last(amount, coalesce(created_at, max(created_at, partition_by=region)))",

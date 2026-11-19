@@ -255,7 +255,7 @@ class TestDownstreamStageStaleReference:
         stage1 = _stage1(metrics=[{"metric": "sum(amount)", "alias": STALE}])
         resp = await engine.execute([stage1, slayer_query(
             population="s1", metrics=[{"metric": f"sum({STALE})", "alias": "t"}])])
-        assert resp.data[0]["s1.t"] == pytest.approx(167.0)
+        assert resp.data[0]["t"] == pytest.approx(167.0)
         assert stale_warnings(resp) == []
 
     async def test_one_warning_per_referencing_position(self, engine) -> None:

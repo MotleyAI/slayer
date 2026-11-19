@@ -42,7 +42,7 @@ BAND = {"field": BAND35, "alias": "band"}
 
 def _by_band_month(resp, *values):
     return {
-        (int(r["orders.band"]), month_key(r["orders.ordered_at"])):
+        (int(r["band"]), month_key(r["orders.ordered_at"])):
             tuple(r[f"orders.{v}"] for v in values)
         for r in resp.data
     }
@@ -55,8 +55,8 @@ class TestPostFilterOnShiftedValue:
             time_dimensions=month_td(),
             filter=["change(sum(amount)) > 0"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="change(sum(amount))", alias="c"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="change(sum(orders.amount))", alias="c"),
             ],
         ))
         got = _by_band_month(resp, "m", "c")
@@ -71,7 +71,7 @@ class TestPostFilterOnShiftedValue:
             dimensions=[BAND],
             time_dimensions=month_td(),
             filter=["change(sum(amount)) > 0"],
-            metrics=[QueryMetric(metric="change(sum(amount))", alias="c")],
+            metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="c")],
         ), dry_run=True)
         assert dry.sql is not None
         assert "__regroup__" not in dry.sql, dry.sql
@@ -86,8 +86,8 @@ class TestConjunctionSplits:
             dimensions=[BAND],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="change(sum(amount))", alias="c"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="change(sum(orders.amount))", alias="c"),
             ],
         )
         anded = await exec_engine.execute(q(
@@ -105,7 +105,7 @@ class TestConjunctionSplits:
     async def test_band_and_row_predicate_conjunction_splits(self, exec_engine) -> None:
         base_kwargs = dict(
             dimensions=[BAND],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         anded = await exec_engine.execute(q(
             filter=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -113,10 +113,10 @@ class TestConjunctionSplits:
         separate = await exec_engine.execute(q(
             filter=["band == 1", "status == 'ok'"], **base_kwargs,
         ))
-        got = {int(r["orders.band"]): float(r["orders.m"]) for r in anded.data}
+        got = {int(r["band"]): float(r["m"]) for r in anded.data}
         assert got == {1: pytest.approx(100.0)}
         assert got == {
-            int(r["orders.band"]): float(r["orders.m"]) for r in separate.data
+            int(r["band"]): float(r["m"]) for r in separate.data
         }
 
     async def test_mixed_or_types_as_measure_and_masks_cells(self, exec_engine) -> None:
@@ -127,7 +127,7 @@ class TestConjunctionSplits:
             dimensions=[BAND],
             time_dimensions=month_td(),
             filter=["band == 1 or change(sum(amount)) > 0"],
-            metrics=[QueryMetric(metric="change(sum(amount))", alias="c")],
+            metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="c")],
         ))
         got = _by_band_month(resp, "c")
         assert set(got) == {(1, "2024-01"), (1, "2024-02"), (1, "2024-03")}
@@ -146,8 +146,8 @@ class TestShiftedCteRegroupAwareness:
         time_dimensions=month_td(),
         filter=["band == 1"],
         metrics=[
-            QueryMetric(metric="sum(amount)", alias="m"),
-            QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+            QueryMetric(metric="sum(orders.amount)", alias="m"),
+            QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
         ],
     )
 

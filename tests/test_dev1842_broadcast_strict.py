@@ -90,4 +90,4 @@ class TestStrictInherited:
             q(to_many_handling="error", dimensions=["customers.tier"],
               metrics=[{"metric": DOTTED, "alias": "x"}]),
         )
-        assert any(r.get("orders.x") is not None for r in resp.data)
+        assert any(r.get("x") is not None for r in resp.data)

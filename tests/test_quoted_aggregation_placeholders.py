@@ -108,7 +108,7 @@ class TestQuotedDefaultExecutes:
             dialect=dialect, seed=_seed, datasets=[_orders(_agg(formula, name="sum_n", n="2"))],
         ) as (engine, _db):
             resp = await engine.execute(_q("sum_n(amount)"))
-        assert float(resp.data[0]["orders.m"]) == pytest.approx(TWICE_SUM)
+        assert float(resp.data[0]["m"]) == pytest.approx(TWICE_SUM)
 
     @pytest.mark.parametrize(("dialect", "formula"), [("sqlite", _SUM_N), ("duckdb", _SUM_N_CAST)])
     async def test_numeric_kwarg_substitutes(self, dialect: str, formula: str) -> None:
@@ -116,7 +116,7 @@ class TestQuotedDefaultExecutes:
             dialect=dialect, seed=_seed, datasets=[_orders(_agg(formula, name="sum_n", n="2"))],
         ) as (engine, _db):
             resp = await engine.execute(_q("sum_n(amount, n=3)"))
-        assert float(resp.data[0]["orders.m"]) == pytest.approx(3 * sum(_AMOUNTS))
+        assert float(resp.data[0]["m"]) == pytest.approx(3 * sum(_AMOUNTS))
 
 
 class TestQuotedPlaceholderIsRead:
@@ -257,7 +257,7 @@ class TestTypedLiteral:
         agg = _agg("SUM({value}) * EXTRACT(DAY FROM DATE '{d}')", name="dated", d="'2024-01-02'")
         async with seeded_exec_engine(dialect="duckdb", seed=_seed, datasets=[_orders(agg)]) as (engine, _db):
             resp = await engine.execute(_q("dated(amount)"))
-        assert float(resp.data[0]["orders.m"]) == pytest.approx(TWICE_SUM)
+        assert float(resp.data[0]["m"]) == pytest.approx(TWICE_SUM)
 
     @pytest.mark.parametrize("dialect", ["postgres", "snowflake", "duckdb"])
     async def test_interval_value_renders(self, dialect: str) -> None:

@@ -69,7 +69,7 @@ async def test_flat_document_imports_end_to_end(db: Path) -> None:
     assert metric_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
     assert not [e for e in entries(result) if e.severity == "unconverted"]
-    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["total_amount"]})
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["orders.total_amount"]})
     assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
 
 
@@ -144,8 +144,8 @@ async def test_relationship_on_renamed_fields_joins_the_source_columns(db: Path)
     assert [j.column_pairs for j in by_name(result)["orders"].relationships] == [[("customer_id", "id")]]
     rows = await query(result=result, db=db, payload={
         "population": "orders", "dimensions": ["customers.segment"],
-        "metrics": [{"metric": "sum(amount)", "alias": "s"}]})
-    assert {r["orders.customers.segment"]: r["orders.s"] for r in rows} == {"b2b": 15, "b2c": 7}
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "s"}]})
+    assert {r["customers.segment"]: r["s"] for r in rows} == {"b2b": 15, "b2c": 7}
 
 
 @pytest.mark.parametrize(("from_columns", "to_columns"), [(["o_custkey"], ["id"]), (["customer_id"], ["c_custkey"])])
@@ -328,7 +328,7 @@ def test_legacy_dataset_scoped_metric(db: Path, tmp_path: Path) -> None:
 async def test_dataset_scoped_metric_becomes_a_measure(db: Path) -> None:
     result = convert(db=db, docs=documents(_shop(orders=_orders(metrics=[m("total_amount", "SUM(amount)")]))))
     assert metric_home(result, "total_amount").name == "orders"
-    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["total_amount"]})
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["orders.total_amount"]})
     assert rows[0]["orders.total_amount"] == pytest.approx(22)
 
 

@@ -53,7 +53,7 @@ class TestPostgresMeaning:
                                               {"field": "ascii(s)", "alias": "v2"},
                                               {"field": "left(s, 1)", "alias": "v3"}, filter=["id = 2"]))
         row = resp.data[0]
-        assert (row["lib.v1"], int(row["lib.v2"]), row["lib.v3"]) == ("é€", 8364, "€")
+        assert (row["v1"], int(row["v2"]), row["v3"]) == ("é€", 8364, "€")
 
     async def test_astral_code_point(self, engine: SlayerQueryEngine) -> None:
         assert await _value(engine, "chr(128512)") == "\U0001F600"
@@ -64,7 +64,7 @@ class TestPostgresMeaning:
                                               {"field": "split_part(s, '/', 9)", "alias": "v3"},
                                               filter=["id = 3"]))
         row = resp.data[0]
-        assert (row["lib.v1"], row["lib.v2"], row["lib.v3"]) == ("b", "c", "")
+        assert (row["v1"], row["v2"], row["v3"]) == ("b", "c", "")
 
     async def test_lpad_truncates(self, engine: SlayerQueryEngine) -> None:
         values = lib_values(await engine.execute(lib_query("lpad(s, 3, '0')", filter=["id IN (1, 8)"])))

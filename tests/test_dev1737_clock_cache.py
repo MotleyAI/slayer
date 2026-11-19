@@ -46,7 +46,7 @@ def data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _q(filters: list[str], **kw) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": filters, **kw,
+        "population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": filters, **kw,
     })
 
 
@@ -60,7 +60,7 @@ class TestClockBypass:
         _q(["created_at <= now()"]),
         _q([], dimensions=[{"field": "date_diff('day', created_at, now())", "alias": "age"}]),
         SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"metric": "max(date_diff('day', created_at, current_date()))", "alias": "m"}],
+            "population": "orders", "metrics": [{"metric": "max(date_diff('day', orders.created_at, current_date()))", "alias": "m"}],
         }),
     ])
     async def test_root_clock_query_never_cached(self, engine, data_calls, query) -> None:
@@ -71,10 +71,10 @@ class TestClockBypass:
 
     async def test_clock_inside_a_stage_never_cached(self, engine, data_calls) -> None:
         inner = SlayerQuery.model_validate({
-            "name": "recent_orders", "population": "orders", "dimensions": ["status"],
-            "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["created_at <= now()"],
+            "name": "recent_orders", "population": "orders", "dimensions": ["orders.status"],
+            "metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": ["orders.created_at <= now()"],
         })
-        outer = SlayerQuery.model_validate({"population": "recent_orders", "metrics": ["sum(n)"]})
+        outer = SlayerQuery.model_validate({"population": "recent_orders", "metrics": ["sum(recent_orders.n)"]})
         await engine.execute([inner, outer], cache=True)
         await engine.execute([inner, outer], cache=True)
         assert len(_data(data_calls)) == 2
@@ -91,13 +91,13 @@ class TestClockBypass:
     async def test_refresh_does_not_repopulate_a_clock_query(self, engine: SlayerQueryEngine) -> None:
         clock = _Clock()
         engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clock)
-        plain = {"population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]}
+        plain = {"population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
         await engine.create_dataset_from_query(query=plain, name="obs")
         await engine.execute("obs", cache=True)
         assert engine.cache_size == 1
 
         await engine.save_dataset(SlayerDataset(name="obs", source_queries=[SlayerQuery.model_validate({
-            **plain, "filter": ["created_at <= now()"],
+            **plain, "filter": ["orders.created_at <= now()"],
         })]))
         clock.t += 200
         await engine.refresh()

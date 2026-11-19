@@ -74,7 +74,7 @@ async def test_bigquery_emits_over_dunder_named_model() -> None:
     sqlglot's bigquery dialect) and must reference the target's physical table.
     """
     sql = await _engine_generate(
-        query=SlayerQuery(population="orders", dimensions=["region_label"]),
+        query=SlayerQuery(population="orders", dimensions=["orders.region_label"]),
         dataset=_host_with_label(),
         extra_datasets=[dunder_target()],
         dialect="bigquery",
@@ -92,7 +92,7 @@ async def test_tsql_emits_over_dunder_named_model() -> None:
     target's physical table.
     """
     sql = await _engine_generate(
-        query=SlayerQuery(population="orders", dimensions=["region_label"]),
+        query=SlayerQuery(population="orders", dimensions=["orders.region_label"]),
         dataset=_host_with_label(),
         extra_datasets=[dunder_target()],
         dialect="tsql",

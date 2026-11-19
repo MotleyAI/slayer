@@ -21,7 +21,7 @@ class TestLiteralEdgeFirst:
                 metrics=[{"metric": "sum(z.amount)", "alias": "s"}],
             )
             # Direct z.x_id edge: x2 owns both z rows; via y.z it would be {1: 10, 2: 5}.
-            assert {r["x.id"]: r["x.s"] for r in resp.data} == {1: None, 2: 15.0}
+            assert {r["x.id"]: r["s"] for r in resp.data} == {1: None, 2: 15.0}
 
 
 class TestRootlessAcrossADirectedCycle:

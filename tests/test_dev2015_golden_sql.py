@@ -34,7 +34,7 @@ def _cases() -> dict[str, dict[str, Any]]:
         },
         "custom/fiscal_year": {
             "population": "orders", "metrics": [m("sum(amount)", "s")],
-            "time_dimensions": [{"field": "order_date", "granularity": "fiscal_year"}],
+            "time_dimensions": [{"field": "orders.order_date", "granularity": "fiscal_year"}],
         },
     }
 

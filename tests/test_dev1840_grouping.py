@@ -19,7 +19,7 @@ from tests._dev1840_fixtures import (
     q,
 )
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
 

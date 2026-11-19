@@ -18,8 +18,8 @@ from slayer.otel import adapter
 from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import refine_engine
 
-_REVENUE = {"population": "orders", "metrics": ["sum(amount)"], "dimensions": ["region"]}
-_MISSING = {"population": "no_such_dataset", "metrics": ["count(*)"]}
+_REVENUE = {"population": "orders", "metrics": ["sum(orders.amount)"], "dimensions": ["orders.region"]}
+_MISSING = {"population": "no_such_dataset", "metrics": ["count(no_such_dataset.*)"]}
 
 
 def _run(query: dict[str, Any], **kwargs: Any) -> None:

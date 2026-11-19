@@ -92,7 +92,7 @@ from tests._dev1946_fixtures import (
     local_sales_global,
 )
 
-AMOUNT = QueryMetric(metric="sum(amount)", alias="a")
+AMOUNT = QueryMetric(metric="sum(orders.amount)", alias="a")
 
 
 def _m(expression: str) -> QueryMetric:
@@ -323,8 +323,8 @@ class TestRankedFilterAndOrder:
         resp = await orders_engine.execute(mode_q(
             None, dimensions=["customers.tier"], metrics=[AMOUNT],
             order=[{"field": RANKED, "direction": "desc"}]))
-        tiers = [r["orders.customers.tier"] for r in resp.data
-                 if r["orders.customers.tier"] is not None]
+        tiers = [r["customers.tier"] for r in resp.data
+                 if r["customers.tier"] is not None]
         assert tiers == ["silver", "gold", "bronze"]  # 97.5, 59.375, 40
 
 
@@ -356,7 +356,7 @@ class TestCrossModelLocalRoot:
     async def test_global(self, orders_engine, mode):
         resp = await orders_engine.execute(mode_q(mode, metrics=[_m(XMODEL_LOCAL)]))
         (row,) = resp.data
-        assert float(row["orders.w"]) == pytest.approx(xmodel_global())  # 281/16
+        assert float(row["w"]) == pytest.approx(xmodel_global())  # 281/16
         _no_mode_warnings(resp)
 
     @pytest.mark.parametrize("mode", MODES)
@@ -375,7 +375,7 @@ class TestOwnPartitionBy:
     async def test_global(self, orders_engine, mode):
         resp = await orders_engine.execute(mode_q(mode, metrics=[_m(OWN_PARTITION)]))
         (row,) = resp.data
-        assert float(row["orders.w"]) == pytest.approx(own_global())  # 760/11
+        assert float(row["w"]) == pytest.approx(own_global())  # 760/11
         _no_mode_warnings(resp)
 
     @pytest.mark.parametrize("mode", MODES)

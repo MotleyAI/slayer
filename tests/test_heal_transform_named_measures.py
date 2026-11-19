@@ -24,7 +24,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 def monthly(name: str, **kw: Any) -> dict[str, Any]:
     return {
         "population": "orders", "time_dimensions": [MONTH],
-        "metrics": [{"metric": "change(sum(amount))", "alias": name}], **kw,
+        "metrics": [{"metric": "change(sum(orders.amount))", "alias": name}], **kw,
     }
 
 
@@ -40,7 +40,7 @@ async def assert_renamed_twin(engine: SlayerQueryEngine, healed: Any, control: A
 class TestQueryMeasureNamedAfterTransform:
     async def test_result_key_rows_and_sql(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(monthly("change"))
-        assert "orders.change" in resp.columns
+        assert "change" in resp.columns
         await assert_renamed_twin(engine, monthly("change"), monthly("chg"))
 
     async def test_filter_reference(self, engine: SlayerQueryEngine) -> None:
@@ -82,7 +82,7 @@ class TestModelExtensionMeasure:
             return {
                 "population": "orders",
                 "extensions": [{"dataset": "orders", "metrics": [{"name": name, "expression": "sum(amount)"}]}],
-                "dimensions": ["region"], "metrics": [name],
+                "dimensions": ["orders.region"], "metrics": [name],
             }
 
         expected = await engine.execute(query("total"))
@@ -103,10 +103,10 @@ class TestSavedMeasureNamedRank:
 
         def query(saved: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["region"],
+                "population": "orders", "dimensions": ["orders.region"],
                 "metrics": [
                     {"metric": f"{saved} * 2", "alias": "doubled"},
-                    {"metric": "rank(sum(amount), direction='desc')", "alias": "r"},
+                    {"metric": "rank(sum(orders.amount), direction='desc')", "alias": "r"},
                 ],
             }
 
@@ -115,7 +115,7 @@ class TestSavedMeasureNamedRank:
             expected = await eng.execute(query("n"))
         assert actual.columns == expected.columns
         assert table(actual, ordered=False) == table(expected, ordered=False)
-        by_region = {r["orders.region"]: (r["orders.doubled"], r["orders.r"]) for r in actual.data}
+        by_region = {r["orders.region"]: (r["doubled"], r["r"]) for r in actual.data}
         assert by_region == {"EU": (6, 1), "US": (6, 2), None: (2, 3)}
 
 

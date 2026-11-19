@@ -188,7 +188,7 @@ def test_unparseable_mixed_case_table_name_drops_its_model() -> None:
 @pytest.mark.parametrize("dialect", ["snowflake", "oracle"])
 async def test_folding_dialect_generates_unquoted_folded_names(dialect: str) -> None:
     items = _datasets(_cube(ITEMS, dialect=dialect))["items"]
-    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": "items", "dimensions": ["amount"]}),
+    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": "items", "dimensions": ["items.amount"]}),
                                  dataset=items, dialect=dialect)
     tree = sqlglot.parse_one(sql, read=dialect)
     (table,) = tree.find_all(exp.Table)

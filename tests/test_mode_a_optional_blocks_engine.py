@@ -70,7 +70,7 @@ def _block_dataset() -> SlayerDataset:
 async def test_optional_block_collapses_to_unfiltered_when_missing():
     engine, tmp = await _engine_with(_block_dataset())
     try:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 735.0
     finally:
@@ -82,7 +82,7 @@ async def test_optional_block_filters_with_in_list_when_present():
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "variables": {"regions": ["US", "CA"]},
         })
         resp = await engine.execute(q)
@@ -96,7 +96,7 @@ async def test_optional_block_single_value_list():
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "variables": {"regions": ["EU"]},
         })
         resp = await engine.execute(q)
@@ -121,7 +121,7 @@ async def test_required_var_alongside_block_raises_and_names_it():
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "variables": {"regions": ["US"]},
         })
         with pytest.raises(Exception, match="min_amount"):
@@ -134,7 +134,7 @@ async def test_dimension_query_over_block_model_resolves_types():
     # Exercises get_result_column_types: blocks must collapse under the defaults probe.
     engine, tmp = await _engine_with(_block_dataset())
     try:
-        q = SlayerQuery(population="orders", dimensions=["region"])
+        q = SlayerQuery(population="orders", dimensions=["orders.region"])
         resp = await engine.execute(q)
         assert {r["orders.region"] for r in resp.data} == {"US", "EU", "CA"}
     finally:
@@ -182,7 +182,7 @@ async def test_bare_var_default_satisfies_required_at_runtime():
     )
     engine, tmp = await _engine_with(model)
     try:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 275.0  # EU only
     finally:

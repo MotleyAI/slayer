@@ -394,7 +394,7 @@ def law_dim_key(row: dict, *, family: str, with_month: bool):
     """``dim_key`` over the law-local families (adds ``cmgrain``)."""
     if family != "cmgrain":
         return dim_key(row, family=family, with_month=with_month)
-    key: tuple = (row["orders.region"], row["orders.customers.regions.name"])
+    key: tuple = (row["orders.region"], row["customers.regions.name"])
     if with_month:
         key += (month_key(row["orders.ordered_at"]),)
     return key

@@ -155,7 +155,7 @@ def _bundle_local() -> ResolvedSourceBundle:
 class TestBindDerivedTimeDimension:
     def test_local_derived_td_binds_to_columnsqlkey(self) -> None:
         td = TimeDimension(
-            field="effective_at",
+            field="orders.effective_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -201,9 +201,9 @@ async def test_derived_td_dimension_groups_by_derived_expr(engine: tuple[SlayerQ
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "sum(amount)"}, {"metric": "count(*)"}]})
+            )], "metrics": [{"metric": "sum(orders.amount)"}, {"metric": "count(orders.*)"}]})
     )
     assert "orders.effective_at" in resp.columns
     assert resp.row_count == 3
@@ -217,9 +217,9 @@ async def test_derived_td_carries_attribute_label(engine: tuple[SlayerQueryEngin
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "sum(amount)"}]})
+            )], "metrics": [{"metric": "sum(orders.amount)"}]})
     )
     assert resp.attributes.dimensions["orders.effective_at"].label == "Effective date"
 
@@ -228,9 +228,9 @@ async def test_derived_td_order_by(engine: tuple[SlayerQueryEngine, str]) -> Non
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "sum(amount)"}], "order": [OrderItem(field="effective_at", direction="asc")]})
+            )], "metrics": [{"metric": "sum(orders.amount)"}], "order": [OrderItem(field="orders.effective_at", direction="asc")]})
     )
     # Ascending by derived month: Jan=10, Feb=12, Mar=12.
     assert [r["orders.amount_sum"] for r in resp.data] == [10.0, 12.0, 12.0]
@@ -243,18 +243,18 @@ async def test_derived_td_cumsum_over_order(engine: tuple[SlayerQueryEngine, str
         SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"metric": "count(*)"},
-                {"metric": "cumsum(count(*))", "alias": "cs"},
+                {"metric": "count(orders.*)"},
+                {"metric": "cumsum(count(orders.*))", "alias": "cs"},
             ],
-            order=[OrderItem(field="effective_at", direction="asc")],
+            order=[OrderItem(field="orders.effective_at", direction="asc")],
         )
     )
     # Derived counts per month: 1, 2, 2 -> cumsum 1, 3, 5.
-    assert [r["orders.cs"] for r in resp.data] == [1, 3, 5]
+    assert [r["cs"] for r in resp.data] == [1, 3, 5]
 
 
 async def test_derived_td_time_shift(engine: tuple[SlayerQueryEngine, str]) -> None:
@@ -264,19 +264,19 @@ async def test_derived_td_time_shift(engine: tuple[SlayerQueryEngine, str]) -> N
         SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"metric": "sum(amount)"},
-                {"metric": "time_shift(sum(amount), periods=-1)", "alias": "prev"},
+                {"metric": "sum(orders.amount)"},
+                {"metric": "time_shift(sum(orders.amount), periods=-1)", "alias": "prev"},
             ],
-            order=[OrderItem(field="effective_at", direction="asc")],
+            order=[OrderItem(field="orders.effective_at", direction="asc")],
         )
     )
     # Derived amounts per month: Jan=10, Feb=12, Mar=12.
     # Prior-period: Jan=None, Feb=10, Mar=12.
-    assert [r["orders.prev"] for r in resp.data] == [None, 10.0, 12.0]
+    assert [r["prev"] for r in resp.data] == [None, 10.0, 12.0]
 
 
 async def test_derived_td_change(engine: tuple[SlayerQueryEngine, str]) -> None:
@@ -286,18 +286,18 @@ async def test_derived_td_change(engine: tuple[SlayerQueryEngine, str]) -> None:
         SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"metric": "sum(amount)"},
-                {"metric": "change(sum(amount))", "alias": "chg"},
+                {"metric": "sum(orders.amount)"},
+                {"metric": "change(sum(orders.amount))", "alias": "chg"},
             ],
-            order=[OrderItem(field="effective_at", direction="asc")],
+            order=[OrderItem(field="orders.effective_at", direction="asc")],
         )
     )
     # change = current - prev: Jan=None, Feb=12-10=2, Mar=12-12=0.
-    assert [r["orders.chg"] for r in resp.data] == [None, 2.0, 0.0]
+    assert [r["chg"] for r in resp.data] == [None, 2.0, 0.0]
 
 
 async def test_derived_td_consecutive_periods(engine: tuple[SlayerQueryEngine, str]) -> None:
@@ -307,17 +307,17 @@ async def test_derived_td_consecutive_periods(engine: tuple[SlayerQueryEngine, s
         SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"metric": "consecutive_periods(sum(amount) > 5)", "alias": "streak"},
+                {"metric": "consecutive_periods(sum(orders.amount) > 5)", "alias": "streak"},
             ],
-            order=[OrderItem(field="effective_at", direction="asc")],
+            order=[OrderItem(field="orders.effective_at", direction="asc")],
         )
     )
     # All three derived months have amount>5, so the run grows 1,2,3.
-    assert [r["orders.streak"] for r in resp.data] == [1, 2, 3]
+    assert [r["streak"] for r in resp.data] == [1, 2, 3]
 
 
 async def test_derived_td_date_range(engine: tuple[SlayerQueryEngine, str]) -> None:
@@ -326,10 +326,10 @@ async def test_derived_td_date_range(engine: tuple[SlayerQueryEngine, str]) -> N
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="effective_at",
+                field="orders.effective_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01 00:00:00", "2024-02-28 00:00:00"],
-            )], "metrics": [{"metric": "sum(amount)"}, {"metric": "count(*)"}]})
+            )], "metrics": [{"metric": "sum(orders.amount)"}, {"metric": "count(orders.*)"}]})
     )
     # Only the two effective-Feb rows survive (row2 shipped 02-05, row3
     # created 02-15) -> one month bucket, amount 12, count 2. With the bare
@@ -347,9 +347,9 @@ async def test_joined_derived_td(engine: tuple[SlayerQueryEngine, str]) -> None:
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="customers.signup_eff",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "sum(amount)"}]})
+            )], "metrics": [{"metric": "sum(orders.amount)"}]})
     )
-    assert "orders.customers.signup_eff" in resp.columns
+    assert "customers.signup_eff" in resp.columns
     assert resp.row_count == 3
     # cust1 (rows 1,2 -> 15), cust2 (row3 -> 7), cust3 (rows 4,5 -> 12).
     assert _amounts(resp, "orders.amount_sum") == [7.0, 12.0, 15.0]
@@ -366,7 +366,7 @@ async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine: tuple
                 granularity=TimeGranularity.MONTH,
             )], "metrics": [{"metric": "sum(customers.revenue)"}]})
     )
-    assert "orders.customers.signup_eff" in resp.columns
-    assert "orders.customers.revenue_sum" in resp.columns
+    assert "customers.signup_eff" in resp.columns
+    assert "customers.revenue_sum" in resp.columns
     # One bucket per distinct customer signup month reachable from orders.
     assert resp.row_count == 3

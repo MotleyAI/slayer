@@ -49,7 +49,7 @@ ORDERS_OSI = OSIDocument.model_validate({
                    {"name": "big", "expression": {"sql": "amount * 2"}}],
     }],
 })
-COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
 
@@ -224,7 +224,7 @@ def test_a_client_survives_a_sync_ingestion(shop: DatasourceConfig, tmp_path: Pa
             engine.run_sync(engine.storage.save_dataset(model))
         response = engine.execute_sync(COUNT_ORDERS)
         assert engine.client_for(shop) is client
-    assert response.data == [{"orders.n": 4}]
+    assert response.data == [{"n": 4}]
 
 
 def test_the_async_entry_points_still_read_as_coroutine_functions() -> None:

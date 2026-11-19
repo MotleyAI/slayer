@@ -148,7 +148,7 @@ def test_every_position_is_read() -> None:
         "population": "orders",
         "dimensions": [{"alias": "c", "field": "upper(city)"}],
         "time_dimensions": [{"field": "coalesce(shipped_at, ordered_at)", "granularity": "month"}],
-        "metrics": ["sum(amount)"],
+        "metrics": ["sum(orders.amount)"],
         "filter": ["length(name) > 3"],
         "order": [{"field": "abs(rate)", "direction": "asc"}],
     })
@@ -163,7 +163,7 @@ def test_plain_dimension_expression_is_read() -> None:
 def test_every_stage_is_read() -> None:
     found = query_features([
         {"name": "s1", "population": "orders", "dimensions": [{"alias": "c", "field": "upper(city)"}],
-         "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
+         "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]},
         {"population": "s1", "metrics": ["max(abs(rev))"]},
     ])
     assert Counter(found.functions) == Counter(["upper", "abs"])
@@ -234,8 +234,8 @@ def store(usage_reporting_env) -> str:
 
 
 def test_report_counts_functions_and_new_flags(store: str) -> None:
-    cli(["query", json.dumps({"population": "orders", "metrics": ["sum(amount)::int"],
-                              "filter": ["lower(status) = 'paid'"]}), "--storage", store])
+    cli(["query", json.dumps({"population": "orders", "metrics": ["sum(orders.amount)::int"],
+                              "filter": ["lower(orders.status) = 'paid'"]}), "--storage", store])
     features = show()["features"]
     assert features["functions"] == {"lower": 1}
     assert features["flags"]["cast"] == 1

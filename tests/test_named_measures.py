@@ -46,7 +46,7 @@ class TestNamedMeasureSQL:
 
         saved_query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "aov", "alias": "result"}],
+            "metrics": [{"metric": "orders.aov", "alias": "result"}],
         })
         inline_query = SlayerQuery(
             population="orders",
@@ -75,13 +75,13 @@ class TestNamedMeasureSQL:
 
         saved_query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "cumsum(aov)", "alias": "result"}],
-            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "metrics": [{"metric": "cumsum(orders.aov)", "alias": "result"}],
+            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
         })
         inline_query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": f"cumsum({formula})", "alias": "result"}],
-            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
         })
 
         saved_sql = await _generate(saved_query, with_saved)
@@ -98,7 +98,7 @@ class TestNamedMeasureSQL:
 
         saved_query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "aov * 1.1", "alias": "result"}],
+            "metrics": [{"metric": "orders.aov * 1.1", "alias": "result"}],
         })
         inline_query = SlayerQuery.model_validate({
             "population": "orders",
@@ -121,11 +121,11 @@ class TestNamedMeasureSQL:
 
         chained_query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "b", "alias": "result"}],
+            "metrics": [{"metric": "orders.b", "alias": "result"}],
         })
         inline_query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(revenue)", "alias": "result"}],
+            "metrics": [{"metric": "sum(orders.revenue)", "alias": "result"}],
         })
 
         chained_sql = await _generate(chained_query, chained)
@@ -144,7 +144,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "a", "alias": "result"}],
+            "metrics": [{"metric": "orders.a", "alias": "result"}],
         })
 
         with pytest.raises(
@@ -161,7 +161,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "nonexistent", "alias": "result"}],
+            "metrics": [{"metric": "orders.nonexistent", "alias": "result"}],
         })
 
         with pytest.raises(
@@ -175,7 +175,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "aov_nett", "alias": "result"}],
+            "metrics": [{"metric": "orders.aov_nett", "alias": "result"}],
         })
 
         with pytest.raises(ValueError, match="Did you mean 'aov_net'"):
@@ -187,7 +187,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(aov)", "alias": "result"}],
+            "metrics": [{"metric": "sum(orders.aov)", "alias": "result"}],
         })
 
         with pytest.raises(
@@ -199,7 +199,7 @@ class TestNamedMeasureSQL:
         model = _orders_dataset()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "round(revenue, 2)", "alias": "result"}],
+            "metrics": [{"metric": "round(orders.revenue, 2)", "alias": "result"}],
         })
 
         with pytest.raises(
@@ -211,7 +211,7 @@ class TestNamedMeasureSQL:
         model = _orders_dataset()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(revenu)", "alias": "result"}],
+            "metrics": [{"metric": "sum(orders.revenu)", "alias": "result"}],
         })
 
         with pytest.raises(ValueError, match="Did you mean 'revenue'"):
@@ -232,7 +232,7 @@ class TestNamedMeasureSQL:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "aov", "alias": "result"}],
+            "metrics": [{"metric": "orders.aov", "alias": "result"}],
         })
 
         with pytest.raises(ValueError, match=r"duplicate metric names"):
@@ -251,7 +251,7 @@ class TestBareNamedMeasureAliasing:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=["rev_total"],
+            metrics=["orders.rev_total"],
         )
         sql = await _generate(query, model)
         assert '"orders.rev_total"' in sql
@@ -267,9 +267,9 @@ class TestBareNamedMeasureAliasing:
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": ["companies_count"],
-            "order": [{"field": "companies_count", "direction": "desc"}],
+            "dimensions": ["orders.status"],
+            "metrics": ["orders.companies_count"],
+            "order": [{"field": "orders.companies_count", "direction": "desc"}],
         })
         sql = await _generate(query, model)
         # The ORDER BY reference must point at the alias we actually emitted.

@@ -67,20 +67,20 @@ async def pg(postgresql, tmp_path):
     ("contains_all(levels, ints)", {1, 3}),
 ])
 async def test_lists_of_differing_physical_types(pg, expr: str, kept: set[int]) -> None:
-    resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["id"],
+    resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["typed.id"],
                                                         "filter": [expr]}))
     assert {int(r["typed.id"]) for r in resp.data} == kept, resp.sql
 
 
 async def test_collect_over_numeric(pg) -> None:
-    resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["team"],
+    resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["typed.team"],
                                                         "metrics": [metric("collect(amount)", "c")]}))
     got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", "c", dataset="typed").items()}
     assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
 async def test_collect_over_uuid(pg) -> None:
-    resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["team"],
+    resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["typed.team"],
                                                         "metrics": [metric("collect(uid)", "c")]}))
     got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "c", dataset="typed").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
@@ -91,6 +91,6 @@ async def test_lists_of_two_attached_collects(pg, fn: str) -> None:
     # uuid[] against text[]: each attached list keeps its element type, so both are read as TEXT[].
     hit = f"{fn}(collect(uid, partition_by=team), collect(uid || '', partition_by=team))"
     resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": [
-        "id", {"field": hit, "alias": "hit"}]}))
-    assert {int(r["typed.id"]): r["typed.hit"] for r in resp.data} == {
+        "typed.id", {"field": hit, "alias": "hit"}]}))
+    assert {int(r["typed.id"]): r["hit"] for r in resp.data} == {
         1: True, 2: True, 3: True, 4: fn == "contains_all"}, resp.sql

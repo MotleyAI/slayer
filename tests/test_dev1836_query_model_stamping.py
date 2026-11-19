@@ -39,7 +39,7 @@ class TestStamping:
     async def test_aggregated_query_stamps_composite_grain(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
+              metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_agg",
         )
         assert _pk_names(model) == {"status", "channel"}
@@ -69,7 +69,7 @@ class TestStampedModelProvesJoins:
     async def test_join_onto_complete_grain_is_provable(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
+              metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_kpis",
         )
         full = DatasetRelationship(
@@ -81,7 +81,7 @@ class TestStampedModelProvesJoins:
     async def test_join_onto_partial_grain_stays_unproven(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
+              metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_kpis2",
         )
         partial = DatasetRelationship(
@@ -96,7 +96,7 @@ class TestStampedModelProvesJoins:
         join onto the query-backed model keeps exact per-dimension values."""
         await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              metrics=[QueryMetric(metric="sum(amount)", alias="total")]),
+              metrics=[QueryMetric(metric="sum(orders.amount)", alias="total")]),
             "vm_grain",
         )
         host = orders_dataset()
@@ -110,7 +110,7 @@ class TestStampedModelProvesJoins:
             population="orders_kpi", dimensions=["status"],
             metrics=[QueryMetric(metric="sum(vm_grain.total)", alias="t")],
         ))
-        got = {r["orders_kpi.status"]: float(r["orders_kpi.t"])
+        got = {r["orders_kpi.status"]: float(r["t"])
                for r in resp.data}
         assert len(resp.data) == 2
         assert got == pytest.approx(AMOUNT_BY_STATUS)

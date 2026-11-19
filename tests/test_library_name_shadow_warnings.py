@@ -108,7 +108,7 @@ class TestEveryResponse:
     async def test_a_pruned_stage_is_not_announced(self) -> None:
         stages = [
             {"name": "unused", "population": "t", "metrics": [metric("reverse(a)", "r")]},
-            {"name": "s1", "population": "t", "dimensions": ["s"], "metrics": [metric("sum(a)", "total")]},
+            {"name": "s1", "population": "t", "dimensions": ["t.s"], "metrics": [metric("sum(a)", "total")]},
             {"population": "s1", "metrics": [metric("sum(total)", "grand")]},
         ]
         query = {"population": "qb", "metrics": [metric("sum(grand)")]}

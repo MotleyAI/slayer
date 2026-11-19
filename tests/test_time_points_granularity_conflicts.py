@@ -13,9 +13,9 @@ async def test_two_spellings_of_one_column_warn() -> None:
         DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], name="buyer"),
     ]})
     query = SlayerQuery.model_validate({
-        "population": "ev_buyer", "metrics": [{"metric": "count(*)", "alias": "n"}],
+        "population": "ev_buyer", "metrics": [{"metric": "count(ev_buyer.*)", "alias": "n"}],
         "time_dimensions": [
-            {"field": "buyer.created_at", "granularity": "week"},
+            {"field": "ev_buyer.buyer.created_at", "granularity": "week"},
             {"field": "customers.created_at", "granularity": "month"},
         ],
         "whole_periods_only": True,

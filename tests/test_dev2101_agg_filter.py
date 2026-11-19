@@ -33,9 +33,9 @@ async def _filtered_equals_restricted(engine: SlayerQueryEngine, expression: str
     """``formula FILTER (WHERE paid)`` equals ``formula`` over a query restricted to the paid rows."""
     filtered = await engine.execute(q(metrics=[m(f"{expression} FILTER (WHERE {PAID})")], **kw))
     restricted = await engine.execute(q(metrics=[m(expression)], filter=[PAID], **kw))
-    key = lambda r: tuple(str(v) for k, v in sorted(r.items()) if k != "orders.v")  # noqa: E731
-    got = {key(r): num(r["orders.v"]) for r in filtered.data}
-    want = {key(r): num(r["orders.v"]) for r in restricted.data}
+    key = lambda r: tuple(str(v) for k, v in sorted(r.items()) if k != "v")  # noqa: E731
+    got = {key(r): num(r["v"]) for r in filtered.data}
+    want = {key(r): num(r["v"]) for r in restricted.data}
     assert got.keys() >= want.keys()
     for k, v in want.items():
         assert got[k] == pytest.approx(v), (expression, k)
@@ -50,8 +50,8 @@ class TestFilterValues:
         resp = await engine.execute(q(dimensions=["region"], metrics=[
             m(f"sum(amount) FILTER (WHERE {PAID})", "f"), m(f"sum(iif({PAID}, amount, NULL))", "masked"),
         ]))
-        filtered = {r["orders.region"]: num(r["orders.f"]) for r in resp.data}
-        masked = {r["orders.region"]: num(r["orders.masked"]) for r in resp.data}
+        filtered = {r["orders.region"]: num(r["f"]) for r in resp.data}
+        masked = {r["orders.region"]: num(r["masked"]) for r in resp.data}
         assert filtered == masked == {"EU": 30.0, "US": 40.0, None: None}
 
     @pytest.mark.parametrize(("formula", "expected"), [
@@ -80,15 +80,15 @@ class TestFilterValues:
 
     async def test_filtered_last_picks_the_newest_passing_row(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "balances", "dimensions": ["customer_id"],
-            "metrics": [{"metric": "last(balance, updated_at) FILTER (WHERE status = 'active')", "alias": "v"}],
+            "population": "balances", "dimensions": ["balances.customer_id"],
+            "metrics": [{"metric": "last(balances.balance, balances.updated_at) FILTER (WHERE balances.status = 'active')", "alias": "v"}],
         }))
         assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 
     async def test_filtered_first_picks_the_oldest_passing_row(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "balances", "dimensions": ["customer_id"],
-            "metrics": [{"metric": "first(balance, updated_at) FILTER (WHERE status = 'inactive')", "alias": "v"}],
+            "population": "balances", "dimensions": ["balances.customer_id"],
+            "metrics": [{"metric": "first(balances.balance, balances.updated_at) FILTER (WHERE balances.status = 'inactive')", "alias": "v"}],
         }))
         assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 999.0, 2: 70.0}
 
@@ -96,7 +96,7 @@ class TestFilterValues:
         resp = await engine.execute(q(dimensions=["region", "city"], metrics=[
             m(f"sum(amount, partition_by=region) FILTER (WHERE {PAID})"),
         ]))
-        got = {(r["orders.region"], r["orders.city"]): num(r["orders.v"]) for r in resp.data}
+        got = {(r["orders.region"], r["orders.city"]): num(r["v"]) for r in resp.data}
         assert got == {("EU", "Paris"): 30.0, ("EU", "Berlin"): 30.0, ("US", "NYC"): 40.0, ("US", "LA"): 40.0,
                        (None, "Rome"): None}
 
@@ -104,7 +104,7 @@ class TestFilterValues:
         await _filtered_equals_restricted(engine, "sum(amount, window='30d')", time_dimensions=MONTH)
         resp = await engine.execute(q(metrics=[m(f"sum(amount, window='30d') FILTER (WHERE {PAID})")],
                                       time_dimensions=MONTH))
-        got = {str(r["orders.created_at"])[:7]: num(r["orders.v"]) for r in resp.data}
+        got = {str(r["orders.created_at"])[:7]: num(r["v"]) for r in resp.data}
         assert got == {"2024-01": 30.0, "2024-02": 40.0, "2024-03": None}
 
 
@@ -136,7 +136,7 @@ class TestFilterPositions:
 
     async def test_inside_a_transform(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(time_dimensions=MONTH, metrics=[m(f"cumsum(count(*) FILTER (WHERE {PAID}))")]))
-        assert sorted(float(r["orders.v"]) for r in resp.data) == [2.0, 3.0, 3.0]
+        assert sorted(float(r["v"]) for r in resp.data) == [2.0, 3.0, 3.0]
 
     async def test_inline_model_measure(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(

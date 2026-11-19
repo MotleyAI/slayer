@@ -221,7 +221,7 @@ class TestExplicitOuterKeys:
             dimensions=["region"], to_many_handling=mode,
             metrics=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
                             partition_by="[region]")]))
-        vals = {k[0]: v["sales.acr"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["acr"] for k, v in region_key(resp).items()}
         for region, expected in ASSOCIATE_AVG_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
 
@@ -313,7 +313,7 @@ class TestExpressionAndKeylessGrain:
     async def test_keyless(self, engine):
         resp = await engine.execute(query(metrics=[m(f"sum({MAX_Q})")]))
         (row,) = resp.data
-        assert float(row["customers.v"]) == pytest.approx(KEYLESS_SUM_MAX_Q)
+        assert float(row["v"]) == pytest.approx(KEYLESS_SUM_MAX_Q)
 
 
 class TestPlanStructure:

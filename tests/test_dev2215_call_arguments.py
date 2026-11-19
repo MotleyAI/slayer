@@ -88,11 +88,11 @@ class TestKeywordOrComparison:
 # --------------------------------------------------------------------------- #
 class TestAggIsReserved:
     @pytest.mark.parametrize("query", [
-        {"metrics": [{"metric": "AGG(amount)", "alias": "v"}]},
-        {"metrics": [{"metric": "agg(amount) + 1", "alias": "v"}]},
-        {"metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["Agg(amount) > 1"]},
-        {"dimensions": [{"field": "agg(amount, partition_by=status)", "alias": "a"}],
-         "metrics": [{"metric": "count(*)", "alias": "n"}]},
+        {"metrics": [{"metric": "AGG(orders.amount)", "alias": "v"}]},
+        {"metrics": [{"metric": "agg(orders.amount) + 1", "alias": "v"}]},
+        {"metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filter": ["Agg(orders.amount) > 1"]},
+        {"dimensions": [{"field": "agg(orders.amount, partition_by=orders.status)", "alias": "a"}],
+         "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
     ], ids=["measure", "arithmetic", "filter", "dimension"])
     async def test_a_call_is_refused(self, engine: SlayerQueryEngine, query: dict) -> None:
         built = q(**query)

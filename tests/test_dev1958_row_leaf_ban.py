@@ -103,34 +103,34 @@ class TestProjectedGrainKeyUnderShift:
     async def test_time_shift_over_projected_dimension(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            metrics=[QueryMetric(metric="time_shift(store, -1)", alias="t")], **kw))
+            metrics=[QueryMetric(metric="time_shift(sales.store, -1)", alias="t")], **kw))
         plain = await exec_engine.execute(_q(
-            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
+            metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")], **kw))
         cells = {(r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data}
         assert len(cells) == len(resp.data) == len(plain.data)
         for r in resp.data:
-            assert r["sales.t"] in (None, r["sales.store"]), r
-        assert any(r["sales.t"] is not None for r in resp.data)
+            assert r["t"] in (None, r["sales.store"]), r
+        assert any(r["t"] is not None for r in resp.data)
 
     async def test_predicate_over_projected_dimension(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            metrics=[QueryMetric(metric="time_shift(store in ('A', 'B'), -1)",
+            metrics=[QueryMetric(metric="time_shift(sales.store in ('A', 'B'), -1)",
                                    alias="t")], **kw))
         plain = await exec_engine.execute(_q(
-            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
+            metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")], **kw))
         assert len(resp.data) == len(plain.data)
         for r in resp.data:
-            assert r["sales.t"] in (None, r["sales.store"] in ("A", "B")), r
-        assert any(r["sales.t"] is not None for r in resp.data)
+            assert r["t"] in (None, r["sales.store"] in ("A", "B")), r
+        assert any(r["t"] is not None for r in resp.data)
 
     async def test_time_shift_in_filter_position(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
             filter=["time_shift(store, -1) = 'A'"],
-            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
+            metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")], **kw))
         plain = await exec_engine.execute(_q(
-            metrics=[QueryMetric(metric="sum(revenue)", alias="r")], **kw))
+            metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")], **kw))
         store_a = sorted(month_key(r["sales.ordered_at"]) for r in plain.data
                          if r["sales.store"] == "A")
         got = sorted((r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data)

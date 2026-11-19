@@ -33,8 +33,8 @@ def _daily() -> SlayerDataset:
         source_queries=[
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["created_at"],
-                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+                "dimensions": ["orders.created_at"],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             })
         ],
     )

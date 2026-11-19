@@ -287,7 +287,7 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
     """``SQLGenerator.generate()`` dispatches to the dialect's ``rewrite_emitted_sql``."""
     query = SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
     )
     with patch.object(
         PostgresDialect,
@@ -334,7 +334,7 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         ) as spy:
             await engine.execute(SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
             ))
         assert spy.called, (
             "SlayerQueryEngine.execute() must dispatch through the active "
@@ -399,8 +399,8 @@ class TestEngineDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": ["orders.status"],
             })
             resp = await engine.execute(query)
             # Keys must be decoded back to dotted form on the response.
@@ -414,8 +414,8 @@ class TestEngineDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": ["orders.status"],
             })
             resp = await engine.execute(query)
             assert resp.data == []
@@ -526,7 +526,7 @@ async def test_bigquery_attributes_survive_alias_mangling() -> None:
     rows = [{"orders___status": "paid"}]
     engine, tmp, _ = await _build_labeled_bigquery_engine(rows)
     try:
-        query = SlayerQuery(population="orders", dimensions=["status"])
+        query = SlayerQuery(population="orders", dimensions=["orders.status"])
         resp = await engine.execute(query)
         assert "orders.status" in resp.attributes.dimensions, (
             f"BigQuery attributes lost the dimension after mangling: "
@@ -588,8 +588,8 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
             data_source="bq",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
-                "dimensions": ["status"],
+                "metrics": [{"metric": "count(orders.*)"}],
+                "dimensions": ["orders.status"],
             })],
         )
         vmodel = await engine._expand_query_backed_dataset(
@@ -616,7 +616,7 @@ async def test_bigquery_dry_run_does_not_decode_data_rows() -> None:
     data_rows = [{"orders___status": "paid"}]
     engine, tmp, _ = await _build_bigquery_engine(rows=data_rows)
     try:
-        query = SlayerQuery(population="orders", dimensions=["status"])
+        query = SlayerQuery(population="orders", dimensions=["orders.status"])
         with patch.object(
             BigqueryDialect, "decode_result_keys", autospec=True,
             side_effect=lambda self, rows, **kw: rows,
@@ -868,10 +868,10 @@ async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
     query = SlayerQuery(
         population="orders",
         time_dimensions=[
-            TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
+            TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)
         ],
-        metrics=[QueryMetric(metric="sum(revenue) / sum(quantity)", alias="aov")],
-        order=[OrderItem(field="created_at", direction="desc")],
+        metrics=[QueryMetric(metric="sum(orders.revenue) / sum(orders.quantity)", alias="aov")],
+        order=[OrderItem(field="orders.created_at", direction="desc")],
         limit=6,
     )
     sql = await _engine_generate(query=query, dataset=model, dialect="bigquery")

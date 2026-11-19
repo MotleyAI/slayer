@@ -17,7 +17,7 @@ from tests._otel_helpers import OtelCapture
 from tests._saved_query_refinement_fixtures import build_refine_storage
 from tests._usage_reporting_helpers import build_storage, cli
 
-_QUERY = {"population": "orders", "metrics": ["count(*)"]}
+_QUERY = {"population": "orders", "metrics": ["count(orders.*)"]}
 
 
 @pytest.fixture

@@ -38,7 +38,7 @@ WORKING_PREFIX = "lift/"
 
 
 def _cases() -> dict:
-    s = QueryMetric(metric="sum(amount)", alias="s")
+    s = QueryMetric(metric="sum(orders.amount)", alias="s")
     return {
         "lift/dim_mixed_rank": q(
             dimensions=["region", "city", {"field": MIXED_RANK, "alias": "rr"}],

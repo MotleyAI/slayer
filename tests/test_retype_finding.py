@@ -342,7 +342,7 @@ class TestQueryTime:
         engine = duck.engine()
         try:
             with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"population": "legacy", "dimensions": ["flags_upper"]})
+                await engine.execute({"population": "legacy", "dimensions": ["legacy.flags_upper"]})
         finally:
             await engine.aclose()
             engine.close()
@@ -354,7 +354,7 @@ class TestQueryTime:
 
     async def test_postgres_json_grouped(self, pg: SlayerQueryEngine) -> None:
         with pytest.raises(SchemaDriftError) as info:
-            await pg.execute({"population": "pg_sql", "dimensions": ["payload"], "metrics": ["count(*)"]})
+            await pg.execute({"population": "pg_sql", "dimensions": ["pg_sql.payload"], "metrics": ["count(pg_sql.*)"]})
         err = info.value
         assert "payload" not in _removed(_dump(err.to_delete), "pg_sql"), err.to_delete
         assert "pg_sql.payload" in str(err), str(err)

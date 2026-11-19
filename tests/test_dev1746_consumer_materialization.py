@@ -274,8 +274,8 @@ class TestRankedPathUsesTheOneMaterialiser:
     def _query(self) -> SlayerQuery:
         return SlayerQuery(
             population="orders_x",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="first(cust_ltv)", alias="f")],
+            dimensions=[QueryDimension(field="orders_x.status")],
+            metrics=[QueryMetric(metric="first(orders_x.cust_ltv)", alias="f")],
         )
 
     async def test_local_first_last_still_materialises_correctly(self) -> None:

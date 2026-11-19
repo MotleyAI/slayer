@@ -25,7 +25,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-SP = QueryMetric(metric="sum(spend)", alias="sp")
+SP = QueryMetric(metric="sum(customers.spend)", alias="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -35,7 +35,7 @@ async def exec_backend(request):
 
 
 def _ok(resp) -> float:
-    return float(status_key(resp, root="customers")[("ok",)]["customers.sp"])
+    return float(status_key(resp, root="customers")[("ok",)]["sp"])
 
 
 class TestBroadcastModeNeverMultiplies:
@@ -43,7 +43,7 @@ class TestBroadcastModeNeverMultiplies:
         """Sanity oracle: the fan-free local total sums every customer once."""
         _, engine = exec_backend
         resp = await engine.execute(cust_q(metrics=[SP]))
-        assert float(resp.data[0]["customers.sp"]) == pytest.approx(
+        assert float(resp.data[0]["sp"]) == pytest.approx(
             LOCAL_SPEND_TOTAL)
 
     async def test_broadcast_mode_broadcasts_and_warns(self, exec_backend):
@@ -55,7 +55,7 @@ class TestBroadcastModeNeverMultiplies:
             cust_q(dimensions=["orders.status"], metrics=[SP],
                    to_many_handling="broadcast"))
         by = status_key(resp, root="customers")
-        vals = {k: float(v["customers.sp"]) for k, v in by.items()}
+        vals = {k: float(v["sp"]) for k, v in by.items()}
         assert vals[("ok",)] == pytest.approx(vals[("new",)])  # broadcast
         assert vals[("ok",)] != pytest.approx(LOCAL_OK_FAN_DEFECT)
         assert vals[("ok",)] != pytest.approx(ASSOC_LOCAL_SPEND_BY_STATUS["ok"])
@@ -72,7 +72,7 @@ class TestAssociateGivesDistinctEntityValue:
                    to_many_handling="associate"))
         by = status_key(resp, root="customers")
         for status, spend in ASSOC_LOCAL_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["customers.sp"]) == pytest.approx(spend)
+            assert float(by[(status,)]["sp"]) == pytest.approx(spend)
         assert _ok(resp) != pytest.approx(LOCAL_OK_FAN_DEFECT)
         assert associated_warnings(resp)
 
@@ -83,14 +83,14 @@ class TestEveryConsumerRoleAvoidsTheFan:
 
     async def test_arithmetic_composite_leaf(self, exec_backend):
         _, engine = exec_backend
-        composite = QueryMetric(metric="sum(spend) + 1", alias="sp1")
+        composite = QueryMetric(metric="sum(customers.spend) + 1", alias="sp1")
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[composite],
                    to_many_handling="associate"))
         by = status_key(resp, root="customers")
-        assert float(by[("ok",)]["customers.sp1"]) == pytest.approx(
+        assert float(by[("ok",)]["sp1"]) == pytest.approx(
             ASSOC_LOCAL_SPEND_BY_STATUS["ok"] + 1)
-        assert float(by[("ok",)]["customers.sp1"]) != pytest.approx(
+        assert float(by[("ok",)]["sp1"]) != pytest.approx(
             LOCAL_OK_FAN_DEFECT + 1)
 
     async def test_aggregate_phase_filter_only(self, exec_backend):
@@ -98,7 +98,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         threshold sees 420, not the fanned 520 that would keep ok anyway — a
         threshold BELOW the fan but ABOVE the true value discriminates."""
         _, engine = exec_backend
-        star = QueryMetric(metric="count(*)", alias="n")
+        star = QueryMetric(metric="count(customers.*)", alias="n")
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[star],
                    filter=["sum(spend) > 450"],

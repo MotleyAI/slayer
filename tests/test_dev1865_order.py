@@ -15,8 +15,8 @@ from slayer.core.query import QueryMetric
 from tests._dev1865_fixtures import q
 from slayer.engine.query_engine import SlayerQueryEngine
 
-RK_REGION = "orders.customers.regions.name"
-RK_TIER = "orders.customers.tier"
+RK_REGION = "customers.regions.name"
+RK_TIER = "customers.tier"
 
 
 class TestDuplicateOppositeDirection:
@@ -25,14 +25,14 @@ class TestDuplicateOppositeDirection:
         # column must coexist, and neither leaks into the projection.
         query = q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[
                 {"field": "ordered_at", "direction": "asc"},
                 {"field": "ordered_at", "direction": "desc"},
             ],
         )
         resp = await exec_engine.execute(query)
-        assert resp.columns == ["orders.region", "orders.s"]
+        assert resp.columns == ["orders.region", "s"]
         sql = (await exec_engine.execute(query=query, dry_run=True)).sql
         assert sql is not None
         order_by = sql.upper().rsplit("ORDER BY", 1)[1]
@@ -62,10 +62,10 @@ class TestOrderOnlyTrimmed:
     async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": "min(amount)", "direction": "asc"}],
         ))
-        assert resp.columns == ["orders.region", "orders.s"]
+        assert resp.columns == ["orders.region", "s"]
 
 
 class TestOrderByCrossModelPartitioned:
@@ -79,7 +79,7 @@ class TestOrderByCrossModelPartitioned:
             }],
         ))
         assert RK_REGION in resp.columns
-        assert "orders.sp" in resp.columns
+        assert "sp" in resp.columns
         # The partitioned value is hidden, not projected.
         assert not any("partition" in c for c in resp.columns)
         # RegN partition total (300) sorts before RegS (50) under desc.

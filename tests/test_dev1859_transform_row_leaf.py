@@ -109,7 +109,7 @@ class TestGrainRefiningLeafRejected:
         """Scenario: Bare grain-refining leaf rejected — never SQL whose base
         grain is one row per (bucket, weight-value)."""
         q = _q(time_dimensions=month_td(),
-               metrics=[QueryMetric(metric="cumsum(weight)", alias="t")])
+               metrics=[QueryMetric(metric="cumsum(sales.weight)", alias="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "cumsum")
@@ -117,7 +117,7 @@ class TestGrainRefiningLeafRejected:
     async def test_rank_family_covered(self, exec_engine):
         """Scenario: Rank family is covered."""
         q = _q(dimensions=["store"], time_dimensions=month_td(),
-               metrics=[QueryMetric(metric="rank(qty, direction='desc')", alias="t")])
+               metrics=[QueryMetric(metric="rank(sales.qty, direction='desc')", alias="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -125,7 +125,7 @@ class TestGrainRefiningLeafRejected:
     async def test_predicate_over_unprojected_column(self, exec_engine):
         """Scenario: Predicate over an unprojected row column rejected."""
         q = _q(time_dimensions=month_td(),
-                metrics=[QueryMetric(metric="consecutive_periods(weight > 0)",
+                metrics=[QueryMetric(metric="consecutive_periods(sales.weight > 0)",
                                        alias="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
@@ -134,7 +134,7 @@ class TestGrainRefiningLeafRejected:
     async def test_raw_time_source_column_refines_the_bucket(self, exec_engine):
         """The bucketed TD's raw source column is not a projected grain key."""
         q = _q(time_dimensions=month_td(),
-               metrics=[QueryMetric(metric="rank(ordered_at, direction='desc')", alias="t")])
+               metrics=[QueryMetric(metric="rank(sales.ordered_at, direction='desc')", alias="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -142,7 +142,7 @@ class TestGrainRefiningLeafRejected:
     async def test_filter_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
                filter=["cumsum(weight) > 0"],
-               metrics=[QueryMetric(metric="sum(revenue)", alias="r")])
+               metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "cumsum")
@@ -150,7 +150,7 @@ class TestGrainRefiningLeafRejected:
     async def test_order_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
                order=[{"field": "rank(qty, direction='desc')", "direction": "desc"}],
-               metrics=[QueryMetric(metric="sum(revenue)", alias="r")])
+               metrics=[QueryMetric(metric="sum(sales.revenue)", alias="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -162,20 +162,20 @@ class TestProjectedGrainKeyStaysLegal:
         weight a query dimension, verified sound today."""
         resp = await exec_engine.execute(_q(
             dimensions=["weight"],
-            metrics=[QueryMetric(metric="rank(weight, direction='desc')", alias="t")]))
+            metrics=[QueryMetric(metric="rank(sales.weight, direction='desc')", alias="t")]))
         by = rows_by(resp, "sales.weight")
         assert len(resp.data) == 2
-        assert int(by[(2.0,)]["sales.t"]) == 1
-        assert int(by[(1.0,)]["sales.t"]) == 2
+        assert int(by[(2.0,)]["t"]) == 1
+        assert int(by[(1.0,)]["t"]) == 2
 
     async def test_cumsum_over_projected_dimension_with_time(self, exec_engine):
         """The projected leaf evaluates at the query grain — one row per
         (weight, month) pair present, cumulative within the weight group."""
         resp = await exec_engine.execute(_q(
             dimensions=["weight"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="cumsum(weight)", alias="t")]))
+            metrics=[QueryMetric(metric="cumsum(sales.weight)", alias="t")]))
         got = {(r["sales.weight"], month_key(r["sales.ordered_at"])):
-               float(r["sales.t"]) for r in resp.data}
+               float(r["t"]) for r in resp.data}
         assert got == {
             (1.0, "2024-01"): 1.0, (1.0, "2024-02"): 2.0, (1.0, "2024-03"): 3.0,
             (2.0, "2024-01"): 2.0, (2.0, "2024-02"): 4.0,
@@ -190,10 +190,10 @@ class TestProjectedGrainKeyStaysLegal:
         resp = await exec_engine.execute(_q(
             dimensions=[{"field": wband, "alias": "wband"}],
             metrics=[QueryMetric(metric=f"rank({wband}, direction='desc')", alias="t")]))
-        by = rows_by(resp, "sales.wband")
+        by = rows_by(resp, "wband")
         assert len(resp.data) == 2
-        assert int(by[(2,)]["sales.t"]) == 1
-        assert int(by[(1,)]["sales.t"]) == 2
+        assert int(by[(2,)]["t"]) == 1
+        assert int(by[(1,)]["t"]) == 2
 
 
 class TestWalkerBehaviourUnchanged:
@@ -204,13 +204,13 @@ class TestWalkerBehaviourUnchanged:
         resp = await exec_engine.execute(_q(
             dimensions=["store"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="cumsum(sum(weight, partition_by=store))", alias="t")]))
+                metric="cumsum(sum(sales.weight, partition_by=sales.store))", alias="t")]))
         assert resp.data
 
     async def test_all_projected_composite_is_legal(self, exec_engine):
         resp = await exec_engine.execute(_q(
             dimensions=["weight", "qty"],
-            metrics=[QueryMetric(metric="rank(weight * qty, direction='desc')", alias="t")]))
+            metrics=[QueryMetric(metric="rank(sales.weight * sales.qty, direction='desc')", alias="t")]))
         assert resp.data
 
 
@@ -242,9 +242,9 @@ class TestLastOverShiftComposition:
     async def test_last_over_change_broadcasts_latest_period(self, exec_engine):
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="last(change(sum(revenue)))", alias="t")]))
+            metrics=[QueryMetric(metric="last(change(sum(sales.revenue)))", alias="t")]))
         # revenue:sum 60/100/60 → change NULL/+40/-40; last() = -40 broadcast.
-        got = {month_key(r["sales.ordered_at"]): r["sales.t"] for r in resp.data}
+        got = {month_key(r["sales.ordered_at"]): r["t"] for r in resp.data}
         assert got == {"2024-01": -40.0, "2024-02": -40.0, "2024-03": -40.0}
 
     async def test_last_over_change_in_filter_selects_declining_partition(self, exec_engine):
@@ -256,9 +256,9 @@ class TestLastOverShiftComposition:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(), dimensions=["store"],
             metrics=["sum(revenue)",
-                      QueryMetric(metric="change(sum(revenue))", alias="ch")],
+                      QueryMetric(metric="change(sum(sales.revenue))", alias="ch")],
             filter=["last(change(sum(revenue))) < 0"]))
-        rows = [(r["sales.store"], month_key(r["sales.ordered_at"]), r["sales.ch"])
+        rows = [(r["sales.store"], month_key(r["sales.ordered_at"]), r["ch"])
                 for r in resp.data]
         assert len(rows) == 3  # no duplicate broadcast rows
         assert set(rows) == {

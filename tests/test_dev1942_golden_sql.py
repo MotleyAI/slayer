@@ -23,7 +23,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1942_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(field="ordered_at",
+_MONTH_TD = [TimeDimension(field="monthly.ordered_at",
                            granularity=TimeGranularity.MONTH)]
 _X = "sum(amount, partition_by=[region, ordered_at])"
 _STANDALONE = f"min({_X}, partition_by=region)"

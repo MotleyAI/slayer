@@ -49,11 +49,11 @@ class TestTransformOverReaggregated:
                       QueryMetric(metric=f"rank(avg({INNER_CR}), direction='desc')", alias="rnk")]))
         by = {k[0]: v for k, v in region_key(resp).items()}
         # South has the largest per-region average -> rank 1 (descending).
-        assert int(by["South"]["sales.rnk"]) == 1
-        assert int(by["South"]["sales.rnk"]) < int(by["North"]["sales.rnk"])
+        assert int(by["South"]["rnk"]) == 1
+        assert int(by["South"]["rnk"]) < int(by["North"]["rnk"])
         # acr unchanged by the presence of the rank transform.
         for region, expected in AVG_CITY_TOTAL_BY_REGION.items():
-            assert float(by[region]["sales.acr"]) == pytest.approx(expected)
+            assert float(by[region]["acr"]) == pytest.approx(expected)
 
 
 class TestArithmeticAndOrderConsumers:
@@ -63,7 +63,7 @@ class TestArithmeticAndOrderConsumers:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(metric=f"avg({INNER_CR}) / 2", alias="half")]))
-        vals = {k[0]: v["sales.half"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["half"] for k, v in region_key(resp).items()}
         assert float(vals["North"]) == pytest.approx(
             AVG_CITY_TOTAL_BY_REGION["North"] / 2)
         assert float(vals["South"]) == pytest.approx(
@@ -74,7 +74,7 @@ class TestArithmeticAndOrderConsumers:
         when not selected — rows come back in its descending order."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")],
             order=[{"field": f"avg({INNER_CR})", "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
         # South(70) > East(60) > North(45) > Gap(10); Void(NULL) placement free.
@@ -93,7 +93,7 @@ class TestExplicitOuterGrain:
         by = rows_by(resp, "sales.region", "sales.product")
         for region in ("North", "South"):
             for product in ("P", "Q"):
-                assert float(by[(region, product)]["sales.acr"]) == pytest.approx(
+                assert float(by[(region, product)]["acr"]) == pytest.approx(
                     AVG_CITY_TOTAL_BY_REGION[region])
         assert broadcast_warnings(resp) == []
 
@@ -109,9 +109,9 @@ class TestFilterOnReaggregated:
             filter=[f"avg({INNER_CR}) > 50"]))
         survivors = {k[0] for k in region_key(filtered)}
         assert survivors == {"South", "East"}
-        ref = {k[0]: v["sales.acr"] for k, v in region_key(unfiltered).items()}
+        ref = {k[0]: v["acr"] for k, v in region_key(unfiltered).items()}
         for k, v in region_key(filtered).items():
-            assert float(v["sales.acr"]) == pytest.approx(float(ref[k[0]]))
+            assert float(v["acr"]) == pytest.approx(float(ref[k[0]]))
 
     async def test_row_phase_filter_reaches_inner_producer(self, exec_engine):
         """Scenario: Row-phase filters reach the inner producer — product='P'
@@ -119,7 +119,7 @@ class TestFilterOnReaggregated:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"], metrics=[reagg("avg", INNER_CR, name="acr")],
             filter=["product = 'P'"]))
-        vals = {k[0]: v["sales.acr"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["acr"] for k, v in region_key(resp).items()}
         for region, expected in ROWPHASE_P_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
 
@@ -131,7 +131,7 @@ class TestCompositeSparseOperand:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(metric=f"avg({COMPOSITE})", alias="comp")]))
-        vals = {k[0]: v["sales.comp"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["comp"] for k, v in region_key(resp).items()}
         for region, expected in COMPOSITE_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
 
@@ -143,7 +143,7 @@ class TestCompositeSparseOperand:
             dimensions=["region"],
             metrics=[QueryMetric(
                 metric=f"sum({INNER_CR} + {INNER_CR})", alias="d2")]))
-        vals = {k[0]: v["sales.d2"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["d2"] for k, v in region_key(resp).items()}
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(2 * total)
 
@@ -156,7 +156,7 @@ class TestCompositeSparseOperand:
             metrics=[QueryMetric(
                 metric=(f"sum(iif({INNER_CR} > 25 and {INNER_CR} < 90, "
                          f"1, 0))"), alias="mid")]))
-        vals = {k[0]: v["sales.mid"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["mid"] for k, v in region_key(resp).items()}
         assert {r: int(vals[r]) for r in ("North", "South", "East")} == {
             "North": 2, "South": 1, "East": 3}
 
@@ -169,7 +169,7 @@ class TestCompositeSparseOperand:
             metrics=[QueryMetric(metric=COMPOSITE, alias="comp")]))
         by = rows_by(resp, "sales.region", "sales.city")
         assert ("South", "Alpha") in by
-        assert by[("South", "Alpha")]["sales.comp"] is None
+        assert by[("South", "Alpha")]["comp"] is None
 
 
 class TestFirstLastDispatch:
@@ -192,8 +192,8 @@ class TestComputedDimensionConsumer:
                   "alias": "rlevel"}
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", rlevel],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
-        by = rows_by(resp, "sales.region", "sales.rlevel")
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
+        by = rows_by(resp, "sales.region", "rlevel")
         expected = {
             region: "high" if avg is not None and avg > 50 else "low"
             for region, avg in AVG_CITY_TOTAL_BY_REGION.items()

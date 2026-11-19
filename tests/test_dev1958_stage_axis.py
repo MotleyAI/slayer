@@ -30,17 +30,17 @@ async def exec_engine(request):
 
 async def test_shifted_share_over_stage_time_dimension(exec_engine) -> None:
     inner = monthly_q(name="s1", dimensions=["region"], time_dimensions=month_td(),
-                      metrics=[QueryMetric(metric="sum(amount)", alias="rev")])
+                      metrics=[QueryMetric(metric="sum(monthly.amount)", alias="rev")])
     outer = SlayerQuery.model_validate({
-        "population": "s1", "dimensions": ["region"],
-        "time_dimensions": [TimeDimension(field="ordered_at",
+        "population": "s1", "dimensions": ["s1.region"],
+        "time_dimensions": [TimeDimension(field="s1.ordered_at",
                                           granularity=TimeGranularity.MONTH,
                                           date_range=["2024-02-01", "2024-03-31"])],
         "metrics": [QueryMetric(
-            metric="time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
+            metric="time_shift(sum(s1.rev) / sum(s1.rev, partition_by=[s1.ordered_at]), -1)",
             alias="t")]})
     resp = await exec_engine.execute([inner, outer])
-    got = {(r["s1.region"], month_key(r["s1.ordered_at"])): r["s1.t"] for r in resp.data}
+    got = {(r["s1.region"], month_key(r["s1.ordered_at"])): r["t"] for r in resp.data}
     assert set(got) == set(EXPECTED)
     for cell, want in EXPECTED.items():
         if want is None:

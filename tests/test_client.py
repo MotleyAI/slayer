@@ -157,7 +157,7 @@ class TestLocalMode:
     ) -> None:
         """Local-mode ``query_sync`` reaches the engine (not HTTP)."""
         await _save_orders(storage)
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         resp = client.query_sync(query, dry_run=True)
         assert resp.sql is not None
         assert "amount" in resp.sql.lower()
@@ -169,7 +169,7 @@ class TestLocalMode:
         await _save_orders(storage)
         query_dict = {
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         resp = client.query_sync(query_dict, dry_run=True)
         assert resp.sql is not None
@@ -182,7 +182,7 @@ class TestLocalMode:
         await _save_orders(storage)
         query_dict = {
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         sql = client.sql_sync(query_dict)
         assert isinstance(sql, str)
@@ -197,12 +197,12 @@ class TestLocalMode:
             {
                 "name": "by_customer",
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["customer_id"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.customer_id"],
             },
             {
                 "population": "by_customer",
-                "metrics": [{"metric": "avg(amount_sum)"}],
+                "metrics": [{"metric": "avg(by_customer.amount_sum)"}],
             },
         ]
         resp = client.query_sync(queries, dry_run=True)
@@ -220,8 +220,8 @@ class TestLocalMode:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
-                    "dimensions": ["region"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
+                    "dimensions": ["orders.region"],
                 })
             ],
         )
@@ -242,12 +242,12 @@ class TestLocalMode:
             {
                 "name": "by_customer",
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "dimensions": ["customer_id"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "dimensions": ["orders.customer_id"],
             },
             {
                 "population": "by_customer",
-                "metrics": [{"metric": "avg(amount_sum)"}],
+                "metrics": [{"metric": "avg(by_customer.amount_sum)"}],
             },
         )
         resp = client.query_sync(queries, dry_run=True)
@@ -263,7 +263,7 @@ class TestLocalMode:
         payload: Mapping[str, Any] = MappingProxyType(
             {
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             }
         )
         resp = client.query_sync(payload, dry_run=True)
@@ -292,7 +292,7 @@ class TestHttpBodyShape:
             {
                 "name": "a",
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             },
             {"population": "a"},
         ]
@@ -320,7 +320,7 @@ class TestHttpBodyShape:
         q = SlayerQuery.model_validate({
             "name": "a",
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
         items: list[Any] = [q, {"population": "a"}]
         client.query_sync(items)
@@ -363,7 +363,7 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         payload = {
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         client.query_sync(payload)
         body = cap.last_body
@@ -384,7 +384,7 @@ class TestHttpBodyShape:
         with HTTP 422.
         """
         client, cap = http_client_with_capture
-        payload = {"population": "orders", "metrics": ["sum(amount)"]}
+        payload = {"population": "orders", "metrics": ["sum(orders.amount)"]}
         client.query_sync(payload)
         body = cap.last_body
         assert body is not None
@@ -397,7 +397,7 @@ class TestHttpBodyShape:
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         client.query_sync(q)
         # JSON mode — see codex note (4); matches _coerce_linked_entities.
         assert cap.last_body == q.model_dump(mode="json", exclude_none=True)
@@ -413,7 +413,7 @@ class TestHttpBodyShape:
             {
                 "name": "a",
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             },
             {"population": "a"},
         ]
@@ -471,7 +471,7 @@ class TestHttpBodyShape:
         client, _cap = http_client_with_capture
         payload = {
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         }
         snapshot = dict(payload)
         client.query_sync(payload, dry_run=True, explain=True)
@@ -533,7 +533,7 @@ class TestHttpBodyShape:
         AND route through the SlayerQuery normalisation pipeline."""
         client, cap = http_client_with_capture
         payload: Mapping[str, Any] = MappingProxyType(
-            {"population": "orders", "metrics": [{"metric": "sum(amount)"}]}
+            {"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]}
         )
         client.query_sync(payload)
         assert cap.last_body == SlayerQuery.model_validate(
@@ -571,7 +571,7 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         payload = {
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "variables": {"region": "US"},
         }
         client.query_sync(payload)
@@ -809,7 +809,7 @@ class TestRefine:
     async def test_local_rejects_non_name(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
-            await client.query({"population": "orders", "metrics": ["count(*)"]}, refine=REFINE)
+            await client.query({"population": "orders", "metrics": ["count(orders.*)"]}, refine=REFINE)
 
     def test_over_http(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         storage = asyncio.run(build_refine_storage(str(tmp_path)))
@@ -844,9 +844,9 @@ class TestVariables:
         assert cap.last_body["variables"] == {"x": 1}
 
     @pytest.mark.parametrize("query", [
-        {"population": "orders", "metrics": ["count(*)"], "variables": {"a": "own", "b": "own"}},
+        {"population": "orders", "metrics": ["count(orders.*)"], "variables": {"a": "own", "b": "own"}},
         SlayerQuery.model_validate(
-            {"population": "orders", "metrics": ["count(*)"], "variables": {"a": "own", "b": "own"}}
+            {"population": "orders", "metrics": ["count(orders.*)"], "variables": {"a": "own", "b": "own"}}
         ),
     ], ids=["dict", "query"])
     def test_http_single_query_runtime_wins(
@@ -864,7 +864,7 @@ class TestVariables:
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, _ = http_client_with_capture
-        query = {"population": "orders", "metrics": ["count(*)"], "variables": {"a": "own"}}
+        query = {"population": "orders", "metrics": ["count(orders.*)"], "variables": {"a": "own"}}
         runtime = {"a": "runtime"}
         client.query_sync(query, variables=runtime)
         assert query["variables"] == {"a": "own"}
@@ -898,20 +898,20 @@ class TestVariables:
     async def test_local_refinement_with_runtime_variables(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
         resp = await client.query(
-            "revenue_by_status", refine={"metrics": ["count(*)"]}, variables={"status": "refunded"},
+            "revenue_by_status", refine={"metrics": ["count(orders.*)"]}, variables={"status": "refunded"},
         )
-        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
+        assert resp.data == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
 
     async def test_local_refinement_placeholder(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
         resp = await client.query(
-            "monthly_revenue", refine={"filter": ["region = '{region}'"]}, variables={"region": "EU"},
+            "monthly_revenue", refine={"filter": ["orders.region = '{region}'"]}, variables={"region": "EU"},
         )
-        assert [(month(r["orders.ordered_at"]), r["orders.revenue"]) for r in resp.data] == [("2025-02", 105.0)]
+        assert [(month(r["orders.ordered_at"]), r["revenue"]) for r in resp.data] == [("2025-02", 105.0)]
 
     async def test_local_single_query(self, tmp_path) -> None:
         client = SlayerClient(storage=await build_refine_storage(str(tmp_path)))
-        query = {"population": "orders", "metrics": ["count(*)"], "filter": ["status = '{status}'"]}
+        query = {"population": "orders", "metrics": ["count(orders.*)"], "filter": ["orders.status = '{status}'"]}
         resp = await client.query(query, variables={"status": "refunded"})
         assert resp.data == [{"orders._count": 1}]
 
@@ -919,10 +919,10 @@ class TestVariables:
         pd = pytest.importorskip("pandas")
         client = SlayerClient(storage=asyncio.run(build_refine_storage(str(tmp_path))))
         resp = client.query_sync("revenue_by_status", variables={"status": "refunded"})
-        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0}]
+        assert resp.data == [{"orders.region": "US", "revenue": 40.0}]
         df = client.query_df("revenue_by_status", variables={"status": "refunded"})
         assert isinstance(df, pd.DataFrame)
-        assert df.to_dict("records") == [{"orders.region": "US", "orders.revenue": 40.0}]
+        assert df.to_dict("records") == [{"orders.region": "US", "revenue": 40.0}]
 
     def test_over_http(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         storage = asyncio.run(build_refine_storage(str(tmp_path)))
@@ -938,11 +938,11 @@ class TestVariables:
         resp = client.query_sync(
             "revenue_by_status", refine={"metrics": ["count(*)"]}, variables={"status": "refunded"},
         )
-        assert resp.data == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
-        single = {"population": "orders", "metrics": ["count(*)"], "filter": ["status = '{status}'"],
+        assert resp.data == [{"orders.region": "US", "revenue": 40.0, "orders._count": 1}]
+        single = {"population": "orders", "metrics": ["count(orders.*)"], "filter": ["orders.status = '{status}'"],
                   "variables": {"status": "paid"}}
         assert client.query_sync(single, variables={"status": "refunded"}).data == [{"orders._count": 1}]
 
 
 def _by_region(rows: list[dict[str, Any]]) -> dict[tuple, Any]:
-    return {(r["orders.region"], month(r["orders.ordered_at"])): r["orders.revenue"] for r in rows}
+    return {(r["orders.region"], month(r["orders.ordered_at"])): r["revenue"] for r in rows}

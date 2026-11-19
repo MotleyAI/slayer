@@ -26,7 +26,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 
 def _bucket_key(row):
     """A (region, month) bucket identity — every column except the measure."""
-    return tuple(sorted((k, v) for k, v in row.items() if k != "orders.w"))
+    return tuple(sorted((k, v) for k, v in row.items() if k != "w"))
 
 
 class TestFieldMaskRestrictsPopulation:
@@ -36,12 +36,12 @@ class TestFieldMaskRestrictsPopulation:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["status = 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region", "orders.city")
         expected = {**CITY_TOTAL, ("South", "CityC"): 25.0}
         assert set(by) == set(expected)
         for key, row in by.items():
-            assert float(row["orders.s"]) == pytest.approx(expected[key])
+            assert float(row["s"]) == pytest.approx(expected[key])
 
     async def test_stratum0_reaches_the_partition_producer(self, exec_engine) -> None:
         # The partitioned producer recomputes over the stratum-0 population:
@@ -49,17 +49,17 @@ class TestFieldMaskRestrictsPopulation:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["status = 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=region)", alias="part")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="part")],
         )), "orders.region", "orders.city")
         ok_region_total = {"North": 100.0, "South": 25.0, None: 60.0}
         for key, row in by.items():
-            assert float(row["orders.part"]) == pytest.approx(ok_region_total[key[0]])
+            assert float(row["part"]) == pytest.approx(ok_region_total[key[0]])
 
     async def test_stratum0_reaches_the_windowed_producer(self, exec_engine) -> None:
         # Same stratum-0 filter reaches a windowed producer: the (South, Mar)
         # bucket is the lone 'hold' order, so it drops when status='ok' applies.
         win = QueryMetric(
-            metric="sum(amount, window='90d', partition_by=region)", alias="w",
+            metric="sum(orders.amount, window='90d', partition_by=orders.region)", alias="w",
         )
         unfiltered = {_bucket_key(r): r for r in (await exec_engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(), metrics=[win],
@@ -69,10 +69,10 @@ class TestFieldMaskRestrictsPopulation:
             filter=["status = 'ok'"], metrics=[win],
         ))).data}
         for key, row in filtered.items():
-            assert float(row["orders.w"]) <= float(unfiltered[key]["orders.w"]) + 1e-9
+            assert float(row["w"]) <= float(unfiltered[key]["w"]) + 1e-9
         # The producer's population shrank: a bucket dropped or a value fell.
         assert set(filtered) != set(unfiltered) or any(
-            float(filtered[k]["orders.w"]) < float(unfiltered[k]["orders.w"]) - 1e-9
+            float(filtered[k]["w"]) < float(unfiltered[k]["w"]) - 1e-9
             for k in filtered
         )
 
@@ -88,9 +88,9 @@ class TestFieldMaskRestrictsPopulation:
         filtered = (await exec_engine.execute(q(
             dimensions=["customers.tier"], filter=["channel = 'app'"], metrics=[total],
         ))).data
-        assert all(float(r["orders.total"]) == pytest.approx(350.0) for r in unfiltered)
+        assert all(float(r["total"]) == pytest.approx(350.0) for r in unfiltered)
         assert filtered
-        assert all(float(r["orders.total"]) == pytest.approx(150.0) for r in filtered)
+        assert all(float(r["total"]) == pytest.approx(150.0) for r in filtered)
 
 
 class TestFieldWinsTieBreak:
@@ -101,10 +101,10 @@ class TestFieldWinsTieBreak:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["city != 'CityB'"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=region)", alias="part")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="part")],
         )), "orders.region", "orders.city")
-        assert float(by[("North", "CityA")]["orders.part"]) == pytest.approx(30.0)
-        assert float(by[("South", "CityC")]["orders.part"]) == pytest.approx(50.0)
+        assert float(by[("North", "CityA")]["part"]) == pytest.approx(30.0)
+        assert float(by[("South", "CityC")]["part"]) == pytest.approx(50.0)
 
 
 class TestAttachedValueDoesNotFeedProducers:
@@ -115,16 +115,16 @@ class TestAttachedValueDoesNotFeedProducers:
             dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
             filter=["sum(amount, partition_by=city) > 45"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="sum(amount, partition_by=[])", alias="grand"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount, partition_by=[])", alias="grand"),
             ],
         )), "orders.region", "orders.city")
         expected_s = {k: v for k, v in CITY_TOTAL.items() if v > 45}
         assert set(by) == set(expected_s)
         for key, row in by.items():
-            assert float(row["orders.s"]) == pytest.approx(expected_s[key])
+            assert float(row["s"]) == pytest.approx(expected_s[key])
             # Grand total is over ALL rows, never the masked survivors.
-            assert float(row["orders.grand"]) == pytest.approx(GRAND_TOTAL)
+            assert float(row["grand"]) == pytest.approx(GRAND_TOTAL)
 
 
 class TestMeasureMaskPrunesCellsOnly:
@@ -132,22 +132,22 @@ class TestMeasureMaskPrunesCellsOnly:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region"],
             filter=["sum(amount) > 55"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region")
         expected = {k: v for k, v in REGION_TOTAL.items() if v > 55}
         assert {k[0] for k in by} == set(expected)
         for key, row in by.items():
-            assert float(row["orders.s"]) == pytest.approx(expected[key[0]])
+            assert float(row["s"]) == pytest.approx(expected[key[0]])
 
 
 class TestHiddenPositionsAddNoColumns:
     async def test_filter_only_and_order_only_add_no_columns(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             filter=["count(*) > 0"],
             order=[{"field": "max(amount)", "direction": "desc"}],
         ))
-        assert resp.columns == ["orders.region", "orders.s"]
+        assert resp.columns == ["orders.region", "s"]
         for row in resp.data:
-            assert set(row) == {"orders.region", "orders.s"}
+            assert set(row) == {"orders.region", "s"}

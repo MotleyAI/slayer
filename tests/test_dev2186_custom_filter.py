@@ -53,7 +53,7 @@ def _by_region(resp: SlayerResponse, value: str = "v") -> dict[Any, float | None
 
 
 def _by_month(resp: SlayerResponse) -> dict[str, float | None]:
-    return {str(r["orders.created_at"])[:7]: num(r["orders.v"]) for r in resp.data}
+    return {str(r["orders.created_at"])[:7]: num(r["v"]) for r in resp.data}
 
 
 class TestValues:
@@ -85,7 +85,7 @@ class TestComposition:
         resp = await engine.execute(q(dimensions=["region", "city"], metrics=[
             m(f"rows(amount, partition_by=region) FILTER (WHERE {PAID})"),
         ]))
-        got = {(r["orders.region"], r["orders.city"]): num(r["orders.v"]) for r in resp.data}
+        got = {(r["orders.region"], r["orders.city"]): num(r["v"]) for r in resp.data}
         assert got == {("EU", "Paris"): 2, ("EU", "Berlin"): 2, ("US", "NYC"): 1, ("US", "LA"): 1, (None, "Rome"): None}
 
     async def test_query_row_filter_and_clause_both_restrict(self, engine: SlayerQueryEngine) -> None:
@@ -171,7 +171,7 @@ class TestWindow:
             m(f"rows(amount, window='2m') FILTER (WHERE {bound})", "b"),
         ]))
         assert _by_month(resp) == {"2024-02": 1, "2024-03": 1}
-        assert {str(r["orders.created_at"])[:7]: num(r["orders.b"]) for r in resp.data} == {"2024-02": 2, "2024-03": 3}
+        assert {str(r["orders.created_at"])[:7]: num(r["b"]) for r in resp.data} == {"2024-02": 2, "2024-03": 3}
 
     async def test_cross_model_time_column_condition(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
@@ -180,7 +180,7 @@ class TestWindow:
             "metrics": [{"metric": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
                           "alias": "v"}],
         }))
-        got = {str(r["customers.orders.created_at"])[:7]: num(r["customers.v"]) for r in resp.data}
+        got = {str(r["orders.created_at"])[:7]: num(r["v"]) for r in resp.data}
         assert got == {"2024-01": None, "2024-02": 2, "2024-03": 3}
 
 
@@ -248,7 +248,7 @@ class TestProducerIsolation:
 class TestCrossModelAndStage:
     async def test_cross_model_source(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "customers", "dimensions": ["name"],
+            "population": "customers", "dimensions": ["customers.name"],
             "metrics": [{"metric": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')", "alias": "v"}],
         }))
         assert {k: num(v) for k, v in by_key(resp, "name", dataset="customers").items()} == {"A": 2, "B": 1, "C": None}
@@ -265,7 +265,7 @@ class TestCrossModelAndStage:
 
     async def test_non_final_stage(self, engine: SlayerQueryEngine) -> None:
         stage = q(name="s", dimensions=["region"], metrics=[m(ROWS_PAID, "pr")])
-        final = SlayerQuery.model_validate({"population": "s", "metrics": [{"metric": "sum(pr)", "alias": "v"}]})
+        final = SlayerQuery.model_validate({"population": "s", "metrics": [{"metric": "sum(s.pr)", "alias": "v"}]})
         resp = await engine.execute([stage, final])
         assert num(single(resp, dataset="s")) == 3
 
@@ -343,6 +343,6 @@ class TestRendererFailsClosed:
         bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[customers_dataset()])
         with pytest.raises(RuntimeError, match="(?i)filter"):
             gen._build_agg_render_spec_from_planned(
-                slot=None, key=key, source_dataset=orders, source_relation="orders", full_alias="orders.v",
+                slot=None, key=key, source_dataset=orders, source_relation="orders", full_alias="v",
                 bundle=bundle,
             )

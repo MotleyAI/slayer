@@ -64,8 +64,8 @@ class TestMainTimeDimensionAmbiguity:
 
     async def test_single_bucket_still_resolves(self, engine) -> None:
         model = await _orders_dataset(engine)
-        td = TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
-        q = SlayerQuery(population="orders", time_dimensions=[td], main_time_dimension="created_at")
+        td = TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)
+        q = SlayerQuery(population="orders", time_dimensions=[td], main_time_dimension="orders.created_at")
         # A lone TD ignores main_time_dimension and resolves regardless.
         assert _resolve_main_time_dimension(query=q, dataset=model) is td
 

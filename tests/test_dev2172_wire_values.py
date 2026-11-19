@@ -125,7 +125,7 @@ class TestCollectOverUuid:
 class TestCollectOverExactDecimals:
     async def test_mcp_json_keeps_every_digit(self, store: FacadeStore) -> None:
         text = await mcp_text(create_mcp_server(storage=store.storage),
-                              {"population": "things", "metrics": ["prices"]}, fmt="json")
+                              {"population": "things", "metrics": ["things.prices"]}, fmt="json")
         assert str(BIG) in text
         assert f'"{BIG}"' not in text
         assert sorted(mcp_rows(text)[0]["things.prices"]) == sorted([BIG, Decimal("0.50")])

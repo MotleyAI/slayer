@@ -52,7 +52,7 @@ def _band(key: str, threshold: int) -> dict:
     }
 
 
-REVENUE = QueryMetric(metric="sum(amount)", alias="revenue")
+REVENUE = QueryMetric(metric="sum(orders.amount)", alias="revenue")
 
 
 def _q(**kw) -> SlayerQuery:
@@ -92,8 +92,8 @@ class TestPartitionKeyFilter:
     async def test_measure_partitioned_by_band_under_partition_key_filter(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", _band("customer_id", 50)],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s"),
-                      QueryMetric(metric="sum(amount, partition_by=band)", alias="bt")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s"),
+                      QueryMetric(metric="sum(orders.amount, partition_by=band)", alias="bt")],
             filter=["customer_id is not null"],
         ))
         assert _rows(resp, "region", "band", "s", "bt") == [
@@ -110,7 +110,7 @@ class TestGrainConsumersUnderPartitionKeyFilter:
     async def test_ranked_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=[_band("customer_id", 50)],
-            metrics=[QueryMetric(metric="last(amount, ordered_at)", alias="v")],
+            metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="v")],
             filter=["customer_id is not null"],
         ))
         assert _rows(resp, "band", "v") == [("high", 60.0), ("other", 25.0)]
@@ -134,7 +134,7 @@ class TestGrainConsumersUnderPartitionKeyFilter:
             metrics=[QueryMetric(metric=formula, alias="v")],
             filter=["customer_id is not null", *extra_filters],
         ))
-        got = sorted(((r["orders.band"], month_key(r["orders.ordered_at"]), float(r["orders.v"]))
+        got = sorted(((r["band"], month_key(r["orders.ordered_at"]), float(r["v"]))
                       for r in resp.data), key=repr)
         assert got == expected
 
@@ -174,7 +174,7 @@ class TestOrderKeyBesideRankedMeasure:
         # Regression guard: a dimensioned query already wraps the sort key.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="last(amount, ordered_at)", alias="v")],
+            metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="v")],
             order=[{"field": "city", "direction": "desc"}],
         ))
         assert _rows(resp, "region", "v") == [("North", 30.0), ("South", 25.0), (None, 60.0)]
@@ -187,8 +187,8 @@ class TestProducerGrainCoverage:
     async def test_measure_partitioned_by_computed_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", _band("customer_id", 50)],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s"),
-                      QueryMetric(metric="sum(amount, partition_by=band)", alias="bt")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s"),
+                      QueryMetric(metric="sum(orders.amount, partition_by=band)", alias="bt")],
         ))
         assert _rows(resp, "region", "band", "s", "bt") == [
             ("North", "high", 100.0, 160.0),

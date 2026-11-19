@@ -38,7 +38,7 @@ class TestValues:
     async def test_all_inputs_null(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("collect(city)", "c")],
                                           filter=["team = 'A' AND city IS NULL"]))
-        assert as_list(resp.data[0]["contractors.c"]) == []
+        assert as_list(resp.data[0]["c"]) == []
 
     async def test_a_cell_without_rows_is_empty(self, engine) -> None:
         got = await _collected(engine, "collect(skills.value)", by_key="name")
@@ -91,7 +91,7 @@ class TestListResults:
     async def test_list_function_in_a_formula(self, engine) -> None:
         resp = await engine.execute(query(dimensions=["team"], metrics=[
             metric("length(collect(skills.value))", "n")]))
-        assert {r["contractors.team"]: int(r["contractors.n"]) for r in resp.data} == {"A": 2, "B": 1}
+        assert {r["contractors.team"]: int(r["n"]) for r in resp.data} == {"A": 2, "B": 1}
 
     async def test_collect_as_a_dimension(self, engine) -> None:
         q = query(dimensions=[{"field": "collect(city, partition_by=team)", "alias": "c"}])
@@ -99,19 +99,19 @@ class TestListResults:
         teams = {r["team"] for r in stored_contractors()}
         expected = {tuple(sorted({r["city"] for r in stored_contractors() if r["team"] == t and r["city"] is not None}))
                     for t in teams}
-        assert {tuple(as_list(r["contractors.c"]) or ()) for r in resp.data} == expected
+        assert {tuple(as_list(r["c"]) or ()) for r in resp.data} == expected
 
     async def test_json_result(self, engine) -> None:
         server = create_mcp_server(storage=engine.storage)
         blocks, _ = await server.call_tool(name="query", arguments={
-            "query": {"population": "contractors", "dimensions": ["team"],
-                      "metrics": [{"metric": "collect(city)", "alias": "c"}]},
+            "query": {"population": "contractors", "dimensions": ["contractors.team"],
+                      "metrics": [{"metric": "collect(contractors.city)", "alias": "c"}]},
             "format": "json"})
         block = next(iter(blocks))
         assert isinstance(block, TextContent), block
         decoded = json.loads(block.text)
         rows = decoded["data"] if isinstance(decoded, dict) else decoded
-        assert {r["contractors.team"]: r["contractors.c"] for r in rows} == {"A": ["Oslo"], "B": ["Oslo", "Rome"]}
+        assert {r["contractors.team"]: r["c"] for r in rows} == {"A": ["Oslo"], "B": ["Oslo", "Rome"]}
 
     async def test_markdown_cell_is_json_text(self, engine) -> None:
         resp = await engine.execute(query(dimensions=["team"], metrics=[metric("collect(city)", "c")]))

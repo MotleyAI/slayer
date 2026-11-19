@@ -232,7 +232,7 @@ async def counts_by(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str
 async def by_id(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, dimension: str) -> list[Any]:
     """``dimension`` per row of ``model``, ordered by ``id``."""
     out = await rows(datasets=datasets, db=db, payload={
-        "population": dataset, "dimensions": ["id", dimension], "order": [{"field": "id"}]})
+        "population": dataset, "dimensions": ["orders.id", dimension], "order": [{"field": "orders.id"}]})
     return [r[f"{dataset}.{dimension}"] for r in out]
 
 

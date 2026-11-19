@@ -33,7 +33,7 @@ class TestProjectedTimeDimension:
     async def test_aggregation_and_rank(self, engine: SlayerQueryEngine) -> None:
         def query(key: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
+                "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
                 "metrics": [
                     {"metric": f"sum(amount, partition_by=[{key}])", "alias": "month_total"},
                     {"metric": f"rank(sum(amount), partition_by=[{key}], direction='desc')", "alias": "r"},
@@ -45,7 +45,7 @@ class TestProjectedTimeDimension:
     async def test_singular_element(self, engine: SlayerQueryEngine) -> None:
         def query(key: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
+                "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
                 "metrics": [{"metric": f"sum(amount, partition_by={key})", "alias": "month_total"}],
             }
 
@@ -54,15 +54,15 @@ class TestProjectedTimeDimension:
     async def test_filter_position(self, engine: SlayerQueryEngine) -> None:
         def query(key: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
-                "metrics": ["sum(amount)"], "filter": [f"sum(amount, partition_by=[{key}]) > 50"],
+                "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
+                "metrics": ["sum(orders.amount)"], "filter": [f"sum(amount, partition_by=[{key}]) > 50"],
             }
 
         await assert_equivalent(engine, query("date_trunc('month', created_at)"), query("created_at"))
 
     async def test_picks_month_among_several_time_dimensions(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(partitioned("date_trunc('month', created_at)", time_dimensions=[MONTH, YEAR], dimensions=()))
-        totals = {str(r["orders.created_at.month"])[:7]: r["orders.part_total"] for r in resp.data}
+        totals = {str(r["orders.created_at.month"])[:7]: r["part_total"] for r in resp.data}
         assert totals == {"2024-01": 30.0, "2024-02": 70.0, "2024-03": 110.0, "2024-12": 70.0}
 
     async def test_bare_column_among_several_time_dimensions_stays_ambiguous(self, engine: SlayerQueryEngine) -> None:
@@ -87,8 +87,8 @@ class TestOtherTimeColumns:
 
     async def test_stage_time_column(self, engine: SlayerQueryEngine) -> None:
         inner = {
-            "name": "s", "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "name": "s", "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }
 
         def query(key: str) -> list[dict[str, Any]]:

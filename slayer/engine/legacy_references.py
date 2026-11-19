@@ -105,9 +105,11 @@ class _Converter(BaseModel):
     anchors: AnchorNames
     conversions: Any
 
-    def text(self, value: str) -> str:
+    def text(self, value: str, *, own_alias: Optional[str] = None) -> str:
+        """``value`` converted; ``own_alias`` (the entry's own) shadows nothing in its own field."""
+        aliases = [a for a in self.aliases if a != own_alias] if own_alias else self.aliases
         try:
-            return convert_text(value, population=self.population, aliases=self.aliases, anchors=self.anchors,
+            return convert_text(value, population=self.population, aliases=aliases, anchors=self.anchors,
                                 conversions=self.conversions)
         except ValueError:
             return value  # an unparseable text is reported where it binds
@@ -139,16 +141,29 @@ class _Converter(BaseModel):
             data["main_time_dimension"] = self.text(main)
 
     def _dimension(self, d: QueryDimension) -> QueryDimension:
-        new = self.text(d.field)
-        return d if new == d.field else d.model_copy(update={"field": new})
+        new = self.text(d.field, own_alias=d.alias)
+        if new == d.field:
+            return d
+        return d.model_copy(update={"field": new, **({"alias": None} if _noop_alias(d) else {})})
 
     def _time_dimension(self, td: TimeDimension) -> TimeDimension:
-        new = self.text(td.field)
+        new = self.text(td.field, own_alias=td.alias)
         return td if new == td.field else td.model_copy(update={"field": new})
 
     def _metric(self, m: QueryMetric) -> QueryMetric:
-        new = self.text(m.metric)
+        new = self.text(m.metric, own_alias=m.alias)
         return m if new == m.metric else m.model_copy(update={"metric": new})
+
+
+def _noop_alias(d: QueryDimension) -> Optional[str]:
+    """A 1.x alias naming a plain reference by its own name, which renamed nothing."""
+    return d.alias if d.alias is not None and d.ref is not None and not d.is_computed else None
+
+
+def _live_aliases(*sources: Any) -> List[str]:
+    """The declared aliases of ``sources`` that rename something."""
+    noop = {a for s in sources for d in (getattr(s, "dimensions", None) or []) if (a := _noop_alias(d))}
+    return [a for a in declared_aliases(*sources) if a not in noop]
 
 
 def _rebuilt(model: Any, data: Dict[str, Any]) -> Any:
@@ -163,7 +178,7 @@ def convert_query(query: SlayerQuery, *, anchors: AnchorNames, conversions: Conv
     population = query.population_name
     if population is None:
         return query
-    converter = _Converter(population=population, aliases=declared_aliases(query), anchors=anchors,
+    converter = _Converter(population=population, aliases=_live_aliases(query), anchors=anchors,
                            conversions=conversions)
     data: Dict[str, Any] = {name: getattr(query, name) for name in query.model_fields_set | {"version"}}
     before = dict(data)
@@ -180,7 +195,7 @@ def convert_refinement(
     population = saved.population_name
     if population is None:
         return refinement
-    converter = _Converter(population=population, aliases=declared_aliases(saved, refinement), anchors=anchors,
+    converter = _Converter(population=population, aliases=_live_aliases(saved, refinement), anchors=anchors,
                            conversions=conversions)
     data: Dict[str, Any] = {name: getattr(refinement, name) for name in refinement.model_fields_set}
     converter.entries(data, refinement)

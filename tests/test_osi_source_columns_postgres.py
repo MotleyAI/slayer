@@ -44,7 +44,7 @@ async def test_unquoted_leaf_folds(pg: DatasourceConfig, tmp_path: Path) -> None
     result = _import(pg, "orders", "SUM(source.Quantity)")
     assert visible(by_name(result)["orders"]) == {"order_id"}
     async with pg_query_engine(pg, base_dir=str(tmp_path), datasets=result.datasets) as engine:
-        rows = (await engine.execute({"population": "orders", "metrics": ["units"]})).data
+        rows = (await engine.execute({"population": "orders", "metrics": ["orders.units"]})).data
     assert rows[0]["orders.units"] == 5
 
 

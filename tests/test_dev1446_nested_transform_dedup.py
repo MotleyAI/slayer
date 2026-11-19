@@ -97,18 +97,18 @@ def _query() -> SlayerQuery:
     # Jan -> NULL, Feb -> -9, Mar -> +1. Only March passes ``change > 0``.
     return SlayerQuery.model_validate({"population": "orders", "time_dimensions": [
             TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )
-        ], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["change(sum(amount)) > 0"]})
+        ], "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}], "filter": ["change(sum(orders.amount)) > 0"]})
 
 
 async def test_dev1446_change_filter_keeps_correct_rows(engine: Tuple[SlayerQueryEngine, str]):
     eng, _ = engine
     resp = await eng.execute(_query())
-    assert resp.columns == ["orders.created_at", "orders.revenue"]
+    assert resp.columns == ["orders.created_at", "revenue"]
     assert [dict(r) for r in resp.data] == [
-        {"orders.created_at": "2024-03-01", "orders.revenue": 9.0}
+        {"orders.created_at": "2024-03-01", "revenue": 9.0}
     ]
 
 

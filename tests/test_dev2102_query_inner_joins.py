@@ -91,7 +91,7 @@ class TestRootAndStoredEdges:
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
             dry = await engine.execute(query, dry_run=True)
-        assert resp.columns == ["orders.id", "orders.customers.name", "orders.customers.tier"]
+        assert resp.columns == ["orders.id", "orders.customers.name", "customers.tier"]
         assert rows(resp, *resp.columns) == [
             (1, "Ann", "gold"), (2, "Ann", "gold"), (3, "Bob", "silver"),
             (4, "Cid", "gold"), (5, "Dee", "bronze"), (6, "Eve", "silver"),
@@ -111,7 +111,7 @@ class TestRootAndStoredEdges:
         async with shop(dialect, with_datasets(stored_inner)) as engine:
             resp = await engine.execute(q(
                 population="customers", extensions=[_vip("left")], dimensions=["name", "vip_list.note"]))
-        assert rows(resp, "customers.name", "customers.vip_list.note") == [
+        assert rows(resp, "customers.name", "vip_list.note") == [
             ("Ann", "a"), ("Ann", "b"), ("Bob", "c"), ("Eve", "d"),
         ]
 
@@ -123,7 +123,7 @@ class TestPaths:
                   dimensions=["name"], metrics=[{"metric": "count(orders.id)", "alias": "n"}])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
-        assert rows(resp, "customers.name", "customers.n") == [("Ann", 1), ("Bob", 1)]
+        assert rows(resp, "customers.name", "n") == [("Ann", 1), ("Bob", 1)]
 
     async def test_multi_hop_chain_through_a_stored_left_hop(self, dialect) -> None:
         query = q(population="orders",
@@ -139,17 +139,17 @@ class TestPaths:
                               ext("regions", relationships=[join("countries", [["country_id", "id"]], join_type="inner")])])
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
-        assert rows(resp, "orders.id", "orders.n") == [(1, 1), (2, 1), (3, 1)]
+        assert rows(resp, "orders.id", "n") == [(1, 1), (2, 1), (3, 1)]
 
     async def test_adding_a_measure_never_changes_the_rows(self, dialect) -> None:
         extensions = [ext("customers", relationships=[join("regions", REGION_PAIRS, join_type="inner")])]
-        base = {"population": "orders", "extensions": extensions, "dimensions": ["status"]}
+        base = {"population": "orders", "extensions": extensions, "dimensions": ["orders.status"]}
         async with shop(dialect) as engine:
             plain = await engine.execute(q(**base, metrics=[{"metric": "count(*)", "alias": "n"}]))
             more = await engine.execute(q(**base, metrics=[
                 {"metric": "count(*)", "alias": "n"}, {"metric": "sum(customers.credit)", "alias": "cr"}]))
-        assert rows(plain, "orders.status", "orders.n") == rows(more, "orders.status", "orders.n")
-        assert rows(plain, "orders.status", "orders.n") == [("new", 1), ("ok", 3)]
+        assert rows(plain, "orders.status", "n") == rows(more, "orders.status", "n")
+        assert rows(plain, "orders.status", "n") == [("new", 1), ("ok", 3)]
 
     async def test_inner_to_a_sibling_stage(self, dialect) -> None:
         stage = q(name="big_spenders", population="orders", dimensions=["customer_id"],
@@ -163,7 +163,7 @@ class TestPaths:
     async def test_inner_to_a_query_backed_model_on_a_flattened_key(self, dialect) -> None:
         qb = SlayerDataset(name="big_spenders_qb", data_source=DS, source_queries=[SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customers.id"],
-            "metrics": [{"metric": "sum(amount)", "alias": "spent"}], "filter": ["spent > 25"]})])
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "spent"}], "filter": ["spent > 25"]})])
         root = q(population="customers", extensions=[ext("customers", relationships=[
             join("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["name"])
         async with shop(dialect, with_datasets(qb)) as engine:
@@ -274,7 +274,7 @@ class TestModes:
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
             dry = await engine.execute(query, dry_run=True)
-        assert rows(resp, "orders.customers.tier", "orders.n") == [("bronze", 1), ("gold", 3), ("silver", 2)]
+        assert rows(resp, "customers.tier", "n") == [("bronze", 1), ("gold", 3), ("silver", 2)]
         assert dry.sql is not None
         joins = [j for j in sqlglot.parse_one(dry.sql).find_all(exp.Join)
                  if isinstance(j.this, exp.Table) and j.this.name == "customers"]

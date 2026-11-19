@@ -279,14 +279,14 @@ class TestConsumerPositions:
             "alias": "band",
         }
         resp = await exec_engine.execute(snap_q(dimensions=[band], metrics=[m("sum(balance)")]))
-        vals = {r["account_snapshots.band"]: num(r["account_snapshots.v"]) for r in resp.data}
+        vals = {r["band"]: num(r["v"]) for r in resp.data}
         _approx(vals, BALANCE_BY_BAND)
 
     async def test_aggregation_parameter(self, exec_engine):
         resp = await exec_engine.execute(snap_q(metrics=[m(
             f"weighted_avg(balance, weight=sum({LAST}, partition_by=[customer_id]))"
         )]))
-        assert num(resp.data[0]["account_snapshots.v"]) == pytest.approx(WEIGHTED_AVG_GLOBAL)
+        assert num(resp.data[0]["v"]) == pytest.approx(WEIGHTED_AVG_GLOBAL)
 
     async def test_explicit_outer_partition(self, exec_engine):
         resp = await exec_engine.execute(snap_q(
@@ -298,7 +298,7 @@ class TestConsumerPositions:
 
     async def test_nested_reaggregation(self, exec_engine):
         resp = await exec_engine.execute(snap_q(metrics=[m(f"max(sum({LAST}, partition_by=[customer_id]))")]))
-        assert num(resp.data[0]["account_snapshots.v"]) == pytest.approx(LAST_BY_CUSTOMER[100])
+        assert num(resp.data[0]["v"]) == pytest.approx(LAST_BY_CUSTOMER[100])
 
 
 class TestStructuralTwins:
@@ -318,8 +318,8 @@ class TestCrossModelOperand:
             population="customers", dimensions=["name"],
             metrics=[m(f"sum({CM_LAST})"), m(f"count({CM_LAST})", "c")],
         ))
-        sums = {r["customers.name"]: num(r["customers.v"]) for r in resp.data}
-        counts = {r["customers.name"]: r["customers.c"] for r in resp.data}
+        sums = {r["customers.name"]: num(r["v"]) for r in resp.data}
+        counts = {r["customers.name"]: r["c"] for r in resp.data}
         _approx(sums, CROSS_MODEL_SUM_BY_NAME)
         assert counts == CROSS_MODEL_COUNT_BY_NAME
 

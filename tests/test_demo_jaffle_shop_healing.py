@@ -47,7 +47,7 @@ EXPECTED_EDGES = {
 
 README_QUERY = {
     "population": "orders",
-    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
+    "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"],
     "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 }
 
@@ -287,7 +287,7 @@ class TestDemoMoneyIsExact:
         _setup(storage, store_dir)
         rows = _run(storage, {
             "population": "orders",
-            "metrics": ["sum(order_total)"],
+            "metrics": ["sum(orders.order_total)"],
             "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
         })
         assert rows

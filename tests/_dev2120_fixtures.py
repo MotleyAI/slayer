@@ -795,7 +795,7 @@ async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs",
     ):
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": dataset, "distinct_dimension_values": False,
-            "dimensions": ["id", {"field": expr, "alias": "v"}],
+            "dimensions": ["docs.id", {"field": expr, "alias": "v"}],
         }))
         got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in resp.data}
         assert set(got) == set(expected), (expr, resp.sql)

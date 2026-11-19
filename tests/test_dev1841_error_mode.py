@@ -25,10 +25,10 @@ from tests._dev1841_fixtures import (
     rows_by,
 )
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 SM = QueryMetric(metric="sum(agents.score)", alias="sm")
-SP = QueryMetric(metric="sum(spend)", alias="sp")
+SP = QueryMetric(metric="sum(customers.spend)", alias="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -74,9 +74,9 @@ class TestErrorModeRefusesExcludedFilters:
         resp = await engine.execute(error_q(
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.tier = 'bronze' OR channel = 'app'"]))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, spend in {"gold": 160.0, "silver": 230.0, "bronze": 40.0}.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend), tier
 
     async def test_ambiguous_hop_errors_in_error_mode(self, exec_backend_amb):
         """An ambiguous correlation hop fails closed in every mode — not an
@@ -97,17 +97,17 @@ class TestErrorModePasses:
                   filter=["channel = 'app'"])
         strict_resp = await engine.execute(error_q(**kw))
         lenient_resp = await engine.execute(bcast_q(**kw))
-        strict_by = rows_by(strict_resp, "orders.customers.tier")
-        lenient_by = rows_by(lenient_resp, "orders.customers.tier")
+        strict_by = rows_by(strict_resp, "customers.tier")
+        lenient_by = rows_by(lenient_resp, "customers.tier")
         assert set(strict_by) == set(lenient_by)
         for key, row in strict_by.items():
-            assert row["orders.cm"] == lenient_by[key]["orders.cm"]
+            assert row["cm"] == lenient_by[key]["cm"]
 
     async def test_fully_attributable_passes(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(
             error_q(dimensions=["customers.tier"], metrics=[M, CM]))
-        assert {r["orders.customers.tier"] for r in resp.data} >= {"gold", "silver"}
+        assert {r["customers.tier"] for r in resp.data} >= {"gold", "silver"}
 
     async def test_explicit_partition_broadcast_does_not_error(self, exec_backend):
         """Scenario: explicit ``partition_by=`` broadcasting must not error even
@@ -118,7 +118,7 @@ class TestErrorModePasses:
             metrics=[QueryMetric(
                 metric="sum(customers.spend, partition_by=[])", alias="total")]))
         for row in resp.data:
-            assert float(row["orders.total"]) == pytest.approx(BCAST_SPEND_CROSS)
+            assert float(row["total"]) == pytest.approx(BCAST_SPEND_CROSS)
 
 
 class TestStrictParity:
@@ -140,7 +140,7 @@ class TestStrictParity:
         _, engine = exec_backend
         migrated = SlayerQuery.model_validate({
             "version": 3, "source_model": "orders", "strict": True,
-            "dimensions": ["status"],
+            "dimensions": ["orders.status"],
             "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
         })
         assert migrated.to_many_handling == "error"

@@ -204,15 +204,15 @@ def _qoq_query(*, metric_expression: str, metric_name: str) -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="ordered_at",
+            field="orders.ordered_at",
             granularity=TimeGranularity.QUARTER,
         )],
         dimensions=[QueryDimension(field="stores.name")],
         metrics=[
-            QueryMetric(metric="sum(order_total)"),
+            QueryMetric(metric="sum(orders.order_total)"),
             QueryMetric(metric=metric_expression, alias=metric_name),
         ],
-        order=[OrderItem(field="ordered_at", direction="asc")],
+        order=[OrderItem(field="orders.ordered_at", direction="asc")],
     )
 
 
@@ -247,13 +247,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.QUARTER,
             )],
             dimensions=[QueryDimension(field="stores.regions.name")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -276,13 +276,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[QueryDimension(field="status_up")],
+            dimensions=[QueryDimension(field="orders.status_up")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -308,13 +308,13 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[QueryDimension(field="stores.tier")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[stores, _regions()])
@@ -337,15 +337,15 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(field="delivery_at",
+                TimeDimension(field="orders.delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
-            main_time_dimension="ordered_at",
+            main_time_dimension="orders.ordered_at",
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -369,14 +369,14 @@ class TestShiftedCtePartitionShape:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             dimensions=[QueryDimension(field="stores.name")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
+                QueryMetric(metric="sum(orders.order_total)"),
                 QueryMetric(
-                    metric="time_shift(sum(order_total), -1, partition_by=stores.name)",
+                    metric="time_shift(sum(orders.order_total), -1, partition_by=stores.name)",
                     alias="prev",
                 ),
             ],
@@ -397,8 +397,8 @@ class TestShiftedCtePartitionShape:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -426,12 +426,12 @@ class TestShiftedCteJoinedFilter:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
             filter=["stores.name = 'North'"],
         )
@@ -454,12 +454,12 @@ class TestShiftedCteJoinedFilter:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, model, extra_datasets=[_stores(), _regions()])
@@ -503,13 +503,13 @@ class TestShiftedCteNullSafeJoinBack:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), dialect=dialect)
@@ -538,13 +538,13 @@ class TestLocalOnlyTimeShiftUnchanged:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="ordered_at",
+                field="orders.ordered_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -573,15 +573,15 @@ class TestJoinedSecondaryTimeDimension:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH),
                 TimeDimension(field="stores.opened_at",
                               granularity=TimeGranularity.QUARTER),
             ],
-            main_time_dimension="ordered_at",
+            main_time_dimension="orders.ordered_at",
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
@@ -722,7 +722,7 @@ class TestQoQExecutionGroundTruth:
             metric_expression="change(sum(order_total))", metric_name="qoq",
         ))
         by = {
-            (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
+            (r["stores.name"], _quarter_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
         # Base per-quarter sums (guards the aggregation under the partition).
@@ -731,20 +731,20 @@ class TestQoQExecutionGroundTruth:
         assert float(by[(None, "2024-01")]["orders.order_total_sum"]) == pytest.approx(10.0)
 
         # Q1 (earliest) has no prior quarter → change is NULL for every store.
-        assert by[("North", "2024-01")]["orders.qoq"] is None
-        assert by[("South", "2024-01")]["orders.qoq"] is None
-        assert by[(None, "2024-01")]["orders.qoq"] is None
+        assert by[("North", "2024-01")]["qoq"] is None
+        assert by[("South", "2024-01")]["qoq"] is None
+        assert by[(None, "2024-01")]["qoq"] is None
 
         # QoQ deltas — each store's series compared only against itself.
-        assert float(by[("North", "2024-04")]["orders.qoq"]) == pytest.approx(150.0)
-        assert float(by[("North", "2024-07")]["orders.qoq"]) == pytest.approx(-50.0)
-        assert float(by[("South", "2024-04")]["orders.qoq"]) == pytest.approx(-120.0)
-        assert float(by[("South", "2024-07")]["orders.qoq"]) == pytest.approx(320.0)
+        assert float(by[("North", "2024-04")]["qoq"]) == pytest.approx(150.0)
+        assert float(by[("North", "2024-07")]["qoq"]) == pytest.approx(-50.0)
+        assert float(by[("South", "2024-04")]["qoq"]) == pytest.approx(-120.0)
+        assert float(by[("South", "2024-07")]["qoq"]) == pytest.approx(320.0)
 
         # The NULL-store group: prev is found across the NULL grain (null-safe
         # join-back) — a plain ``=`` join-back would drop these to NULL.
-        assert float(by[(None, "2024-04")]["orders.qoq"]) == pytest.approx(10.0)
-        assert float(by[(None, "2024-07")]["orders.qoq"]) == pytest.approx(-15.0)
+        assert float(by[(None, "2024-04")]["qoq"]) == pytest.approx(10.0)
+        assert float(by[(None, "2024-07")]["qoq"]) == pytest.approx(-15.0)
 
     async def test_change_pct_per_store_matches_hand_computed(self, qoq_engine) -> None:
         """``change_pct`` percentages per store (NULL prior → NULL)."""
@@ -752,17 +752,17 @@ class TestQoQExecutionGroundTruth:
             metric_expression="change_pct(sum(order_total))", metric_name="qoq_pct",
         ))
         by = {
-            (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
+            (r["stores.name"], _quarter_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
-        assert by[("North", "2024-01")]["orders.qoq_pct"] is None
-        assert float(by[("North", "2024-04")]["orders.qoq_pct"]) == pytest.approx(1.0)
-        assert float(by[("North", "2024-07")]["orders.qoq_pct"]) == pytest.approx(-50.0 / 300.0)
-        assert float(by[("South", "2024-04")]["orders.qoq_pct"]) == pytest.approx(-0.6)
-        assert float(by[("South", "2024-07")]["orders.qoq_pct"]) == pytest.approx(4.0)
+        assert by[("North", "2024-01")]["qoq_pct"] is None
+        assert float(by[("North", "2024-04")]["qoq_pct"]) == pytest.approx(1.0)
+        assert float(by[("North", "2024-07")]["qoq_pct"]) == pytest.approx(-50.0 / 300.0)
+        assert float(by[("South", "2024-04")]["qoq_pct"]) == pytest.approx(-0.6)
+        assert float(by[("South", "2024-07")]["qoq_pct"]) == pytest.approx(4.0)
         # NULL-store percentages also require the null-safe join-back.
-        assert float(by[(None, "2024-04")]["orders.qoq_pct"]) == pytest.approx(1.0)
-        assert float(by[(None, "2024-07")]["orders.qoq_pct"]) == pytest.approx(-0.75)
+        assert float(by[(None, "2024-04")]["qoq_pct"]) == pytest.approx(1.0)
+        assert float(by[(None, "2024-07")]["qoq_pct"]) == pytest.approx(-0.75)
 
 
 class TestSecondaryTimeDimensionExecution:
@@ -776,15 +776,15 @@ class TestSecondaryTimeDimensionExecution:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
-                TimeDimension(field="ordered_at",
+                TimeDimension(field="orders.ordered_at",
                               granularity=TimeGranularity.MONTH),
-                TimeDimension(field="delivery_at",
+                TimeDimension(field="orders.delivery_at",
                               granularity=TimeGranularity.QUARTER),
             ],
-            main_time_dimension="ordered_at",
+            main_time_dimension="orders.ordered_at",
             metrics=[
-                QueryMetric(metric="sum(order_total)"),
-                QueryMetric(metric="time_shift(sum(order_total), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.order_total)"),
+                QueryMetric(metric="time_shift(sum(orders.order_total), -1)", alias="prev"),
             ],
         )
         resp = await secondary_td_engine.execute(query)
@@ -794,6 +794,6 @@ class TestSecondaryTimeDimensionExecution:
         }
         # Feb-ordered, Q1-delivered: prev = Jan-ordered / Q1-delivered = 100
         # (NOT 130 = all-of-January broadcast).
-        assert float(by[("2024-02", "2024-01")]["orders.prev"]) == pytest.approx(100.0)
+        assert float(by[("2024-02", "2024-01")]["prev"]) == pytest.approx(100.0)
         # Feb-ordered, Q2-delivered: prev = Jan-ordered / Q2-delivered = 30.
-        assert float(by[("2024-02", "2024-04")]["orders.prev"]) == pytest.approx(30.0)
+        assert float(by[("2024-02", "2024-04")]["prev"]) == pytest.approx(30.0)

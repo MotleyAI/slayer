@@ -65,20 +65,20 @@ async def engine(request):
 
 async def _value(engine, expression: str) -> float:
     resp = await engine.execute(orders_q(metrics=[{"metric": expression, "alias": "w"}]))
-    return float(resp.data[0]["orders.w"])
+    return float(resp.data[0]["w"])
 
 
 async def _by(engine, expression: str, *, dim: str, **kw) -> dict:
     resp = await engine.execute(orders_q(
         dimensions=[dim], metrics=[{"metric": expression, "alias": "w"}], **kw))
-    return {r[f"orders.{dim}"]: float(r["orders.w"]) for r in resp.data}
+    return {r[f"orders.{dim}"]: float(r["w"]) for r in resp.data}
 
 
 async def _by_month(engine, expression: str) -> dict:
     resp = await engine.execute(orders_q(
         time_dimensions=TD, metrics=[{"metric": expression, "alias": "w"}]))
-    return {month_key(r["orders.customers.signup_at"]): float(r["orders.w"])
-            for r in resp.data if r["orders.customers.signup_at"] is not None}
+    return {month_key(r["customers.signup_at"]): float(r["w"])
+            for r in resp.data if r["customers.signup_at"] is not None}
 
 
 def _home_path(expression: str) -> tuple:
@@ -147,7 +147,7 @@ class TestDefaultInFilterAndOrder:
         query = orders_q(dimensions=["status"], metrics=[{"metric": "sum(amount)", "alias": "s"}],
                          filter=[f"{agg}(amount) > {threshold}"])
         resp = await engine.execute(query)
-        assert {r["orders.status"]: float(r["orders.s"]) for r in resp.data} \
+        assert {r["orders.status"]: float(r["s"]) for r in resp.data} \
             == {"ok": AMOUNT_BY_STATUS["ok"]}
         sql = (await engine.execute(query, dry_run=True)).sql
         assert sql is not None
@@ -256,13 +256,13 @@ class TestDefaultAndTwinOneProducer:
     """``weight`` defaults to ``customers.hr.pop``: default and twin share one producer."""
 
     QUERY = {"population": "orders", "dimensions": ["customers.hr.rname"],
-             "metrics": [{"metric": "wpop(amount)", "alias": "a"},
-                          {"metric": "wpop(amount, weight=customers.hr.pop)", "alias": "b"}]}
+             "metrics": [{"metric": "wpop(orders.amount)", "alias": "a"},
+                          {"metric": "wpop(orders.amount, weight=customers.hr.pop)", "alias": "b"}]}
 
     async def test_both_names_one_value(self, engine1954) -> None:
         resp = await engine1954.execute(SlayerQuery.model_validate(self.QUERY))
-        assert by_key(resp, RNAME, "orders.a") == WPOP_BY_RNAME
-        assert by_key(resp, RNAME, "orders.b") == WPOP_BY_RNAME
+        assert by_key(resp, RNAME, "a") == WPOP_BY_RNAME
+        assert by_key(resp, RNAME, "b") == WPOP_BY_RNAME
 
     async def test_one_producer(self, engine1954) -> None:
         sql = (await engine1954.execute(SlayerQuery.model_validate(self.QUERY), dry_run=True)).sql

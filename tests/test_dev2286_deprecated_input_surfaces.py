@@ -31,7 +31,7 @@ from tests._library_names_fixtures import agg, metric, stored_engine, t_doc
 from tests._model_access_fixtures import mcp_text
 
 EXTENSION_OLD = "An extension object in `population`"
-LEGACY_CLEAN = {"population": {"source_name": "orders"}, "metrics": ["count(*)"]}
+LEGACY_CLEAN = {"population": {"source_name": "orders"}, "metrics": ["count(orders.*)"]}
 TWO_FORMS = strict(LEGACY_CLEAN)
 
 

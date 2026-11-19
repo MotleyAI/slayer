@@ -211,7 +211,7 @@ class TestCrossModelFragmentJoins:
                 dimensions=[QueryDimension(field="status", alias="status")],
                 metrics=[
                     {"metric": "wscaled_sum(customers.spend)", "alias": "m0"},
-                    {"metric": "sum(amount)", "alias": "m1"},
+                    {"metric": "sum(orders.amount)", "alias": "m1"},
                 ],
             ),
             dataset=_orders(),
@@ -235,7 +235,7 @@ class TestHostPathFragmentJoinsStillWork:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": [{"field": "status", "alias": "status"}],
-                "metrics": [{"metric": "wscaled_sum(amount)", "alias": "m0"}],
+                "metrics": [{"metric": "wscaled_sum(orders.amount)", "alias": "m0"}],
             }),
             dataset=_orders_local_agg(),
         )
@@ -248,7 +248,7 @@ class TestHostPathFragmentJoinsStillWork:
                 population="orders",
                 dimensions=[QueryDimension(field="status", alias="status")],
                 metrics=[{
-                    "metric": "wscaled_sum(amount, w='customers.regions.weight')",
+                    "metric": "wscaled_sum(orders.amount, w='customers.regions.weight')",
                     "alias": "m0",
                 }],
             ),

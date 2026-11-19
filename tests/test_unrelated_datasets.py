@@ -101,7 +101,7 @@ class TestResolution:
         resp = await engine.execute(stages(
             {"name": "c", "population": "customers", "metrics": [m("count(*)", "nc")]},
             {"name": "e", "population": "events", "metrics": [m("count(*)", "ne")]},
-            {"population": "c", "dimensions": ["nc"], "metrics": [m("max(e.ne)", "ne")]},
+            {"population": "c", "dimensions": ["c.nc"], "metrics": [m("max(e.ne)", "ne")]},
         ))
         assert only_row(resp, "nc", "ne") == (3.0, 5.0)
 
@@ -117,7 +117,7 @@ class TestResolution:
             dimensions=["city"], metrics=[m("count(*)", "n"), m("count(events.id)", "ne")],
         )]))
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "per_city", "dimensions": ["city"], "metrics": [m("max(ne)", "ne_max")],
+            "population": "per_city", "dimensions": ["per_city.city"], "metrics": [m("max(ne)", "ne_max")],
         }))
         assert rows(resp, "ne_max") == {"A": (5.0,), "B": (5.0,)}
 
@@ -145,7 +145,7 @@ class TestResolution:
 class TestExistingResolutionUnchanged:
     async def test_join_path_reference(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "users", "dimensions": ["name"], "metrics": [m("count(events.id)", "n")],
+            "population": "users", "dimensions": ["users.name"], "metrics": [m("count(events.id)", "n")],
         }))
         assert rows(resp, "n", by="name") == {"u1": (2.0,), "u2": (2.0,), "u3": (1.0,)}
         assert unrelated_warnings(resp) == []
@@ -390,9 +390,9 @@ class TestRowLevelRefusal:
 
     @pytest.mark.parametrize("fields, reference", [
         ({"time_dimensions": [{"field": "events.created_at", "granularity": "month"}]}, "events.created_at"),
-        ({"dimensions": ["city", {"field": "events.amount * 2", "alias": "a2"}]}, "events.amount"),
+        ({"dimensions": ["customers.city", {"field": "events.amount * 2", "alias": "a2"}]}, "events.amount"),
         ({"order": [{"field": "events.amount", "direction": "asc"}]}, "events.amount"),
-        ({"dimensions": ["city", "events.kind"], "metrics": [], "distinct_dimension_values": False}, "events.kind"),
+        ({"dimensions": ["customers.city", "events.kind"], "metrics": [], "distinct_dimension_values": False}, "events.kind"),
     ], ids=["time_dimension", "computed_dimension", "order_key", "raw_rows"])
     async def test_other_row_level_positions(self, engine, fields: dict[str, Any], reference: str) -> None:
         q = query(**{"metrics": [m("count(*)", "n")], **fields})
@@ -403,7 +403,7 @@ class TestRowLevelRefusal:
     async def test_one_row_stage_field_names_the_max_remedy(self, engine) -> None:
         q = stages(
             {"name": "e", "population": "events", "metrics": [m("count(*)", "ne")]},
-            {"population": "customers", "dimensions": ["city", "e.ne"], "metrics": [m("count(*)", "n")]},
+            {"population": "customers", "dimensions": ["customers.city", "e.ne"], "metrics": [m("count(*)", "n")]},
         )
         with pytest.raises(UnrelatedDatasetError) as exc:
             await engine.execute(q)
@@ -419,7 +419,7 @@ class TestRowLevelRefusal:
             SlayerQuery.model_validate({
                 "population": "customers",
                 "extensions": [{"dataset": "customers", "relationships": [{"to": "events", "from_columns": [], "to_columns": []}]}],
-                "metrics": ["count(*)"],
+                "metrics": ["count(customers.*)"],
             })
         msg = str(exc.value)
         assert "from_columns" in msg

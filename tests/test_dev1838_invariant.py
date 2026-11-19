@@ -26,7 +26,7 @@ from tests._dev1838_fixtures import (
     q,
 )
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 class _LegacyCrossModelPlan(Protocol):
@@ -62,15 +62,15 @@ SHAPES = {
         QueryMetric(metric="last(customers.spend)", alias="sl")],
         to_many_handling="broadcast"),
     "filtered_local": q(dimensions=["status"], metrics=[
-        M, QueryMetric(metric="sum(gold_amount)", alias="g")]),
+        M, QueryMetric(metric="sum(orders.gold_amount)", alias="g")]),
     "crossing_arg": q(dimensions=["status"], metrics=[
-        M, QueryMetric(metric="wscaled_sum(amount)", alias="w")]),
+        M, QueryMetric(metric="wscaled_sum(orders.amount)", alias="w")]),
     "host_grain_wrap": q(dimensions=["status"], metrics=[M],
                          order=[OrderItem(
                              field="customers.tier",
                              direction="asc")]),
     "windowed": q(dimensions=["region"], time_dimensions=month_td(),
-                  metrics=[QueryMetric(metric="sum(amount, window='90d')",
+                  metrics=[QueryMetric(metric="sum(orders.amount, window='90d')",
                                          alias="w")]),
     "band_cross_model": q(dimensions=["status", BAND], metrics=[
         M, QueryMetric(metric="sum(customers.spend)", alias="cm")]),

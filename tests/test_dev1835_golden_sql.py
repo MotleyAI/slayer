@@ -46,35 +46,35 @@ def _cases() -> dict:
         "mig/bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
             ],
         ),
         "mig/bare_rk": q(
             dimensions=["region"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="last(amount)", alias="l"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="last(orders.amount)", alias="l"),
             ],
         ),
         "lift/band_x_wm": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount, window='90d'))", alias="x"),
+                QueryMetric(metric="cumsum(sum(orders.amount, window='90d'))", alias="x"),
             ],
         ),
         "dedup/dual_role": q(
             dimensions=["region", RBAND],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         ),
     }

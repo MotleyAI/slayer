@@ -110,4 +110,4 @@ class TestEquivalence:
         ))
         assert functional.columns == explicit.columns
         assert functional.data == explicit.data
-        assert functional.columns[0] == "orders.customers.created_at"
+        assert functional.columns[0] == "customers.created_at"

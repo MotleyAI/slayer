@@ -116,7 +116,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
         dimensions=["region", "city"],
         time_dimensions=month_td(),
         metrics=[QueryMetric(
-            metric="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
+            metric="sum(orders.amount, partition_by=orders.region) + sum(orders.amount, partition_by=orders.city)",
             alias="x",
         )],
     ))
@@ -128,7 +128,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     cells: dict[tuple, set] = {}
     for row in resp.data:
         cell = (row["orders.region"], row["orders.city"])
-        cells.setdefault(cell, set()).add(canon(row["orders.x"]))
+        cells.setdefault(cell, set()).add(canon(row["x"]))
     for cell, values in cells.items():
         assert len(values) == 1, (
             f"LAW grain union violated — mixed-grain formula not constant "

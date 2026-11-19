@@ -36,11 +36,11 @@ class TestExpressionArgument:
         resp = await engine.execute(q(
             dimensions=[{"field": "date_trunc('year', CAST(created_txt AS DATE))", "alias": "y"}], metrics=[m("count(*)")],
         ))
-        assert {str(r["orders.y"])[:4]: num(r["orders.v"]) for r in resp.data} == {"2024": 1, "2025": 5}
+        assert {str(r["y"])[:4]: num(r["v"]) for r in resp.data} == {"2024": 1, "2025": 5}
 
     async def test_in_an_aggregation_source(self, engine) -> None:
         resp = await engine.execute(q(metrics=[m(f"count_distinct(date_trunc('month', {EFF}))")]))
-        assert [num(r["orders.v"]) for r in resp.data] == [4]
+        assert [num(r["v"]) for r in resp.data] == [4]
 
     async def test_in_arithmetic(self, engine) -> None:
         resp = await engine.execute(q(dimensions=[

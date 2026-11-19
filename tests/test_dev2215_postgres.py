@@ -71,7 +71,7 @@ async def test_extraction_equals_its_date_part_twin(pg: tuple[SlayerQueryEngine,
     assert alias.columns == twin.columns
     assert alias.sql == twin.sql
     assert sorted_rows(alias) == sorted_rows(twin)
-    assert int(next(r["orders.x"] for r in alias.data if int(r["orders.id"]) == 3)) == ROW3_PARTS[part]
+    assert int(next(r["x"] for r in alias.data if int(r["orders.id"]) == 3)) == ROW3_PARTS[part]
 
 
 async def test_week_is_the_iso_week_number(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
@@ -89,7 +89,7 @@ async def test_first_last_partitioned_cross_model(pg: tuple[SlayerQueryEngine, D
     resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], metrics=[
         m("last(customers.status, customers.updated_at, partition_by=customers.region)", "l"),
         m("first(customers.status, customers.updated_at, partition_by=customers.region)", "f")]))
-    got = {r["orders.customers.name"]: (r["orders.f"], r["orders.l"]) for r in resp.data}
+    got = {r["customers.name"]: (r["f"], r["l"]) for r in resp.data}
     assert got == {"A": ("gold", "gold"), "B": ("gold", "gold"), "C": ("bronze", "bronze"), "D": ("bronze", "bronze")}
 
 

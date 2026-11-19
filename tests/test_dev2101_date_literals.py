@@ -107,7 +107,7 @@ class TestTypedLiterals:
     async def test_typed_literal_outside_a_date_position(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["id", {"field": "DATE '2024-01-01'", "alias": "d"}],
                                       filter=["id = 1"]))
-        assert str(resp.data[0]["orders.d"])[:10] == "2024-01-01"
+        assert str(resp.data[0]["d"])[:10] == "2024-01-01"
 
 
 @pytest.fixture

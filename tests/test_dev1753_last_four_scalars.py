@@ -294,8 +294,8 @@ class TestEndToEndBinding:
             resp = await engine.execute(
                 SlayerQuery(
                     population="orders",
-                    dimensions=[QueryDimension(field="status")],
-                    metrics=[QueryMetric(metric="count(*)", alias="n")],
+                    dimensions=[QueryDimension(field="orders.status")],
+                    metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
                     filter=[predicate],
                 ),
                 dry_run=True,
@@ -308,11 +308,11 @@ class TestEndToEndBinding:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                metrics=[QueryMetric(metric="count(*)", alias="n")],
-                filter=["mod(amount + qty, 3) == 0"],
+                metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+                filter=["mod(orders.amount + orders.qty, 3) == 0"],
             )
         )
-        assert resp.data[0]["orders.n"] == 2
+        assert resp.data[0]["n"] == 2
 
     @pytest.mark.parametrize(
         "predicate,func",
@@ -327,7 +327,7 @@ class TestEndToEndBinding:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
             filter=[predicate],
         )
         with pytest.raises(ValueError, match=func):
@@ -343,11 +343,11 @@ class TestGreatestLeastNullSemanticsSqlite:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="id")],
+                dimensions=[QueryDimension(field="orders.id")],
                 metrics=[QueryMetric(metric=expression, alias="g")],
             )
         )
-        return {int(r["orders.id"]): r["orders.g"] for r in resp.data}
+        return {int(r["orders.id"]): r["g"] for r in resp.data}
 
     async def test_greatest_ignores_null(self, engine) -> None:
         got = await self._values(engine, "greatest(max(amount), max(disc))")

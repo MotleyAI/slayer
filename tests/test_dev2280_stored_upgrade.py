@@ -182,7 +182,7 @@ class TestRewrites:
         assert [m.expression for m in model.metrics] == [EARLY_COUNT_UPGRADED]
         assert next(c for c in model.fields if c.name == "late_amount").filter == LATE_AMOUNT_UPGRADED
         assert next(c for c in model.fields if c.name == "late_amount").sql == "amount"
-        resp = await run(storage, {"population": "orders", "metrics": ["early", "sum(late_amount)"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["orders.early", "sum(orders.late_amount)"]})
         row = resp.data[0]
         assert int(row["orders.early"]) == 3
         assert float(next(v for k, v in row.items() if k != "orders.early")) == pytest.approx(220.0)

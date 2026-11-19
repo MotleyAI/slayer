@@ -152,8 +152,8 @@ def _with_saved_metric() -> list[SlayerDataset]:
 
 
 def _stages() -> list[SlayerQuery]:
-    return [SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["id", "num_txt"]}),
-            SlayerQuery.model_validate({"population": "s1", "dimensions": ["id"], "filter": ["num_txt > 100"]})]
+    return [SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["lib.id", "lib.num_txt"]}),
+            SlayerQuery.model_validate({"population": "s1", "dimensions": ["s1.id"], "filter": ["s1.num_txt > 100"]})]
 
 
 FUNCTION_CASES = [
@@ -467,13 +467,13 @@ LIST_CASES = [
     ListCase(case_id="child-filter", mentions="skills",
              build=lambda: _contractors(metrics=[_count()], filter=["skills.value = 'go'"])),
     ListCase(case_id="nested-hop", mentions="skills",
-             build=lambda: SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+             build=lambda: SlayerQuery.model_validate({"population": "assignments", "dimensions": ["assignments.id"],
                                                        "filter": ["contractors.skills.value = 'sql'"]})),
     ListCase(case_id="stage", mentions="contains",
              build=lambda: [
-                 SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["id"],
-                                             "filter": ["contains(skills, 'go')"]}),
-                 SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "count(*)", "alias": "n"}]}),
+                 SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["contractors.id"],
+                                             "filter": ["contains(contractors.skills, 'go')"]}),
+                 SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "count(s1.*)", "alias": "n"}]}),
              ]),
     ListCase(case_id="collect", mentions="collect",
              build=lambda: _contractors(dimensions=["team"], metrics=[{"metric": "collect(city)", "alias": "c"}])),

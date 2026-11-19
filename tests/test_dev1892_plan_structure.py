@@ -128,13 +128,13 @@ class TestCardinalityInvariant:
     ) -> None:
         base = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         withw = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       QueryMetric(metric=_WAVG_REAGG, alias="w")]))
-        a = {k: v["sales.tot"] for k, v in region_key(base).items()}
-        b = {k: v["sales.tot"] for k, v in region_key(withw).items()}
+        a = {k: v["tot"] for k, v in region_key(base).items()}
+        b = {k: v["tot"] for k, v in region_key(withw).items()}
         assert set(a) == set(b)
         for k in a:
             assert a[k] == b[k]

@@ -91,7 +91,7 @@ def _filtered_query() -> SlayerQuery:
         metrics=[QueryMetric(
             metric="sum(customers_v2.lifetime_value)", alias="ltv",
         )],
-        filter=["status == 'paid'"],
+        filter=["orders_x.status == 'paid'"],
     )
 
 
@@ -99,7 +99,7 @@ def _non_empty_base_query() -> SlayerQuery:
     """A host dimension means the base is NOT empty — the node must be absent."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders_x.status")],
         metrics=[QueryMetric(
             metric="sum(customers_v2.lifetime_value)", alias="ltv",
         )],
@@ -276,7 +276,7 @@ class TestEmptyBaseExecution:
             f"the scalar aggregate was multiplied by the host rowset:\n"
             f"{resp.data}"
         )
-        assert resp.data[0]["orders.total"] == pytest.approx(1325.0), resp.data
+        assert resp.data[0]["total"] == pytest.approx(1325.0), resp.data
 
     async def test_host_filter_gates_the_whole_result(
         self, exec_engine: SlayerQueryEngine,
@@ -287,11 +287,11 @@ class TestEmptyBaseExecution:
         query = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="total")],
-            filter=["status == 'paid'"],
+            filter=["orders.status == 'paid'"],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, resp.data
-        assert resp.data[0]["orders.total"] == pytest.approx(1000.0), resp.data
+        assert resp.data[0]["total"] == pytest.approx(1000.0), resp.data
 
     async def test_host_filter_matching_nothing_yields_no_rows(
         self, exec_engine: SlayerQueryEngine,
@@ -301,7 +301,7 @@ class TestEmptyBaseExecution:
         query = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="total")],
-            filter=["status == 'nonexistent'"],
+            filter=["orders.status == 'nonexistent'"],
         )
         resp = await exec_engine.execute(query)
         assert resp.data == [], (
@@ -318,4 +318,4 @@ class TestEmptyBaseExecution:
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, resp.data
-        assert resp.data[0]["orders.twice"] == pytest.approx(2650.0), resp.data
+        assert resp.data[0]["twice"] == pytest.approx(2650.0), resp.data

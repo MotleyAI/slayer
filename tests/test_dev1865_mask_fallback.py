@@ -20,8 +20,8 @@ _QUERY_KWARGS = dict(
     dimensions=["region", "city"],
     filter=["sum(amount) > 55"],
     metrics=[
-        QueryMetric(metric="sum(amount)", alias="s"),
-        QueryMetric(metric="sum(amount, partition_by=region)", alias="part"),
+        QueryMetric(metric="sum(orders.amount)", alias="s"),
+        QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="part"),
     ],
 )
 

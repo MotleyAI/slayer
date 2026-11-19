@@ -163,7 +163,7 @@ async def test_is_null_filter_renders_end_to_end(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(orders.*)"}],
             "filter": ["customers.region IS NOT NULL"],
         })
     )
@@ -330,9 +330,9 @@ async def test_order_by_joined_column_not_in_dimensions(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "metrics": [{"metric": "sum(orders.amount)"}],
             "order": [OrderItem(field="customers.region", direction="asc")],
         })
     )
-    regions = [r["orders.customers.region"] for r in resp.data]
+    regions = [r["customers.region"] for r in resp.data]
     assert regions == ["EU", "NA"]

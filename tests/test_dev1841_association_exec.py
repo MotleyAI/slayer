@@ -32,7 +32,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
@@ -57,7 +57,7 @@ class TestCrossModelAssociation:
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}  # grain unchanged
         for status, spend in ASSOC_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend)
+            assert float(by[(status,)]["cm"]) == pytest.approx(spend)
 
     async def test_differs_from_broadcast_default(self, exec_backend):
         """The default broadcasts the same value to every cell; associate does
@@ -66,7 +66,7 @@ class TestCrossModelAssociation:
         resp = await engine.execute(bcast_q(dimensions=["status"], metrics=[CM]))
         by = status_key(resp)
         for cell in by.values():
-            assert float(cell["orders.cm"]) == pytest.approx(BCAST_SPEND_CROSS)
+            assert float(cell["cm"]) == pytest.approx(BCAST_SPEND_CROSS)
 
     async def test_star_count_counts_distinct_entities(self, exec_backend):
         """Scenario: star-count counts distinct associated entities."""
@@ -76,7 +76,7 @@ class TestCrossModelAssociation:
             metrics=[QueryMetric(metric="count(customers.*)", alias="nc")]))
         by = status_key(resp)
         for status, n in ASSOC_COUNT_BY_STATUS.items():
-            assert int(by[(status,)]["orders.nc"]) == n
+            assert int(by[(status,)]["nc"]) == n
 
     async def test_filtered_count_over_association_counts_matching_entities(
         self, exec_backend_ext,
@@ -94,7 +94,7 @@ class TestCrossModelAssociation:
         by = status_key(resp)
         # gold (c1,c3,c6) with an ok order: c1,c3,c6 → 3; with a new order: c1 → 1.
         for status, n in {"ok": 3, "new": 1}.items():
-            assert int(by[(status,)]["orders.gc"]) == n
+            assert int(by[(status,)]["gc"]) == n
 
     async def test_percentile_family_over_the_association(self, exec_backend):
         """Scenario: percentile attributes over the association — median over
@@ -105,7 +105,7 @@ class TestCrossModelAssociation:
             metrics=[QueryMetric(metric="median(customers.spend)", alias="med")]))
         by = status_key(resp)
         for status, med in ASSOC_MEDIAN_BY_STATUS.items():
-            assert float(by[(status,)]["orders.med"]) == pytest.approx(med)
+            assert float(by[(status,)]["med"]) == pytest.approx(med)
 
     async def test_multi_hop_association(self, exec_backend):
         """Scenario: multi-hop association attributes per cell — the metric root
@@ -117,7 +117,7 @@ class TestCrossModelAssociation:
                                    alias="pop")]))
         by = status_key(resp)
         for status, pop in ASSOC_POP_BY_STATUS.items():
-            assert float(by[(status,)]["orders.pop"]) == pytest.approx(pop)
+            assert float(by[(status,)]["pop"]) == pytest.approx(pop)
 
     #: The plain scalar family beyond sum/count/median — avg/min/max over each
     #: cell's distinct customer population.
@@ -135,7 +135,7 @@ class TestCrossModelAssociation:
             metrics=[QueryMetric(metric=f"{agg}(customers.spend)", alias="v")]))
         by = status_key(resp)
         for status, val in expected.items():
-            assert float(by[(status,)]["orders.v"]) == pytest.approx(val)
+            assert float(by[(status,)]["v"]) == pytest.approx(val)
 
 
 class TestMixedGrain:
@@ -149,11 +149,11 @@ class TestMixedGrain:
         _, engine = exec_backend
         assoc = await engine.execute(assoc_q(
             dimensions=["customers.tier", "status"], metrics=[CM]))
-        by = rows_by(assoc, "orders.customers.tier", "orders.status")
-        assert float(by[("gold", "ok")]["orders.cm"]) == pytest.approx(190.0)
-        assert float(by[("gold", "new")]["orders.cm"]) == pytest.approx(100.0)
-        assert float(by[("silver", "ok")]["orders.cm"]) == pytest.approx(230.0)
-        assert float(by[("silver", "new")]["orders.cm"]) == pytest.approx(150.0)
+        by = rows_by(assoc, "customers.tier", "orders.status")
+        assert float(by[("gold", "ok")]["cm"]) == pytest.approx(190.0)
+        assert float(by[("gold", "new")]["cm"]) == pytest.approx(100.0)
+        assert float(by[("silver", "ok")]["cm"]) == pytest.approx(230.0)
+        assert float(by[("silver", "new")]["cm"]) == pytest.approx(150.0)
 
     async def test_broadcast_repeats_across_the_unattributable_axis(
         self, exec_backend,
@@ -164,11 +164,11 @@ class TestMixedGrain:
         _, engine = exec_backend
         resp = await engine.execute(bcast_q(
             dimensions=["customers.tier", "status"], metrics=[CM]))
-        by = rows_by(resp, "orders.customers.tier", "orders.status")
-        assert float(by[("gold", "ok")]["orders.cm"]) == pytest.approx(
-            float(by[("gold", "new")]["orders.cm"]))
-        assert float(by[("silver", "ok")]["orders.cm"]) == pytest.approx(
-            float(by[("silver", "new")]["orders.cm"]))
+        by = rows_by(resp, "customers.tier", "orders.status")
+        assert float(by[("gold", "ok")]["cm"]) == pytest.approx(
+            float(by[("gold", "new")]["cm"]))
+        assert float(by[("silver", "ok")]["cm"]) == pytest.approx(
+            float(by[("silver", "new")]["cm"]))
 
 
 class TestMeasureLocalFilter:
@@ -184,7 +184,7 @@ class TestMeasureLocalFilter:
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
         for status, spend in ASSOC_GOLD_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.gs"]) == pytest.approx(spend)
+            assert float(by[(status,)]["gs"]) == pytest.approx(spend)
 
 
 class TestModeInvarianceOfAttributable:
@@ -196,9 +196,9 @@ class TestModeInvarianceOfAttributable:
         resp = await engine.execute(SlayerQuery(
             population="orders", dimensions=["customers.tier"],
             metrics=[CM], to_many_handling=mode))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         for tier, spend in SPEND_BY_TIER.items():
-            assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend)
+            assert float(by[(tier,)]["cm"]) == pytest.approx(spend)
         # Fully attributable: no mode-related warning in any mode.
         assert broadcast_warnings(resp) == []
         assert associated_warnings(resp) == []
@@ -218,4 +218,4 @@ class TestCardinalityNeutral:
         b = status_key(with_cm)
         assert set(a) == set(b)
         for key in a:
-            assert a[key]["orders.m"] == b[key]["orders.m"]
+            assert a[key]["m"] == b[key]["m"]

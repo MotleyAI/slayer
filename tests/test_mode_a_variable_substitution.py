@@ -115,7 +115,7 @@ class TestModelFiltersSubstitution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -128,7 +128,7 @@ class TestModelFiltersSubstitution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"region": "US"},
             })
             resp = await engine.execute(q)
@@ -159,7 +159,7 @@ class TestColumnSqlSubstitution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(scaled)"}],
+                "metrics": [{"metric": "sum(orders.scaled)"}],
                 "variables": {"mult": 2},
             })
             resp = await engine.execute(q)
@@ -172,7 +172,7 @@ class TestColumnSqlSubstitution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(scaled)"}],
+                "metrics": [{"metric": "sum(orders.scaled)"}],
                 "variables": {"mult": 1},
             })
             resp = await engine.execute(q)
@@ -208,7 +208,7 @@ class TestColumnFilterSubstitution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(region_amount)"}],
+                "metrics": [{"metric": "sum(orders.region_amount)"}],
                 "variables": {"region": "US"},
             })
             resp = await engine.execute(q)
@@ -244,7 +244,7 @@ class TestModelSqlSubstitution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "floored",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(floored.amount)"}],
                 "variables": {"floor": 100},
             })
             resp = await engine.execute(q)
@@ -258,7 +258,7 @@ class TestModelSqlSubstitution:
         try:
             q = SlayerQuery(
                 population="floored",
-                dimensions=[QueryDimension(field="floor_val")],
+                dimensions=[QueryDimension(field="floored.floor_val")],
                 variables={"floor": 100},
             )
             resp = await engine.execute(q)
@@ -290,7 +290,7 @@ class TestPrecedence:
     async def test_model_default_used_when_nothing_supplied(self) -> None:
         engine, tmp = await _engine_with(self._dataset())
         try:
-            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 160.0  # US default
         finally:
@@ -301,7 +301,7 @@ class TestPrecedence:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -314,7 +314,7 @@ class TestPrecedence:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q, variables={"region": "CA"})
@@ -347,7 +347,7 @@ class TestMissingVariable:
             # Non-empty var set (so the guard runs) but lacking 'region'.
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
@@ -360,7 +360,7 @@ class TestMissingVariable:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
@@ -427,7 +427,7 @@ class TestEscapingEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "t",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(t.amount)"}],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)
@@ -451,8 +451,8 @@ class TestEscapingEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "t",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["status = '{v}'"],
+                "metrics": [{"metric": "sum(t.amount)"}],
+                "filter": ["t.status = '{v}'"],
                 "variables": {"v": "a\\b"},
             })
             resp = await engine.execute(q)
@@ -480,8 +480,8 @@ class TestEscapingEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "t",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["status = '{v}'"],
+                "metrics": [{"metric": "sum(t.amount)"}],
+                "filter": ["t.status = '{v}'"],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)
@@ -507,7 +507,7 @@ class TestEscaping:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"status": "O'Brien"},
             })
             resp = await engine.execute(q)
@@ -536,7 +536,7 @@ class TestBraceLiterals:
         )
         engine, tmp = await _engine_with(model)
         try:
-            q = SlayerQuery(population="orders", dimensions=[QueryDimension(field="j")])
+            q = SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.j")])
             resp = await engine.execute(q)
             assert {row["orders.j"] for row in resp.data} == {"{1,2,3}"}
         finally:
@@ -567,7 +567,7 @@ class TestBraceLiterals:
         engine, tmp = await _engine_with(model)
         try:
             resp = await engine.execute(
-                SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+                SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
             )
             # No raise (literal, not a missing-variable error); no row has the
             # literal status '{status}', so the aggregate is NULL.
@@ -594,7 +594,7 @@ class TestBraceLiterals:
         try:
             q = SlayerQuery(
                 population="floored",
-                dimensions=[QueryDimension(field="tag_val")],
+                dimensions=[QueryDimension(field="floored.tag_val")],
                 variables={"floor": 100},
             )
             resp = await engine.execute(q)
@@ -667,14 +667,14 @@ class TestCrossModelConsistency:
             q = SlayerQuery(
                 population="orders",
                 metrics=[
-                    {"metric": "sum(amount)"},
+                    {"metric": "sum(orders.amount)"},
                     {"metric": "count(customers.id)"},
                 ],
                 variables={"floor": 100},
             )
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
-            assert _sum(resp, "orders.customers.id_count") == 2
+            assert _sum(resp, "customers.id_count") == 2
             assert "{floor}" not in resp.sql  # no un-substituted placeholder
         finally:
             tmp.cleanup()
@@ -686,7 +686,7 @@ class TestCrossModelConsistency:
             q = SlayerQuery(
                 population="orders",
                 metrics=[
-                    {"metric": "sum(amount)"},
+                    {"metric": "sum(orders.amount)"},
                     {"metric": "count(customers.id)"},
                 ],
                 variables={"floor": 100},
@@ -694,7 +694,7 @@ class TestCrossModelConsistency:
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 300.0
             # The host's model filter restricts the customers-rooted count.
-            assert _sum(resp, "orders.customers.id_count") == 2
+            assert _sum(resp, "customers.id_count") == 2
             # The substituted predicate is emitted where the filter DOES apply,
             # and no placeholder token survives anywhere.
             assert "amount >= 100" in resp.sql
@@ -1022,8 +1022,8 @@ class TestQueryFilterRegression:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["region = '{region}'"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "filter": ["orders.region = '{region}'"],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -1036,8 +1036,8 @@ class TestQueryFilterRegression:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["status = '{status}'"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "filter": ["orders.status = '{status}'"],
                 "variables": {"status": "O'Brien"},
             })
             resp = await engine.execute(q)
@@ -1072,14 +1072,14 @@ class TestModelImmutabilityAcrossExecutes:
             r_eu = await engine.execute(
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                     "variables": {"region": "EU"},
                 })
             )
             r_ca = await engine.execute(
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                     "variables": {"region": "CA"},
                 })
             )
@@ -1090,7 +1090,7 @@ class TestModelImmutabilityAcrossExecutes:
             # outside the block so only execute() can throw inside it.
             missing_var_q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
@@ -1124,7 +1124,7 @@ class TestMissingVariablePerSurface:
             # Non-empty var set (guard runs) but lacking 'mult'.
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(scaled)"}],
+                "metrics": [{"metric": "sum(orders.scaled)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'mult'"):
@@ -1146,7 +1146,7 @@ class TestMissingVariablePerSurface:
         try:
             q = SlayerQuery.model_validate({
                 "population": "floored",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(floored.amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'floor'"):
@@ -1370,7 +1370,7 @@ class TestListModeAEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"regions": ["US", "CA"]},
             })
             resp = await engine.execute(q)
@@ -1384,7 +1384,7 @@ class TestListModeAEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"regions": ["EU"]},
             })
             resp = await engine.execute(q)
@@ -1397,7 +1397,7 @@ class TestListModeAEndToEnd:
             self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
-            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
             resp = await engine.execute(q)
             # EU=275, CA=300 → 575.
             assert _sum(resp, "orders.amount_sum") == 575.0
@@ -1412,7 +1412,7 @@ class TestListModeAEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"regions": ["US"]},
             })
             resp = await engine.execute(q)
@@ -1426,7 +1426,7 @@ class TestListModeAEndToEnd:
             self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
-            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
             resp = await engine.execute(q, variables={"regions": ["US"]})
             # Runtime ['US'] wins over default ['EU','CA'] → 160.
             assert _sum(resp, "orders.amount_sum") == 160.0
@@ -1438,7 +1438,7 @@ class TestListModeAEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"regions": ["x') OR ('1'='1"]},
             })
             resp = await engine.execute(q)
@@ -1474,8 +1474,8 @@ class TestListModeBEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["region in ({regions})"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "filter": ["orders.region in ({regions})"],
                 "variables": {"regions": ["US", "CA"]},
             })
             resp = await engine.execute(q)
@@ -1490,8 +1490,8 @@ class TestListModeBEndToEnd:
             # a tuple through the Python-AST parser rather than a bare string.
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["region in ({regions})"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "filter": ["orders.region in ({regions})"],
                 "variables": {"regions": ["EU"]},
             })
             resp = await engine.execute(q)
@@ -1504,8 +1504,8 @@ class TestListModeBEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["region not in ({regions})"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "filter": ["orders.region not in ({regions})"],
                 "variables": {"regions": ["US"]},
             })
             resp = await engine.execute(q)
@@ -1521,8 +1521,8 @@ class TestListModeBEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["region in ({regions})"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "filter": ["orders.region in ({regions})"],
                 "variables": {"regions": ["EU", "CA"]},
             })
             resp = await engine.execute(q, variables={"regions": ["US"]})
@@ -1537,8 +1537,8 @@ class TestListModeBEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["status in ({statuses})"],
+                "metrics": [{"metric": "sum(orders.amount)"}],
+                "filter": ["orders.status in ({statuses})"],
                 "variables": {"statuses": ["O'Brien"]},
             })
             resp = await engine.execute(q)
@@ -1751,7 +1751,7 @@ class TestEngineDialectThreadingEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
                 "variables": {"v": value},
             })
             result = await engine.execute(q, dry_run=True)
@@ -1862,8 +1862,8 @@ class TestModeBControlCharsEndToEnd:
         try:
             q = SlayerQuery.model_validate({
                 "population": "t",
-                "metrics": [{"metric": "sum(amount)"}],
-                "filter": ["status = '{v}'"],
+                "metrics": [{"metric": "sum(t.amount)"}],
+                "filter": ["t.status = '{v}'"],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)

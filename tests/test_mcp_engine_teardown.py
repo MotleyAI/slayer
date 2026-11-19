@@ -156,7 +156,7 @@ class TestContractAttribute:
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
             server, name="query",
-            arguments={"query": [{"population": "t", "metrics": [{"metric": "count(*)"}]}]},
+            arguments={"query": [{"population": "t", "metrics": [{"metric": "count(t.*)"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine

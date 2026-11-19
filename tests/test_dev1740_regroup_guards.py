@@ -27,7 +27,7 @@ class TestPartitionByRequired:
                 {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
                  "alias": "band"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
@@ -48,7 +48,7 @@ class TestAggregateReferencingDimGenerates:
                 {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         sql = await gen(q)
         assert "_cm_" in sql
@@ -65,7 +65,7 @@ class TestDeferredShapesRaiseDev1824:
                  "alias": "x"},
             ],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         with pytest.raises(ValueError) as ei:
             await gen(q)
@@ -83,7 +83,7 @@ class TestDeferredShapesRaiseDev1824:
                                "> 5000 THEN 1 ELSE 0 END", "alias": "x"},
             ],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -101,7 +101,7 @@ class TestDeferredShapesRaiseDev1824:
                 {"field": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "x"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         assert "__regroup__" not in await gen(q)
 

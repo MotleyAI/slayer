@@ -26,7 +26,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def by_region(order: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"population": "orders", "dimensions": ["region"], "metrics": ["count(*)"], "order": order}
+    return {"population": "orders", "dimensions": ["orders.region"], "metrics": ["count(orders.*)"], "order": order}
 
 
 class TestOrderItemCoercion:
@@ -67,8 +67,8 @@ class TestExecuted:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_refinement_order_object(backend: str) -> None:
     async with refine_engine(backend) as (eng, _):
-        healed = await eng.execute("monthly_revenue", refine={"order": [{"field": "sum(amount)"}]})
-        expected = await eng.execute("monthly_revenue", refine={"order": [{"field": "sum(amount)"}]})
+        healed = await eng.execute("monthly_revenue", refine={"order": [{"field": "sum(orders.amount)"}]})
+        expected = await eng.execute("monthly_revenue", refine={"order": [{"field": "sum(orders.amount)"}]})
     assert healed.columns == expected.columns
     assert table(healed, ordered=True) == table(expected, ordered=True)
     assert healed.sql == expected.sql

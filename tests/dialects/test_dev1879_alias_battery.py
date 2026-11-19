@@ -67,7 +67,7 @@ def _shape_query(shape: str) -> SlayerQuery:
         metrics=[QueryMetric(metric=_SHAPES[shape])],
         time_dimensions=[
             TimeDimension(
-                field="created_at",
+                field="mart.created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],
@@ -129,12 +129,12 @@ async def test_bigquery_unnamed_formula_measures() -> None:
     query = SlayerQuery(
         population="mart",
         metrics=[
-            QueryMetric(metric="sum(logo_churn) / sum(logo_bop)"),
-            QueryMetric(metric="time_shift(sum(cmrr_eop), -1, 'year')"),
+            QueryMetric(metric="sum(mart.logo_churn) / sum(mart.logo_bop)"),
+            QueryMetric(metric="time_shift(sum(mart.cmrr_eop), -1, 'year')"),
         ],
         time_dimensions=[
             TimeDimension(
-                field="created_at",
+                field="mart.created_at",
                 granularity=TimeGranularity.MONTH,
             )
         ],

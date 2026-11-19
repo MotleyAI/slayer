@@ -227,6 +227,18 @@ async def test_a_form_used_twice_warns_once(engine: SlayerQueryEngine) -> None:
     )
 
 
+async def test_an_entry_aliased_as_its_own_field_converts(engine: SlayerQueryEngine) -> None:
+    """A 1.x alias naming a field by its own name renamed nothing: the twin drops it."""
+    await assert_converts(
+        engine,
+        _orders(dimensions=[{"field": "status", "alias": "status"}], metrics=[m("sum(amount)", "total")],
+                filter=["status <> 'x'"]),
+        _orders(dimensions=["orders.status"], metrics=[m("sum(orders.amount)", "total")],
+                filter=["orders.status <> 'x'"]),
+        {STATUS, AMOUNT},
+    )
+
+
 async def test_a_root_relative_spelling_used_twice_in_one_query(seed: SlayerQueryEngine) -> None:
     _resp, caught = await execute_recording(seed, _orders(metrics=["count(*)"], filter=["count(*) > 1"]))
     texts = future_warnings(caught)

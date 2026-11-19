@@ -113,7 +113,7 @@ def query_backed_dataset() -> SlayerDataset:
     """``done_orders_qb``: a query-backed model over ``orders``, filtered to done orders."""
     return SlayerDataset(
         name="done_orders_qb", data_source="test", filters=["status = 'done'"],
-        source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["id", "status"]})],
+        source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.id", "orders.status"]})],
     )
 
 

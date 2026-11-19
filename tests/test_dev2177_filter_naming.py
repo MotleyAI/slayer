@@ -65,7 +65,7 @@ class TestFilteredTwinsStayDistinct:
 
     async def test_named_filtered_first_beside_first(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m(OPEN_FIRST, "fo"), m("first(amount)", "f")]))
-        assert _row(resp) == {"orders.fo": 20, "orders.f": 10}
+        assert _row(resp) == {"fo": 20, "f": 10}
 
     @pytest.mark.parametrize(("agg", "expected"), [("first", 20 - 10), ("last", 25 - 5)])
     async def test_filtered_and_unfiltered_inside_one_formula(self, engine: SlayerQueryEngine, agg: str,
@@ -73,13 +73,13 @@ class TestFilteredTwinsStayDistinct:
         resp = await engine.execute(q(metrics=[
             m(f"{agg}(amount) FILTER (WHERE status = 'open') - {agg}(amount)", "d"),
         ]))
-        assert _row(resp) == {"orders.d": expected}, resp.sql
+        assert _row(resp) == {"d": expected}, resp.sql
 
     async def test_conditions_whose_names_coincide(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[
             m(OPEN_FIRST, "a"), m("first(amount) FILTER (WHERE status <> 'open')", "b"),
         ]))
-        assert _row(resp) == {"orders.a": 20, "orders.b": 10}, resp.sql
+        assert _row(resp) == {"a": 20, "b": 10}, resp.sql
 
     async def test_star_count_over_a_joined_condition_beside_count(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=["count(*) FILTER (WHERE customers.name = 'Alice')", "count(*)"]))

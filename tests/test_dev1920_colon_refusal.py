@@ -142,7 +142,7 @@ QUERY_POSITIONS = [
                   "dimensions": [{"alias": "d", "field": "amount:sum(partition_by=region)"}]},
                  "amount:sum(partition_by=region)", "sum(amount, partition_by=region)", id="computed-dimension"),
     pytest.param({"population": {"dataset": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
-                  "metrics": ["m"]}, "amount:sum", "sum(amount)", id="model-extension-measure"),
+                  "metrics": ["orders.m"]}, "amount:sum", "sum(amount)", id="model-extension-measure"),
 ]
 
 
@@ -163,17 +163,17 @@ class TestFreshQueries:
 
     async def test_custom_granularity(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store(granularities=[FISCAL_QUARTER])
-        exc = await _query_failure(storage, {"population": "orders", "metrics": ["count(*)"],
+        exc = await _query_failure(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                              "time_dimensions": ["created_at:fiscal_quarter"]})
         assert_colon_refused(exc, span="created_at:fiscal_quarter", twin="fiscal_quarter(created_at)")
 
     async def test_non_colon_colons_run(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
-        resp = await run(storage, {"population": "orders", "filter": ["note = 'a:sum'"], "metrics": [
-            {"alias": "total", "metric": "sum(amount::INT)"},
-            {"alias": "tagged", "metric": "sum(amount) FILTER (WHERE note = 'x:count')"},
+        resp = await run(storage, {"population": "orders", "filter": ["orders.note = 'a:sum'"], "metrics": [
+            {"alias": "total", "metric": "sum(orders.amount::INT)"},
+            {"alias": "tagged", "metric": "sum(orders.amount) FILTER (WHERE orders.note = 'x:count')"},
         ]})
-        assert rows(resp) == [{"orders.total": 60.0, "orders.tagged": None}]
+        assert rows(resp) == [{"total": 60.0, "tagged": None}]
 
 
 async def _save_failure(storage: StorageBackend, doc: dict) -> BaseException:

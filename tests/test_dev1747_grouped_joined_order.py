@@ -84,7 +84,7 @@ def _grouped_order_query(*, dataset: str, name: str, direction: str) -> SlayerQu
     """Grouped by ``orders.status``, ordered by an UNPROJECTED joined column."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         metrics=_MEASURE,
         order=[OrderItem(
             field=f"{dataset}.{name}", direction=direction,
@@ -131,7 +131,7 @@ class TestGroupedJoinedOrderResolves:
         ))
         assert response.data
         for row in response.data:
-            assert set(row) == {"orders.status", "orders.rev"}, (
+            assert set(row) == {"orders.status", "rev"}, (
                 f"hidden order wrap leaked into the result row: {sorted(row)}"
             )
 
@@ -165,7 +165,7 @@ class TestPerGroupSortKey:
         response = await _execute(_grouped_order_query(
             dataset="customers.regions", name="name", direction="asc",
         ))
-        by_status = {r["orders.status"]: r["orders.rev"] for r in response.data}
+        by_status = {r["orders.status"]: r["rev"] for r in response.data}
         assert by_status == {
             "A": GROUP_A_AMOUNT, "B": GROUP_B_AMOUNT, "N": GROUP_NULL_AMOUNT,
         }
@@ -203,10 +203,10 @@ class TestDirectionAwareWrap:
         or the two order paths mean different things by ``ASC``."""
         sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=_MEASURE,
             order=[OrderItem(
-                field="created_at", direction="asc",
+                field="orders.created_at", direction="asc",
             )],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], (
@@ -223,11 +223,11 @@ class TestDirectionAwareWrap:
         pass if both wraps landed on the same column, which is the bug."""
         sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=_MEASURE,
             order=[
-                OrderItem(field="created_at", direction="asc"),
-                OrderItem(field="amount", direction="desc"),
+                OrderItem(field="orders.created_at", direction="asc"),
+                OrderItem(field="orders.amount", direction="desc"),
             ],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], f"\n{sql}"
@@ -248,7 +248,7 @@ class TestFanoutContainment:
 
     async def test_sibling_sum_is_not_multiplied_by_the_fanout(self) -> None:
         response = await _execute(self._tag_ordered())
-        by_status = {r["orders.status"]: r["orders.rev"] for r in response.data}
+        by_status = {r["orders.status"]: r["rev"] for r in response.data}
         assert by_status == {
             "A": GROUP_A_AMOUNT, "B": GROUP_B_AMOUNT, "N": GROUP_NULL_AMOUNT,
         }, (

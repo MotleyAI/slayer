@@ -89,7 +89,7 @@ async def test_single_cross_model_parametric_key(engine: SlayerQueryEngine):
             "metrics": [{"metric": "percentile(customers.revenue, p=0.5)"}],
         })
     )
-    assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
+    assert "customers.revenue_percentile_p_0_5" in resp.columns
 
 
 async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
@@ -103,11 +103,11 @@ async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
             ],
         )
     )
-    assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
-    assert "orders.customers.revenue_percentile_p_0_95" in resp.columns
+    assert "customers.revenue_percentile_p_0_5" in resp.columns
+    assert "customers.revenue_percentile_p_0_95" in resp.columns
     # Distinct keys — no collision.
     assert (
-        "orders.customers.revenue_percentile_p_0_5"
-        != "orders.customers.revenue_percentile_p_0_95"
+        "customers.revenue_percentile_p_0_5"
+        != "customers.revenue_percentile_p_0_95"
     )
     assert len([c for c in resp.columns if "revenue_percentile" in c]) == 2

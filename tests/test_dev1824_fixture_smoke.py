@@ -41,21 +41,21 @@ class TestSeededDataset:
     async def test_city_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(CITY_TOTAL)
         for key, total in CITY_TOTAL.items():
-            assert float(by[key]["orders.s"]) == pytest.approx(total)
+            assert float(by[key]["s"]) == pytest.approx(total)
 
     async def test_region_month_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):
-                float(r["orders.s"])
+                float(r["s"])
             for r in resp.data
         }
         assert got == pytest.approx(REGION_MONTH_TOTAL)

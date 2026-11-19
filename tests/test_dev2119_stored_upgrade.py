@@ -94,7 +94,7 @@ class TestObjectFormBecomesText:
 
     def test_every_stage_of_a_multi_stage_model(self) -> None:
         inner = {**_query(version=None, tds=[_td(SIGNUP_OBJECT)]), "name": "s1"}
-        outer = {"population": "s1", "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
+        outer = {"population": "s1", "metrics": [{"metric": "sum(rev_q.rev)", "alias": "rev"}],
                  "time_dimensions": [_td({"name": "customers__signed_up_at"}, key="column", granularity="year")]}
         model = SlayerDataset.model_validate(query_backed_v10(name="two", version=16, stages=[inner, outer]))
         assert [[td.field for td in s.time_dimensions or []]
@@ -134,8 +134,8 @@ class TestStoredDocumentsUpgrade:
         raw = await raw_doc(storage, "rev_q")
         assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert raw["source_queries"][0]["time_dimensions"][0]["field"] == SIGNUP_TEXT
-        resp = await run(storage, {"population": "rev_q", "dimensions": ["customers__signed_up_at"],
-                                   "metrics": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "dimensions": ["rev_q.customers__signed_up_at"],
+                                   "metrics": ["sum(rev_q.rev)"]})
         assert _cells(resp, dim_suffix="signed_up_at", width=7) == REV_BY_SIGNUP_MONTH
 
     @pytest.mark.parametrize("backend", BACKENDS)

@@ -154,7 +154,7 @@ class TestParallelNamedEdges:
         models = _parallel_edge_datasets()
         elab = elaborate_query(
             query=SlayerQuery(population="tk", metrics=[
-                QueryMetric(metric="sum(opener.score - closer.score)", alias="m")]),
+                QueryMetric(metric="sum(tk.opener.score - tk.closer.score)", alias="m")]),
             bundle=ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:]))
         aggs = [k for k in elab.terms if isinstance(k, AggregateKey)]
         assert len(aggs) == 1

@@ -82,12 +82,12 @@ def _windowed_query() -> SlayerQuery:
     """Windowed measure grouped by a NULLABLE dimension + a month bucket."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="rev_w")],
+        metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="rev_w")],
     )
 
 
@@ -95,12 +95,12 @@ def _windowed_chain_query() -> SlayerQuery:
     """The same shape against the shared orders_x chain (postgres-shaped)."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders_x.status")],
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders_x.created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="rev_w")],
+        metrics=[QueryMetric(metric="sum(orders_x.amount, window='90d')", alias="rev_w")],
     )
 
 
@@ -181,7 +181,7 @@ class TestB1WindowedInnerGrainNullSafe:
         """
         resp = await exec_engine.execute(_windowed_query())
         by_group = {
-            (r["orders.status"], str(r["orders.created_at"])[:7]): r["orders.rev_w"]
+            (r["orders.status"], str(r["orders.created_at"])[:7]): r["rev_w"]
             for r in resp.data
         }
         feb_null = by_group.get((None, "2024-02"))
@@ -334,7 +334,7 @@ class TestGrainSemantics:
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, f"scalar CMA must yield ONE row:\n{resp.data}"
         # 1000.0 + 250.0 + 75.0 over the three seeded customers.
-        assert resp.data[0]["orders.total"] == pytest.approx(1325.0), resp.data
+        assert resp.data[0]["total"] == pytest.approx(1325.0), resp.data
 
     async def test_composite_grain_conjoins_one_null_safe_pair_per_member(
         self,
@@ -391,7 +391,7 @@ class TestGrainSemantics:
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="spend")],
         )
         resp = await exec_engine.execute(query)
-        by_tier = {r["orders.customers.tier"]: r["orders.spend"] for r in resp.data}
+        by_tier = {r["customers.tier"]: r["spend"] for r in resp.data}
         assert None in by_tier, (
             f"the NULL-tier group vanished from the result:\n{resp.data}"
         )

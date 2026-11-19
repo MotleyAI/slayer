@@ -526,8 +526,8 @@ class TestDev1576UnknownVsDisallowed:
         # HAVING predicate heals just like a measure.
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
             "filter": [f"{raw}(amount) > 5"],
         })
         sql = await _engine_generate(

@@ -70,7 +70,7 @@ class TestWindowPlusPartition:
     async def test_rolling_total_at_coarser_grain(self, exec_engine) -> None:
         base = q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with_w = base.model_copy(update={"metrics": [
             *(base.metrics or []),
@@ -80,16 +80,16 @@ class TestWindowPlusPartition:
         rows = _rcm_rows(await exec_engine.execute(with_w))
         assert set(rows) == RCM_GROUPS == set(plain)
         for (region, city, month), r in rows.items():
-            assert float(r["orders.w"]) == pytest.approx(
+            assert float(r["w"]) == pytest.approx(
                 TRAILING_90D_REGION[(region, month)]
             )
             # Adding the measure changes no other column's value.
-            assert float(r["orders.s"]) == pytest.approx(
-                float(plain[(region, city, month)]["orders.s"])
+            assert float(r["s"]) == pytest.approx(
+                float(plain[(region, city, month)]["s"])
             )
         # Identical across cities of the same (region, month).
-        assert rows[("North", "CityB", "2024-02")]["orders.w"] == (
-            rows[("North", None, "2024-02")]["orders.w"]
+        assert rows[("North", "CityB", "2024-02")]["w"] == (
+            rows[("North", None, "2024-02")]["w"]
         )
 
     async def test_window_duration_bounds_the_trailing_interval(
@@ -100,13 +100,13 @@ class TestWindowPlusPartition:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="sum(amount, window='45d', partition_by=region)", alias="w",
+                metric="sum(orders.amount, window='45d', partition_by=orders.region)", alias="w",
             )],
         ))
         rows = _rcm_rows(resp)
         assert set(rows) == RCM_GROUPS
         for (region, _city, month), r in rows.items():
-            assert float(r["orders.w"]) == pytest.approx(
+            assert float(r["w"]) == pytest.approx(
                 TRAILING_45D_REGION[(region, month)]
             )
 
@@ -114,7 +114,7 @@ class TestWindowPlusPartition:
         query = q(
             dimensions=["region"],
             metrics=[QueryMetric(
-                metric="sum(amount, window='1y', partition_by=region)", alias="w",
+                metric="sum(orders.amount, window='1y', partition_by=orders.region)", alias="w",
             )],
         )
         with pytest.raises(ValueError, match=r"resolve its time dimension"):
@@ -126,25 +126,25 @@ class TestFirstLastPartition:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="last(amount, partition_by=region)", alias="l"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="l"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == RC_GROUPS
         for (region, city), r in by.items():
-            assert float(r["orders.l"]) == pytest.approx(REGION_LAST[region])
-            assert float(r["orders.s"]) == pytest.approx(CITY_TOTAL[(region, city)])
+            assert float(r["l"]) == pytest.approx(REGION_LAST[region])
+            assert float(r["s"]) == pytest.approx(CITY_TOTAL[(region, city)])
 
     async def test_region_first_on_city_rows(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="first(amount, partition_by=region)", alias="f")],
+            metrics=[QueryMetric(metric="first(orders.amount, partition_by=orders.region)", alias="f")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == RC_GROUPS
         for (region, _city), r in by.items():
-            assert float(r["orders.f"]) == pytest.approx(REGION_FIRST[region])
+            assert float(r["f"]) == pytest.approx(REGION_FIRST[region])
 
     async def test_temporal_partition_key_does_not_hijack_ranking(
         self, exec_engine,
@@ -156,13 +156,13 @@ class TestFirstLastPartition:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="last(amount, partition_by=[region, ordered_at])", alias="l",
+                metric="last(orders.amount, partition_by=[orders.region, orders.ordered_at])", alias="l",
             )],
         ))
         rows = _rcm_rows(resp)
         assert set(rows) == RCM_GROUPS
         for (region, _city, month), r in rows.items():
-            assert float(r["orders.l"]) == pytest.approx(
+            assert float(r["l"]) == pytest.approx(
                 REGION_MONTH_LAST[(region, month)]
             )
 
@@ -174,7 +174,7 @@ class TestTransformOverPartitioned:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="cumsum(sum(amount, partition_by=[region, ordered_at]))",
+                metric="cumsum(sum(orders.amount, partition_by=[orders.region, orders.ordered_at]))",
                 alias="c",
             )],
         ))
@@ -189,7 +189,7 @@ class TestTransformOverPartitioned:
         }
         assert set(rows) == set(expected)
         for key, value in expected.items():
-            assert float(rows[key]["orders.c"]) == pytest.approx(value)
+            assert float(rows[key]["c"]) == pytest.approx(value)
 
     async def test_rank_rows_by_attached_region_total(self, exec_engine) -> None:
         # As a MEASURE the rank evaluates at query grain: the five (region,
@@ -197,11 +197,11 @@ class TestTransformOverPartitioned:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             metrics=[QueryMetric(
-                metric="rank(sum(amount, partition_by=region), direction='desc')", alias="r",
+                metric="rank(sum(orders.amount, partition_by=orders.region), direction='desc')", alias="r",
             )],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
-        got = {key: int(r["orders.r"]) for key, r in by.items()}
+        got = {key: int(r["r"]) for key, r in by.items()}
         assert got == {
             ("North", "CityA"): 1, ("North", "CityB"): 1, ("North", None): 1,
             (None, "CityD"): 4, ("South", "CityC"): 5,
@@ -212,33 +212,33 @@ class TestFilterOnPartitioned:
     async def test_keep_rows_whose_partition_total_qualifies(self, exec_engine) -> None:
         unfiltered = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )), "orders.region", "orders.city")
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {k for k in RC_GROUPS if REGION_TOTAL[k[0]] > 50}
         for key, r in by.items():
-            assert float(r["orders.s"]) == pytest.approx(
-                float(unfiltered[key]["orders.s"])
+            assert float(r["s"]) == pytest.approx(
+                float(unfiltered[key]["s"])
             )
 
     async def test_conjunction_splits_by_scope(self, exec_engine) -> None:
         combined = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         separate = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50", "city != 'CityB'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         key = lambda resp: {  # noqa: E731
-            (r["orders.region"], r["orders.city"]): float(r["orders.s"])
+            (r["orders.region"], r["orders.city"]): float(r["s"])
             for r in resp.data
         }
         assert key(combined) == key(separate)
@@ -251,7 +251,7 @@ class TestFilterOnPartitioned:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 and sum(amount) > 25"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {
@@ -259,7 +259,7 @@ class TestFilterOnPartitioned:
             if REGION_TOTAL[k[0]] > 50 and CITY_TOTAL[k] > 25
         }
         for key, r in by.items():
-            assert float(r["orders.s"]) == pytest.approx(CITY_TOTAL[key])
+            assert float(r["s"]) == pytest.approx(CITY_TOTAL[key])
 
     async def test_no_common_scope_fails_closed(self, exec_engine) -> None:
         # `status` resolves only before aggregation; the partitioned aggregate
@@ -267,7 +267,7 @@ class TestFilterOnPartitioned:
         query = q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises((ValueError, NotImplementedError)) as ei:
             await exec_engine.execute(query)
@@ -283,13 +283,13 @@ class TestFilterOnPartitioned:
         keep_all = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=[]) > 100"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert len(keep_all.data) == len(RC_GROUPS)
         keep_none = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=[]) > 300"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert keep_none.data == []
 
@@ -299,13 +299,13 @@ class TestRowCombinedCoexistence:
         resp = await exec_engine.execute(q(
             dimensions=["region", {"field": BAND35, "alias": "band"}],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         ))
         by = {
-            (r["orders.region"], int(r["orders.band"])):
-                (float(r["orders.s"]), float(r["orders.rt"]))
+            (r["orders.region"], int(r["band"])):
+                (float(r["s"]), float(r["rt"]))
             for r in resp.data
         }
         assert by == {
@@ -319,10 +319,10 @@ class TestRowCombinedCoexistence:
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=region)", alias="rt")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt")],
         ))
         got = {
-            r["orders.region"]: (int(r["orders.band"]), float(r["orders.rt"]))
+            r["orders.region"]: (int(r["band"]), float(r["rt"]))
             for r in resp.data
         }
         assert got == {
@@ -338,7 +338,7 @@ class TestRowCombinedCoexistence:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": "sum(amount, partition_by=city)", "direction": "asc"}],
         ))
         totals = [
@@ -352,10 +352,10 @@ class TestRowCombinedCoexistence:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{"field": "band", "direction": "asc"}],
         ))
-        bands = [int(r["orders.band"]) for r in resp.data]
+        bands = [int(r["band"]) for r in resp.data]
         assert len(bands) == len(RC_GROUPS)
         assert bands == sorted(bands)
         assert bands == sorted(BAND35_OF.values())
@@ -368,7 +368,7 @@ class TestRowCombinedCoexistence:
         # error, never the leaked-placeholder ValueError.
         query = q(
             dimensions=["region", {"field": BAND35, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             order=[{
                 "field": "sum(amount, partition_by=city)", "direction": "asc",
             }],
@@ -454,7 +454,7 @@ class TestCardinalityNeutral:
         tds = month_td() if tds else None
         base = q(
             dimensions=dims, time_dimensions=tds,
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with_rt = base.model_copy(update={"metrics": [
             *(base.metrics or []),
@@ -476,8 +476,8 @@ class TestCardinalityNeutral:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=[])", alias="g")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=[])", alias="g")],
         ))
         assert len(resp.data) == len(RC_GROUPS)
         for r in resp.data:
-            assert float(r["orders.g"]) == pytest.approx(GRAND_TOTAL)
+            assert float(r["g"]) == pytest.approx(GRAND_TOTAL)

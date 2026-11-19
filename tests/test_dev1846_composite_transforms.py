@@ -79,13 +79,13 @@ async def _error(*, metrics, dimensions=None):
 class TestFixtureSmoke:
     async def test_trivial_query_executes(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="sum(revenue)", alias="r"),
-            QueryMetric(metric="count(*)", alias="n"),
+            QueryMetric(metric="sum(sales.revenue)", alias="r"),
+            QueryMetric(metric="count(sales.*)", alias="n"),
         ]))
         by = _by_month(resp)
-        assert _f(by["2024-01"]["sales.r"]) == pytest.approx(60.0)
-        assert int(by["2024-01"]["sales.n"]) == 3
-        assert _f(by["2024-02"]["sales.r"]) == pytest.approx(100.0)
+        assert _f(by["2024-01"]["r"]) == pytest.approx(60.0)
+        assert int(by["2024-01"]["n"]) == 3
+        assert _f(by["2024-02"]["r"]) == pytest.approx(100.0)
 
 
 class TestTimeShiftCompositeExecution:
@@ -95,21 +95,21 @@ class TestTimeShiftCompositeExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[
-                QueryMetric(metric="sum(revenue) / sum(qty)", alias="cur"),
-                QueryMetric(metric="time_shift(sum(revenue) / sum(qty), -1)",
+                QueryMetric(metric="sum(sales.revenue) / sum(sales.qty)", alias="cur"),
+                QueryMetric(metric="time_shift(sum(sales.revenue) / sum(sales.qty), -1)",
                              alias="prev"),
             ],
         ))
         by = _by_store_month(resp)
-        assert _f(by[("A", "2024-01")]["sales.cur"]) == pytest.approx(6.0)
-        assert _f(by[("A", "2024-02")]["sales.cur"]) == pytest.approx(8.0)
-        assert _f(by[("B", "2024-02")]["sales.cur"]) == pytest.approx(10.0)
-        assert by[("A", "2024-01")]["sales.prev"] is None
-        assert by[("B", "2024-01")]["sales.prev"] is None
-        assert _f(by[("A", "2024-02")]["sales.prev"]) == pytest.approx(6.0)
-        assert _f(by[("A", "2024-03")]["sales.prev"]) == pytest.approx(8.0)
-        assert _f(by[("B", "2024-02")]["sales.prev"]) == pytest.approx(6.0)
-        assert _f(by[("B", "2024-03")]["sales.prev"]) == pytest.approx(10.0)
+        assert _f(by[("A", "2024-01")]["cur"]) == pytest.approx(6.0)
+        assert _f(by[("A", "2024-02")]["cur"]) == pytest.approx(8.0)
+        assert _f(by[("B", "2024-02")]["cur"]) == pytest.approx(10.0)
+        assert by[("A", "2024-01")]["prev"] is None
+        assert by[("B", "2024-01")]["prev"] is None
+        assert _f(by[("A", "2024-02")]["prev"]) == pytest.approx(6.0)
+        assert _f(by[("A", "2024-03")]["prev"]) == pytest.approx(8.0)
+        assert _f(by[("B", "2024-02")]["prev"]) == pytest.approx(6.0)
+        assert _f(by[("B", "2024-03")]["prev"]) == pytest.approx(10.0)
 
     async def test_change_pct_ratio_resets_per_store(self, exec_engine) -> None:
         """``change_pct(sum(revenue) / count(*))`` desugars onto the composite
@@ -118,16 +118,16 @@ class TestTimeShiftCompositeExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[
-                QueryMetric(metric="change_pct(sum(revenue) / count(*))", alias="pct"),
+                QueryMetric(metric="change_pct(sum(sales.revenue) / count(sales.*))", alias="pct"),
             ],
         ))
         by = _by_store_month(resp)
-        assert by[("A", "2024-01")]["sales.pct"] is None
-        assert by[("B", "2024-01")]["sales.pct"] is None
-        assert _f(by[("A", "2024-02")]["sales.pct"]) == pytest.approx((40 - 15) / 15)
-        assert _f(by[("A", "2024-03")]["sales.pct"]) == pytest.approx((50 - 40) / 40)
-        assert _f(by[("B", "2024-02")]["sales.pct"]) == pytest.approx((60 - 30) / 30)
-        assert _f(by[("B", "2024-03")]["sales.pct"]) == pytest.approx((10 - 60) / 60)
+        assert by[("A", "2024-01")]["pct"] is None
+        assert by[("B", "2024-01")]["pct"] is None
+        assert _f(by[("A", "2024-02")]["pct"]) == pytest.approx((40 - 15) / 15)
+        assert _f(by[("A", "2024-03")]["pct"]) == pytest.approx((50 - 40) / 40)
+        assert _f(by[("B", "2024-02")]["pct"]) == pytest.approx((60 - 30) / 30)
+        assert _f(by[("B", "2024-03")]["pct"]) == pytest.approx((10 - 60) / 60)
 
     async def test_change_ratio_by_store(self, exec_engine) -> None:
         """``change(sum(revenue) / sum(qty))`` = ratio − prior ratio, per store,
@@ -135,63 +135,63 @@ class TestTimeShiftCompositeExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[
-                QueryMetric(metric="change(sum(revenue) / sum(qty))", alias="delta"),
+                QueryMetric(metric="change(sum(sales.revenue) / sum(sales.qty))", alias="delta"),
             ],
         ))
         by = _by_store_month(resp)
-        assert by[("A", "2024-01")]["sales.delta"] is None
-        assert by[("B", "2024-01")]["sales.delta"] is None
-        assert _f(by[("A", "2024-02")]["sales.delta"]) == pytest.approx(2.0)
-        assert _f(by[("A", "2024-03")]["sales.delta"]) == pytest.approx(2.0)
-        assert _f(by[("B", "2024-02")]["sales.delta"]) == pytest.approx(4.0)
-        assert _f(by[("B", "2024-03")]["sales.delta"]) == pytest.approx(-5.0)
+        assert by[("A", "2024-01")]["delta"] is None
+        assert by[("B", "2024-01")]["delta"] is None
+        assert _f(by[("A", "2024-02")]["delta"]) == pytest.approx(2.0)
+        assert _f(by[("A", "2024-03")]["delta"]) == pytest.approx(2.0)
+        assert _f(by[("B", "2024-02")]["delta"]) == pytest.approx(4.0)
+        assert _f(by[("B", "2024-03")]["delta"]) == pytest.approx(-5.0)
 
     async def test_coalesce_missing_bucket_is_null(self, exec_engine) -> None:
         """A NULL-absorbing wrapper does NOT turn a missing shifted bucket into
         0: the earliest month's shifted value is NULL."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="coalesce(sum(revenue), 0)", alias="cur"),
-            QueryMetric(metric="time_shift(coalesce(sum(revenue), 0), -1)",
+            QueryMetric(metric="coalesce(sum(sales.revenue), 0)", alias="cur"),
+            QueryMetric(metric="time_shift(coalesce(sum(sales.revenue), 0), -1)",
                          alias="prev"),
         ]))
         by = _by_month(resp)
-        assert _f(by["2024-01"]["sales.cur"]) == pytest.approx(60.0)
-        assert by["2024-01"]["sales.prev"] is None
-        assert _f(by["2024-02"]["sales.prev"]) == pytest.approx(60.0)
-        assert _f(by["2024-03"]["sales.prev"]) == pytest.approx(100.0)
+        assert _f(by["2024-01"]["cur"]) == pytest.approx(60.0)
+        assert by["2024-01"]["prev"] is None
+        assert _f(by["2024-02"]["prev"]) == pytest.approx(60.0)
+        assert _f(by["2024-03"]["prev"]) == pytest.approx(100.0)
 
     async def test_two_differently_parameterized_leaves(self, exec_engine) -> None:
         """A join-crossing fragment leaf (``wrevenue_sum``) plus a column-filtered
         leaf (``hi_rev``): each re-aggregates with its own parameters/filter in
         the shifted period."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="wrevenue_sum(revenue) + sum(hi_rev)", alias="cur"),
-            QueryMetric(metric="time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
+            QueryMetric(metric="wrevenue_sum(sales.revenue) + sum(sales.hi_rev)", alias="cur"),
+            QueryMetric(metric="time_shift(wrevenue_sum(sales.revenue) + sum(sales.hi_rev), -1)",
                          alias="prev"),
         ]))
         by = _by_month(resp)
-        assert _f(by["2024-01"]["sales.cur"]) == pytest.approx(200.0)  # 150 + 50
-        assert _f(by["2024-02"]["sales.cur"]) == pytest.approx(360.0)  # 260 + 100
-        assert _f(by["2024-03"]["sales.cur"]) == pytest.approx(180.0)  # 130 + 50
-        assert by["2024-01"]["sales.prev"] is None
-        assert _f(by["2024-02"]["sales.prev"]) == pytest.approx(200.0)
-        assert _f(by["2024-03"]["sales.prev"]) == pytest.approx(360.0)
+        assert _f(by["2024-01"]["cur"]) == pytest.approx(200.0)  # 150 + 50
+        assert _f(by["2024-02"]["cur"]) == pytest.approx(360.0)  # 260 + 100
+        assert _f(by["2024-03"]["cur"]) == pytest.approx(180.0)  # 130 + 50
+        assert by["2024-01"]["prev"] is None
+        assert _f(by["2024-02"]["prev"]) == pytest.approx(200.0)
+        assert _f(by["2024-03"]["prev"]) == pytest.approx(360.0)
 
     async def test_crossing_param_registers_join_per_leaf(self, exec_engine) -> None:
         """A composite whose only aggregate leaf crosses the ``regions`` join:
         the shifted CTE must bind that join to compute ``SUM(revenue * factor)``
         in the prior period."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="wrevenue_sum(revenue) * 2", alias="cur"),
-            QueryMetric(metric="time_shift(wrevenue_sum(revenue) * 2, -1)",
+            QueryMetric(metric="wrevenue_sum(sales.revenue) * 2", alias="cur"),
+            QueryMetric(metric="time_shift(wrevenue_sum(sales.revenue) * 2, -1)",
                          alias="prev"),
         ]))
         by = _by_month(resp)
-        assert _f(by["2024-01"]["sales.cur"]) == pytest.approx(300.0)  # 150 * 2
-        assert _f(by["2024-02"]["sales.cur"]) == pytest.approx(520.0)  # 260 * 2
-        assert by["2024-01"]["sales.prev"] is None
-        assert _f(by["2024-02"]["sales.prev"]) == pytest.approx(300.0)
-        assert _f(by["2024-03"]["sales.prev"]) == pytest.approx(520.0)
+        assert _f(by["2024-01"]["cur"]) == pytest.approx(300.0)  # 150 * 2
+        assert _f(by["2024-02"]["cur"]) == pytest.approx(520.0)  # 260 * 2
+        assert by["2024-01"]["prev"] is None
+        assert _f(by["2024-02"]["prev"]) == pytest.approx(300.0)
+        assert _f(by["2024-03"]["prev"]) == pytest.approx(520.0)
 
 
 class TestConsecutivePeriodsExecution:
@@ -199,71 +199,71 @@ class TestConsecutivePeriodsExecution:
         """A bare numeric composite: streak counts consecutive months where the
         delta is non-NULL and non-zero (40, 62, 30 → 1, 2, 3)."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="consecutive_periods(sum(revenue) - sum(cost))",
+            QueryMetric(metric="consecutive_periods(sum(sales.revenue) - sum(sales.cost))",
                          alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["sales.streak"]) == 1
-        assert int(by["2024-02"]["sales.streak"]) == 2
-        assert int(by["2024-03"]["sales.streak"]) == 3
+        assert int(by["2024-01"]["streak"]) == 1
+        assert int(by["2024-02"]["streak"]) == 2
+        assert int(by["2024-03"]["streak"]) == 3
 
     async def test_growth_streak_over_nested_transform(self, exec_engine) -> None:
         """Comparison predicate over a nested transform (already renders today —
         regression anchor): change > 0 holds only in Feb → 0, 1, 0."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="consecutive_periods(change(sum(revenue)) > 0)",
+            QueryMetric(metric="consecutive_periods(change(sum(sales.revenue)) > 0)",
                          alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["sales.streak"]) == 0
-        assert int(by["2024-02"]["sales.streak"]) == 1
-        assert int(by["2024-03"]["sales.streak"]) == 0
+        assert int(by["2024-01"]["streak"]) == 0
+        assert int(by["2024-02"]["streak"]) == 1
+        assert int(by["2024-03"]["streak"]) == 0
 
     async def test_bare_nested_transform(self, exec_engine) -> None:
         """A bare nested transform value: cumsum is non-zero every month → 1,2,3."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="consecutive_periods(cumsum(sum(revenue)))",
+            QueryMetric(metric="consecutive_periods(cumsum(sum(sales.revenue)))",
                          alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["sales.streak"]) == 1
-        assert int(by["2024-02"]["sales.streak"]) == 2
-        assert int(by["2024-03"]["sales.streak"]) == 3
+        assert int(by["2024-01"]["streak"]) == 1
+        assert int(by["2024-02"]["streak"]) == 2
+        assert int(by["2024-03"]["streak"]) == 3
 
     async def test_scalar_call_in_comparison(self, exec_engine) -> None:
         """Scalar call inside a comparison (already renders today — regression
         anchor): round(revenue:sum) >= 10 holds every month → 1, 2, 3."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="consecutive_periods(round(sum(revenue)) >= 10)",
+            QueryMetric(metric="consecutive_periods(round(sum(sales.revenue)) >= 10)",
                          alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["sales.streak"]) == 1
-        assert int(by["2024-02"]["sales.streak"]) == 2
-        assert int(by["2024-03"]["sales.streak"]) == 3
+        assert int(by["2024-01"]["streak"]) == 1
+        assert int(by["2024-02"]["streak"]) == 2
+        assert int(by["2024-03"]["streak"]) == 3
 
     async def test_or_connective(self, exec_engine) -> None:
         """``sum(revenue) > 90 or sum(cost) > 40`` holds only in Feb → 0, 1, 0."""
         resp = await exec_engine.execute(_q(metrics=[
             QueryMetric(
-                metric="consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
+                metric="consecutive_periods(sum(sales.revenue) > 90 or sum(sales.cost) > 40)",
                 alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["sales.streak"]) == 0
-        assert int(by["2024-02"]["sales.streak"]) == 1
-        assert int(by["2024-03"]["sales.streak"]) == 0
+        assert int(by["2024-01"]["streak"]) == 0
+        assert int(by["2024-02"]["streak"]) == 1
+        assert int(by["2024-03"]["streak"]) == 0
 
     async def test_not_connective(self, exec_engine) -> None:
         """``not (sum(revenue) > 90)`` fails only in Feb → 1, 0, 1."""
         resp = await exec_engine.execute(_q(metrics=[
-            QueryMetric(metric="consecutive_periods(not (sum(revenue) > 90))",
+            QueryMetric(metric="consecutive_periods(not (sum(sales.revenue) > 90))",
                          alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["sales.streak"]) == 1
-        assert int(by["2024-02"]["sales.streak"]) == 0
-        assert int(by["2024-03"]["sales.streak"]) == 1
+        assert int(by["2024-01"]["streak"]) == 1
+        assert int(by["2024-02"]["streak"]) == 0
+        assert int(by["2024-03"]["streak"]) == 1
 
     async def test_in_predicate(self, exec_engine) -> None:
         """A top-level IN over a grouped dimension: both stores are in the set
@@ -271,13 +271,13 @@ class TestConsecutivePeriodsExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(store in ('A', 'B'))", alias="streak")],
+                metric="consecutive_periods(sales.store in ('A', 'B'))", alias="streak")],
         ))
         by = _by_store_month(resp)
         for store in ("A", "B"):
-            assert int(by[(store, "2024-01")]["sales.streak"]) == 1
-            assert int(by[(store, "2024-02")]["sales.streak"]) == 2
-            assert int(by[(store, "2024-03")]["sales.streak"]) == 3
+            assert int(by[(store, "2024-01")]["streak"]) == 1
+            assert int(by[(store, "2024-02")]["streak"]) == 2
+            assert int(by[(store, "2024-03")]["streak"]) == 3
 
     async def test_negated_in_predicate(self, exec_engine) -> None:
         """A negated IN: store A is never in {B, C} (true → 1,2,3), store B
@@ -285,13 +285,13 @@ class TestConsecutivePeriodsExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(store not in ('B', 'C'))",
+                metric="consecutive_periods(sales.store not in ('B', 'C'))",
                 alias="streak")],
         ))
         by = _by_store_month(resp)
-        assert int(by[("A", "2024-03")]["sales.streak"]) == 3
-        assert int(by[("B", "2024-01")]["sales.streak"]) == 0
-        assert int(by[("B", "2024-03")]["sales.streak"]) == 0
+        assert int(by[("A", "2024-03")]["streak"]) == 3
+        assert int(by[("B", "2024-01")]["streak"]) == 0
+        assert int(by[("B", "2024-03")]["streak"]) == 0
 
     async def test_null_predicate_group_treated_as_false(self, exec_engine) -> None:
         """A group whose ``or`` predicate evaluates to NULL breaks the streak
@@ -301,14 +301,14 @@ class TestConsecutivePeriodsExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(sum(hi_rev) > 0 or sum(cost) > 1000)",
+                metric="consecutive_periods(sum(sales.hi_rev) > 0 or sum(sales.cost) > 1000)",
                 alias="streak")],
         ))
         by = _by_store_month(resp)
-        assert int(by[("A", "2024-03")]["sales.streak"]) == 3
-        assert int(by[("B", "2024-01")]["sales.streak"]) == 1
-        assert int(by[("B", "2024-02")]["sales.streak"]) == 2
-        assert int(by[("B", "2024-03")]["sales.streak"]) == 0
+        assert int(by[("A", "2024-03")]["streak"]) == 3
+        assert int(by[("B", "2024-01")]["streak"]) == 1
+        assert int(by[("B", "2024-02")]["streak"]) == 2
+        assert int(by[("B", "2024-03")]["streak"]) == 0
 
     async def test_nested_in_under_and(self, exec_engine) -> None:
         """An IN nested under ``and`` (its column must materialise): store A
@@ -316,13 +316,13 @@ class TestConsecutivePeriodsExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[QueryMetric(
-                metric="consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
+                metric="consecutive_periods(sales.store in ('A', 'C') and sum(sales.revenue) > 0)",
                 alias="streak")],
         ))
         by = _by_store_month(resp)
-        assert int(by[("A", "2024-01")]["sales.streak"]) == 1
-        assert int(by[("A", "2024-03")]["sales.streak"]) == 3
-        assert int(by[("B", "2024-02")]["sales.streak"]) == 0
+        assert int(by[("A", "2024-01")]["streak"]) == 1
+        assert int(by[("A", "2024-03")]["streak"]) == 3
+        assert int(by[("B", "2024-02")]["streak"]) == 0
 
 
 class TestPredicateTypingContract:
@@ -331,12 +331,12 @@ class TestPredicateTypingContract:
         drives truthiness (iif → 1 every month → 1, 2, 3)."""
         resp = await exec_engine.execute(_q(metrics=[
             QueryMetric(
-                metric="consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
+                metric="consecutive_periods(iif(sum(sales.revenue) > 0, 1, 0))",
                 alias="streak"),
         ]))
         by = _by_month(resp)
-        assert int(by["2024-01"]["sales.streak"]) == 1
-        assert int(by["2024-03"]["sales.streak"]) == 3
+        assert int(by["2024-01"]["streak"]) == 1
+        assert int(by["2024-03"]["streak"]) == 3
 
     @pytest.mark.parametrize("formula", [
         "consecutive_periods((sum(revenue) > 0) + (sum(cost) > 0))",
@@ -347,11 +347,11 @@ class TestPredicateTypingContract:
         """Every month's revenue and cost are positive, so each value is non-zero and the run never breaks."""
         resp = await exec_engine.execute(_q(metrics=[QueryMetric(metric=formula, alias="streak")]))
         by = _by_month(resp)
-        assert [int(by[m]["sales.streak"]) for m in ("2024-01", "2024-02", "2024-03")] == [1, 2, 3]
+        assert [int(by[m]["streak"]) for m in ("2024-01", "2024-02", "2024-03")] == [1, 2, 3]
 
     async def test_string_family_predicate_rejected(self) -> None:
         name, msg = await _error(metrics=[QueryMetric(
-            metric="consecutive_periods(lower(max(sku)))", alias="x")])
+            metric="consecutive_periods(lower(max(sales.sku)))", alias="x")])
         assert name == "ValueError", (name, msg)
         low = msg.lower()
         assert "consecutive_periods" in low, msg
@@ -361,7 +361,7 @@ class TestPredicateTypingContract:
     async def test_boolean_in_in_operand_is_its_integer(self) -> None:
         """Never passed through as a bare ``(SUM(revenue) > 0) IN (...)``."""
         sql = await gen(_q(metrics=[QueryMetric(
-            metric="consecutive_periods((sum(revenue) > 0) in (1, 0))", alias="x")]), dialect="postgres")
+            metric="consecutive_periods((sum(sales.revenue) > 0) in (1, 0))", alias="x")]), dialect="postgres")
         assert "> 0 IN" not in sql.replace("\n", " ").upper()
 
 

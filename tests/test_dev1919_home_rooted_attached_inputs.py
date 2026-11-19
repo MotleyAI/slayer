@@ -72,7 +72,7 @@ from tests._dev1919_fixtures import (
     windowed_param_by_month,
 )
 
-AMOUNT = QueryMetric(metric="sum(amount)", alias="a")
+AMOUNT = QueryMetric(metric="sum(orders.amount)", alias="a")
 
 
 def _m(expression: str) -> QueryMetric:
@@ -263,8 +263,8 @@ class TestFilterAndOrderPositions:
         resp = await orders_engine.execute(mode_q(
             None, dimensions=["customers.tier"], metrics=[AMOUNT],
             order=[{"field": HEADLINE, "direction": "desc"}]))
-        tiers = [r["orders.customers.tier"] for r in resp.data
-                 if r["orders.customers.tier"] is not None]
+        tiers = [r["customers.tier"] for r in resp.data
+                 if r["customers.tier"] is not None]
         assert tiers == ["silver", "gold", "bronze"]
 
 
@@ -305,7 +305,7 @@ class TestWindowedOuter:
             filter=[f"{WINDOWED_PARAM} > 110"]))
         assert_cells(month_vals(pruned, "a"), {"2024-02": 55})
         for row in pruned.data:
-            assert set(row) == {"orders.a", "orders.customers.signup_at"}
+            assert set(row) == {"a", "customers.signup_at"}
 
         ordered = await orders_engine.execute(mode_q(
             None, time_dimensions=signup_month_td(), metrics=[AMOUNT],
@@ -314,7 +314,7 @@ class TestWindowedOuter:
         assert months == ["2024-02", "2024-03", "2024-01", "2024-04"]
         assert_cells(month_vals(ordered, "a"), base)
         for row in ordered.data:
-            assert set(row) == {"orders.a", "orders.customers.signup_at"}
+            assert set(row) == {"a", "customers.signup_at"}
 
     def test_windowed_parameter_reads_the_row_attach(self):
         """Plan pin: the trailing-window kernel's picked parameter is the nested

@@ -68,4 +68,4 @@ class TestOtherNamesKeepCaseResolution:
             resp = await engine.execute({"population": "t",
                                          "metrics": [metric("UPPER(a)", "up"), metric("total(a)", "tot")]})
         (row,) = resp.data
-        assert (float(row["t.up"]), float(row["t.tot"])) == (SUM_A, MAX_A)
+        assert (float(row["up"]), float(row["tot"])) == (SUM_A, MAX_A)

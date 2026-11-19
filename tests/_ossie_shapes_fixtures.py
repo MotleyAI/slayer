@@ -34,28 +34,28 @@ QUERIES: dict[str, ShapeCase] = {
         x1={"source_model": "orders", "dimensions": ["status"],
             "measures": ["sum(amount)", {"formula": "avg(amount)", "name": "avg_amount"}, "revenue", "count(*)"]},
         ossie=[{"population": "orders", "dimensions": ["status"],
-                "metrics": ["sum(amount)", {"metric": "avg(amount)", "alias": "avg_amount"}, {"metric": "revenue"},
-                            "count(*)"]}],
+                "metrics": ["sum(amount)", {"metric": "avg(amount)", "alias": "avg_amount"}, {"metric": "orders.revenue"},
+                            "count(orders.*)"]}],
     ),
     "reference_dimensions": ShapeCase(
         x1={"source_model": "orders", "dimensions": ["status", {"name": "name", "model": "customers"}],
             "measures": ["count(*)"]},
         ossie=[
-            {"population": "orders", "dimensions": ["status", "customers.name"], "metrics": ["count(*)"]},
+            {"population": "orders", "dimensions": ["status", "customers.name"], "metrics": ["count(orders.*)"]},
             {"population": "orders", "dimensions": [{"field": "status"}, {"field": "customers.name"}],
-             "metrics": ["count(*)"]},
+             "metrics": ["count(orders.*)"]},
         ],
     ),
     "aliased_reference_dimension": ShapeCase(
         x1={"source_model": "orders", "dimensions": [{"expression": "customers.name", "name": "buyer_name"}],
             "measures": ["count(*)"]},
         ossie=[{"population": "orders", "dimensions": [{"field": "customers.name", "alias": "buyer_name"}],
-                "metrics": ["count(*)"]}],
+                "metrics": ["count(orders.*)"]}],
     ),
     "alias_equal_to_default": ShapeCase(
         x1={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"]},
         ossie=[{"population": "orders", "dimensions": [{"field": "status", "alias": "status"}],
-                "metrics": ["count(*)"]}],
+                "metrics": ["count(orders.*)"]}],
     ),
     "expression_dimensions": ShapeCase(
         x1={"source_model": "orders",
@@ -63,22 +63,22 @@ QUERIES: dict[str, ShapeCase] = {
             "measures": ["count(*)"]},
         ossie=[
             {"population": "orders", "dimensions": [{"field": "upper(status)", "alias": "status_uc"}, "lower(status)"],
-             "metrics": ["count(*)"]},
+             "metrics": ["count(orders.*)"]},
             {"population": "orders",
              "dimensions": [{"field": "upper(status)", "alias": "status_uc"}, {"field": "lower(status)"}],
-             "metrics": ["count(*)"]},
+             "metrics": ["count(orders.*)"]},
         ],
     ),
     "time_dimension": ShapeCase(
         x1={"source_model": "orders", "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
             "measures": ["count(*)"]},
         ossie=[{"population": "orders", "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-                "metrics": ["count(*)"]}],
+                "metrics": ["count(orders.*)"]}],
     ),
     "aliased_time_dimension": ShapeCase(
         ossie=[{"population": "orders",
                 "time_dimensions": [{"field": "created_at", "granularity": "month", "alias": "m"}],
-                "metrics": ["count(*)"]}],
+                "metrics": ["count(orders.*)"]}],
     ),
     "order_by_reference_and_expression": ShapeCase(
         x1={"source_model": "orders", "dimensions": ["status", {"name": "name", "model": "customers"}],
@@ -101,7 +101,7 @@ QUERIES: dict[str, ShapeCase] = {
         ],
         ossie=[[
             {"name": "per_customer", "population": "orders", "dimensions": ["customer_id"],
-             "metrics": [{"metric": "sum(amount)", "alias": "revenue_total"}, "count(*)"],
+             "metrics": [{"metric": "sum(amount)", "alias": "revenue_total"}, "count(orders.*)"],
              "filter": "amount > 5"},
             {"population": "per_customer",
              "metrics": [{"metric": "avg(revenue_total)", "alias": "avg_revenue"}, "max(revenue_total)"],
@@ -111,22 +111,22 @@ QUERIES: dict[str, ShapeCase] = {
     "single_filter": ShapeCase(
         x1={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"], "filters": ["amount > 15"]},
         ossie=[
-            {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"], "filter": "amount > 15"},
-            {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"], "filter": ["amount > 15"]},
+            {"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"], "filter": "orders.amount > 15"},
+            {"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"], "filter": ["orders.amount > 15"]},
         ],
     ),
     "filter_list": ShapeCase(
         x1={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"],
             "filters": ["amount > 15", "status = 'ok'"]},
-        ossie=[{"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"],
-                "filter": ["amount > 15", "status = 'ok'"]}],
+        ossie=[{"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"],
+                "filter": ["orders.amount > 15", "orders.status = 'ok'"]}],
     ),
     "no_filter": ShapeCase(
         x1={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"], "filters": []},
         ossie=[
-            {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]},
-            {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"], "filter": None},
-            {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"], "filter": []},
+            {"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"]},
+            {"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"], "filter": None},
+            {"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"], "filter": []},
         ],
     ),
 }

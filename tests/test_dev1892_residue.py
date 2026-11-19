@@ -122,7 +122,7 @@ class TestAttachedParameterOnRowLevelSource:
             metrics=[QueryMetric(metric=_ATTACHED_ON_ROW, alias="w")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
-        assert by[("ok",)]["orders.w"] == by[("new",)]["orders.w"] is not None
+        assert by[("ok",)]["w"] == by[("new",)]["w"] is not None
         assert broadcast_warnings(resp)
 
     async def test_error_mode_refuses_the_dimension(self, assoc_engine):
@@ -146,7 +146,7 @@ class TestRestSurfaceResidue:
     async def test_residue_maps_to_400(self, sales_storage):
         """A re-aggregation column-parameter residue is a client error (400)."""
         client = TestClient(create_app(storage=sales_storage))
-        body = {"population": "sales", "dimensions": ["region"],
+        body = {"population": "sales", "dimensions": ["sales.region"],
                 "metrics": [{"metric": f"wavg({INNER_CR}, weight=id)", "alias": "w"}]}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text

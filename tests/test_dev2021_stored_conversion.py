@@ -114,9 +114,9 @@ class TestDimension:
         assert QueryDimension(field="upper(customers.region)", alias="customers__tier_label") in (
             stage.dimensions or [])
         assert len(_conversion_warnings(caught, document="rev_by_tier", column="tier_label")) == 1
-        resp = await run(storage, {"population": "rev_by_tier", "dimensions": ["customers__tier_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
-        assert _rows(resp, "rev_by_tier.customers__tier_label", "rev_by_tier.t") == [("NORTH", 120.0), ("SOUTH", 90.0)]
+        resp = await run(storage, {"population": "rev_by_tier", "dimensions": ["rev_by_tier.customers__tier_label"],
+                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
+        assert _rows(resp, "rev_by_tier.customers__tier_label", "t") == [("NORTH", 120.0), ("SOUTH", 90.0)]
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_converted_model_is_written_back(self, tmp_path, shop_ds, backend: str) -> None:
@@ -143,7 +143,7 @@ class TestDimension:
         model, _ = await _load(storage, "by_status")
         assert QueryDimension(field="upper(status)", alias="status_label") in (_stage_of(model).dimensions or [])
         resp = await run(storage, {"population": "by_status", "dimensions": ["status_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
+                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
         assert _rows(resp, "by_status.status_label", "by_status.t") == [("2024/01/01", 60.0), ("NEW", 70.0), ("OK", 80.0)]
 
 
@@ -167,9 +167,9 @@ class TestMeasure:
         model, _ = await _load(storage, "cids")
         assert QueryMetric(metric="sum(CAST(customers.id * 10 AS INT))", alias="customers__cid_sum") in (
             _stage_of(model).metrics or [])
-        resp = await run(storage, {"population": "cids", "dimensions": ["status"],
-                                   "metrics": [{"metric": "sum(customers__cid_sum)", "alias": "t"}]})
-        assert _rows(resp, "cids.status", "cids.t") == [("2024/01/01", 20.0), ("new", 40.0), ("ok", 60.0)]
+        resp = await run(storage, {"population": "cids", "dimensions": ["cids.status"],
+                                   "metrics": [{"metric": "sum(cids.customers__cid_sum)", "alias": "t"}]})
+        assert _rows(resp, "cids.status", "t") == [("2024/01/01", 20.0), ("new", 40.0), ("ok", 60.0)]
 
 
 class TestQualification:
@@ -183,7 +183,7 @@ class TestQualification:
         assert QueryDimension(field="lower(buyer.region)", alias="buyer__region_label") in (
             _stage_of(model).dimensions or [])
         resp = await run(storage, {"population": "by_buyer", "dimensions": ["buyer__region_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
+                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
         assert _rows(resp, "by_buyer.buyer__region_label", "by_buyer.t") == [("north", 120.0), ("south", 90.0)]
 
     async def test_an_inferred_population_qualifies_the_expression(self, tmp_path, shop_ds) -> None:
@@ -195,7 +195,7 @@ class TestQualification:
         assert QueryDimension(field="upper(customers.region)", alias="customers__tier_label") in (
             loaded.dimensions or [])
         resp = await run(storage, loaded)
-        assert _rows(resp, "orders.status", "orders.customers__tier_label", "orders.n") == [
+        assert _rows(resp, "orders.status", "customers__tier_label", "orders.n") == [
             ("2024/01/01", "SOUTH", 1), ("new", "NORTH", 2), ("ok", "NORTH", 2), ("ok", "SOUTH", 1)]
 
     async def test_an_alias_qualifies_the_expression(self, tmp_path, shop_ds) -> None:
@@ -208,7 +208,7 @@ class TestQualification:
         assert QueryDimension(field="lower(cust.region)", alias="cust__region_label") in (
             _stage_of(model).dimensions or [])
         resp = await run(storage, {"population": "by_alias", "dimensions": ["cust__region_label"],
-                                   "metrics": [{"metric": "sum(rev)", "alias": "t"}]})
+                                   "metrics": [{"metric": "sum(rev_by_tier.rev)", "alias": "t"}]})
         assert _rows(resp, "by_alias.cust__region_label", "by_alias.t") == [("north", 120.0), ("south", 90.0)]
 
     async def test_an_owner_qualified_reference_reads_the_owners_column(self, tmp_path, shop_ds) -> None:
@@ -231,7 +231,7 @@ class TestQualification:
             "upper(customers.region)"]
         assert [f.casefold() for f in loaded.filter or []] == ["upper(customers.region) = 'north'"]
         resp = await run(storage, loaded)
-        assert [r["orders.rev"] for r in resp.data] == [120.0]
+        assert [r["rev"] for r in resp.data] == [120.0]
 
 
 _Q_AMOUNT = "iif(status = 'ok', amount, NULL)"
@@ -310,7 +310,7 @@ class TestEveryPosition:
         assert "CAST(ordered_at AS TIMESTAMP)" in str(loaded.main_time_dimension)
         assert "CAST(ordered_at AS TIMESTAMP)" in str((loaded.time_dimensions or [])[0].field)
         resp = await run(storage, loaded)
-        assert sorted(float(r["orders.rev"]) for r in resp.data) == [10.0, 50.0, 150.0]
+        assert sorted(float(r["rev"]) for r in resp.data) == [10.0, 50.0, 150.0]
 
     async def test_partition_and_ranking_keys_and_extension_measures(self, tmp_path, shop_ds) -> None:
         stage = _stage(
@@ -422,7 +422,7 @@ class TestMemories:
         query = (await storage.get_memory("m_tier")).query
         assert query is not None
         resp = await run(storage, query)
-        assert _rows(resp, "orders.customers__tier_label", "orders.rev") == [("NORTH", 120.0), ("SOUTH", 90.0)]
+        assert _rows(resp, "customers__tier_label", "rev") == [("NORTH", 120.0), ("SOUTH", 90.0)]
 
     async def test_an_unconvertible_memory_fails_to_load(self, tmp_path, shop_ds) -> None:
         memory = memory_v2(memory_id="m_bad", query=_UNCONVERTIBLE["not-mode-b"], version=_MEMORY_V)

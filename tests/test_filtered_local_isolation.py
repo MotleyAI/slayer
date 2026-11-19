@@ -165,7 +165,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(total_amount)"}],
+            "metrics": [{"metric": "sum(claim_amount.total_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -177,7 +177,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(paid_amount)"}],
+            "metrics": [{"metric": "sum(claim_amount.paid_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -189,7 +189,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(loss_payment_amt)"}],
+            "metrics": [{"metric": "sum(claim_amount.loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -211,8 +211,8 @@ class TestCrossModelPlannerTriggerPredicate:
         )
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(eu_amount)"}],
-            "dimensions": ["id"],
+            "metrics": [{"metric": "sum(orders.eu_amount)"}],
+            "dimensions": ["orders.id"],
         })
         planned = plan_query(query=q, bundle=bundle)
         attaches = [
@@ -274,7 +274,7 @@ class TestCrossModelPlannerTriggerPredicate:
         q = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"metric": "sum(customers.premium_rev)"}],
-            "dimensions": ["id"],
+            "dimensions": ["orders.id"],
         })
         planned = plan_query(query=q, bundle=bundle)
         assert len(planned.regroup_attach_plans) == 1
@@ -292,7 +292,7 @@ class TestProducerMode:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(loss_payment_amt)"}],
+            "metrics": [{"metric": "sum(claim_amount.loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -339,8 +339,8 @@ class TestHostModelFiltersInteractions:
         )
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "sum(loss_payment_amt)"}],
-            "dimensions": ["id"],
+            "metrics": [{"metric": "sum(claim_amount.loss_payment_amt)"}],
+            "dimensions": ["claim_amount.id"],
         })
         planned = plan_query(query=q, bundle=bundle)
         assert [a for a in planned.regroup_attach_plans if a.attach_phase == "combined"]
@@ -387,11 +387,11 @@ class TestFirstLastNoNestedCmaPlans:
         host = _claim_amount(with_time=True, with_filter_first=True)
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"metric": "last(latest_payment)"}],
+            "metrics": [{"metric": "last(claim_amount.latest_payment)"}],
             "dimensions": ["claim.claim_number"],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="claim_amount.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -661,8 +661,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "sum(region_pay)"},
-                {"metric": "sum(region_pay) + sum(amount)", "alias": "combo"},
+                {"metric": "sum(orders.region_pay)"},
+                {"metric": "sum(orders.region_pay) + sum(orders.amount)", "alias": "combo"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -679,8 +679,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "sum(region_pay)"},
-                {"metric": "sum(cust_weight_d)"},
+                {"metric": "sum(orders.region_pay)"},
+                {"metric": "sum(orders.cust_weight_d)"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -699,8 +699,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # A host ROW filter must propagate into the sub-plan's filters.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(region_pay)"}],
-            "filter": ["amount > 50"],
+            "metrics": [{"metric": "sum(orders.region_pay)"}],
+            "filter": ["orders.amount > 50"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())
         (attach,) = [
@@ -718,7 +718,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # the host, so it too propagates into the sub-plan.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(region_pay)"}],
+            "metrics": [{"metric": "sum(orders.region_pay)"}],
             "filter": ["customers.weight > 1"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())

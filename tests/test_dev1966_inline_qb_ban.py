@@ -34,8 +34,8 @@ INLINE_QB: Dict[str, Any] = {
     "name": "iqb",
     "data_source": "test",
     "source_queries": [{
-        "population": "orders", "dimensions": ["status"],
-        "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+        "population": "orders", "dimensions": ["orders.status"],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
     }],
 }
 OUTER: Dict[str, Any] = {"dimensions": ["status"], "metrics": [{"metric": "sum(rev)", "alias": "t"}]}

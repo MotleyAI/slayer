@@ -62,7 +62,7 @@ def unknown_key_error(exc: BaseException) -> UnknownKeyError:
 class TestEntryClasses:
     def test_metric_entries_are_query_metrics(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders",
-                                            "metrics": ["count(*)", {"metric": "sum(amount)", "alias": "total"}]})
+                                            "metrics": ["count(orders.*)", {"metric": "sum(amount)", "alias": "total"}]})
         assert all(isinstance(m, QueryMetric) for m in query.metrics or [])
         assert [(m.metric, m.alias) for m in query.metrics or []] == [("count(*)", None), ("sum(amount)", "total")]
 
@@ -74,7 +74,7 @@ class TestEntryClasses:
 
     def test_dimension_entries_are_query_dimensions(self) -> None:
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": ["count(*)"],
+            "population": "orders", "metrics": ["count(orders.*)"],
             "dimensions": ["status", {"field": "customers.name"}, {"field": "upper(status)", "alias": "s", "label": "S"}],
         })
         assert all(isinstance(d, QueryDimension) for d in query.dimensions or [])
@@ -237,9 +237,9 @@ class TestExecution:
         with recorded() as caught:
             ossie = await execute(storage, {
                 "population": "orders",
-                "dimensions": ["customers.region", {"field": "status", "alias": "s"}],
-                "metrics": ["revenue", {"metric": "count(*)", "alias": "n"}],
-                "filter": "status = 'ok'",
+                "dimensions": ["customers.region", {"field": "orders.status", "alias": "s"}],
+                "metrics": ["orders.revenue", {"metric": "count(orders.*)", "alias": "n"}],
+                "filter": "orders.status = 'ok'",
             })
         assert deprecations(caught) == []
         assert deprecated_in(ossie.warnings) == []
@@ -255,18 +255,18 @@ class TestExecution:
 
     async def test_an_alias_names_a_references_column(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
-        aliased = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        aliased = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                           "dimensions": [{"field": "customers.region", "alias": "r"}]})
-        plain = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        plain = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                         "dimensions": ["customers.region"]})
         assert aliased.columns[0].split(".")[-1] == "r"
         assert sorted_rows(aliased) == sorted_rows(plain)
 
     async def test_an_alias_equal_to_the_default_name_changes_nothing(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
-        aliased = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        aliased = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                           "dimensions": [{"field": "status", "alias": "status"}]})
-        plain = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        plain = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                         "dimensions": ["status"]})
         assert list(aliased.columns) == list(plain.columns)
         assert sorted_rows(aliased) == sorted_rows(plain)
@@ -274,9 +274,9 @@ class TestExecution:
     async def test_an_old_field_reference_converts(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
         with recorded():
-            old = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+            old = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                           "dimensions": [{"name": "region", "model": "customers"}]})
-        new = await execute(storage, {"population": "orders", "metrics": ["count(*)"],
+        new = await execute(storage, {"population": "orders", "metrics": ["count(orders.*)"],
                                       "dimensions": [{"field": "customers.region"}]})
         assert list(old.columns) == list(new.columns)
         assert sorted_rows(old) == sorted_rows(new)

@@ -156,10 +156,10 @@ class TestSelectedMeasureAddressable:
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.aov"}],
             filter=["customers.aov > 100"]))
-        rows = [r for r in resp.data if r.get("orders.customers.aov") is not None]
+        rows = [r for r in resp.data if r.get("customers.aov") is not None]
         assert rows, "filter removed everything — it did not bind to the aov slot"
         for r in rows:
-            assert float(r["orders.customers.aov"]) > 100
+            assert float(r["customers.aov"]) > 100
 
     async def test_dotted_name_order_uses_selected_slot(self, exec_backend):
         _, engine = exec_backend
@@ -167,8 +167,8 @@ class TestSelectedMeasureAddressable:
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.aov"}],
             order=[{"field": "customers.aov", "direction": "desc"}]))
-        vals = [float(r["orders.customers.aov"]) for r in resp.data
-                if r.get("orders.customers.aov") is not None]
+        vals = [float(r["customers.aov"]) for r in resp.data
+                if r.get("customers.aov") is not None]
         assert vals == sorted(vals, reverse=True)
         assert len(vals) > 1
 
@@ -178,7 +178,7 @@ class TestSelectedMeasureAddressable:
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.aov", "alias": "myaov"}],
             filter=["myaov > 100"]))
-        rows = [r for r in resp.data if r.get("orders.myaov") is not None]
+        rows = [r for r in resp.data if r.get("myaov") is not None]
         assert rows
         for r in rows:
-            assert float(r["orders.myaov"]) > 100
+            assert float(r["myaov"]) > 100

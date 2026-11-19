@@ -44,7 +44,7 @@ async def exec_engine(request):
         yield engine
 
 
-def _region_vals(resp, metric="sales.acr"):
+def _region_vals(resp, metric="acr"):
     return {k[0]: v[metric] for k, v in region_key(resp).items()}
 
 
@@ -67,13 +67,13 @@ class TestHeadlineOracle:
         sibling plain measure (the core SLayer invariant)."""
         base = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         with_reagg = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")]))
-        a = {k: v["sales.tot"] for k, v in region_key(base).items()}
-        b = {k: v["sales.tot"] for k, v in region_key(with_reagg).items()}
+        a = {k: v["tot"] for k, v in region_key(base).items()}
+        b = {k: v["tot"] for k, v in region_key(with_reagg).items()}
         assert set(a) == set(b)
         for k in a:
             assert a[k] == b[k]
@@ -86,7 +86,7 @@ class TestDegenerateIdentity:
         remedy (operand grain == outer grain)."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="avg(sum(amount))", alias="acr")]))
+            metrics=[QueryMetric(metric="avg(sum(sales.amount))", alias="acr")]))
         vals = _region_vals(resp)
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(total)
@@ -106,9 +106,9 @@ class TestChainAttribution:
             dimensions=["customers.regions.name"],
             metrics=[reagg("avg", "sum(amount, partition_by=customer_id)",
                             name="acc")]))
-        by = rows_by(resp, "corders.customers.regions.name")
+        by = rows_by(resp, "customers.regions.name")
         for region, expected in CHAIN_AVG_BY_REGION.items():
-            assert float(by[(region,)]["corders.acc"]) == pytest.approx(expected)
+            assert float(by[(region,)]["acc"]) == pytest.approx(expected)
         assert broadcast_warnings(resp) == []
 
 
@@ -119,7 +119,7 @@ class TestOuterOperatorFamily:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[reagg("count", INNER_CR, name="nc")]))
-        vals = _region_vals(resp, "sales.nc")
+        vals = _region_vals(resp, "nc")
         for region, n in COUNT_CITY_CELLS_BY_REGION.items():
             assert int(vals[region]) == n
 
@@ -135,7 +135,7 @@ class TestOuterOperatorFamily:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[reagg(agg, INNER_CR, name="v")]))
-        east = _region_vals(resp, "sales.v")["East"]
+        east = _region_vals(resp, "v")["East"]
         assert float(east) == pytest.approx(float(expected))
 
     async def test_percentile_is_bounded_by_the_cell_totals(self, exec_engine):
@@ -145,7 +145,7 @@ class TestOuterOperatorFamily:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[reagg("percentile", INNER_CR, name="p", p=0.9)]))
-        north = float(_region_vals(resp, "sales.p")["North"])
+        north = float(_region_vals(resp, "p")["North"])
         # North city totals are [30, 60]; the 0.9 percentile sits strictly above
         # the mean/median (45) and at most the max (60), excluding min/avg/median
         # — robust across PERCENTILE_CONT/DISC interpolation.
@@ -157,7 +157,7 @@ class TestOuterOperatorFamily:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[reagg("dsum", INNER_CR, name="ds")]))
-        vals = _region_vals(resp, "sales.ds")
+        vals = _region_vals(resp, "ds")
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(total)
 
@@ -172,7 +172,7 @@ class TestNullEmptyKeyless:
             dimensions=["region", "city"],
             metrics=[QueryMetric(metric=INNER_CR, alias="cr")]))
         by_cell = rows_by(cells, "sales.region", "sales.city")
-        assert float(by_cell[("Gap", None)]["sales.cr"]) == pytest.approx(
+        assert float(by_cell[("Gap", None)]["cr"]) == pytest.approx(
             GAP_NULL_CELL_TOTAL)
         # Re-aggregated by region, that single null cell participates once.
         resp = await exec_engine.execute(sales_q(
@@ -201,7 +201,7 @@ class TestNullEmptyKeyless:
             dimensions=["region"], filter=["product = 'Q'"],
             metrics=[QueryMetric(
                 metric=f"avg(coalesce({INNER_CR}, 0))", alias="acz")]))
-        vals = _region_vals(resp, "sales.acz")
+        vals = _region_vals(resp, "acz")
         assert set(vals) == set(FILTERED_COALESCE_AVG_BY_REGION)
         for region, expected in FILTERED_COALESCE_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -212,18 +212,18 @@ class TestNullEmptyKeyless:
         avg_resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[reagg("avg", INNER_CR, name="acr")]))
-        assert region_key(avg_resp)[("Void",)]["sales.acr"] is None
+        assert region_key(avg_resp)[("Void",)]["acr"] is None
         cnt_resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[reagg("count", INNER_CR, name="nc")]))
-        assert int(region_key(cnt_resp)[("Void",)]["sales.nc"]) == 0
+        assert int(region_key(cnt_resp)[("Void",)]["nc"]) == 0
 
     async def test_keyless_inner_is_global_identity_plus_warning(self, exec_engine):
         """Scenario: Keyless inner aggregate — avg(sum(amount, partition_by=[]))
         executes as the global total with the degenerate warning, no error."""
         resp = await exec_engine.execute(sales_q(
             metrics=[reagg("avg", "sum(amount, partition_by=[])", name="g")]))
-        assert float(resp.data[0]["sales.g"]) == pytest.approx(KEYLESS_GRAND_TOTAL)
+        assert float(resp.data[0]["g"]) == pytest.approx(KEYLESS_GRAND_TOTAL)
         assert degenerate_warnings(resp)
 
 
@@ -234,10 +234,10 @@ class TestCrossModelInner:
         cells — region 1 orders 10+20+40, region 2 order 100."""
         resp = await exec_engine.execute(SlayerQuery(
             population="customers",
-            dimensions=[QueryDimension(field="region_id")],
+            dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[QueryMetric(
-                metric="avg(sum(corders.amount, partition_by=region_id))",
+                metric="avg(sum(corders.amount, partition_by=customers.region_id))",
                 alias="art")]))
         by = rows_by(resp, "customers.region_id")
-        assert float(by[(1,)]["customers.art"]) == pytest.approx(70.0)
-        assert float(by[(2,)]["customers.art"]) == pytest.approx(100.0)
+        assert float(by[(1,)]["art"]) == pytest.approx(70.0)
+        assert float(by[(2,)]["art"]) == pytest.approx(100.0)

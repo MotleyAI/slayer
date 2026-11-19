@@ -357,11 +357,11 @@ class TestIterSlotDepsTransformAux:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "cumsum(sum(amount), partition_by=region)"},
+                {"metric": "cumsum(sum(orders.amount), partition_by=orders.region)"},
             ],
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -380,10 +380,10 @@ class TestTransformLayersPopulation:
     def test_cumsum_emits_transform_layer(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "cumsum(sum(amount))"}],
+            "metrics": [{"metric": "cumsum(sum(orders.amount))"}],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -397,7 +397,7 @@ class TestTransformLayersPopulation:
     def test_rank_emits_transform_layer(self) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="rank(sum(amount), direction='desc')")],
+            metrics=[QueryMetric(metric="rank(sum(orders.amount), direction='desc')")],
         )
         planned = plan_query(query=q, bundle=_bundle())
         assert any(
@@ -407,10 +407,10 @@ class TestTransformLayersPopulation:
     def test_time_shift_emits_transform_layer(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "time_shift(sum(amount), periods=-1)"}],
+            "metrics": [{"metric": "time_shift(sum(orders.amount), periods=-1)"}],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -426,10 +426,10 @@ class TestTransformLayersPopulation:
         # transform_layers should show the materialised op only.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "change(sum(amount))"}],
+            "metrics": [{"metric": "change(sum(orders.amount))"}],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -445,10 +445,10 @@ class TestTransformLayersPopulation:
         # time_shift layer must appear before the outer cumsum layer.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "cumsum(change(sum(amount)))"}],
+            "metrics": [{"metric": "cumsum(change(sum(orders.amount)))"}],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -468,12 +468,12 @@ class TestTransformLayersPopulation:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "rank(sum(amount), direction='desc')"},
-                {"metric": "cumsum(sum(amount))"},
+                {"metric": "rank(sum(orders.amount), direction='desc')"},
+                {"metric": "cumsum(sum(orders.amount))"},
             ],
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -487,7 +487,7 @@ class TestTransformLayersPopulation:
             assert len(layer.slot_ids) == 1
 
     def test_no_transform_no_layers(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         assert planned.transform_layers == []
 
@@ -504,10 +504,10 @@ class TestTransformInnerIdentity:
         # both occurrences of amount:sum must intern to the SAME slot.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "change(sum(amount))"}],
+            "metrics": [{"metric": "change(sum(orders.amount))"}],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -529,12 +529,12 @@ class TestTransformInnerIdentity:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "sum(amount)"},
-                {"metric": "change(sum(amount))"},
+                {"metric": "sum(orders.amount)"},
+                {"metric": "change(sum(orders.amount))"},
             ],
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],

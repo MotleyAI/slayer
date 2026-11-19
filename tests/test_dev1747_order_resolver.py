@@ -55,7 +55,7 @@ import pydantic
 _MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
 
 _MONTH = TimeDimension(
-    field="created_at", granularity=TimeGranularity.MONTH,
+    field="orders.created_at", granularity=TimeGranularity.MONTH,
 )
 
 #: One query per render path that builds its own ORDER BY term. D4's claim is
@@ -64,35 +64,35 @@ _MONTH = TimeDimension(
 _D4_SHAPES = {
     "host_base": SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         metrics=_MEASURE,
         order=[OrderItem(field="rev", direction="desc")],
     ),
     "cross_model": SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         metrics=[
-            {"metric": "sum(amount)", "alias": "rev"},
+            {"metric": "sum(orders.amount)", "alias": "rev"},
             {"metric": "sum(customers.spend)", "alias": "cs"},
         ],
         order=[OrderItem(field="cs", direction="desc")],
     ),
     "outer_composite": SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [QueryDimension(field="status")],
-        "metrics": [{"metric": "sum(customers.spend) + sum(amount)", "alias": "mix"}],
+        "dimensions": [QueryDimension(field="orders.status")],
+        "metrics": [{"metric": "sum(customers.spend) + sum(orders.amount)", "alias": "mix"}],
         "order": [OrderItem(field="mix", direction="desc")],
     }),
     "windowed": SlayerQuery.model_validate({
         "population": "orders",
         "time_dimensions": [_MONTH],
-        "metrics": [{"metric": "sum(amount, window='90d')", "alias": "w"}],
+        "metrics": [{"metric": "sum(orders.amount, window='90d')", "alias": "w"}],
         "order": [OrderItem(field="w", direction="desc")],
     }),
     "transform_chain": SlayerQuery.model_validate({
         "population": "orders",
         "time_dimensions": [_MONTH],
-        "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}],
+        "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}],
         "order": [OrderItem(field="cs", direction="asc")],
     }),
 }
@@ -174,10 +174,10 @@ class TestOrderTargetMatrix:
         takes the FIRST alias, since both hold the same value."""
         sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
-                {"metric": "sum(amount)", "alias": "rev_again"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev_again"},
             ],
             order=[OrderItem(field="rev_again", direction="desc")],
         ))
@@ -215,13 +215,13 @@ class TestOrderTargetMatrix:
         quietly projected, which changes the result shape."""
         sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=_MEASURE,
-            order=[OrderItem(field="id", direction="desc")],
+            order=[OrderItem(field="orders.id", direction="desc")],
         ))
         assert order_terms(sql), f"hidden sort key produced no ORDER BY:\n{sql}"
         projected = {s.alias_or_name for s in _outer_projection(sql)}
-        assert projected == {"orders.status", "orders.rev"}, (
+        assert projected == {"orders.status", "rev"}, (
             f"the hidden order slot leaked into the projection: {projected}"
         )
 
@@ -239,8 +239,8 @@ class TestOrderTargetMatrix:
 
         sql = await _sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [QueryDimension(field="status")],
-            "metrics": [{"metric": "sum(amount)", "alias": "_1"}],
+            "dimensions": [QueryDimension(field="orders.status")],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "_1"}],
             "order": [OrderItem(field="_1", direction="asc")],
         }))
         for term in order_terms(sql):
@@ -251,17 +251,17 @@ class TestOrderTargetMatrix:
 
     async def test_transformed_measure_orders_at_the_chain_outer_wrap(self) -> None:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")]}))
-        _assert_orders_by(sql, "orders.cs")
+            )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="desc")]}))
+        _assert_orders_by(sql, "cs")
 
     async def test_cross_model_aggregate_orders_on_its_cte_column(self) -> None:
         sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
             order=[OrderItem(field="cs", direction="desc")],
@@ -276,7 +276,7 @@ class TestOrderTargetMatrix:
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
             order=[OrderItem(field="cs", direction="desc")],
@@ -285,10 +285,10 @@ class TestOrderTargetMatrix:
 
     async def test_windowed_measure_orders_on_its_cte_column(self) -> None:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"metric": "sum(amount, window='90d')", "alias": "w"}], "order": [OrderItem(field="w", direction="desc")]}))
-        _assert_orders_by(sql, "orders.w")
+            )], "metrics": [{"metric": "sum(orders.amount, window='90d')", "alias": "w"}], "order": [OrderItem(field="w", direction="desc")]}))
+        _assert_orders_by(sql, "w")
 
 
 # ---------------------------------------------------------------------------
@@ -388,9 +388,9 @@ class TestNullOrdering:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    {"metric": "sum(amount)", "alias": "rev"},
+                    {"metric": "sum(orders.amount)", "alias": "rev"},
                     {"metric": "sum(customers.spend)", "alias": "cs"},
                 ],
                 order=[OrderItem(field="cs", direction="desc")],
@@ -406,9 +406,9 @@ class TestNullOrdering:
     async def test_tsql_transform_chain_has_no_case_when_emulation(self) -> None:
         sql = await _sql(
             SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
-                )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="asc")]}),
+                )], "metrics": [{"metric": "cumsum(sum(orders.amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="asc")]}),
             dialect="tsql",
         )
         assert "CASE" not in order_by_text(sql, dialect="tsql").upper()
@@ -440,15 +440,15 @@ class TestSingleResolver:
         for label, query in (
             ("base", SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=_MEASURE,
                 order=[OrderItem(field="rev", direction="desc")],
             )),
             ("combined", SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    {"metric": "sum(amount)", "alias": "rev"},
+                    {"metric": "sum(orders.amount)", "alias": "rev"},
                     {"metric": "sum(customers.spend)", "alias": "cs"},
                 ],
                 order=[OrderItem(field="rev", direction="desc")],

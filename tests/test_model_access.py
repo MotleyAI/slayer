@@ -200,14 +200,14 @@ class TestModelsReadBy:
             {"dataset": "pub", "relationships": [{"to": "hr", "from_columns": ["id"], "to_columns": ["id"]}]}]},
         {"population": "pub_link", "dimensions": [f"{PRUNED_EDGE}.dept"]},
         {"population": "fin", "time_dimensions": [{"field": "hr.hired_at", "granularity": "month"}]},
-        {"population": "fin", "metrics": [{"metric": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
+        {"population": "fin", "metrics": [{"metric": "sum(fin.amount)"}], "filter": ["hr.dept = 'eng'"]},
     ], ids=["extension-base", "extension-join", "model-join", "time-dimension-hop", "filter-hop"])
     async def test_query_fields_read_hr(self, datasets: dict[str, SlayerDataset], stage: dict) -> None:
         assert "hr" in self.reads(SlayerQuery.model_validate(stage), datasets)
 
     async def test_sibling_stage_chain_reads_the_first_source(self, datasets: dict[str, SlayerDataset]) -> None:
         chained = SlayerDataset(name="chained", source_queries=[
-            SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "t"}]}),
+            SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"metric": "sum(hr.salary)", "alias": "t"}]}),
             SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "sum(t)"}]}),
         ])
         reads = self.reads(chained, datasets)

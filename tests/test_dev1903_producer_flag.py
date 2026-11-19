@@ -150,7 +150,7 @@ class TestTwoEntryPoints:
 def _producer_env():
     bundle = _dev1836_bundle()
     query = dev1836_q(dimensions=["status"],
-                      metrics=[QueryMetric(metric="sum(amount)", alias="s")])
+                      metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")])
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
     return query, prebound, elaborate_mod.elaborate_synthesized(
@@ -219,10 +219,10 @@ class TestEverySiteStatesItsPopulation:
             bundle=_dev1836_bundle()), {"NoInheritedPopulation"}, id="cross-model"),
         pytest.param(lambda: plan_query(query=dev1836_q(
             dimensions=["status", "channel"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=channel)", alias="pt")]),
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)", alias="pt")]),
             bundle=_dev1836_bundle()), {"InheritedPopulation"}, id="local-regroup"),
         pytest.param(lambda: plan_query(query=cust_q(
-            dimensions=["tier"], metrics=[QueryMetric(metric="sum(spend)", alias="sp")],
+            dimensions=["tier"], metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             order=[{"field": "orders.amount", "direction": "asc"}]),
             bundle=_customers_bundle()), {"InheritedPopulation"}, id="wrap"),
         pytest.param(lambda: _monthly_plan("time_shift(sum(amount), -1)"),
@@ -245,7 +245,7 @@ class TestTopOnlySteps:
         bundle = _dev1836_bundle()
         query = dev1836_q(
             dimensions=["status", "channel"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             filter=["status = 'ok' and sum(amount, partition_by=channel) > 0"])
         top = elaborate_query(query=query, bundle=bundle)
         assert top.prebound is not None
@@ -262,7 +262,7 @@ class TestTopOnlySteps:
         """A fanning row filter rides the host EXISTS at the top; a producer with no
         inherited population keeps it as its own mask."""
         query = cust_q(dimensions=["tier"],
-                       metrics=[QueryMetric(metric="sum(spend)", alias="sp")],
+                       metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
                        filter=["orders.status = 'ok'"])
         assert _semi_join_and_mask_counts(
             plan_query(query=query, bundle=_customers_bundle())) == [(1, 0)]
@@ -273,7 +273,7 @@ class TestTopOnlySteps:
         """A row-attach root partitioned by exactly the query grain is stripped at the
         top; the producer entry leaves the key as written."""
         query = sales_q(dimensions=["region"], metrics=[QueryMetric(
-            metric="sum(quantity * sum(amount, partition_by=product), partition_by=region)",
+            metric="sum(sales.quantity * sum(sales.amount, partition_by=sales.product), partition_by=sales.region)",
             alias="x")])
 
         def outer_partition(pq: PlannedQuery):
@@ -291,12 +291,12 @@ class TestTopOnlySteps:
         producer does neither."""
         calls = _count_top_only(monkeypatch)
         s1 = cust_q(name="s1", dimensions=["tier"], metrics=[
-            QueryMetric(metric="sum(spend)", alias="sp"),
-            QueryMetric(metric="sum(spend, partition_by=tier)", alias="pt")],
+            QueryMetric(metric="sum(customers.spend)", alias="sp"),
+            QueryMetric(metric="sum(customers.spend, partition_by=customers.tier)", alias="pt")],
             filter=["orders.status = 'ok'"])
         root = SlayerQuery.model_validate({
-            "population": "s1", "dimensions": ["tier"],
-            "metrics": [{"metric": "sum(sp)", "alias": "t"}]})
+            "population": "s1", "dimensions": ["s1.tier"],
+            "metrics": [{"metric": "sum(s1.sp)", "alias": "t"}]})
         stage_plans = plan_stages(queries=[s1, root], bundle=_customers_bundle())
         assert calls == {"dispose": 2, "total_routing": 2}
         assert [len(p.semi_join_filters) for p in stage_plans] == [1, 0]
@@ -304,7 +304,7 @@ class TestTopOnlySteps:
 
     @pytest.mark.parametrize("plan", [
         pytest.param(lambda: plan_query(query=cust_q(
-            dimensions=["tier"], metrics=[QueryMetric(metric="sum(spend)", alias="sp")],
+            dimensions=["tier"], metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             filter=["orders.status = 'ok'"],
             order=[{"field": "orders.amount", "direction": "asc"}]),
             bundle=_customers_bundle()), id="late-wrap"),
@@ -320,7 +320,7 @@ class TestTopOnlySteps:
         """Blinded discovery raises at the top; a producer holds the root inline."""
         monkeypatch.setattr(stages, "discover_roots", lambda *_a, **_k: [])
         query = dev1836_q(dimensions=["status", "channel"], metrics=[
-            QueryMetric(metric="sum(amount, partition_by=channel)", alias="pt")])
+            QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)", alias="pt")])
         bundle = _dev1836_bundle()
         with pytest.raises(ValueError, match="no routing disposition"):
             plan_query(query=query, bundle=bundle)
@@ -342,7 +342,7 @@ class TestStrictSubsetNesting:
 
     async def test_outer_reaggregation_values(self, exec_engine):
         resp = await exec_engine.execute(_probe_a_query())
-        got = {(r["sales.region"], r["sales.product"]): r["sales.acc"] for r in resp.data}
+        got = {(r["sales.region"], r["sales.product"]): r["acc"] for r in resp.data}
         assert set(got) == PROBE_A_CELLS
         for cell, value in got.items():
             assert float(value) == pytest.approx(PROBE_A_VALUE), cell
@@ -350,7 +350,7 @@ class TestStrictSubsetNesting:
     def test_carrier_nests_every_strict_constituent(self):
         """``[city]`` and ``[region]`` are strict subsets of the ``[city, region]`` carrier grain."""
         pq = plan_query(query=sales_q(dimensions=["region"], metrics=[QueryMetric(
-            metric="avg(sum(amount, partition_by=city) + sum(amount, partition_by=region))",
+            metric="avg(sum(sales.amount, partition_by=sales.city) + sum(sales.amount, partition_by=sales.region))",
             alias="x")]), bundle=_sales_bundle())
         [outer] = pq.regroup_attach_plans
         [carrier] = outer.producer_plan.regroup_attach_plans
@@ -395,11 +395,11 @@ class TestOffGrainConstituentNests:
         """Grained at ``spend_band`` alone (the nested aggregate is opaque): a constant
         weight per band."""
         query = sales_q(dimensions=dimensions, metrics=[QueryMetric(
-            metric="weighted_avg(amount, weight=rank(sum(amount, partition_by=spend_band), direction='desc'))",
+            metric="weighted_avg(sales.amount, weight=rank(sum(sales.amount, partition_by=spend_band), direction='desc'))",
             alias="w")])
         resp = await exec_engine.execute(query)
         names = [d if isinstance(d, str) else d["alias"] for d in dimensions]
-        got = {tuple(r[f"sales.{n}"] for n in names): r["sales.w"] for r in resp.data}
+        got = {tuple(r[f"sales.{n}"] for n in names): r["w"] for r in resp.data}
         assert got == {k: None if v is None else pytest.approx(v) for k, v in expected.items()}
 
 

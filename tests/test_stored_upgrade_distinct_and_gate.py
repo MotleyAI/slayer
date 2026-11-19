@@ -127,7 +127,7 @@ class TestDistinctResults:
         model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ['sum("distinct")']
-        resp = await run(storage, {"population": "orders", "metrics": ["total"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["orders.total"]})
         assert measure_total(resp, measure="total") == DISTINCT_TOTAL
 
     @pytest.mark.parametrize("backend", BACKENDS)

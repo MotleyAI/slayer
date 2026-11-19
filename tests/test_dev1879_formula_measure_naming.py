@@ -44,7 +44,7 @@ def _q(**kw) -> SlayerQuery:
 def _month_td() -> list[TimeDimension]:
     return [
         TimeDimension(
-            field="created_at",
+            field="mart.created_at",
             granularity=TimeGranularity.MONTH,
         )
     ]
@@ -106,7 +106,7 @@ class TestUnchangedPaths:
                 ]
             )
         )
-        _assert_key_and_alias(resp, "mart.churn_ratio")
+        _assert_key_and_alias(resp, "churn_ratio")
         assert "mart.logo_churn_sum_logo_bop_sum" not in resp.columns
 
     async def test_plain_aggregates(self) -> None:
@@ -124,7 +124,7 @@ class TestUnchangedPaths:
 
     async def test_cross_model_aggregate(self) -> None:
         resp = await _dry(_q(metrics=["sum(targets.goal)"]))
-        _assert_key_and_alias(resp, "mart.targets.goal_sum")
+        _assert_key_and_alias(resp, "targets.goal_sum")
 
     async def test_saved_measure_reference(self) -> None:
         resp = await _dry(_q(metrics=["aov"]))

@@ -43,8 +43,8 @@ def dialect(request) -> str:
 
 def _cust_spend() -> SlayerDataset:
     return SlayerDataset(name="cust_spend", data_source=DS, source_queries=[SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["customer_id"],
-        "metrics": [{"metric": "sum(amount)", "alias": "spent"}]})])
+        "population": "orders", "dimensions": ["orders.customer_id"],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "spent"}]})])
 
 
 class TestExtendingAnyModel:
@@ -53,11 +53,11 @@ class TestExtendingAnyModel:
         computed = q(population="orders", dimensions=[{"field": "upper(customers.tier)", "alias": "tier_label"}],
                      metrics=[AMOUNT])
         async with shop(dialect) as engine:
-            got = by_key(await engine.execute(computed), "orders.tier_label", "orders.a")
+            got = by_key(await engine.execute(computed), "tier_label", "a")
         async with shop(dialect, with_datasets(stored)) as engine:
             expected = by_key(await engine.execute(q(
                 population="orders", dimensions=["customers.tier_label"], metrics=[AMOUNT])),
-                "orders.customers.tier_label", "orders.a")
+                "orders.customers.tier_label", "a")
         assert got == expected == {"GOLD": 35.0, "SILVER": 45.0, "BRONZE": 40.0, None: 7.0}
 
     async def test_extending_a_joined_model_adds_a_measure(self, dialect) -> None:
@@ -67,7 +67,7 @@ class TestExtendingAnyModel:
                 extensions=[ext("customers", metrics=[{"name": "credit_total", "expression": "sum(credit)"}])]))
             direct = await engine.execute(q(
                 population="orders", metrics=[{"metric": "sum(customers.credit)", "alias": "ct"}]))
-        assert float(extended.data[0]["orders.ct"]) == float(direct.data[0]["orders.ct"]) == TOTAL_CREDIT
+        assert float(extended.data[0]["ct"]) == float(direct.data[0]["ct"]) == TOTAL_CREDIT
 
     async def test_extending_the_root_equals_the_legacy_form(self, dialect) -> None:
         joins = [join("regions", [["ship_region_id", "id"]])]
@@ -78,7 +78,7 @@ class TestExtendingAnyModel:
                 legacy_query = q(population=ext("orders", relationships=joins), **fields)
             legacy = await engine.execute(legacy_query)
         assert rows(current, *current.columns) == rows(legacy, *legacy.columns)
-        assert by_key(current, "orders.regions.name", "orders.a") == {
+        assert by_key(current, "regions.name", "a") == {
             "North": 15.0, "South": 35.0, "East": 40.0, None: 37.0}
 
     async def test_extension_of_a_query_backed_join_target_applies_once(self, dialect) -> None:
@@ -89,7 +89,7 @@ class TestExtendingAnyModel:
         ])
         async with shop(dialect, with_datasets(_cust_spend())) as engine:
             resp = await engine.execute(query)
-        assert by_key(resp, "orders.customer_id", "orders.s2") == {
+        assert by_key(resp, "orders.customer_id", "s2") == {
             1: 60.0, 2: 60.0, 3: 10.0, 4: 80.0, 5: 30.0, None: 14.0}
 
     async def test_query_backed_measure_extension_in_a_non_root_stage(self, dialect) -> None:
@@ -109,7 +109,7 @@ class TestExtendingAnyModel:
         async with shop(dialect, with_datasets(_cust_spend())) as engine:
             got = await engine.execute(over_model)
             expected = await engine.execute(explicit)
-        assert float(got.data[0]["s.t"]) == float(expected.data[0]["s.t"]) == TOTAL_AMOUNT
+        assert float(got.data[0]["t"]) == float(expected.data[0]["t"]) == TOTAL_AMOUNT
 
 
 class TestScope:
@@ -124,7 +124,7 @@ class TestScope:
 
     async def test_extension_is_invisible_to_a_stored_query_backed_stage(self, dialect) -> None:
         qb = SlayerDataset(name="tl_rev", data_source=DS, source_queries=[SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["status"],
+            "population": "orders", "dimensions": ["orders.status"],
             "metrics": [{"metric": "customers.credit_total", "alias": "a"}]})])
         query = q(population="tl_rev", metrics=[{"metric": "sum(a)", "alias": "t"}],
                   extensions=[ext("customers", metrics=[CREDIT_TOTAL])])
@@ -148,7 +148,7 @@ class TestScope:
                  extensions=[ext("customers", metrics=[{"name": "double_spent", "expression": "sum(spent * 2)"}])])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])
-        assert float(resp.data[0]["customers.t"]) == 2 * TOTAL_AMOUNT
+        assert float(resp.data[0]["t"]) == 2 * TOTAL_AMOUNT
 
     async def test_a_join_another_model_declares_into_the_sibling_source_is_walkable(self, dialect) -> None:
         stage = q(name="s", population="orders", dimensions=["customer_id"])
@@ -156,7 +156,7 @@ class TestScope:
                  extensions=[ext("customers", relationships=[join("s", [["id", "customer_id"]])])])
         async with shop(dialect) as engine:
             resp = await engine.execute([stage, root])
-        assert {r["s.customers.name"] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
+        assert {r["customers.name"] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
 
 
 class TestModelNameCase:
@@ -168,7 +168,7 @@ class TestModelNameCase:
                   extensions=[ext(spelled, metrics=[CREDIT_TOTAL])])
         async with shop(dialect, respelled_dataset(base_datasets(), name="customers", spelling="Customers")) as engine:
             resp = await engine.execute(query)
-        assert float(resp.data[0]["orders.ct"]) == TOTAL_CREDIT
+        assert float(resp.data[0]["ct"]) == TOTAL_CREDIT
 
     async def test_a_stage_joins_a_model_saved_in_another_case(self, dialect) -> None:
         stage = q(name="big_orders", population="orders", dimensions=["id", "customer_id"])
@@ -184,7 +184,7 @@ class TestModelNameCase:
                  extensions=[ext("CUSTOMERS", metrics=[{"name": "cities", "expression": "count_distinct(upper(city))"}])])
         async with shop(dialect, respelled_dataset(base_datasets(), name="customers", spelling="Customers")) as engine:
             resp = await engine.execute([stage, root])
-        assert resp.data[0]["customers.t"] == 4
+        assert resp.data[0]["t"] == 4
 
 
 class TestRejectedTargets:
@@ -255,7 +255,7 @@ class TestStageOrdering:
         root = q(population="b", metrics=[{"metric": "sum(t)", "alias": "total"}])
         async with shop(dialect) as engine:
             resp = await engine.execute([*(stages[n] for n in order), root])
-        assert float(resp.data[0]["b.total"]) == TOTAL_AMOUNT
+        assert float(resp.data[0]["total"]) == TOTAL_AMOUNT
 
 
 class TestUsageFeatures:

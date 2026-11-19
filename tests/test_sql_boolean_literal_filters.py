@@ -55,8 +55,8 @@ class TestSQLEmission:
         engine = _make_engine()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["is_active = true"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.is_active = true"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
         assert "TRUE" in sql.upper()
@@ -65,8 +65,8 @@ class TestSQLEmission:
         engine = _make_engine()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["status = 'food' or false"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.status = 'food' or false"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
         assert "FALSE" in sql.upper()
@@ -75,8 +75,8 @@ class TestSQLEmission:
         engine = _make_engine()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(*)"}],
-            "filter": ["is_active = True"],
+            "metrics": [{"metric": "count(orders.*)"}],
+            "filter": ["orders.is_active = True"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
         assert "TRUE" in sql.upper()

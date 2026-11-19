@@ -189,19 +189,19 @@ def query_backed_datasets() -> list[SlayerDataset]:
         return SlayerDataset(name=name, source_queries=[SlayerQuery.model_validate(s) for s in stages])
 
     return [
-        qb("hr_summary", {"population": "hr", "dimensions": ["dept"], "metrics": [{"metric": "sum(salary)", "alias": "total"}]}),
-        qb("hr_rollup", {"population": "hr_summary", "metrics": [{"metric": "sum(total)", "alias": "grand"}]}),
-        qb("fin_hop", {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}),
+        qb("hr_summary", {"population": "hr", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(hr.salary)", "alias": "total"}]}),
+        qb("hr_rollup", {"population": "hr_summary", "metrics": [{"metric": "sum(hr_summary.total)", "alias": "grand"}]}),
+        qb("fin_hop", {"population": "fin", "dimensions": ["fin.hr.dept"], "metrics": [{"metric": "sum(fin.amount)", "alias": "amt"}]}),
         qb("fin_ordered", {
-            "population": "fin", "dimensions": ["id"], "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
-            "order": [{"field": "hr.salary", "direction": "desc"}],
+            "population": "fin", "dimensions": ["fin.id"], "metrics": [{"metric": "sum(fin.amount)", "alias": "amt"}],
+            "order": [{"field": "fin.hr.salary", "direction": "desc"}],
         }),
-        qb("fin_report", {"population": "fin", "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}),
+        qb("fin_report", {"population": "fin", "metrics": [{"metric": "sum(fin.amount)", "alias": "amt"}]}),
     ]
 
 
-MIXED_QUERY = {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(amount)"}]}
-QHOP_QUERY = {"population": "pay", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(gross)"}]}
+MIXED_QUERY = {"population": "fin", "dimensions": ["fin.hr.dept"], "metrics": [{"metric": "sum(fin.amount)"}]}
+QHOP_QUERY = {"population": "pay", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(pay.gross)"}]}
 
 
 async def _save_memories(storage: StorageBackend) -> None:

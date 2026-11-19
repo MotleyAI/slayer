@@ -158,8 +158,8 @@ async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written
 async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) -> None:
     await storage.save_dataset(orders_dataset())
     saved = SlayerDataset.model_validate({"name": "paid_orders", "data_source": "test", "source_queries": [
-        {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
-         "filter": ["status == 'paid' and region is not None"]}]})
+        {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
+         "filter": ["orders.status == 'paid' and orders.region is not None"]}]})
     await storage.save_dataset(saved)
     loaded = await storage.get_dataset("paid_orders", data_source="test")
     assert loaded is not None
@@ -193,8 +193,8 @@ async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageB
 
 async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQueryEngine) -> None:
     saved = SlayerDataset.model_validate({"name": "paid_orders", "source_queries": [
-        {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}],
-         "filter": ["status == 'paid' and region is not None"]}]})
+        {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}],
+         "filter": ["orders.status == 'paid' and orders.region is not None"]}]})
     notes: list[Any] = []
     with recorded_warnings():
         await engine.save_dataset(saved, warnings_out=notes)

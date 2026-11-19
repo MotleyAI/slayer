@@ -66,33 +66,33 @@ def _rows(resp: SlayerResponse, *, key: str) -> set[tuple]:
 class TestExpressionHomes:
     async def test_coalesced_timestamp_groups_by_month(self, engine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF)]))
-        assert by_bucket(resp, KEY, "orders.v") == EFF_MONTH_COUNT
+        assert by_bucket(resp, KEY, "v") == EFF_MONTH_COUNT
 
     async def test_cast_text_to_date(self, engine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td("CAST(created_txt AS DATE)")]))
-        assert by_bucket(resp, "orders.cast_created_txt_as_date", "orders.v") == CREATED_MONTH_COUNT
+        assert by_bucket(resp, "orders.cast_created_txt_as_date", "v") == CREATED_MONTH_COUNT
 
     async def test_cross_model_expression_over_a_to_one_hop(self, engine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td("coalesce(customers.signup_ts, created_at)")]))
-        got = by_bucket(resp, "orders.coalesce_customers_signup_ts_created_at", "orders.v")
+        got = by_bucket(resp, "orders.coalesce_customers_signup_ts_created_at", "v")
         assert got == {"2024-11": 3, "2025-02": 2, "2025-03": 1}
 
     async def test_stage_scope_expression(self, engine) -> None:
         inner = SlayerQuery.model_validate({
-            "name": "s1", "population": "orders", "dimensions": ["id", "shipped_at", "created_at"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "name": "s1", "population": "orders", "dimensions": ["orders.id", "orders.shipped_at", "orders.created_at"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
-            "population": "s1", "time_dimensions": [td(EFF)], "metrics": [{"metric": "sum(rev)", "alias": "v"}],
+            "population": "s1", "time_dimensions": [td(EFF)], "metrics": [{"metric": "sum(s1.rev)", "alias": "v"}],
         })
         resp = await engine.execute([inner, outer])
-        assert by_bucket(resp, f"s1.{EFF_NAME}", "s1.v") == EFF_MONTH_SUM
+        assert by_bucket(resp, f"s1.{EFF_NAME}", "v") == EFF_MONTH_SUM
 
 
 class TestExpressionTyping:
     async def test_leaf_across_a_fanning_hop_fails_closed(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "population": "accounts", "metrics": [{"metric": "count(*)", "alias": "v"}],
+            "population": "accounts", "metrics": [{"metric": "count(accounts.*)", "alias": "v"}],
             "time_dimensions": [td("coalesce(orders.shipped_at, signup_ts)")],
         })
         msg = str(await _plan_fails(engine, query, UnsafeRelationshipInputError))
@@ -118,17 +118,17 @@ class TestExpressionTyping:
 class TestTimePositions:
     async def test_date_range(self, engine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF, date_range=["2025-01-01", "2025-03-31"])]))
-        assert by_bucket(resp, KEY, "orders.v") == {"2025-01": 1, "2025-02": 2, "2025-03": 2}
+        assert by_bucket(resp, KEY, "v") == {"2025-01": 1, "2025-02": 2, "2025-03": 2}
 
     async def test_timestamp_expression_takes_instant_bounds(self, engine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF, date_range=["2025-01-07 09:30:00", "2025-02-28"])]))
-        assert by_bucket(resp, KEY, "orders.v") == {"2025-02": 2}
+        assert by_bucket(resp, KEY, "v") == {"2025-02": 2}
 
     async def test_date_expression_takes_date_bounds_whole_periods(self, engine) -> None:
         resp = await engine.execute(_count(
             time_dimensions=[td(CAST_DAY, date_range=["2025-01", "2025-02"])], whole_periods_only=True,
         ))
-        assert by_bucket(resp, "orders.cast_created_at_as_date", "orders.v") == {"2025-01": 2, "2025-02": 2}
+        assert by_bucket(resp, "orders.cast_created_at_as_date", "v") == {"2025-01": 2, "2025-02": 2}
 
     async def test_date_expression_rejects_a_sub_day_point(self, engine) -> None:
         query = _count(time_dimensions=[td(CAST_DAY, date_range=["2025-01-05 12:00:00", "2025-02-28"])])
@@ -145,7 +145,7 @@ class TestTimePositions:
         resp = await engine.execute(_count(
             time_dimensions=[td(dimension, date_range=["2025-01-15", "2025-03-10"])], whole_periods_only=snap,
         ))
-        assert by_bucket(resp, key, "orders.v") == expected
+        assert by_bucket(resp, key, "v") == expected
 
     @pytest.mark.parametrize("dimension, key, expected", [
         (CAST_DAY, CAST_KEY, {"2025-01": 2, "2025-02": 2}),
@@ -157,7 +157,7 @@ class TestTimePositions:
             time_dimensions=[td(dimension)], whole_periods_only=True,
             filter=[f"'2025-01-15' <= {dimension}", f"{dimension} <= '2025-03-10'"],
         ))
-        assert by_bucket(resp, key, "orders.v") == expected
+        assert by_bucket(resp, key, "v") == expected
 
     @pytest.mark.parametrize("dimension, key, expected", [
         (CAST_DAY, CAST_KEY, {"2024-12": 1, "2025-01": 2, "2025-02": 2}),
@@ -168,22 +168,22 @@ class TestTimePositions:
                                                          expected: dict) -> None:
         async with engine_for(backend, clock=PinnedClock(datetime(2025, 3, 10, 12, 0, 0))) as e:
             resp = await e.execute(_count(time_dimensions=[td(dimension)], whole_periods_only=True))
-        assert by_bucket(resp, key, "orders.v") == expected
+        assert by_bucket(resp, key, "v") == expected
 
     async def test_rolling_window_and_change_over_an_expression_axis(self, engine) -> None:
         resp = await engine.execute(q(
             time_dimensions=[td(EFF, date_range=["2025-02-01", "2025-04-30"])],
             metrics=[m("sum(amount)", "s"), m("sum(amount, window='3m')", "w"), m("change(sum(amount))", "c")],
         ))
-        assert by_bucket(resp, KEY, "orders.s") == FEB_APR_SUM
-        assert by_bucket(resp, KEY, "orders.w") == FEB_APR_WINDOW
-        assert by_bucket(resp, KEY, "orders.c") == FEB_APR_CHANGE
+        assert by_bucket(resp, KEY, "s") == FEB_APR_SUM
+        assert by_bucket(resp, KEY, "w") == FEB_APR_WINDOW
+        assert by_bucket(resp, KEY, "c") == FEB_APR_CHANGE
 
     @pytest.mark.parametrize("bound", [f"{EFF} >= '2025-02'", f"date_trunc('month', {EFF}) >= '2025-02-01'"])
     async def test_filter_on_the_expression_is_a_frame_bound(self, engine, bound: str) -> None:
         resp = await engine.execute(q(time_dimensions=[td(EFF)], filter=[bound],
                                       metrics=[m("sum(amount, window='3m')", "w")]))
-        assert by_bucket(resp, KEY, "orders.w") == FEB_APR_WINDOW
+        assert by_bucket(resp, KEY, "w") == FEB_APR_WINDOW
 
     @pytest.mark.parametrize("measures", [
         [m("count(*)", "n"), m("sum(amount)", "s")],
@@ -200,18 +200,18 @@ class TestStageBuckets:
     def _inner(self) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "time_dimensions": [td(EFF)],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
 
     def _outer(self, granularity: str) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "s1", "time_dimensions": [td(EFF_NAME, granularity)],
-            "metrics": [{"metric": "sum(rev)", "alias": "v"}],
+            "metrics": [{"metric": "sum(s1.rev)", "alias": "v"}],
         })
 
     async def test_coarser_rebucket_sums_the_monthly_sums(self, engine) -> None:
         resp = await engine.execute([self._inner(), self._outer("year")])
-        assert by_bucket(resp, f"s1.{EFF_NAME}", "s1.v", width=4) == {"2025": 210.0}
+        assert by_bucket(resp, f"s1.{EFF_NAME}", "v", width=4) == {"2025": 210.0}
 
     async def test_finer_rebucket_rejected(self, engine) -> None:
         msg = str(await _plan_fails(engine, [self._inner(), self._outer("day")], TimeDimensionFieldError))
@@ -223,7 +223,7 @@ class TestPerLeafRebucketing:
     def _monthly(self, dimension: str, granularity: str) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "monthly", "time_dimensions": [td(dimension, granularity)],
-            "metrics": [{"metric": "sum(rev)", "alias": "v"}],
+            "metrics": [{"metric": "sum(monthly.rev)", "alias": "v"}],
         })
 
     async def test_cast_of_a_month_bucketed_column_at_day_rejected(self, engine) -> None:
@@ -239,7 +239,7 @@ class TestPerLeafRebucketing:
     async def test_same_and_coarser_granularities_bind(self, engine, granularity: str, width: int,
                                                        expected: dict) -> None:
         resp = await engine.execute(self._monthly(CAST_DAY, granularity))
-        assert by_bucket(resp, "monthly.cast_created_at_as_date", "monthly.v", width=width) == expected
+        assert by_bucket(resp, "monthly.cast_created_at_as_date", "v", width=width) == expected
 
     async def test_bucketed_leaf_beside_an_unbucketed_one_binds_the_rule(self, engine) -> None:
         query = self._monthly("coalesce(created_at, refunded_at)", "day")
@@ -251,15 +251,15 @@ class TestPerLeafRebucketing:
 class TestNamesAndKeys:
     async def test_unnamed_expression_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF)]))
-        assert resp.columns == [KEY, "orders.v"]
+        assert resp.columns == [KEY, "v"]
 
     async def test_named_expression_key_and_main_time_dimension(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             time_dimensions=[td("created_at"), td(EFF, alias="effective_at")], main_time_dimension="effective_at",
             metrics=[m("cumsum(count(*))")],
         ))
-        assert set(resp.columns) == {"orders.created_at", "orders.effective_at", "orders.v"}
-        got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])
+        assert set(resp.columns) == {"orders.created_at", "effective_at", "v"}
+        got = {(bucket(r["orders.created_at"]), bucket(r["effective_at"])): num(r["v"])
                for r in resp.data}
         assert got == {
             ("2024-12", "2025-03"): 1, ("2025-01", "2025-01"): 1, ("2025-01", "2025-02"): 2,
@@ -268,26 +268,26 @@ class TestNamesAndKeys:
 
     async def test_named_column_time_dimension(self, engine: SlayerQueryEngine) -> None:
         named = await engine.execute(_count(time_dimensions=[td("created_at", alias="m")]))
-        assert named.columns == ["orders.m", "orders.v"]
-        assert by_bucket(named, "orders.m", "orders.v") == CREATED_MONTH_COUNT
+        assert named.columns == ["m", "v"]
+        assert by_bucket(named, "m", "v") == CREATED_MONTH_COUNT
 
     async def test_named_time_dimension_never_carries_the_granularity_suffix(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF, alias="em"), td(EFF, "year", alias="ey")]))
-        assert set(resp.columns) == {"orders.em", "orders.ey", "orders.v"}
+        assert set(resp.columns) == {"em", "ey", "v"}
 
     async def test_partition_by_a_time_dimension_name(self, engine) -> None:
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=[td(EFF, alias="effective_at")],
             metrics=[m("sum(amount, partition_by=effective_at)")],
         ))
-        got = by_bucket(resp, "orders.effective_at", "orders.v", by=["orders.region"])
+        got = by_bucket(resp, "effective_at", "v", by=["orders.region"])
         assert got == {("EU", "2025-01"): 10.0, ("EU", "2025-02"): 50.0, ("EU", "2025-04"): 50.0,
                        ("US", "2025-02"): 50.0, ("US", "2025-03"): 100.0}
 
     async def test_two_granularities_of_one_expression(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(dimensions=[f"date_trunc('month', {EFF})", f"date_trunc('year', {EFF})"]))
-        assert set(resp.columns) == {f"{KEY}.month", f"{KEY}.year", "orders.v"}
-        got = {(bucket(r[f"{KEY}.month"]), bucket(r[f"{KEY}.year"], width=4)): num(r["orders.v"]) for r in resp.data}
+        assert set(resp.columns) == {f"{KEY}.month", f"{KEY}.year", "v"}
+        got = {(bucket(r[f"{KEY}.month"]), bucket(r[f"{KEY}.year"], width=4)): num(r["v"]) for r in resp.data}
         assert got == {(k, "2025"): v for k, v in EFF_MONTH_COUNT.items()}
 
     def test_equivalent_spellings_with_differing_label_rejected_at_construction(self) -> None:
@@ -308,7 +308,7 @@ class TestNamesAndKeys:
             dimensions=["date_trunc('month', created_at)"], time_dimensions=[td(EFF, alias="effective_at")],
             main_time_dimension="effective_at", metrics=[m("cumsum(count(*))")],
         ))
-        got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])
+        got = {(bucket(r["orders.created_at"]), bucket(r["effective_at"])): num(r["v"])
                for r in resp.data}
         assert got[("2025-01", "2025-02")] == 2
         assert got[("2025-02", "2025-03")] == 2

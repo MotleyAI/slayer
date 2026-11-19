@@ -226,7 +226,7 @@ class TestHeadlineOracle:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(metric=MIXED_SUM, alias="m")]))
-        vals = _region_vals(resp, "sales.m")
+        vals = _region_vals(resp, "m")
         for region, expected in MIXED_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
             row_prod = ROW_PRODUCT_SUM_BY_REGION[region]
@@ -240,14 +240,14 @@ class TestHeadlineOracle:
         """Scenario: Adding a mixed measure is cardinality-neutral."""
         base = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         with_mixed = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       QueryMetric(metric=MIXED_SUM, alias="m")]))
         assert len(with_mixed.data) == len(base.data)
-        a = {k: v["sales.tot"] for k, v in region_key(base).items()}
-        b = {k: v["sales.tot"] for k, v in region_key(with_mixed).items()}
+        a = {k: v["tot"] for k, v in region_key(base).items()}
+        b = {k: v["tot"] for k, v in region_key(with_mixed).items()}
         assert len(a) == len(base.data)  # no duplicate region keys either
         assert a == b
 
@@ -258,9 +258,9 @@ class TestUngrainedInner:
         dimensions — no degenerate-re-aggregation warning."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(quantity * avg(unit_price))",
+            metrics=[QueryMetric(metric="sum(sales.quantity * avg(sales.unit_price))",
                                    alias="m")]))
-        vals = _region_vals(resp, "sales.m")
+        vals = _region_vals(resp, "m")
         for region, expected in UNGRAINED_MIXED_BY_REGION.items():
             if expected is None:
                 assert vals[region] is None
@@ -282,8 +282,8 @@ class TestNullConstituent:
                     metric=f"sum(coalesce({INNER_UP_CITY}, 0) * quantity)",
                     alias="cz"),
             ]))
-        bare = _region_vals(resp, "sales.bare")
-        cz = _region_vals(resp, "sales.cz")
+        bare = _region_vals(resp, "bare")
+        cz = _region_vals(resp, "cz")
         for region, expected in CITY_MIXED_BY_REGION.items():
             if expected is None:
                 assert bare[region] is None
@@ -300,7 +300,7 @@ class TestFilterInheritance:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"], filter=["quantity >= 2"],
             metrics=[QueryMetric(metric=MIXED_SUM, alias="m")]))
-        vals = _region_vals(resp, "sales.m")
+        vals = _region_vals(resp, "m")
         for region, expected in FILTERED_MIXED_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
         assert vals["North"] != pytest.approx(FILTERED_MIXED_NORTH_WRONG)
@@ -314,7 +314,7 @@ class TestCountFamily:
             dimensions=["region"],
             metrics=[QueryMetric(metric=f"count(quantity * {INNER_UP_CITY})",
                                    alias="n")]))
-        vals = _region_vals(resp, "sales.n")
+        vals = _region_vals(resp, "n")
         for region, expected in COUNT_CITY_MIXED_BY_REGION.items():
             assert int(vals[region]) == expected
 
@@ -324,7 +324,7 @@ class TestCountFamily:
             metrics=[QueryMetric(
                 metric=f"count_distinct(quantity * {INNER_UP_PRODUCT})",
                 alias="nd")]))
-        vals = _region_vals(resp, "sales.nd")
+        vals = _region_vals(resp, "nd")
         for region, expected in DISTINCT_MIXED_BY_REGION.items():
             assert int(vals[region]) == expected
 
@@ -334,14 +334,14 @@ class TestCrossModelConstituent:
         """Requirement: attached constituents may be cross-model."""
         resp = await exec_engine.execute(SlayerQuery(
             population="customers",
-            dimensions=[QueryDimension(field="region_id")],
+            dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[QueryMetric(
                 metric="sum(region_id * sum(corders.amount, "
                         "partition_by=region_id))",
                 alias="xm")]))
         by = rows_by(resp, "customers.region_id")
         for rid, expected in CROSS_MODEL_MIXED_BY_REGION_ID.items():
-            assert float(by[(rid,)]["customers.xm"]) == pytest.approx(expected)
+            assert float(by[(rid,)]["xm"]) == pytest.approx(expected)
 
 
 class TestFilterAndOrderPositions:
@@ -350,8 +350,8 @@ class TestFilterAndOrderPositions:
         measure, pruning rows with surviving values unchanged."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"], filter=[f"{MIXED_SUM} > 40"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
-        vals = _region_vals(resp, "sales.tot")
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
+        vals = _region_vals(resp, "tot")
         assert set(vals) == {"North", "South", "East"}
         for region in vals:
             assert float(vals[region]) == pytest.approx(
@@ -360,7 +360,7 @@ class TestFilterAndOrderPositions:
     async def test_order_position_sorts_by_the_mixed_value(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")],
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")],
             order=[{"field": MIXED_SUM, "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
         assert order == ["South", "North", "East", "Gap", "Void"]
@@ -372,11 +372,11 @@ class TestDimensionPosition:
         mixed value groups rows with unchanged cardinality."""
         resp = await exec_engine.execute(sales_q(
             dimensions=[{"field": MIXED_BAND_EXPR, "alias": "mixed_band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
-        by = rows_by(resp, "sales.mixed_band")
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
+        by = rows_by(resp, "mixed_band")
         assert len(resp.data) == len(AMOUNT_BY_MIXED_BAND)
         for band, expected in AMOUNT_BY_MIXED_BAND.items():
-            assert float(by[(band,)]["sales.tot"]) == pytest.approx(expected)
+            assert float(by[(band,)]["tot"]) == pytest.approx(expected)
 
 
 class TestOuterModifiers:
@@ -392,7 +392,7 @@ class TestOuterModifiers:
         assert len(resp.data) == 8  # the (region, product) pairs in the rows
         assert len(by) == len(resp.data)  # and no duplicate pair keys
         for (region, _product), row in by.items():
-            assert float(row["sales.m"]) == pytest.approx(
+            assert float(row["m"]) == pytest.approx(
                 MIXED_SUM_BY_REGION[region])
 
     async def test_parametric_outer_with_row_valued_weight(self, exec_engine):
@@ -402,7 +402,7 @@ class TestOuterModifiers:
             metrics=[QueryMetric(
                 metric=f"wavg(quantity * {INNER_UP_PRODUCT}, weight=quantity)",
                 alias="w")]))
-        vals = _region_vals(resp, "sales.w")
+        vals = _region_vals(resp, "w")
         for region, expected in WAVG_MIXED_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
 
@@ -412,7 +412,7 @@ class TestOuterModifiers:
             dimensions=["region"],
             metrics=[QueryMetric(metric=f"dsum(quantity * {INNER_UP_PRODUCT})",
                                    alias="ds")]))
-        vals = _region_vals(resp, "sales.ds")
+        vals = _region_vals(resp, "ds")
         for region, expected in MIXED_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
 
@@ -424,7 +424,7 @@ class TestOuterModifiers:
             metrics=[QueryMetric(
                 metric=f"corr(quantity * {INNER_UP_PRODUCT}, other=quantity)",
                 alias="c")]))
-        vals = _region_vals(resp, "sales.c")
+        vals = _region_vals(resp, "c")
         for region, expected in CORR_MIXED_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
 
@@ -437,7 +437,7 @@ class TestOuterModifiers:
                 metric="sum(qty * sum(revenue, partition_by=store), "
                         "window='90d')",
                 alias="w")]))
-        got = {month_key(r["sales.ordered_at"]): r["sales.w"] for r in resp.data}
+        got = {month_key(r["sales.ordered_at"]): r["w"] for r in resp.data}
         assert len(resp.data) == len(MIXED_W90_BY_MONTH)
         for month, expected in MIXED_W90_BY_MONTH.items():
             assert float(got[month]) == pytest.approx(expected)
@@ -466,10 +466,10 @@ class TestWindowedConstituent:
         resp = await exec_engine_1846.execute(SlayerQuery(
             population="sales", time_dimensions=month_td(),
             metrics=[QueryMetric(metric=self._FORMULA, alias="m"),
-                      QueryMetric(metric="sum(revenue, window='90d')", alias="w"),
-                      QueryMetric(metric="sum(qty)", alias="q")]))
+                      QueryMetric(metric="sum(sales.revenue, window='90d')", alias="w"),
+                      QueryMetric(metric="sum(sales.qty)", alias="q")]))
         got = {month_key(r["sales.ordered_at"]):
-               (r["sales.m"], r["sales.w"], r["sales.q"]) for r in resp.data}
+               (r["m"], r["w"], r["q"]) for r in resp.data}
         assert set(got) == set(MIXED_INNER_W90_BY_MONTH)
         for month, expected in MIXED_INNER_W90_BY_MONTH.items():
             m, w, q = got[month]

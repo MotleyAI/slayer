@@ -69,7 +69,7 @@ async def test_legacy_literal_against_temporal_column_runs(tmp_path, shop_ds, ba
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend=backend, filters=[stored_filter])
     [loaded] = await _loaded_filters(storage)
     assert not [frag for frag in LEGACY_FRAGMENTS if frag in loaded], loaded
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev)"]})
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
     assert measure_total(resp, measure="rev_sum") == expected
 
 
@@ -87,7 +87,7 @@ async def test_non_temporal_or_unresolvable_comparison_stays_verbatim(tmp_path, 
 
 async def test_text_column_comparison_keeps_its_rows(tmp_path, shop_ds):
     storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", filters=["status = '2024/01/01'"])
-    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev)"]})
+    resp = await run(storage, {"population": "rev_f", "metrics": ["sum(rev_f.rev)"]})
     assert measure_total(resp, measure="rev_sum") == 60.0
 
 

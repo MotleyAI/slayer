@@ -106,7 +106,7 @@ def _td_granularity(query: SlayerQuery) -> str:
 
 
 def _totals(resp: SlayerResponse) -> dict[str, float]:
-    return {str(r["events.created_at"])[:10]: float(r["events.s"]) for r in resp.data}
+    return {str(r["events.created_at"])[:10]: float(r["s"]) for r in resp.data}
 
 
 def _rows(resp: SlayerResponse) -> list[tuple]:
@@ -314,7 +314,7 @@ async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path:
     loaded = await _stage(storage, "bucketed")
     assert [(str(t.field), str(t.granularity)) for t in loaded.time_dimensions or []] == [
         ("created_at", "left_granularity")]
-    resp = await run(storage, {"population": "bucketed", "dimensions": ["created_at"], "metrics": ["sum(s)"]})
+    resp = await run(storage, {"population": "bucketed", "dimensions": ["bucketed.created_at"], "metrics": ["sum(bucketed.s)"]})
     assert {str(r["bucketed.created_at"])[:10]: float(r["bucketed.s_sum"]) for r in resp.data} == EXPECTED_BUCKETS
 
 
@@ -387,11 +387,11 @@ MODEL_POSITIONS: dict[str, tuple[Callable[[str], dict], Callable[[str], dict]]] 
     "column-granularity": (
         lambda g: events_doc(name="dep", column_granularity=g),
         lambda g: {"population": "dep", "metrics": [SUM],
-                   "time_dimensions": [{"field": "created_at", "granularity": g}]},
+                   "time_dimensions": [{"field": "dep.created_at", "granularity": g}]},
     ),
     "model-measure": (
         lambda g: events_doc(name="dep", metrics=[{"name": "n", "formula": f"count_distinct({g}(created_at))"}]),
-        lambda _: {"population": "dep", "metrics": ["n"]},
+        lambda _: {"population": "dep", "metrics": ["dep.n"]},
     ),
 }
 

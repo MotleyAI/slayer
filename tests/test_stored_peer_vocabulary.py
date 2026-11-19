@@ -40,7 +40,7 @@ CURRENT: dict[str, Any] = {
     "aggregations": [{"name": "doubled", "expression": "SUM({value}) * 2"}],
     "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
 }
-REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(amount)"]}
+REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(orders.amount)"]}
 
 
 @pytest.mark.parametrize(("raw", "keys", "expected"), [

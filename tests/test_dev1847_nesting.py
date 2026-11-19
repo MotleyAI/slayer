@@ -66,7 +66,7 @@ class TestDepthThree:
             metrics=[QueryMetric(metric=DEPTH3, alias="d3")]))
         by = rows_by(resp, "sales.product")
         for product, expected in DEPTH3_MAX_AVG_BY_PRODUCT.items():
-            assert float(by[(product,)]["sales.d3"]) == pytest.approx(expected)
+            assert float(by[(product,)]["d3"]) == pytest.approx(expected)
 
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb", "postgres"])
     async def test_depth_three_sql_is_flat_closed_and_leak_free(self, dialect):
@@ -88,17 +88,17 @@ class TestSharedProducerRendersOnce:
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         both = sales_q(
             dimensions=["region", band],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")])
         resp = await exec_engine.execute(both)
-        by = rows_by(resp, "sales.region", "sales.spend_band")
+        by = rows_by(resp, "sales.region", "spend_band")
         # BOTH consuming depths produce correct values: the row-attach band sum
         # (tot) and the re-aggregated avg of city totals (acr).
         for (region, label), total in SHAPE_B_GROUP_SUM.items():
-            cell = by[(region, label)]["sales.tot"]
+            cell = by[(region, label)]["tot"]
             assert (cell is None) if total is None else float(cell) == pytest.approx(total)
         for (region, label), acr in SHAPE_B_ACR.items():
-            cell = by[(region, label)]["sales.acr"]
+            cell = by[(region, label)]["acr"]
             assert (cell is None) if acr is None else float(cell) == pytest.approx(acr)
 
     async def test_producer_not_duplicated_by_second_consumer(self, exec_engine):
@@ -108,9 +108,9 @@ class TestSharedProducerRendersOnce:
         band = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
         dialect = "postgres"
         single = sales_q(dimensions=["region", band],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="tot")])
+                         metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")])
         both = sales_q(dimensions=["region", band],
-                       metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+                       metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot"),
                                  reagg("avg", INNER_CR, name="acr")])
         s_sql = await gen(single, dialect=dialect)
         b_sql = await gen(both, dialect=dialect)

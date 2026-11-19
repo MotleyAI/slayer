@@ -43,8 +43,8 @@ class TestOrderItemField:
 
     def test_invalid_policy_names_the_allowed_values(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerQuery.model_validate({"population": "orders", "dimensions": ["id"],
-                                        "order": [{"field": "discount", "nulls": "middle"}]})
+            SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.id"],
+                                        "order": [{"field": "orders.discount", "nulls": "middle"}]})
         msg = str(info.value)
         assert "first" in msg, msg
         assert "last" in msg, msg
@@ -82,19 +82,19 @@ class TestExecutedPlacement:
         assert resp.columns == ["orders.city"]
 
     async def test_stage_rewrite_keeps_the_policy(self, engine: SlayerQueryEngine) -> None:
-        inner = SlayerQuery.model_validate({"name": "by_city", "population": "orders", "dimensions": ["city"],
-                                            "metrics": [{"metric": "max(discount)", "alias": "md"}]})
-        outer = SlayerQuery.model_validate({"population": "by_city", "dimensions": ["city"],
-                                            "metrics": [{"metric": "max(md)", "alias": "v"}],
+        inner = SlayerQuery.model_validate({"name": "by_city", "population": "orders", "dimensions": ["orders.city"],
+                                            "metrics": [{"metric": "max(orders.discount)", "alias": "md"}]})
+        outer = SlayerQuery.model_validate({"population": "by_city", "dimensions": ["by_city.city"],
+                                            "metrics": [{"metric": "max(by_city.md)", "alias": "v"}],
                                             "order": [{"field": "v", "direction": "asc", "nulls": "first"},
-                                                      {"field": "city"}]})
+                                                      {"field": "by_city.city"}]})
         resp = await engine.execute([inner, outer])
         assert [r["by_city.city"] for r in resp.data] == CITY_ORDER[("asc", "first")]
 
     async def test_refinement_keeps_the_policy(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(query=discount_rows_query(direction="desc", nulls="first"),
                                              name="discount_rows")
-        resp = await engine.execute("discount_rows", refine={"filter": ["id <> 2"]})
+        resp = await engine.execute("discount_rows", refine={"filter": ["orders.id <> 2"]})
         id_key = next(c for c in resp.columns if c.endswith(".id"))
         assert [int(r[id_key]) for r in resp.data] == [1, 4, 5, 3]
 

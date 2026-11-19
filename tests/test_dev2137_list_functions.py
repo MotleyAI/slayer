@@ -33,12 +33,12 @@ async def engine():
 
 async def _values(engine, expr: str, **body: Any) -> dict[str, Any]:
     resp = await engine.execute(query(dimensions=["name", {"field": expr, "alias": "v"}], **body))
-    return {r["contractors.name"]: r["contractors.v"] for r in resp.data}
+    return {r["contractors.name"]: r["v"] for r in resp.data}
 
 
 async def _count(engine, filter_: str, **body: Any) -> float | None:
     resp = await engine.execute(query(metrics=[metric("count(*)", "n")], filter=[filter_], **body))
-    return num(resp.data[0]["contractors.n"])
+    return num(resp.data[0]["n"])
 
 
 async def _names(engine, filter_: str, **body: Any) -> set[str]:
@@ -98,12 +98,12 @@ class TestLength:
 class TestPositions:
     async def test_in_a_measure_formula(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("sum(length(skills))", "n")]))
-        assert num(resp.data[0]["contractors.n"]) == 4
+        assert num(resp.data[0]["n"]) == 4
 
     async def test_in_a_measure_filter(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("count(*)", "n")], dimensions=["team"],
                                           filter=["contains(skills, 'go')"]))
-        assert {r["contractors.team"]: num(r["contractors.n"]) for r in resp.data} == {"A": 1, "B": 1}
+        assert {r["contractors.team"]: num(r["n"]) for r in resp.data} == {"A": 1, "B": 1}
 
     async def test_in_a_case_expression(self, engine) -> None:
         got = await _values(engine, "CASE WHEN contains(skills, 'sql') THEN 'yes' ELSE 'no' END")
@@ -188,20 +188,20 @@ class TestMixedNumerics:
     async def test_executes_on_duckdb(self, filter_: str) -> None:
         async with seeded_exec_engine(dialect="duckdb", seed=_seed_mixed, datasets=[mixed_dataset()]) as (eng, _db):
             resp = await eng.execute(SlayerQuery.model_validate(
-                {"population": "mixed", "dimensions": ["id"], "filter": [filter_]}))
+                {"population": "mixed", "dimensions": ["mixed.id"], "filter": [filter_]}))
         assert {int(r["mixed.id"]) for r in resp.data} == {1}, resp.sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     @pytest.mark.parametrize("filter_", MIXED_FILTERS)
     async def test_emits(self, dialect: str, filter_: str) -> None:
-        await emit(SlayerQuery.model_validate({"population": "mixed", "dimensions": ["id"], "filter": [filter_]}),
+        await emit(SlayerQuery.model_validate({"population": "mixed", "dimensions": ["mixed.id"], "filter": [filter_]}),
                    dialect=dialect, datasets=[mixed_dataset()])
 
     @pytest.mark.parametrize("filter_", ["contains_any(scores, prices)", "contains_any(prices, scores)"])
     async def test_bigquery_overlap_compares_by_equality(self, filter_: str) -> None:
         # BigQuery has no ``FLOAT64 IN UNNEST(ARRAY<INT64>)`` signature.
         sql = await emit(SlayerQuery.model_validate(
-            {"population": "mixed", "dimensions": ["id"], "filter": [filter_]}), dialect="bigquery",
+            {"population": "mixed", "dimensions": ["mixed.id"], "filter": [filter_]}), dialect="bigquery",
             datasets=[mixed_dataset()])
         assert "IN UNNEST" not in sql.upper(), sql
 

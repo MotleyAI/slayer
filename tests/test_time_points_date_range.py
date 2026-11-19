@@ -88,25 +88,25 @@ class TestBounds:
 class TestStages:
     async def test_multi_stage_model_accepts_one_sided_range(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "daily", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-            "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
+            "population": "daily", "metrics": [{"metric": "sum(daily.rev)", "alias": "r"}],
+            "time_dimensions": [{"field": "daily.ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
         }))
-        assert sum(r["daily.r"] for r in resp.data) == pytest.approx(
+        assert sum(r["r"] for r in resp.data) == pytest.approx(
             float(sum(ids_where(lambda t: t >= D(2026, 1, 1)))),
         )
 
     async def test_stage_range_with_period_bounds(self, engine) -> None:
         inner = {
             "name": "m", "population": "ev",
-            "time_dimensions": [{"field": "ts", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": "ev.ts", "granularity": "month"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-            "time_dimensions": [{"field": "ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
+            "population": "m", "metrics": [{"metric": "sum(m.rev)", "alias": "r"}],
+            "time_dimensions": [{"field": "m.ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
-        got = {month_key(r["m.ts"]): r["m.r"] for r in resp.data}
+        got = {month_key(r["m.ts"]): r["r"] for r in resp.data}
         assert got == {
             "2025-02": pytest.approx(float(sum(ids_in(D(2025, 2, 1), D(2025, 3, 1))))),
             "2025-03": pytest.approx(float(sum(ids_in(D(2025, 3, 1), D(2025, 4, 1))))),
@@ -115,16 +115,16 @@ class TestStages:
     async def test_stage_range_on_coarser_rebucketing(self, engine) -> None:
         inner = {
             "name": "m", "population": "ev",
-            "time_dimensions": [{"field": "ts", "granularity": "month"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": "ev.ts", "granularity": "month"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-            "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": "2025-Q1"}],
+            "population": "m", "metrics": [{"metric": "sum(m.rev)", "alias": "r"}],
+            "time_dimensions": [{"field": "m.ts", "granularity": "year", "date_range": "2025-Q1"}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
         [row] = resp.data
-        assert row["m.r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
+        assert row["r"] == pytest.approx(float(sum(ids_in(D(2025, 1, 1), D(2025, 4, 1)))))
 
 
 def _td(date_range) -> dict:

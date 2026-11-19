@@ -107,7 +107,7 @@ class TestReaggregationInDimensionAndElsewhere:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", RLEVEL], metrics=[TOT], filter=[f"{R} < sum(amount)"]))
-        got = {(r["sales.region"], r["sales.rlevel"]): r["sales.tot"] for r in resp.data}
+        got = {(r["sales.region"], r["rlevel"]): r["tot"] for r in resp.data}
         assert got == _approx({("East", "hi"): 180.0, ("Gap", "lo"): 20.0,
                                ("North", "lo"): 90.0, ("South", "hi"): 140.0})
 
@@ -168,7 +168,7 @@ class TestTransformOverReaggregationInDimension:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL, RLEVEL],
             metrics=[TOT, QueryMetric(metric=R, alias="r")]))
-        got = {r["sales.region"]: (r["sales.tlevel"], r["sales.rlevel"]) for r in resp.data}
+        got = {r["sales.region"]: (r["tlevel"], r["rlevel"]) for r in resp.data}
         assert got == {"South": ("rest", "hi"), "East": ("top", "hi"),
                        "North": ("top", "lo"), "Gap": ("top", "lo"), "Void": ("rest", "lo")}
         assert _col(resp, "tot") == _approx(TOT_BY_REGION)
@@ -187,7 +187,7 @@ class TestOrderByTransformSharedWithDimension:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", PBAND], metrics=[TOT],
             order=[{"field": "pband", "direction": "asc"}]))
-        bands = [r["sales.pband"] for r in resp.data]
+        bands = [r["pband"] for r in resp.data]
         assert bands == ["rest", "rest", "top", "top", "top"]
         assert set(_regions(resp)[:2]) == {"East", "Void"}
 
@@ -217,9 +217,9 @@ class TestCrossModelReaggregationInDimension:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name", CL],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")],
+            metrics=[QueryMetric(metric="sum(corders.amount)", alias="tot")],
             filter=[f"{CHAIN_R} < sum(amount)"]))
-        got = [(r["corders.customers.regions.name"], r["corders.cl"], r["corders.tot"])
+        got = [(r["customers.regions.name"], r["cl"], r["tot"])
                for r in resp.data]
         assert got == [("North", "lo", pytest.approx(70.0))]
 
@@ -230,14 +230,14 @@ class TestCrossModelReaggregationInDimension:
 class TestFinerGrainedReaggregationDimension:
     async def test_executes_at_its_declared_grain(self, exec_engine):
         resp = await exec_engine.execute(sales_q(dimensions=["region", FINE_DIM], metrics=[TOT]))
-        got = {(r["sales.region"], r["sales.x"]): r["sales.tot"] for r in resp.data}
+        got = {(r["sales.region"], r["x"]): r["tot"] for r in resp.data}
         assert got == _approx(FINE_TOT)
 
     async def test_order_by_name_of_the_reaggregation_dimension(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", {"field": FINE, "alias": "x"}], metrics=[TOT],
             order=[{"field": "x", "direction": "desc"}]))
-        xs = [r["sales.x"] for r in resp.data if r["sales.x"] is not None]
+        xs = [r["x"] for r in resp.data if r["x"] is not None]
         assert xs == pytest.approx([100.0, 80.0, 60.0, 50.0, 40.0, 15.0, 12.0, 8.0])
 
 
@@ -452,13 +452,13 @@ class TestSynthesizedGrainNames:
         months = [TimeDimension(field=n, granularity=TimeGranularity.MONTH)
                   for n in ("created_at", "customers.created_at")]
         q = SlayerQuery(
-            population="orders", dimensions=[QueryDimension(field="region")], time_dimensions=months,
+            population="orders", dimensions=[QueryDimension(field="orders.region")], time_dimensions=months,
             metrics=[QueryMetric(
                 metric="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
                         " partition_by=[created_at, customers.created_at])", alias="m")],
         )
         async with seeded_exec_engine(dialect="sqlite", seed=seed, datasets=models) as (eng, _):
             resp = await eng.execute(q)
-        got = {(r["orders.region"], r["orders.created_at"][:7]): r["orders.m"] for r in resp.data}
+        got = {(r["orders.region"], r["orders.created_at"][:7]): r["m"] for r in resp.data}
         assert got == {("N", "2024-01"): 15.0, ("S", "2024-01"): 15.0,
                        ("N", "2024-02"): 35.0, ("S", "2024-02"): 35.0}

@@ -46,7 +46,7 @@ def _hint(err: Exception) -> str:
 # --------------------------------------------------------------------------- #
 # The flat spelling executes.
 # --------------------------------------------------------------------------- #
-_KEYED = {**_S, "dimensions": ["customer_id", "customers.name"]}
+_KEYED = {**_S, "dimensions": ["orders.customer_id", "customers.name"]}
 _BY_REGION = {**_S, "dimensions": ["customers.region_id", "customers.name"]}
 _BY_CUSTOMER = [(11, "Ann"), (12, "Bob"), (13, "Eve"), (14, "Bob")]
 _CUSTOMER_PAIRS = [["id", "customer_id"]]
@@ -55,18 +55,18 @@ _CUSTOMER_PAIRS = [["id", "customer_id"]]
 @pytest.mark.parametrize("dialect", DIALECTS)
 @pytest.mark.parametrize(("payload", "keys", "expected"), [
     pytest.param(_joined("addresses", "s.customers__name", stage=_KEYED, pairs=[["customer_id", "customer_id"]]),
-                 ("addresses.id", "addresses.s.customers__name"), _BY_CUSTOMER, id="stored-addresses"),
+                 ("addresses.id", "s.customers__name"), _BY_CUSTOMER, id="stored-addresses"),
     pytest.param(_joined("regions", "s.customers__name", stage=_BY_REGION, pairs=[["id", "customers__region_id"]]),
-                 ("regions.id", "regions.s.customers__name"), [(1, "Ann"), (2, "Bob"), (3, "Eve")],
+                 ("regions.id", "s.customers__name"), [(1, "Ann"), (2, "Bob"), (3, "Eve")],
                  id="stored-regions"),
     pytest.param(_joined("customers", "s.customers__name", stage=_KEYED, pairs=_CUSTOMER_PAIRS),
-                 ("customers.id", "customers.s.customers__name"),
+                 ("customers.id", "s.customers__name"),
                  [(1, "Ann"), (2, "Bob"), (3, "Cid"), (4, "Dee"), (5, "Eve")], id="stored-customers"),
     pytest.param([q(name="s", population="orders", dimensions=["customer_id"]),
-                  q(population="addresses", dimensions=["id", "s.customers.name"], extensions=[
+                  q(population="addresses", dimensions=["id", "customers.name"], extensions=[
                       ext("addresses", relationships=[join("s", [["customer_id", "customer_id"]])]),
                       ext("s", relationships=[join("customers", [["customer_id", "id"]])])])],
-                 ("addresses.id", "addresses.s.customers.name"), _BY_CUSTOMER, id="genuine-join-through-a-stage"),
+                 ("addresses.id", "s.customers.name"), _BY_CUSTOMER, id="genuine-join-through-a-stage"),
 ])
 async def test_a_joined_stage_column_executes(dialect: str, payload: list[SlayerQuery | dict], keys: tuple[str, str],
                                               expected: list[tuple]) -> None:
@@ -79,7 +79,7 @@ async def test_a_joined_stage_column_executes(dialect: str, payload: list[Slayer
 # The dotted spelling is refused with the flat name.
 # --------------------------------------------------------------------------- #
 async def test_a_stored_roots_dotted_spelling_suggests_the_flat_column() -> None:
-    err = await _refused(_joined("addresses", "s.customers.name"))
+    err = await _refused(_joined("addresses", "customers.name"))
     assert "'s'" in err.scope_summary
     assert "customers__name" in err.scope_summary
     assert "s.customers__name" in err.suggestion
@@ -88,13 +88,13 @@ async def test_a_stored_roots_dotted_spelling_suggests_the_flat_column() -> None
 
 async def test_a_routable_target_does_not_override_the_flat_column() -> None:
     models = with_datasets(customers(DatasetRelationship(to="regions", from_columns=[p[0] for p in _REGION_PAIRS], to_columns=[p[1] for p in _REGION_PAIRS])))
-    err = await _refused(_joined("regions", "s.customers.name"), datasets=models)
+    err = await _refused(_joined("regions", "customers.name"), datasets=models)
     assert "s.customers__name" in err.suggestion
     assert "'customers.name'" not in str(err)
 
 
 async def test_a_hop_back_to_the_root_is_not_a_circular_join() -> None:
-    err = await _refused(_joined("customers", "s.customers.name", stage=_KEYED, pairs=_CUSTOMER_PAIRS))
+    err = await _refused(_joined("customers", "customers.name", stage=_KEYED, pairs=_CUSTOMER_PAIRS))
     assert "s.customers__name" in err.suggestion
 
 
@@ -179,12 +179,12 @@ async def test_a_routing_short_form_is_not_pre_empted_by_a_flat_column() -> None
     models = with_datasets(flat, customers(DatasetRelationship(to="regions", from_columns=[p[0] for p in _REGION_PAIRS], to_columns=[p[1] for p in _REGION_PAIRS])))
     async with shop("sqlite", models) as engine:
         resp = await engine.execute(q(population="orders", dimensions=["id", "regions.name"]))
-    assert rows(resp, "orders.id", "orders.customers.regions.name") == [
+    assert rows(resp, "orders.id", "regions.name") == [
         (1, "North"), (2, "North"), (3, "South"), (4, None), (5, None), (6, "East"), (7, None)]
 
 
 async def test_a_downstream_stages_dotted_spelling_names_the_flat_column() -> None:
-    err = await _refused([q(**_S), q(population="s", dimensions=["s.customers.name"])],
+    err = await _refused([q(**_S), q(population="s", dimensions=["customers.name"])],
                          exc=IllegalScopeReferenceError)
     assert "customers__name" in err.reason
 

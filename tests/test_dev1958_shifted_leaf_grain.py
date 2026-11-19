@@ -66,7 +66,7 @@ async def filtered_engine(request):
 
 
 def _dr_td() -> list:
-    return [TimeDimension(field="ordered_at",
+    return [TimeDimension(field="monthly.ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
@@ -77,7 +77,7 @@ def _q(expression: str, *, date_range: bool = False, **kw):
                      metrics=[QueryMetric(metric=expression, alias="t")], **kw)
 
 
-def _cells(resp, name: str = "monthly.t") -> dict:
+def _cells(resp, name: str = "t") -> dict:
     out = {(r["monthly.region"], month_key(r["monthly.ordered_at"])): r[name]
            for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one cell"
@@ -129,7 +129,7 @@ class TestPartitionedLeafKeepsItsGrain:
         resp = await exec_engine.execute(_q(
             "avg(time_shift(sum(amount, partition_by=[region, ordered_at]) "
             "/ sum(amount, partition_by=[ordered_at]), -1))", dimensions=[]))
-        got = {month_key(r["monthly.ordered_at"]): r["monthly.t"] for r in resp.data}
+        got = {month_key(r["monthly.ordered_at"]): r["t"] for r in resp.data}
         assert set(got) == set(REAGG_BY_MONTH)
         for month, want in REAGG_BY_MONTH.items():
             if want is None:
@@ -195,8 +195,8 @@ class TestSharedShiftedRelation:
 
     async def test_two_offsets_values(self, exec_engine) -> None:
         resp = await exec_engine.execute(self._two_offsets())
-        _assert_cells(_cells(resp, "monthly.t1"), cells=ALL_CELLS, expected=SHIFTED_SHARE)
-        _assert_cells(_cells(resp, "monthly.t2"), cells=ALL_CELLS, expected=TWO_BACK_SHARE)
+        _assert_cells(_cells(resp, "t1"), cells=ALL_CELLS, expected=SHIFTED_SHARE)
+        _assert_cells(_cells(resp, "t2"), cells=ALL_CELLS, expected=TWO_BACK_SHARE)
 
     async def test_two_offsets_read_one_shifted_relation(self) -> None:
         sql = await gen(self._two_offsets())

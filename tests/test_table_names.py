@@ -330,11 +330,11 @@ def _key_columns(sql: str, *, dialect: str) -> set[tuple[str, bool]]:
 
 
 @pytest.mark.parametrize(("cardinality", "query"), [
-    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["name", "orders.status"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
+    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["customers.name", "orders.status"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["customers.name"],
                                    "filter": ["orders.status = 'x'"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
-                                   "filter": ["name = 'a' OR orders.status = 'x'"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["customers.name"],
+                                   "filter": ["customers.name = 'a' OR orders.status = 'x'"]}),
 ])
 @pytest.mark.parametrize("dialect", ["snowflake", "postgres"])
 async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality, query: dict[str, Any], dialect: str) -> None:

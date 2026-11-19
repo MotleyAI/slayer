@@ -35,8 +35,8 @@ if _HAS_PG:
     postgresql = factories.postgresql("postgresql_proc")
 
 _REVERSE_QUERY = SlayerQuery(
-    population="customers", dimensions=["name", "orders.status"])
-_KEYS = ("customers.name", "customers.orders.status")
+    population="customers", dimensions=["customers.name", "orders.status"])
+_KEYS = ("customers.name", "orders.status")
 
 
 async def test_reverse_hop_sqlite() -> None:

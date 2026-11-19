@@ -193,7 +193,7 @@ class TestBindTimeDimension:
     def test_local_td_yields_timetrunckey(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -243,7 +243,7 @@ class TestBindTimeDimension:
 
     def test_model_scope_without_source_model_rejected(self) -> None:
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         scope = DatasetScope(population=None)
@@ -428,7 +428,7 @@ class TestProjectionPlannerTimeDimensions:
     def test_td_declared_measure_is_public_not_hidden(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         bound = bind_time_dimension(
@@ -469,7 +469,7 @@ class TestStagePlannerTimeDimensions:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -493,7 +493,7 @@ class TestStagePlannerTimeDimensions:
             name="s1",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     label="Order date",
                 ),
@@ -572,7 +572,7 @@ class TestStagePlannerTimeDimensions:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -590,10 +590,10 @@ class TestStagePlannerTimeDimensions:
     def test_td_coexists_with_aggregate_measure(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"metric": "sum(amount)"}]})
+            ], "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert len(planned.projection) == 2
         assert any(isinstance(s.key, TimeTruncKey) for s in planned.row_slots)
@@ -604,10 +604,10 @@ class TestStagePlannerTimeDimensions:
     def test_stage_schema_emits_one_td_column(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "name": "s1", "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"metric": "sum(amount)"}]})
+            ], "metrics": [{"metric": "sum(orders.amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert planned.stage_schema is not None
         cols = planned.stage_schema.fields

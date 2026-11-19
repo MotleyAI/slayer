@@ -180,7 +180,7 @@ class TestStored:
         storage = await shop_store(backend="yaml", base=str(tmp_path), datasets=[current(shop_customers()), doc])
         async with owned_query_engine(storage=storage) as engine:
             with recorded():
-                response = await engine.execute({"population": "orders", "metrics": ["count(*)"]})
+                response = await engine.execute({"population": "orders", "metrics": ["count(orders.*)"]})
         [entry] = [w for w in response.warnings or [] if getattr(w, "kind", None) == "unknown_stored_key"]
         assert entry.model_dump(mode="json")["paths"] == ["x_owner"]
 
@@ -195,7 +195,7 @@ class TestStored:
 
     def test_a_stored_query_backed_dataset_warns_once(self) -> None:
         doc = current({"name": "by_status", "data_source": DS, "x_owner": "team",
-                       "source_queries": [{"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]}]})
+                       "source_queries": [{"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"]}]})
         with recorded() as caught:
             dataset = SlayerDataset.model_validate(doc)
         assert len(dataset.source_queries or []) == 1

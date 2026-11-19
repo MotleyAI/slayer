@@ -382,7 +382,7 @@ class TestInnerJoins:
         assert "orders" in sql, sql
         assert "JOIN" in sql.upper(), sql
         # Resolved as a joined dimension under the dotted result key.
-        assert "order_items.orders.status" in sql, sql
+        assert "orders.status" in sql, sql
 
 
 # --------------------------------------------------------------------------

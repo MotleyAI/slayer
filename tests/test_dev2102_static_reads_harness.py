@@ -21,8 +21,8 @@ from tests._dev2102_fixtures import (
 _HARNESS_QB = "harness_qb"
 _AMOUNT = {"metric": "sum(amount)", "alias": "a"}
 _REGION_PAIRS = [["region_id", "id"]]
-_SPENT_BY_CUSTOMER = {"population": "orders", "dimensions": ["customer_id"],
-                      "metrics": [{"metric": "sum(amount)", "alias": "spent"}]}
+_SPENT_BY_CUSTOMER = {"population": "orders", "dimensions": ["orders.customer_id"],
+                      "metrics": [{"metric": "sum(orders.amount)", "alias": "spent"}]}
 
 
 def _datasets() -> list[SlayerDataset]:
@@ -234,12 +234,12 @@ def test_a_sibling_shadows_a_stored_model_whatever_the_case() -> None:
 
 
 _CUSTOMER_NAMES = {"population": "orders", "dimensions": ["customers.name"],
-                   "metrics": [{"metric": "count(*)", "alias": "n"}]}
+                   "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
 @pytest.mark.parametrize(("stages", "column"), [
     pytest.param([q(name="s", population="cities_src", dimensions=["city"]), q(**_CUSTOMER_NAMES)],
-                 "orders.customers.name", id="other-stage"),
+                 "customers.name", id="other-stage"),
 ])
 async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery | dict], column: str) -> None:
     async with shop("sqlite", _datasets()) as engine:
@@ -252,7 +252,7 @@ async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery
 
 _LABELS = _cities({"name": "label", "sql": "city", "datatype": "String"}, name="labels_src")
 _STORED_LABEL_READ = {"population": "orders", "dimensions": ["customers.label"],
-                      "metrics": [{"metric": "count(*)", "alias": "n"}]}
+                      "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
 @pytest.mark.parametrize("stages", [

@@ -120,7 +120,7 @@ class TestGuardOwnership:
                 population="orders", time_dimensions=month_td(),
                 metrics=[
                     QueryMetric(metric="sum(customers.spend)", alias="cm"),
-                    QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                    QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
                 ],
             ),
             bundle=_bundle(),

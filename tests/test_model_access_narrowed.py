@@ -100,14 +100,14 @@ class TestSaveWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             text = await mcp_text(store.storage, "create_dataset", name="pay_report",
-                                  query={"population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "v"}]})
+                                  query={"population": "hr", "metrics": [{"metric": "sum(hr.salary)", "alias": "v"}]})
         assert "narrowed" in text.lower()
         assert mentions(text, "hr")
 
 
 async def test_sync_create_from_query_forwards_tags_and_warnings(store: AccessStore, engine: SlayerQueryEngine) -> None:
     notes: list = []
-    query = {"population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "v"}]}
+    query = {"population": "hr", "metrics": [{"metric": "sum(hr.salary)", "alias": "v"}]}
     engine.create_dataset_from_query_sync(query=query, name="hr_sync", access_tags=["ops"], warnings_out=notes)
     assert (await must_get(store.storage, "hr_sync")).access_tags == ["ops"]
     assert any(mentions(n.model_dump_json(), "hr") for n in notes)
@@ -130,7 +130,7 @@ class TestRetagWarning:
 
     async def test_moving_and_retagging_warns_its_readers(self, store: AccessStore, engine: SlayerQueryEngine) -> None:
         await engine.save_dataset(query_backed("pc", source="pub", expression="count(*)"))
-        reader = SlayerQuery.model_validate({"population": "pc", "metrics": [{"metric": "sum(v)", "alias": "total"}]})
+        reader = SlayerQuery.model_validate({"population": "pc", "metrics": [{"metric": "sum(pc.v)", "alias": "total"}]})
         await engine.save_dataset(SlayerDataset(name="pc_reader", source_queries=[reader]))
         pub = await must_get(store.storage, "pub")
         ds = await store.storage.get_datasource(DS)

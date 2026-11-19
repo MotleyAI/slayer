@@ -20,11 +20,11 @@ from tests._deprecated_input_helpers import deprecated_in, mcp_payload, recorded
 from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
-_STRICT_BODY = {"population": "orders", "metrics": [{"metric": "count(*)"}], "strict": True}
+_STRICT_BODY = {"population": "orders", "metrics": [{"metric": "count(orders.*)"}], "strict": True}
 
 _ASSOCIATE_BODY = {
     "population": "orders",
-    "dimensions": ["status"],
+    "dimensions": ["orders.status"],
     "metrics": [{"metric": "sum(customers.spend)", "alias": "cm"}],
     "to_many_handling": "associate",
 }
@@ -52,7 +52,7 @@ class TestRestSurface:
         client = TestClient(create_app(storage=storage))
         resp = client.post("/query", json=_ASSOCIATE_BODY)
         assert resp.status_code == 200, resp.text
-        by = {r["orders.status"]: float(r["orders.cm"]) for r in resp.json()["data"]}
+        by = {r["orders.status"]: float(r["cm"]) for r in resp.json()["data"]}
         assert by["ok"] == pytest.approx(420.0)
         assert by["new"] == pytest.approx(290.0)
 
@@ -86,7 +86,7 @@ class TestRestSurface:
         parameter the customer entity does not determine) is a client error
         (400), not a 500."""
         client = TestClient(create_app(storage=storage))
-        body = {"population": "orders", "dimensions": ["status"],
+        body = {"population": "orders", "dimensions": ["orders.status"],
                 "metrics": [{"metric": "weighted_avg(customers.spend, "
                               "weight=sum(amount, partition_by=status))"}],
                 "to_many_handling": "associate"}

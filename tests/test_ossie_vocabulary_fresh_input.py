@@ -99,7 +99,7 @@ DATASET_FORMS: dict[str, tuple[dict[str, Any], str, str, Check]] = {
                      lambda d: d.relationships[0].to == "customers"),
 }
 
-QUERY: dict[str, Any] = {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]}
+QUERY: dict[str, Any] = {"population": "orders", "dimensions": ["status"], "metrics": ["count(orders.*)"]}
 REL = {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], "name": "buyer"}
 
 #: id -> (pre-2.0 query input, old token, new token, check on the converted query)
@@ -229,7 +229,7 @@ class TestExecution:
         async with vocab_engine(backend) as engine:
             with recorded() as caught:
                 old = await engine.execute({"source_model": "orders", "measures": ["sum(amount)"]})
-            new = await engine.execute({"population": "orders", "metrics": ["sum(amount)"]})
+            new = await engine.execute({"population": "orders", "metrics": ["sum(orders.amount)"]})
         assert normal(old) == normal(new)
         reported = olds(old.warnings)
         warned = sorted(payload_of(w).old for w in deprecations(caught))
@@ -242,9 +242,9 @@ class TestExecution:
     async def test_an_old_field_reference_converts(self, backend: str) -> None:
         async with vocab_engine(backend) as engine:
             with recorded():
-                old = await engine.execute({"population": "orders", "metrics": ["count(*)"],
+                old = await engine.execute({"population": "orders", "metrics": ["count(orders.*)"],
                                             "dimensions": [{"name": "name", "model": "customers"}]})
-            new = await engine.execute({"population": "orders", "metrics": ["count(*)"],
+            new = await engine.execute({"population": "orders", "metrics": ["count(orders.*)"],
                                         "dimensions": ["customers.name"]})
         assert normal(old) == normal(new)
         [w] = deprecated_in(old.warnings)
@@ -253,7 +253,7 @@ class TestExecution:
 
     async def test_an_old_key_across_stages_and_an_extension_warns_once(self, backend: str) -> None:
         stages = [
-            {"name": "per_customer", "population": "orders", "dimensions": ["customer_id"],
+            {"name": "per_customer", "population": "orders", "dimensions": ["orders.customer_id"],
              "measures": [{"metric": "sum(amount)", "alias": "total"}, "aov"],
              "extensions": [{"dataset": "orders",
                              "measures": [{"name": "aov", "expression": "sum(amount) / count(*)"}]}]},

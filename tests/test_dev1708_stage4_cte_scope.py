@@ -108,7 +108,7 @@ class TestDev1701SharedGrainDerivedTimeDim:
             time_dimensions=[TimeDimension(
                 field="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -143,9 +143,9 @@ class TestDev1701AnchoringDirectionMatrix:
         query = SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
-                field="eff_created",
+                field="orders_x.eff_created",
                 granularity=TimeGranularity.MONTH)],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
@@ -163,7 +163,7 @@ class TestDev1701AnchoringDirectionMatrix:
             time_dimensions=[TimeDimension(
                 field="customers_v2.signup_eff",
                 granularity=TimeGranularity.MONTH)],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
@@ -177,7 +177,7 @@ class TestDev1701AnchoringDirectionMatrix:
             time_dimensions=[TimeDimension(
                 field="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amount)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -233,7 +233,7 @@ class TestDev1527CrossModelKwarg:
         query = SlayerQuery(
             population="orders_x",
             metrics=[QueryMetric(
-                metric="weighted_avg(customers_v2.lifetime_value, weight=deep_weight)")],
+                metric="weighted_avg(customers_v2.lifetime_value, weight=orders_x.deep_weight)")],
         )
         with pytest.raises(UnknownReferenceError):
             await _gen(query)
@@ -492,7 +492,7 @@ class TestDerivedSharedGrainRenders:
             name="amt_bucket", sql="amount * 2", datatype=DataType.FLOAT)]
         query = SlayerQuery(
             population="orders_x",
-            dimensions=["amt_bucket"],
+            dimensions=["orders_x.amt_bucket"],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
             to_many_handling="broadcast",
         )
@@ -750,12 +750,12 @@ class TestNullSafeJoinBackExecution:
             dimensions=["customers_v2.status"],
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
-        by_status = {r["orders_x.customers_v2.status"]: r for r in resp.data}
+        by_status = {r["customers_v2.status"]: r for r in resp.data}
         assert None in by_status, resp.data
         null_row = by_status[None]
         # customers 2 & 3 both have NULL status; their lifetime_values (20 + 30)
         # must survive the join-back.
-        assert null_row["orders_x.customers_v2.lifetime_value_sum"] == 50.0, resp.data
+        assert null_row["customers_v2.lifetime_value_sum"] == 50.0, resp.data
 
     async def test_null_grain_retains_aggregate_filtered_local(self, sqlite_engine: SlayerQueryEngine) -> None:
         """Same, for a filtered-local (host-rooted) isolation CTE
@@ -781,9 +781,9 @@ class TestNullSafeJoinBackExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.status"],
-            metrics=[QueryMetric(metric="sum(amt_hi)")],
+            metrics=[QueryMetric(metric="sum(orders_x.amt_hi)")],
         ))
-        by_status = {r["orders_x.customers_v2.status"]: r for r in resp.data}
+        by_status = {r["customers_v2.status"]: r for r in resp.data}
         assert None in by_status, resp.data
         # customers 2 (order amt 7) + 3 (order amt 9), both ltv > 15, NULL status.
         assert by_status[None]["orders_x.amt_hi_sum"] == 16.0, resp.data
@@ -801,8 +801,8 @@ class TestNullSafeJoinBackExecution:
             metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
         by_name = {
-            r["orders_x.customers_v2.regions.name"]: r for r in resp.data
+            r["customers_v2.regions.name"]: r for r in resp.data
         }
         assert None in by_name, resp.data
         # customer 2 (region 2, NULL name) has lifetime_value 20.
-        assert by_name[None]["orders_x.customers_v2.lifetime_value_sum"] == 20.0, resp.data
+        assert by_name[None]["customers_v2.lifetime_value_sum"] == 20.0, resp.data

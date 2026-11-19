@@ -137,7 +137,7 @@ class TestSpineOperands:
         q = (model.source_queries or [])[0]
         assert q.filter == ["time_spine.timestamp >= '2024-01-25'", ORDERS_LT, SPINE_LT]
         resp = await run(storage, q)
-        by_day = {r["time_spine.timestamp"]: r["orders.rev"] for r in resp.data}
+        by_day = {r["time_spine.timestamp"]: r["rev"] for r in resp.data}
         assert by_day.get("2024-01-31") == pytest.approx(JAN_31_ORDER[-1]), resp.data
 
     async def test_spine_spelt_in_another_case(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:

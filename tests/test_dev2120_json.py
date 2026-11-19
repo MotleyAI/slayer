@@ -167,7 +167,7 @@ class TestTyping:
     async def test_typed_sum(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_metric_query("sum(json_value(payload, '$.qty' RETURNING INT))",
                                                    filter=["id IN (1, 2, 3, 8)"]))
-        assert float(resp.data[0]["lib.v"]) == 5
+        assert float(resp.data[0]["v"]) == 5
 
     async def test_text_result_keeps_the_numeric_aggregation_error(self, engine: SlayerQueryEngine) -> None:
         query = _metric_query("sum(json_value(payload, '$.qty'))")

@@ -216,7 +216,7 @@ class TestExpressionSql:
             _q(
                 metrics=["sum(amount - cost)"],
                 dimensions=["status"],
-                order=[OrderItem(field="sum(amount - cost)", direction="desc")],
+                order=[OrderItem(field="sum(orders.amount - orders.cost)", direction="desc")],
             )
         )
         assert "ORDER BY" in resp.sql.upper()
@@ -229,7 +229,7 @@ class TestExpressionSql:
                 dimensions=["status"],
                 time_dimensions=[
                     TimeDimension(
-                        field="created_at", granularity=TimeGranularity.MONTH
+                        field="orders.created_at", granularity=TimeGranularity.MONTH
                     )
                 ],
             )
@@ -240,13 +240,13 @@ class TestExpressionSql:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount - cost)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount - orders.cost)"}],
         })
         root = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "max(amount_cost_sum)"}],
+            "dimensions": ["stage1.status"],
+            "metrics": [{"metric": "max(stage1.amount_cost_sum)"}],
         })
         model = _orders()
         with tempfile.TemporaryDirectory() as d:
@@ -273,7 +273,7 @@ class TestExpressionSql:
                         "alias": "profitable",
                     },
                 ],
-                metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+                metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
             )
         )
         assert re.search(r"SUM\s*\(.*?amount.*?-.*?cost.*?\)", _norm(resp.sql)), resp.sql
@@ -289,7 +289,7 @@ class TestExpressionSql:
                     "alias": "profitable",
                 },
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="t")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="t")],
         )
         with pytest.raises(ValueError, match="partition_by"):
             await _dry(q)
@@ -314,7 +314,7 @@ class TestExpressionNaming:
         resp = await _dry(
             _q(metrics=[{"metric": "sum(amount - cost)", "alias": "profit"}])
         )
-        assert "orders.profit" in resp.columns
+        assert "profit" in resp.columns
         assert "orders.amount_cost_sum" not in resp.columns
 
     async def test_long_expression_capped_and_formatting_stable(self) -> None:

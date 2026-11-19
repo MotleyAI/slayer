@@ -258,7 +258,7 @@ class TestForcedLimitExecution:
     @staticmethod
     def _grouped(resp) -> dict:
         return {
-            (r["orders.region"], r["orders.rband"], r["orders.cband"]): r["orders.s"]
+            (r["orders.region"], r["rband"], r["cband"]): r["s"]
             for r in resp.data
         }
 
@@ -318,7 +318,7 @@ class TestUserSurfacesExempt:
     def _query(metric: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="region")],
+            dimensions=[QueryDimension(field="orders.region")],
             metrics=[QueryMetric(metric=metric, alias="w")],
         )
 
@@ -345,8 +345,8 @@ class TestUserSurfacesExempt:
         model = self._orders(name="wtab", sql_table=PHYS_TBL)
         query = SlayerQuery(
             population="wtab",
-            dimensions=[QueryDimension(field="region")],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            dimensions=[QueryDimension(field="wtab.region")],
+            metrics=[QueryMetric(metric="sum(wtab.amount)", alias="s")],
         )
         sql = await _dry_sql([model], query)
         assert PHYS_TBL in sql
@@ -362,8 +362,8 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             population="orders",
             extensions=[ext],
-            dimensions=[QueryDimension(field="region")],
-            metrics=[QueryMetric(metric="extwide", alias="w")],
+            dimensions=[QueryDimension(field="orders.region")],
+            metrics=[QueryMetric(metric="orders.extwide", alias="w")],
         )
         sql = await _dry_sql([model], query)
         assert f'"{PHYS_COL}"' in sql
@@ -374,13 +374,13 @@ class TestUserSurfacesExempt:
         ])
         inner = SlayerQuery(
             name="s1", population="wide_src",
-            dimensions=[QueryDimension(field="region")],
-            metrics=[QueryMetric(metric="sum(wide)", alias="w")],
+            dimensions=[QueryDimension(field="wide_src.region")],
+            metrics=[QueryMetric(metric="sum(wide_src.wide)", alias="w")],
         )
         outer = SlayerQuery(
             population="s1",
-            dimensions=[QueryDimension(field="region")],
-            metrics=[QueryMetric(metric="sum(w)", alias="tw")],
+            dimensions=[QueryDimension(field="s1.region")],
+            metrics=[QueryMetric(metric="sum(s1.w)", alias="tw")],
         )
         sql = await _dry_sql([wide_src], [inner, outer])
         assert f'"{PHYS_COL}"' in sql
@@ -398,8 +398,8 @@ class TestUserSurfacesExempt:
         )
         query = SlayerQuery(
             population="sqlm",
-            dimensions=[QueryDimension(field="region")],
-            metrics=[QueryMetric(metric="sum(wide)", alias="w")],
+            dimensions=[QueryDimension(field="sqlm.region")],
+            metrics=[QueryMetric(metric="sum(sqlm.wide)", alias="w")],
         )
         sql = await _dry_sql([model], query)
         assert f'"{PHYS_COL}"' in sql
@@ -410,8 +410,8 @@ class TestUserSurfacesExempt:
         ])
         query = SlayerQuery(
             population="inline_orders",
-            dimensions=[QueryDimension(field="region")],
-            metrics=[QueryMetric(metric="sum(wide)", alias="w")],
+            dimensions=[QueryDimension(field="inline_orders.region")],
+            metrics=[QueryMetric(metric="sum(inline_orders.wide)", alias="w")],
         )
         sql = await _dry_sql([stored], query)
         assert f'"{PHYS_COL}"' in sql
@@ -430,7 +430,7 @@ class TestUserSurfacesExempt:
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="region")],
+            dimensions=[QueryDimension(field="orders.region")],
             metrics=[QueryMetric(metric="sum(dims.wide)", alias="w")],
         )
         sql = await _dry_sql([host, dims], query)
@@ -445,7 +445,7 @@ class TestUserSurfacesExempt:
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field=LONG_COL_NAME)],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await _dry_sql([model], query)
         assert LONG_COL_NAME in sql
@@ -850,7 +850,7 @@ class TestManglingComposition:
         rebuilds — and decode must return the canonical dotted names."""
         d = get_dialect(dialect)
         resp = await _dry_run(dev1824_models(), NESTED, dialect=dialect)
-        assert resp.columns == ["orders.band", "orders.b2", "orders.s"]
+        assert resp.columns == ["band", "b2", "s"]
         assert resp.sql is not None
         tree = sqlglot.parse_one(resp.sql, dialect=dialect)
         outer = next(iter(tree.find_all(exp.Select)))

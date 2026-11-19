@@ -68,7 +68,7 @@ async def test_a_literal_naming_the_root_filters_on_its_text(engine: SlayerQuery
 
 async def test_a_literal_naming_the_root_inside_a_measure(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(metrics=[{"metric": "sum(iif(note = 'see orders.x', amount, 0))", "alias": "m"}]))
-    assert float(resp.data[0]["orders.m"]) == 10.0
+    assert float(resp.data[0]["m"]) == 10.0
 
 
 async def test_a_literal_naming_the_root_inside_an_order_expression(engine: SlayerQueryEngine) -> None:
@@ -98,8 +98,8 @@ async def test_a_quoted_identifier_naming_the_root_is_one_identifier(engine: Sla
 
 
 @pytest.mark.parametrize(("quoted", "bare"), [
-    ({"filter": ['"status" = \'paid\''], "metrics": ["count(*)"]}, {"filter": ["status = 'paid'"], "metrics": ["count(*)"]}),
-    ({"metrics": ['sum("amount")']}, {"metrics": ["sum(amount)"]}),
+    ({"filter": ['orders."status" = \'paid\''], "metrics": ["count(orders.*)"]}, {"filter": ["orders.status = 'paid'"], "metrics": ["count(orders.*)"]}),
+    ({"metrics": ['sum(orders."amount")']}, {"metrics": ["sum(orders.amount)"]}),
 ], ids=["filter", "measure"])
 async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, quoted: dict, bare: dict) -> None:
     await assert_same(engine, _orders(**quoted), _orders(**bare))
@@ -212,7 +212,7 @@ async def test_a_filter_literal_naming_a_query_backed_model_splices_nothing(
 
 
 async def test_a_query_backed_root_is_spliced(engine: SlayerQueryEngine, spliced: list[str]) -> None:
-    await engine.execute({"population": "qb", "metrics": ["sum(tot)"]}, dry_run=True)
+    await engine.execute({"population": "qb", "metrics": ["sum(qb.tot)"]}, dry_run=True)
     assert spliced == ["qb"]
 
 
@@ -258,7 +258,7 @@ async def test_a_quoted_identifier_placeholder_is_refused_and_never_demanded(
 
 def _backing(filter_text: str) -> SlayerDataset:
     return SlayerDataset(name="qbv", data_source="test", source_queries=[SlayerQuery.model_validate(
-        {"population": "orders", "metrics": ["count(*)"], "filter": [filter_text]})])
+        {"population": "orders", "metrics": ["count(orders.*)"], "filter": [filter_text]})])
 
 
 @pytest.mark.parametrize(("filter_text", "required"), [
@@ -276,7 +276,7 @@ async def test_inspection_reports_the_looked_up_variables(
 
 async def test_text_binding_does_not_look_up_runs_without_variables(engine: SlayerQueryEngine) -> None:
     await engine.storage.save_dataset(_backing("status = '{{s}}' OR regexp_like(status, '[0-9]{3}')"))
-    resp = await engine.execute({"population": "qbv", "metrics": ["count(*)"]})
+    resp = await engine.execute({"population": "qbv", "metrics": ["count(qbv.*)"]})
     assert resp.data
 
 
@@ -288,7 +288,7 @@ async def test_a_spliced_backing_query_looks_up_what_it_reports(
     engine: SlayerQueryEngine, filter_text: str, needed: set[str],
 ) -> None:
     await engine.storage.save_dataset(_backing(filter_text))
-    body = {"population": "qbv", "metrics": ["count(*)"]}
+    body = {"population": "qbv", "metrics": ["count(qbv.*)"]}
     await engine.execute(body, variables=dict.fromkeys(needed, "a"), dry_run=True)
     for name in needed:
         with pytest.raises(VariableError, match=f"'{name}'"):

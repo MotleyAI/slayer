@@ -82,7 +82,7 @@ class TestBaseValueFoldRegression:
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="count(customers.*)", alias="nc")]))
-        vals = _vals(resp, "orders.nc")
+        vals = _vals(resp, "nc")
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(vals[status]) == n
 
@@ -93,7 +93,7 @@ class TestBaseValueFoldRegression:
         resp = await toone_filter_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="sum(customers.north_spend)", alias="ns")]))
-        vals = _vals(resp, "orders.ns")
+        vals = _vals(resp, "ns")
         for status, spend in NORTH_SPEND_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(spend)
 
@@ -108,7 +108,7 @@ class TestParameterOverSourceShapes:
             metrics=[QueryMetric(
                 metric="weighted_avg(customers.regions.pop, weight=customers.spend)",
                 alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in WAVG_POPVAL_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -119,7 +119,7 @@ class TestParameterOverSourceShapes:
         resp = await shared_default_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum(customers.spend)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -129,7 +129,7 @@ class TestParameterOverSourceShapes:
         resp = await expr_default_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum2(customers.spend)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -140,6 +140,6 @@ class TestParameterOverSourceShapes:
         resp = await toone_default_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum3(customers.spend)", alias="w")]))
-        vals = _vals(resp, "orders.w")
+        vals = _vals(resp, "w")
         for status, expected in ASSOC_WSUM3_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)

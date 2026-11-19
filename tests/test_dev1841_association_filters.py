@@ -56,7 +56,7 @@ class TestFilterRoutingIntoAssociation:
             dimensions=["status"], metrics=[CM], filter=["channel = 'app'"]))
         by = status_key(resp)
         for status, spend in ASSOC_APP_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend)
+            assert float(by[(status,)]["cm"]) == pytest.approx(spend)
 
     async def test_unsafe_reachable_filter_pushes_by_semijoin(
         self, exec_backend_weak,
@@ -69,7 +69,7 @@ class TestFilterRoutingIntoAssociation:
             filter=["customers.plans.level = 'basic'"]))
         by = status_key(resp)
         for status, spend in ASSOC_BASIC_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend)
+            assert float(by[(status,)]["cm"]) == pytest.approx(spend)
 
     async def test_null_sensitive_membership_excludes_absent_related_rows(
         self, exec_backend_weak,
@@ -83,9 +83,9 @@ class TestFilterRoutingIntoAssociation:
             dimensions=["status"], metrics=[CM],
             filter=["customers.plans.level != 'pro'"]))
         by = status_key(resp)
-        assert float(by[("ok",)]["orders.cm"]) == pytest.approx(240.0)
-        assert float(by[("ok",)]["orders.cm"]) != pytest.approx(270.0)
-        assert float(by[("new",)]["orders.cm"]) == pytest.approx(100.0)
+        assert float(by[("ok",)]["cm"]) == pytest.approx(240.0)
+        assert float(by[("ok",)]["cm"]) != pytest.approx(270.0)
+        assert float(by[("new",)]["cm"]) == pytest.approx(100.0)
 
     async def test_mixed_disjunction_pushes_on_association(
         self, exec_backend,
@@ -98,4 +98,4 @@ class TestFilterRoutingIntoAssociation:
             filter=["customers.tier = 'gold' OR channel = 'app'"]))
         by = status_key(resp)
         for status, spend in {"ok": 270.0, "new": 250.0}.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend), status
+            assert float(by[(status,)]["cm"]) == pytest.approx(spend), status

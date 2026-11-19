@@ -95,8 +95,8 @@ class TestQueryTime:
     async def test_a_refused_query_explained(self) -> None:
         async with _env(_contractors(STALE)) as engine:
             with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"population": "contractors", "metrics": [{"metric": "count(*)", "alias": "n"}],
-                                      "filter": ["skills = 'go'"]})
+                await engine.execute({"population": "contractors", "metrics": [{"metric": "count(contractors.*)", "alias": "n"}],
+                                      "filter": ["contractors.skills = 'go'"]})
         err = info.value
         assert "contractors" in err.datasets
         assert not any(_deletes_skills(e) for e in _dumps(err.to_delete)), err.to_delete

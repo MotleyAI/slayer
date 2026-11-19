@@ -42,15 +42,15 @@ class TestImplicitAndExplicitName:
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
                                       metrics=[{"metric": "customers.aov"}]))
-        assert "orders.customers.aov" in resp.columns
+        assert "customers.aov" in resp.columns
 
     async def test_explicit_name_overrides_the_implicit_key(self, exec_backend: tuple[str, SlayerQueryEngine]) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
             metrics=[{"metric": "customers.aov", "alias": "myaov"}]))
-        assert "orders.myaov" in resp.columns
-        assert "orders.customers.aov" not in resp.columns
+        assert "myaov" in resp.columns
+        assert "customers.aov" not in resp.columns
 
 
 class TestTypeAndFormatInheritance:
@@ -71,7 +71,7 @@ class TestTypeAndFormatInheritance:
                 name="qb_typed", data_source="test",
                 source_queries=[SlayerQuery(
                     population="orders",
-                    dimensions=["status"],
+                    dimensions=["orders.status"],
                     metrics=[metric_spec],
                 )],
             )

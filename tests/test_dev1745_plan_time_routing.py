@@ -72,8 +72,8 @@ def _outer_where_query() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": [{"field": "status", "alias": "status"}],
-        "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
-        "filter": ["sum(eu_amount) > 100"],
+        "metrics": [{"metric": "sum(orders.eu_amount)", "alias": "eu"}],
+        "filter": ["sum(orders.eu_amount) > 100"],
     })
 
 
@@ -100,8 +100,8 @@ class TestPlanCarriesOuterWhereRouting:
         plain = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"field": "status", "alias": "status"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "a"}],
-            "filter": ["sum(amount) > 100"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "a"}],
+            "filter": ["sum(orders.amount) > 100"],
         })
         planned = plan_query(query=plain, bundle=_bundle())
         assert _lower_positions(planned).outer_where_ids == []
@@ -177,10 +177,10 @@ class TestFrameBoundColumnsStayPlanSide:
 
     def _windowed_query(self) -> SlayerQuery:
         return SlayerQuery.model_validate({"population": "orders", "time_dimensions": [{
-                "field": "created_at",
+                "field": "orders.created_at",
                 "granularity": TimeGranularity.MONTH,
                 "date_range": ["2024-01-01", "2024-12-31"],
-            }], "metrics": [{"metric": "sum(amount)", "alias": "a"}]})
+            }], "metrics": [{"metric": "sum(orders.amount)", "alias": "a"}]})
 
     def test_plan_carries_frame_bound_columns(self) -> None:
         """A DECLARED field, checked the same way as masks.

@@ -17,8 +17,8 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._ch_fake_http import CORRELATED_SETTING, FakeClickHouse, fake_ch_engine, route_engine
 from tests._dev2210_fixtures import table_datasets
 
-UPS = SlayerQuery.model_validate({"population": "ups_orders", "dimensions": ["id"]})
-DONE = SlayerQuery.model_validate({"population": "returns", "dimensions": ["id", "done_orders.status"]})
+UPS = SlayerQuery.model_validate({"population": "ups_orders", "dimensions": ["ups_orders.id"]})
+DONE = SlayerQuery.model_validate({"population": "returns", "dimensions": ["returns.id", "done_orders.status"]})
 
 
 @pytest.fixture

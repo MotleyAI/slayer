@@ -233,7 +233,7 @@ class TestExprDefaultQualifiedRefs:
         resp = await qual_expr_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum6(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM6_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -242,7 +242,7 @@ class TestExprDefaultQualifiedRefs:
         resp = await mixed_expr_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum7(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM7_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -252,7 +252,7 @@ class TestExprDefaultQualifiedRefs:
         resp = await self_qual_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum8(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -262,7 +262,7 @@ class TestExprDefaultQualifiedRefs:
         resp = await derived_local_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric="wsum9(customers.spend)", alias="w")]))
-        vals = _status_vals(resp, "orders.w")
+        vals = _status_vals(resp, "w")
         for status, expected in ASSOC_WSUM9_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
 
@@ -280,8 +280,8 @@ class TestExprDefaultQualifiedRefs:
         # operand grain (customer_id pins the to-one customers row).
         resp = await qual_reagg_engine.execute(chain_q(
             metrics=[QueryMetric(
-                metric="cwavg(sum(amount, partition_by=customer_id))", alias="w")]))
-        got = float(resp.data[0]["corders.w"])
+                metric="cwavg(sum(corders.amount, partition_by=corders.customer_id))", alias="w")]))
+        got = float(resp.data[0]["w"])
         assert got == pytest.approx(CORDERS_GLOBAL_WAVG)
         assert got != pytest.approx(CORDERS_GLOBAL_UNWEIGHTED)
 
@@ -293,9 +293,9 @@ class TestExprDefaultLiteralsAndResidue:
         resp = await lit_reagg_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(
-                metric="wlit(sum(amount, partition_by=[city, region]))",
+                metric="wlit(sum(sales.amount, partition_by=[sales.city, sales.region]))",
                 alias="w")]))
-        vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
         assert vals["Void"] is None  # its only cell total is NULL
@@ -306,9 +306,9 @@ class TestExprDefaultLiteralsAndResidue:
         resp = await lit_only_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(
-                metric="wconst(sum(amount, partition_by=[city, region]))",
+                metric="wconst(sum(sales.amount, partition_by=[sales.city, sales.region]))",
                 alias="w")]))
-        vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
+        vals = {k[0]: v["w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
         assert vals["Void"] is None
@@ -317,7 +317,7 @@ class TestExprDefaultLiteralsAndResidue:
         # An operand grain that pins nothing about customers -> the one-rule
         # typed error (was silent invalid SQL).
         q = chain_q(metrics=[QueryMetric(
-            metric="cwavg(sum(amount, partition_by=amount))", alias="w")])
+            metric="cwavg(sum(corders.amount, partition_by=corders.amount))", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await qual_reagg_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -353,8 +353,8 @@ class TestExprDefaultLiteralsAndResidue:
                 QueryMetric(
                     metric="sum(customers.spend * (orders.amount + 0))", alias="oracle"),
             ]))
-        default_vals = _status_vals(resp=resp, metric="orders.w")
-        oracle_vals = _status_vals(resp=resp, metric="orders.oracle")
+        default_vals = _status_vals(resp=resp, metric="w")
+        oracle_vals = _status_vals(resp=resp, metric="oracle")
         assert default_vals
         for status, expected in oracle_vals.items():
             assert float(default_vals[status]) == pytest.approx(float(expected))

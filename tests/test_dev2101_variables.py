@@ -100,7 +100,7 @@ class TestStructureIsNeverInjected:
     @pytest.mark.parametrize("kw", [
         {"metrics": ["{f}(amount)"], "variables": {"f": "sum"}},
         {"dimensions": ["customers.{c}"], "variables": {"c": "name"}},
-        {"metrics": ["sum(amount, partition_by={x})"], "dimensions": ["region"], "variables": {"x": "region"}},
+        {"metrics": ["sum(orders.amount, partition_by={x})"], "dimensions": ["orders.region"], "variables": {"x": "region"}},
         {"metrics": ["sum(amount, {k}=1)"], "variables": {"k": "partition_by"}},
     ], ids=["function", "path-segment", "reference-kwarg", "kwarg-name"])
     async def test_non_literal_positions_rejected(self, engine: SlayerQueryEngine, kw: dict) -> None:
@@ -127,7 +127,7 @@ class TestDateRangeBounds:
     async def test_both_bounds(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
             {**MONTH, "date_range": ["{start}", "{end}"]}], variables={"start": "2024-02-01", "end": "2024-02-29"}))
-        assert [num(r["orders.v"]) for r in resp.data] == [70.0]
+        assert [num(r["v"]) for r in resp.data] == [70.0]
 
     async def test_one_sided_lower(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
@@ -137,12 +137,12 @@ class TestDateRangeBounds:
     async def test_one_sided_upper(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
             {**MONTH, "date_range": [None, "{end}"]}], variables={"end": "2024-01-31"}))
-        assert [num(r["orders.v"]) for r in resp.data] == [30.0]
+        assert [num(r["v"]) for r in resp.data] == [30.0]
 
     async def test_single_period(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(metrics=[m("sum(amount)")], time_dimensions=[
             {**MONTH, "date_range": "{p}"}], variables={"p": "2024-02"}))
-        assert [num(r["orders.v"]) for r in resp.data] == [70.0]
+        assert [num(r["v"]) for r in resp.data] == [70.0]
 
     async def test_missing_variable(self, engine: SlayerQueryEngine) -> None:
         await _rejected(engine, "end", metrics=[m("sum(amount)")],

@@ -71,7 +71,7 @@ def test_allowed_on_primary_key_columns() -> None:
 async def test_duckdb_emits_native_approx() -> None:
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(orders.customer_id)")],
     )
     sql = (await _generate("duckdb", query, _dataset())).lower()
     assert "approx_count_distinct(" in sql
@@ -80,7 +80,7 @@ async def test_duckdb_emits_native_approx() -> None:
 async def test_postgres_emits_exact_fallback() -> None:
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(orders.customer_id)")],
     )
     sql = (await _generate("postgres", query, _dataset())).upper()
     assert "COUNT(DISTINCT" in sql
@@ -97,7 +97,7 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
     override (not just that the override exists)."""
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(orders.customer_id)")],
     )
     sql = (await _generate("clickhouse", query, _dataset())).lower()
     assert "uniq(" in sql
@@ -106,7 +106,7 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
 async def test_approx_on_primary_key_column_generates() -> None:
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count_distinct_approx(id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(orders.id)")],
     )
     # Must not raise an eligibility error on the PK column.
     sql = await _generate("duckdb", query, _dataset())

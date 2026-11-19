@@ -73,7 +73,7 @@ async def test_formula_equals_client_side_combine(pair_case):
         QueryMetric(metric=OPERANDS[pair.a], alias="a"),
         QueryMetric(metric=OPERANDS[pair.b], alias="b"),
     ]))
-    left_rows = {_row_key(row=r, kwargs=kwargs): r["orders.x"] for r in left.data}
+    left_rows = {_row_key(row=r, kwargs=kwargs): r["x"] for r in left.data}
     right_rows = {_row_key(row=r, kwargs=kwargs): r for r in right.data}
     assert len(left_rows) == len(left.data), "duplicate group keys (left)"
     assert len(right_rows) == len(right.data), "duplicate group keys (right)"
@@ -82,7 +82,7 @@ async def test_formula_equals_client_side_combine(pair_case):
         f"pair={pair} grain={grain}"
     )
     for key, row in right_rows.items():
-        expected = _combine(op=pair.op, a=row["orders.a"], b=row["orders.b"])
+        expected = _combine(op=pair.op, a=row["a"], b=row["b"])
         assert values_equal(a=left_rows[key], b=expected), (
             f"LAW broadcast coherence violated — cell {key}: formula gave "
             f"{left_rows[key]!r}, client-side combine gave {expected!r}; "
@@ -119,15 +119,15 @@ async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):
     rt = QueryMetric(metric=OPERANDS["part_region"], alias="rt")
     per_region: list[dict] = []
     for kwargs in (
-        {"dimensions": ["region"]},
-        {"dimensions": ["region", "city"]},
-        {"dimensions": ["region", "city"], "time_dimensions": month_td()},
+        {"dimensions": ["orders.region"]},
+        {"dimensions": ["orders.region", "city"]},
+        {"dimensions": ["orders.region", "city"], "time_dimensions": month_td()},
     ):
         resp = await exec_engine.execute(q(**kwargs, metrics=[rt]))
         values: dict = {}
         for row in resp.data:
             values.setdefault(row["orders.region"], set()).add(
-                canon(row["orders.rt"]),
+                canon(row["rt"]),
             )
         for region, seen in values.items():
             assert len(seen) == 1, (

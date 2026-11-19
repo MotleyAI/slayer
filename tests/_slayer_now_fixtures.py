@@ -54,7 +54,7 @@ PINNED_WINDOW = ids_in(datetime(2025, 4, 1), datetime(2025, 7, 1))
 
 
 def ids_query(*filters: str) -> dict:
-    return {"population": "ev", "dimensions": ["id"], "filter": list(filters)}
+    return {"population": "ev", "dimensions": ["ev.id"], "filter": list(filters)}
 
 
 def row_ids(rows: list[dict]) -> set[int]:

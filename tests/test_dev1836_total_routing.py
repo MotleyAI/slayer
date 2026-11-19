@@ -55,7 +55,7 @@ class TestExplicitRejections:
         _, engine = exec_backend
         query = q(
             dimensions=[{"field": "sum(amount)", "alias": "d"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         )
         with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
             await engine.execute(query)
@@ -68,14 +68,14 @@ class TestExplicitRejections:
         _, engine = exec_backend
         query = q(
             dimensions=[LOCAL_BAND],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=band)",
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=band)",
                                    alias="x"),
-                      QueryMetric(metric="sum(amount)", alias="s")],
+                      QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         resp = await engine.execute(query)
         assert resp.data
         for row in resp.data:
-            assert float(row["orders.x"]) == float(row["orders.s"])
+            assert float(row["x"]) == float(row["s"])
 
     def test_migrated_cm_still_renders_in_a_cte_body(self):
         """A plain cross-model measure renders inside a CTE body today; the
@@ -84,7 +84,7 @@ class TestExplicitRejections:
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ), bundle=bundle)
@@ -106,7 +106,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=channel)",
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)",
                                    alias="pt")],
         )
         bundle = _bundle()
@@ -150,7 +150,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             **role_kwargs,
         )
         bundle = _bundle()
@@ -165,12 +165,12 @@ class TestNoSilentDrops:
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
-                QueryMetric(metric="sum(customers.spend) / sum(amount)",
+                QueryMetric(metric="sum(customers.spend) / sum(orders.amount)",
                              alias="ratio"),
             ],
         ))
         for row in resp.data:
-            for col in ("orders.m", "orders.cm", "orders.ratio"):
+            for col in ("m", "cm", "ratio"):
                 assert col in row, col

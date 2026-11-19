@@ -239,8 +239,8 @@ async def test_transform_wrapped_reference_follows_rename(tmp_path) -> None:
     )
     query = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": ["running_orders", "order_count"],
-        "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+        "metrics": ["orders.running_orders", "orders.order_count"],
+        "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
     })
     resp = await engine.execute(query=query, dry_run=True)
     assert resp.sql is not None
@@ -263,8 +263,8 @@ async def test_change_pct_desugar_reference_follows_rename(tmp_path) -> None:
     )
     query = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": ["mom_orders", "order_count"],
-        "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+        "metrics": ["orders.mom_orders", "orders.order_count"],
+        "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
     })
     resp = await engine.execute(query=query, dry_run=True)
     assert resp.sql is not None
@@ -278,9 +278,9 @@ async def test_full_reported_scenario(tmp_path) -> None:
     engine = await _make_engine(tmp_path, seed=True)
     query = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": ["habit_score", "order_count", "unique_customers", "total_revenue"],
+        "metrics": ["orders.habit_score", "orders.order_count", "orders.unique_customers", "orders.total_revenue"],
         "dimensions": ["stores.name"],
-        "order": [{"field": "habit_score", "direction": "desc"}],
+        "order": [{"field": "orders.habit_score", "direction": "desc"}],
         "limit": 100,
     })
     dry = await engine.execute(query=query, dry_run=True)
@@ -288,7 +288,7 @@ async def test_full_reported_scenario(tmp_path) -> None:
     assert _referenced_but_undeclared(dry.sql) == set(), dry.sql
 
     resp = await engine.execute(query=query)  # must execute cleanly
-    assert [r["orders.stores.name"] for r in resp.data] == ["North", "South"]
+    assert [r["stores.name"] for r in resp.data] == ["North", "South"]
     for r in resp.data:
         assert r["orders.habit_score"] * r["orders.unique_customers"] == (
             r["orders.order_count"]
@@ -315,7 +315,7 @@ async def test_formula_referencing_nonexistent_measure_raises(tmp_path) -> None:
             DatasetMetric(name="bad", expression="order_count / nonexistent_measure"),
         ],
     )
-    query = SlayerQuery(population="orders", metrics=["bad"])
+    query = SlayerQuery(population="orders", metrics=["orders.bad"])
     with pytest.raises(UnknownReferenceError) as exc:
         await engine.execute(query=query, dry_run=True)
     assert "nonexistent_measure" in str(exc.value)
@@ -334,8 +334,8 @@ async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> Non
     )
     query = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": ["running_bad"],
-        "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+        "metrics": ["orders.running_bad"],
+        "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
     })
     with pytest.raises(UnknownReferenceError) as exc:
         await engine.execute(query=query, dry_run=True)

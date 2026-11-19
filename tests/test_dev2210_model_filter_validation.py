@@ -91,10 +91,10 @@ class TestQueryReadsInvalidStoredFilter:
         return engine
 
     @pytest.mark.parametrize("body", [
-        {"population": "bad_done", "dimensions": ["id"]},
-        {"population": "returns_bad", "dimensions": ["id", "bad_done.status"]},
-        {"population": "returns_bad_filtered", "dimensions": ["id"]},
-        {"population": "returns_bad_derived", "dimensions": ["id", "bad_status"]},
+        {"population": "bad_done", "dimensions": ["bad_done.id"]},
+        {"population": "returns_bad", "dimensions": ["returns_bad.id", "bad_done.status"]},
+        {"population": "returns_bad_filtered", "dimensions": ["returns_bad_filtered.id"]},
+        {"population": "returns_bad_derived", "dimensions": ["returns_bad_derived.id", "returns_bad_derived.bad_status"]},
     ], ids=["source", "join-target", "another-models-filter", "derived-column"])
     async def test_fails_with_the_targets_filter(self, stored, body):
         query = SlayerQuery.model_validate(body)

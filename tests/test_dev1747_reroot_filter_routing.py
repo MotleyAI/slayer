@@ -52,8 +52,8 @@ FILTER_AGGREGATE_REF = "sum(customers.spend) > 500"
 #: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing column — the filtered-local helpers live only on this route.
 _HOST_ROOTED_QUERY = SlayerQuery.model_validate({
     "population": "orders",
-    "dimensions": [QueryDimension(field="status")],
-    "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+    "dimensions": [QueryDimension(field="orders.status")],
+    "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
     "order": [OrderItem(field="cust_region", direction="asc")],
 })
 
@@ -62,7 +62,7 @@ def _query(*filters: str) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": [QueryDimension(field="customers.regions.name")],
-        "metrics": [{"metric": "sum(amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
         "filter": list(filters) or None,
     })
 
@@ -201,7 +201,7 @@ class TestMixedOrPushes:
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "sum(customers.spend)", "alias": "cs"},
                 {"metric": "sum(customers.regions.population)", "alias": "pop"},
             ],
@@ -239,10 +239,10 @@ class TestMixedOrPushes:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [QueryDimension(field="customers.regions.name")],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
             "filter": [
-                "customers.tier == 'gold' or status == 'A'",
-                "customers.tier == 'silver' or status == 'B'",
+                "customers.tier == 'gold' or orders.status == 'A'",
+                "customers.tier == 'silver' or orders.status == 'B'",
             ],
         })
         with tempfile.TemporaryDirectory() as d:
@@ -315,7 +315,7 @@ class TestUnreachableDimensionsStillDrop:
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [
                 QueryDimension(field="customers.regions.name"),
                 QueryDimension(field="order_tags.name"),
-            ], "metrics": [{"metric": "sum(amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
+            ], "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
             "to_many_handling": "broadcast"})
         plan = plan_query(query=query, bundle=dev1747_bundle())
         attach = next(
@@ -339,8 +339,8 @@ class TestFilteredLocalDispatchAccounting:
     def _grouped_joined_order(self) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [QueryDimension(field="status")],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "dimensions": [QueryDimension(field="orders.status")],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             "order": [OrderItem(
                 field="customers.regions.name",
                 direction="asc",
@@ -368,9 +368,9 @@ class TestFilteredLocalDispatchAccounting:
         plan = plan_query(
             query=SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    {"metric": "sum(amount)", "alias": "rev"},
+                    {"metric": "sum(orders.amount)", "alias": "rev"},
                     _CROSS_MODEL_MEASURE,
                 ],
             ),
@@ -436,7 +436,7 @@ class TestRerootedFilterStillNarrowsTheHost:
     async def test_a_reachable_filter_narrows_the_host_rows(self) -> None:
         """A reachable filter must narrow the host to one region group; without the fix it silently became "annotate, don't exclude"."""
         rows = await self._rows(FILTER_REACHABLE)
-        regions = [r["orders.customers.regions.name"] for r in rows]
+        regions = [r["customers.regions.name"] for r in rows]
         assert regions == [REGION_A_LOW], (
             f"the re-rooted CTE applied the filter but the host base did not, "
             f"so excluded regions came back: {regions}"
@@ -447,7 +447,7 @@ class TestRerootedFilterStillNarrowsTheHost:
         rows = await self._rows(FILTER_REACHABLE)
         leaked = [
             r for r in rows
-            if r["orders.customers.regions.name"] in (
+            if r["customers.regions.name"] in (
                 REGION_A_HIGH, REGION_B_ONLY, None,
             )
         ]
@@ -460,10 +460,10 @@ class TestRerootedFilterStillNarrowsTheHost:
         """The surviving group must keep its own values; an over-filtering fix would empty the result and still pass the two tests above."""
         rows = await self._rows(FILTER_REACHABLE)
         assert len(rows) == 1, rows
-        assert rows[0]["orders.rev"] == 11.0, (
+        assert rows[0]["rev"] == 11.0, (
             f"the surviving group's own measure changed: {rows[0]}"
         )
-        assert rows[0]["orders.cs"] == ALPHA_SPEND_ALL, (
+        assert rows[0]["cs"] == ALPHA_SPEND_ALL, (
             f"the cross-model measure changed: {rows[0]}"
         )
 
@@ -471,25 +471,25 @@ class TestRerootedFilterStillNarrowsTheHost:
         """``status == 'A'`` keeps group A's two orders across two regions; it now ALSO pushes into the producer by semi-join (rows unchanged)."""
         rows = await self._rows(FILTER_HOST_LOCAL)
         regions = sorted(
-            str(r["orders.customers.regions.name"]) for r in rows
+            str(r["customers.regions.name"]) for r in rows
         )
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
-        assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
+        assert sum(r["rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
     async def test_the_tags_filter_narrows_without_fanning_out(self) -> None:
         """``rush`` tags orders 1 and 2 only; a join-based pushdown (instead of containment) would multiply order 1 by its three tags."""
         rows = await self._rows(FILTER_TAGS)
         regions = sorted(
-            str(r["orders.customers.regions.name"]) for r in rows
+            str(r["customers.regions.name"]) for r in rows
         )
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
-        assert sum(r["orders.rev"] for r in rows) == GROUP_A_AMOUNT, rows
+        assert sum(r["rev"] for r in rows) == GROUP_A_AMOUNT, rows
 
     async def test_a_mixed_or_filter_still_narrows_the_host(self) -> None:
         """A mixed-OR filter applies at the host as well as inside the producer's semi-join."""
         rows = await self._rows(FILTER_MIXED_OR)
         regions = sorted(
-            str(r["orders.customers.regions.name"]) for r in rows
+            str(r["customers.regions.name"]) for r in rows
         )
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
 
@@ -498,13 +498,13 @@ class TestRerootedFilterStillNarrowsTheHost:
     ) -> None:
         """A filter on a DIFFERENT target attribute separates host from CTE: extra regions return if the host stops filtering; Alpha's ``cs`` reads 1040 not 1000 if the CTE does."""
         rows = await self._rows(FILTER_TARGET_ATTRIBUTE)
-        by_region = {r["orders.customers.regions.name"]: r for r in rows}
+        by_region = {r["customers.regions.name"]: r for r in rows}
         assert sorted(by_region) == sorted([REGION_A_LOW, REGION_A_HIGH]), (
             f"the host base did not narrow to the gold-tier rows: "
             f"{sorted(by_region)}"
         )
-        assert by_region[REGION_A_LOW]["orders.cs"] == ALPHA_SPEND_GOLD, (
-            f"Alpha's cross-model spend is {by_region[REGION_A_LOW]['orders.cs']}, "
+        assert by_region[REGION_A_LOW]["cs"] == ALPHA_SPEND_GOLD, (
+            f"Alpha's cross-model spend is {by_region[REGION_A_LOW]['cs']}, "
             f"not {ALPHA_SPEND_GOLD} — the re-rooted CTE aggregated an "
             f"UNFILTERED target population (unfiltered total is "
             f"{ALPHA_SPEND_ALL})"
@@ -523,7 +523,7 @@ class TestRerootedFilterStillNarrowsTheHost:
     async def test_the_mixed_or_filter_pushes_without_a_warning(self) -> None:
         rows, dropped = await self._rows_and_warnings(FILTER_MIXED_OR)
         assert not dropped, [str(w.message) for w in dropped]
-        regions = sorted(str(r["orders.customers.regions.name"]) for r in rows)
+        regions = sorted(str(r["customers.regions.name"]) for r in rows)
         assert regions == sorted([REGION_A_LOW, REGION_A_HIGH]), regions
 
 
@@ -546,9 +546,9 @@ class TestRerootedAggregateRefFilter:
             engine = await make_sqlite_engine(d, db)
             query = _query(FILTER_AGGREGATE_REF)
             rows = (await engine.execute(query)).data
-        regions = [r["orders.customers.regions.name"] for r in rows]
+        regions = [r["customers.regions.name"] for r in rows]
         assert regions == [REGION_A_LOW], regions
-        assert rows[0]["orders.cs"] == ALPHA_SPEND_ALL, rows[0]
+        assert rows[0]["cs"] == ALPHA_SPEND_ALL, rows[0]
 
 
 class TestRowPhaseFiltersAlwaysApplyAtTheHost:
@@ -567,7 +567,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         population="orders",
         dimensions=[QueryDimension(field="customers.regions.name")],
         metrics=[
-            {"metric": "sum(amount)", "alias": "rev"},
+            {"metric": "sum(orders.amount)", "alias": "rev"},
             {"metric": "sum(customers.spend)", "alias": "cs"},
             {"metric": "sum(customers.regions.population)", "alias": "pop"},
         ],
@@ -586,7 +586,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
 
     async def test_one_plans_routing_does_not_unfilter_the_host(self) -> None:
         rows = await self._rows(self._MIXED_ROUTES)
-        regions = [r["orders.customers.regions.name"] for r in rows]
+        regions = [r["customers.regions.name"] for r in rows]
         assert regions == [REGION_A_LOW], (
             f"the forward plan's routing made the host skip the filter, so "
             f"regions it excludes came back: {regions}"
@@ -599,27 +599,27 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         plain = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [QueryDimension(field="customers.regions.name")],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             "filter": [FILTER_REACHABLE],
         })
         plain_rows = await self._rows(plain)
         mixed_rows = await self._rows(self._MIXED_ROUTES)
         assert (
-            [r["orders.customers.regions.name"] for r in plain_rows]
-            == [r["orders.customers.regions.name"] for r in mixed_rows]
+            [r["customers.regions.name"] for r in plain_rows]
+            == [r["customers.regions.name"] for r in mixed_rows]
         ), f"plain={plain_rows} mixed={mixed_rows}"
         assert (
-            [r["orders.rev"] for r in plain_rows]
-            == [r["orders.rev"] for r in mixed_rows]
+            [r["rev"] for r in plain_rows]
+            == [r["rev"] for r in mixed_rows]
         ), "the sibling local measure changed when a cross-model one was added"
 
     async def test_applying_at_the_host_does_not_fan_out_a_sibling(self) -> None:
         """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``sum(amount)`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
         rows = await self._rows(SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(orders.amount)", "alias": "rev"},
                 {"metric": "count(order_tags.id)", "alias": "tags"},
             ],
             filter=["order_tags.name == 'rush'"],
@@ -628,7 +628,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         assert sorted(by_status) == ["A"], (
             f"'rush' tags only orders 1 and 2, both status A: {sorted(by_status)}"
         )
-        assert by_status["A"]["orders.rev"] == GROUP_A_AMOUNT, (
+        assert by_status["A"]["rev"] == GROUP_A_AMOUNT, (
             f"the sibling local measure fanned out: "
-            f"{by_status['A']['orders.rev']} != {GROUP_A_AMOUNT}"
+            f"{by_status['A']['rev']} != {GROUP_A_AMOUNT}"
         )

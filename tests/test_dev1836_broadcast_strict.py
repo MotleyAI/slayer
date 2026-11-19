@@ -33,7 +33,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
@@ -124,7 +124,7 @@ class TestBroadcastMetadata:
         # The keyless (single-row producer) attach is cardinality-neutral.
         assert len(resp.data) == len(control.data) == 2
         for row in resp.data:
-            assert float(row["orders.total"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["total"]) == pytest.approx(SPEND_TOTAL)
 
     async def test_broadcast_reason_names_the_hop_forward_and_reverse(
         self, exec_backend,
@@ -179,10 +179,10 @@ class TestStrictMode:
             to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
             filter=["channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         assert set(by) == {("gold",)}
-        assert float(by[("gold",)]["orders.m"]) == pytest.approx(30.0)
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        assert float(by[("gold",)]["m"]) == pytest.approx(30.0)
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
 
     async def test_mixed_disjunction_pushes_in_error_mode(self, exec_backend):
         """A root-local OR cross-path conjunct no longer errors — the
@@ -192,10 +192,10 @@ class TestStrictMode:
             to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
             filter=["customers.tier = 'gold' OR channel = 'app'"],
         ))
-        by = rows_by(resp, "orders.customers.tier")
+        by = rows_by(resp, "customers.tier")
         # Every app order belongs to a gold customer, so both legs yield gold only.
         assert set(by) == {("gold",)}
-        assert float(by[("gold",)]["orders.cm"]) == pytest.approx(160.0)
+        assert float(by[("gold",)]["cm"]) == pytest.approx(160.0)
 
     async def test_strict_passes_when_all_attributable(self, exec_backend):
         _, engine = exec_backend
@@ -205,14 +205,14 @@ class TestStrictMode:
         strict = await engine.execute(
             q(to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM]),
         )
-        lenient_by = rows_by(lenient, "orders.customers.tier")
-        strict_by = rows_by(strict, "orders.customers.tier")
+        lenient_by = rows_by(lenient, "customers.tier")
+        strict_by = rows_by(strict, "customers.tier")
         assert set(strict_by) == set(lenient_by)
         for key, row in strict_by.items():
-            for col in ("orders.m", "orders.cm"):
+            for col in ("m", "cm"):
                 assert row[col] == lenient_by[key][col], (key, col)
         for tier, expected in SPEND_BY_TIER.items():
-            assert float(strict_by[(tier,)]["orders.cm"]) == pytest.approx(expected)
+            assert float(strict_by[(tier,)]["cm"]) == pytest.approx(expected)
 
     async def test_strict_allows_explicit_partition_broadcast(self, exec_backend):
         _, engine = exec_backend
@@ -223,4 +223,4 @@ class TestStrictMode:
             )],
         ))
         for row in resp.data:
-            assert float(row["orders.total"]) == pytest.approx(SPEND_TOTAL)
+            assert float(row["total"]) == pytest.approx(SPEND_TOTAL)

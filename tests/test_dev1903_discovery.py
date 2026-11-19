@@ -86,13 +86,13 @@ def _pairs(ds: List[RootDisposition], match) -> set:
 class TestPhaseRoutingMatrix:
     def test_row_local_producer(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="s")]),
+                         metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_combined_local_producer_partitioned(self):
         ds = _discover(q(dimensions=["status", "channel"],
-                         metrics=[QueryMetric(metric="sum(amount, partition_by=channel)",
+                         metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)",
                                                 alias="pt")]),
                        _bundle(dev1836_datasets()))
         [d] = _of(ds, _agg("sum", ["channel"]))
@@ -102,25 +102,25 @@ class TestPhaseRoutingMatrix:
 
     def test_combined_local_producer_ranked(self):
         ds = _discover(q(dimensions=["status"],
-                         metrics=[QueryMetric(metric="last(amount, ordered_at)", alias="l")]),
+                         metrics=[QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="l")]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("last")) == {("combined", "local_producer")}
 
     def test_combined_local_producer_windowed(self):
         ds = _discover(q(time_dimensions=month_td(),
-                         metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")]),
+                         metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum")) == {("combined", "local_producer")}
 
     def test_combined_local_producer_crossing_input(self):
         ds = _discover(SlayerQuery(population="orders",
-                                   metrics=[QueryMetric(metric="sum(region_pay)", alias="m0")]),
+                                   metrics=[QueryMetric(metric="sum(orders.region_pay)", alias="m0")]),
                        _s5_bundle())
         assert _pairs(ds, _agg("sum")) == {("combined", "local_producer")}
 
     def test_row_target_rooted(self):
         ds = _discover(q(dimensions=[{"field": SPEND_BAND, "alias": "band"}],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="s")]),
+                         metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum", ["tier"])) == {("row", "target_rooted")}
 
@@ -143,7 +143,7 @@ class TestPhaseRoutingMatrix:
     def test_combined_target_rooted_unattributable_grain(self):
         """A local aggregate grouped by an unattributable dimension routes target-rooted."""
         ds = _discover(q(dimensions=["customers.segments.label"],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="s")]),
+                         metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum")) == {("combined", "target_rooted")}
 
@@ -159,7 +159,7 @@ class TestPhaseRoutingMatrix:
     def test_row_reaggregation(self):
         ds = _discover(monthly_q(dimensions=["region", REAGG_BAND],
                                  time_dimensions=monthly_month_td(),
-                                 metrics=[QueryMetric(metric="sum(amount)", alias="s")]),
+                                 metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")]),
                        _bundle(_monthly_datasets()))
         assert _pairs(ds, _agg("min", ["region"])) == {("row", "reaggregation")}
 
@@ -195,7 +195,7 @@ class TestRowAttachRoots:
 class TestDualRole:
     def test_computed_dimension_and_measure(self):
         ds = _discover(q(dimensions=["channel", LOCAL_BAND],
-                         metrics=[QueryMetric(metric="sum(amount, partition_by=channel)",
+                         metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.channel)",
                                                 alias="x")]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {
@@ -229,28 +229,28 @@ class TestDualRole:
 class TestConsumerContextExclusions:
     def test_order_by_dimension_name_is_row_scope(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+                         metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
                          order=[{"field": "band", "direction": "asc"}]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_field_typed_filter_on_dimension_aggregate_is_row_scope(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+                         metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
                          filter=["sum(amount, partition_by=channel) > 30"]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_measure_typed_filter_dimension_subtree_not_walked(self):
         ds = _discover(q(dimensions=["status", LOCAL_BAND],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+                         metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
                          filter=["sum(amount) > band"]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {("row", "local_producer")}
 
     def test_measure_typed_filter_keeps_dual_role_combined(self):
         ds = _discover(q(dimensions=["channel", LOCAL_BAND],
-                         metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+                         metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
                          filter=["sum(amount, partition_by=channel) > sum(amount)"]),
                        _bundle(dev1836_datasets()))
         assert _pairs(ds, _agg("sum", ["channel"])) == {
@@ -296,7 +296,7 @@ class TestOccurrenceOrder:
     def test_first_seen_order(self):
         ds = _discover(q(dimensions=["status"],
                          metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm"),
-                                   QueryMetric(metric="last(amount, ordered_at)", alias="l")]),
+                                   QueryMetric(metric="last(orders.amount, orders.ordered_at)", alias="l")]),
                        _bundle(dev1836_datasets()))
         routings = [d.routing for d in ds if d.routing != "inline"]
         assert routings == ["target_rooted", "local_producer"]
@@ -340,7 +340,7 @@ class TestReaggregationInComputedDimension:
     @pytest.mark.parametrize(("kw", "location"), [
         pytest.param({"metrics": [QueryMetric(metric=_R, alias="r")]},
                      "metric 'r'", id="dual-role-measure"),
-        pytest.param({"metrics": [QueryMetric(metric="sum(amount)", alias="s")],
+        pytest.param({"metrics": [QueryMetric(metric="sum(sales.amount)", alias="s")],
                       "order": [{"field": _R, "direction": "asc"}]},
                      "order item", id="dual-role-order"),
     ])
@@ -362,8 +362,8 @@ class TestReaggregationInComputedDimension:
     async def test_dimension_only_consumption_executes(self, exec_engine, filters, expected):
         resp = await exec_engine.execute(sales_q(
             dimensions=["product", _RLEVEL],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")], filter=filters))
-        got = {(r["sales.product"], r["sales.rlevel"]): r["sales.s"] for r in resp.data}
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="s")], filter=filters))
+        got = {(r["sales.product"], r["rlevel"]): r["s"] for r in resp.data}
         assert got == pytest.approx(expected)
 
 

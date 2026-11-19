@@ -161,8 +161,8 @@ def daily_stage_dataset() -> SlayerDataset:
         name="daily", data_source="test",
         source_queries=[SlayerQuery.model_validate({
             "population": "ev",
-            "time_dimensions": [{"field": "ts", "granularity": "day"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": "ev.ts", "granularity": "day"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
         })],
     )
 
@@ -232,7 +232,7 @@ async def ids_with_range(
 ) -> set[int]:
     """Row ids counted under a time dimension on ``column`` carrying ``date_range``."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": dataset, "dimensions": ["id"],
+        "population": dataset, "dimensions": ["ev.id"],
         "time_dimensions": [{"field": column, "granularity": granularity, "date_range": date_range}],
     }))
     return {int(r[f"{dataset}.id"]) for r in resp.data}

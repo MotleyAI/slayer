@@ -62,7 +62,7 @@ def test_transform_two_names_both_surface(dialect: str) -> None:
         {"metric": "cumsum(sum(amount))", "alias": "run_b"},
     ], dialect=dialect)
     assert _outer_projection(sql, dialect) == [
-        "orders.created_at", "orders.run_a", "orders.run_b",
+        "orders.created_at", "run_a", "run_b",
     ]
 
 
@@ -75,7 +75,7 @@ def test_post_arithmetic_two_names_both_surface(dialect: str) -> None:
         {"metric": "change(sum(amount))", "alias": "ch_b"},
     ], dialect=dialect)
     assert _outer_projection(sql, dialect) == [
-        "orders.created_at", "orders.ch_a", "orders.ch_b",
+        "orders.created_at", "ch_a", "ch_b",
     ]
 
 
@@ -89,16 +89,16 @@ def test_two_names_carried_through_later_step() -> None:
     ])
     step2 = _cte(sql, "step2")
     step2_names = [e.alias_or_name for e in step2.expressions]
-    assert "orders.run_a" in step2_names
-    assert "orders.run_b" in step2_names
+    assert "run_a" in step2_names
+    assert "run_b" in step2_names
     # The CTE step2 selects from must itself carry both (sqlglot does not
     # resolve columns, so step2's projection alone would not prove it).
     feeder = step2.args["from_"].this.name
     feeder_names = _cte_projection(sql, feeder)
-    assert "orders.run_a" in feeder_names
-    assert "orders.run_b" in feeder_names
+    assert "run_a" in feeder_names
+    assert "run_b" in feeder_names
     assert _outer_projection(sql) == [
-        "orders.created_at", "orders.run_a", "orders.run_b", "orders.ch",
+        "orders.created_at", "run_a", "run_b", "ch",
     ]
 
 
@@ -111,7 +111,7 @@ def test_consecutive_periods_two_names_both_surface(dialect: str) -> None:
         {"metric": "consecutive_periods(sum(amount))", "alias": "streak_b"},
     ], dialect=dialect)
     assert _outer_projection(sql, dialect) == [
-        "orders.created_at", "orders.streak_a", "orders.streak_b",
+        "orders.created_at", "streak_a", "streak_b",
     ]
 
 
@@ -121,14 +121,14 @@ def test_cross_model_transform_two_names_both_surface() -> None:
         {"metric": "cumsum(sum(customers.spend))", "alias": "run_b"},
     ])
     assert _outer_projection(sql) == [
-        "orders.created_at", "orders.run_a", "orders.run_b",
+        "orders.created_at", "run_a", "run_b",
     ]
 
 
 def test_single_name_emission_unchanged() -> None:
     sql = _generate([{"metric": "cumsum(sum(amount))", "alias": "cs"}])
-    assert _outer_projection(sql) == ["orders.created_at", "orders.cs"]
-    assert _cte_projection(sql, "step1").count("orders.cs") == 1
+    assert _outer_projection(sql) == ["orders.created_at", "cs"]
+    assert _cte_projection(sql, "step1").count("cs") == 1
 
 
 def test_same_name_same_formula_raises() -> None:

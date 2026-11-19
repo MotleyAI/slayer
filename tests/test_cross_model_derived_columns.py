@@ -139,7 +139,7 @@ async def test_quoted_self_identity_column_emits_quoted_and_no_cycle(tmp_path) -
     await storage.save_dataset(model)
     query = SlayerQuery(
         population="merchant",
-        dimensions=[QueryDimension(field="legalEntityType")],
+        dimensions=[QueryDimension(field="merchant.legalEntityType")],
     )
     sql = await _gen_sql(engine, query, model)
     assert '"legalEntityType"' in sql, f"Expected quoted identifier preserved, got:\n{sql}"
@@ -168,7 +168,7 @@ async def test_quoted_self_identity_column_is_qualified_across_a_join(tmp_path) 
     await storage.save_dataset(other)
     query = SlayerQuery(
         population="merchant",
-        dimensions=[QueryDimension(field="legalEntityType"), QueryDimension(field="other.legalEntityType")],
+        dimensions=[QueryDimension(field="merchant.legalEntityType"), QueryDimension(field="other.legalEntityType")],
     )
     sql = await _gen_sql(engine=engine, query=query, dataset=merchant)
     assert 'merchant."legalEntityType"' in sql, sql
@@ -187,7 +187,7 @@ async def test_derived_over_quoted_self_identity_keeps_quoting(tmp_path) -> None
             DatasetField(name="label", sql="legalEntityType", datatype=DataType.STRING),
         ],
     )
-    query = SlayerQuery(population="merchant", dimensions=[QueryDimension(field="label")])
+    query = SlayerQuery(population="merchant", dimensions=[QueryDimension(field="merchant.label")])
     sql = await _gen_sql(engine=engine, query=query, dataset=model)
     assert '"legalEntityType"' in sql, sql
     assert _no_bare_derived_ref(sql, "merchant", "label"), sql  # label was inlined
@@ -209,7 +209,7 @@ async def test_cross_model_columnsql_references_derived_column(tmp_path) -> None
     ])
     query = SlayerQuery(
         population="A",
-        dimensions=[QueryDimension(field="ratio_using_derived")],
+        dimensions=[QueryDimension(field="A.ratio_using_derived")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -229,7 +229,7 @@ async def test_cross_model_base_column_still_works(tmp_path) -> None:
     model_a = await _save_a_b(storage, a_columns=[
         DatasetField(name="ratio_using_base", sql="A.bar / B.foo_raw", datatype=DataType.FLOAT),
     ])
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="ratio_using_base")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.ratio_using_base")])
     sql = await _gen_sql(engine, query, model_a)
     assert "A.bar / B.foo_raw" in _norm(sql), f"Base column ref broken:\n{sql}"
 
@@ -252,7 +252,7 @@ async def test_local_columnsql_references_local_derived(tmp_path) -> None:
             DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c2")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c2")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1"), (
@@ -282,7 +282,7 @@ async def test_chain_of_three_derived_columns(tmp_path) -> None:
             DatasetField(name="c3", sql="A.c2 + 100", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c3")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c3")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1")
@@ -402,7 +402,7 @@ async def test_multihop_derived_via_join_path(tmp_path) -> None:
         relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
     await storage.save_dataset(model_a)
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="ratio_multihop")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.ratio_multihop")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "B__C", "x_derived"), (
@@ -473,7 +473,7 @@ async def test_diamond_join_derived(tmp_path) -> None:
         ],
     )
     await storage.save_dataset(orders)
-    query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="diamond_concat")])
+    query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="orders.diamond_concat")])
     sql = await _gen_sql(engine, query, orders)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "customers__regions", "name_upper")
@@ -499,7 +499,7 @@ async def test_cycle_detection(tmp_path) -> None:
             DatasetField(name="c2", sql="A.c1 - 1", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c1")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c1")])
     with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
         await _gen_sql(engine, query, model_a)
     # The chain must follow recursion order, not a random frozenset
@@ -528,7 +528,7 @@ async def test_self_reference_terminates(tmp_path) -> None:
             DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="bar")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.bar")])
     sql = await _gen_sql(engine, query, model_a)
     assert "A.bar" in _norm(sql)
 
@@ -547,7 +547,7 @@ async def test_mixed_base_and_derived_refs_in_one_columnsql(tmp_path) -> None:
             datatype=DataType.FLOAT,
         ),
     ])
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="mixed")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.mixed")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert "B.foo_raw / 100.0" in norm  # derived expanded
@@ -595,7 +595,7 @@ async def test_measure_aggregation_via_local_columnsql_referencing_derived(tmp_p
     ])
     query = SlayerQuery(
         population="A",
-        metrics=[QueryMetric(metric="sum(ratio_using_derived)")],
+        metrics=[QueryMetric(metric="sum(A.ratio_using_derived)")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -615,7 +615,7 @@ async def test_filter_referencing_derived_column(tmp_path) -> None:
     model_a = await _save_a_b(storage, a_columns=[])
     query = SlayerQuery(
         population="A",
-        dimensions=[QueryDimension(field="bar")],
+        dimensions=[QueryDimension(field="A.bar")],
         filter=["B.foo_normalized > 0.5"],
     )
     sql = await _gen_sql(engine, query, model_a)
@@ -653,7 +653,7 @@ async def test_columnsql_references_unrelated_table_alias_left_alone(tmp_path) -
             DatasetField(name="passthrough", sql="bar + 1", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="passthrough")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.passthrough")])
     sql = await _gen_sql(engine, query, model_a)
     # Should not raise. Bare ``bar`` is qualified to A in the outer wrapper;
     # ``some_col`` (referenced inside the model.sql subquery) is left untouched.
@@ -802,7 +802,7 @@ async def test_multihop_filter_on_derived_target_column(tmp_path) -> None:
     model_a = await _save_a_b_c(storage)
     query = SlayerQuery(
         population="A",
-        dimensions=[QueryDimension(field="bar")],
+        dimensions=[QueryDimension(field="A.bar")],
         filter=["B.C.x_derived > 0"],
     )
     sql = await _gen_sql(engine, query, model_a)
@@ -1091,8 +1091,8 @@ async def test_dev1334_query_filter_on_bare_derived_col_with_cross_table_sql_add
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
-        filter=["is_eu = 1"],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+        filter=["orders.is_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1130,8 +1130,8 @@ async def test_dev1334_query_filter_on_chained_local_derived_cols_adds_join(
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
-        filter=["is_premium_eu = 1"],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+        filter=["orders.is_premium_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1180,8 +1180,8 @@ async def test_dev1334_query_filter_on_multi_hop_derived_col_adds_all_prefixes(
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
-        filter=["region_label = 'US'"],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+        filter=["orders.region_label = 'US'"],
     )
     sql = await _gen_sql(engine, query, orders)
     aliases = _join_aliases(sql)
@@ -1201,7 +1201,7 @@ async def test_dev1334_model_level_filter_on_bare_derived_col_with_cross_table_s
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1236,7 +1236,7 @@ async def test_dev1334_column_level_filter_attribute_with_cross_table_ref_adds_j
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="sum(eu_amount)", alias="eu_total")],
+        metrics=[QueryMetric(metric="sum(orders.eu_amount)", alias="eu_total")],
     )
     sql = await _gen_sql(engine, query, orders)
     assert "customers" in _join_aliases(sql), (
@@ -1328,7 +1328,7 @@ async def test_dev1494_column_filter_dotted_base_ref_adds_join(tmp_path) -> None
         claim_columns=[
             DatasetField(name="loss_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
-        metrics=[QueryMetric(metric="sum(loss_amt)", alias="amt")],
+        metrics=[QueryMetric(metric="sum(claim_amount.loss_amt)", alias="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"loss_payment join not discovered from dotted-base column filter:\n{sql}"
@@ -1366,7 +1366,7 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
         claim_columns=[
             DatasetField(name="deep_amt", sql="amount", filter="loss_payment.deep_flag = 1", datatype=DataType.FLOAT),
         ],
-        metrics=[QueryMetric(metric="sum(deep_amt)", alias="amt")],
+        metrics=[QueryMetric(metric="sum(claim_amount.deep_amt)", alias="amt")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate loss_payment join missing: {aliases}\nSQL:\n{sql}"
@@ -1401,7 +1401,7 @@ async def test_dev1494_model_filter_dotted_derived_ref_inlined(tmp_path) -> None
         claim_columns=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
         claim_filters=["loss_payment.has_flag = 1"],
-        metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
+        metrics=[QueryMetric(metric="sum(claim_amount.amount)", alias="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"placeholder join not kept for model-filter has_flag idiom:\n{sql}"
@@ -1434,8 +1434,8 @@ async def test_dev1494_column_filter_does_not_disturb_sibling_unfiltered_measure
             DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
         metrics=[
-            QueryMetric(metric="sum(total_amt)", alias="total"),
-            QueryMetric(metric="sum(paid_amt)", alias="paid"),
+            QueryMetric(metric="sum(claim_amount.total_amt)", alias="total"),
+            QueryMetric(metric="sum(claim_amount.paid_amt)", alias="paid"),
         ],
     )
     # The unfiltered measure is a plain SUM over the base column, unguarded by
@@ -1467,7 +1467,7 @@ async def test_dev1494_column_filter_exists_subquery_ref_not_scanned_for_joins(
             filter="EXISTS (SELECT 1 FROM Loss_Payment AS loss_payment WHERE loss_payment.status = 'paid')",
             datatype=DataType.FLOAT,
         )],
-        metrics=[QueryMetric(metric="sum(exists_amt)", alias="amt")],
+        metrics=[QueryMetric(metric="sum(claim_amount.exists_amt)", alias="amt")],
     )
     # No OUTER join to loss_payment is added from the inner-scope ref.
     assert "loss_payment" not in _join_aliases(sql), (
@@ -1491,7 +1491,7 @@ async def test_dev1494_column_filter_constant_placeholder_join_kept_sqlite(
             DatasetField(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT),
         ],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
-        metrics=[QueryMetric(metric="sum(loss_amt)", alias="amt")],
+        metrics=[QueryMetric(metric="sum(claim_amount.loss_amt)", alias="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), f"placeholder join not kept:\n{sql}"
     assert _no_bare_derived_ref(sql, "loss_payment", "has_flag"), (
@@ -1528,7 +1528,7 @@ async def test_dev1494_column_filter_multihop_dotted_input_adds_all_joins(
         claim_columns=[
             DatasetField(name="amt", sql="amount", filter="loss_payment.claim.state = 'open'", datatype=DataType.FLOAT),
         ],
-        metrics=[QueryMetric(metric="sum(amt)", alias="a")],
+        metrics=[QueryMetric(metric="sum(claim_amount.amt)", alias="a")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate join missing: {aliases}\nSQL:\n{sql}"
@@ -1554,7 +1554,7 @@ async def test_dev1494_column_filter_join_discovered_in_composite_measure(
             DatasetField(name="total_amt", sql="amount", datatype=DataType.FLOAT),
             DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.FLOAT),
         ],
-        metrics=[QueryMetric(metric="sum(paid_amt) + sum(total_amt)", alias="combo")],
+        metrics=[QueryMetric(metric="sum(claim_amount.paid_amt) + sum(claim_amount.total_amt)", alias="combo")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"composite-measure filtered-aggregate join not discovered:\n{sql}"
@@ -1602,7 +1602,7 @@ async def test_dev1494_cross_model_cte_target_filter_adds_join(tmp_path) -> None
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
+        dimensions=[QueryDimension(field="orders.status")],
         metrics=[QueryMetric(metric="sum(customers.premium_rev)", alias="prem")],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1637,9 +1637,9 @@ async def test_dev1334_filter_with_mixed_dotted_and_bare_derived_refs(tmp_path) 
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         # Dotted ref → warehouses; bare-name ref → customers (via is_eu's chain).
-        filter=["is_eu = 1 and warehouses.name = 'WH-1'"],
+        filter=["orders.is_eu = 1 and warehouses.name = 'WH-1'"],
     )
     sql = await _gen_sql(engine, query, orders)
     aliases = _join_aliases(sql)
@@ -1671,7 +1671,7 @@ async def test_dev1334_filter_with_various_comparison_operators_on_derived_col(
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         filter=[filter_expr],
     )
     sql = await _gen_sql(engine, query, orders)
@@ -1708,8 +1708,8 @@ async def test_dev1334_filter_on_self_referential_derived_chain_raises_cycle_err
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
-        filter=["a = 0"],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+        filter=["orders.a = 0"],
     )
     with pytest.raises(ValueError, match=r"[Cc]ircular|[Cc]ycle") as exc_info:
         await _gen_sql(engine, query, orders)
@@ -1750,8 +1750,8 @@ async def test_dev1334_dialect_threaded_into_join_discovery(tmp_path) -> None:
     engine = SlayerQueryEngine(storage=storage)
     query = SlayerQuery(
         population="orders",
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
-        filter=["bracket_eu = 1"],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
+        filter=["orders.bracket_eu = 1"],
     )
     sql = await _gen_sql(engine, query, orders, dialect="tsql")
     assert "customers" in _join_aliases(sql, dialect="tsql"), (
@@ -1785,7 +1785,7 @@ async def test_dev1410_local_bare_ref_to_local_derived(tmp_path) -> None:
             DatasetField(name="c2", sql="c1 * 2", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c2")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c2")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1"), (
@@ -1811,7 +1811,7 @@ async def test_dev1410_local_bare_ref_three_deep(tmp_path) -> None:
             DatasetField(name="c3", sql="c2 + 100", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c3")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c3")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "c1")
@@ -1837,7 +1837,7 @@ async def test_dev1410_local_bare_ref_mixed_with_base(tmp_path) -> None:
             DatasetField(name="mixed", sql="raw_a + derived_b", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="mixed")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.mixed")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "derived_b"), (
@@ -1917,7 +1917,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_subquery_left_alone(
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="mixed")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.mixed")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Root-scope ``score`` (rightmost operand) is inlined: A.raw_a * 10
@@ -1951,7 +1951,7 @@ async def test_dev1410_qualified_ref_to_derived_inside_subquery_left_alone(
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="collide")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.collide")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Subquery-scope B.foo_normalized must NOT be rewritten to the inlined
@@ -1987,7 +1987,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_window_over_partition_in
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="rn")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.rn")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     assert _no_bare_derived_ref(norm, "A", "bucket"), (
@@ -2017,7 +2017,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_union_left_alone(
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="union_use")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.union_use")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # The subquery's ``score`` (inside UNION) is left alone.
@@ -2054,7 +2054,7 @@ async def test_dev1410_local_bare_ref_to_derived_inside_values_left_alone(
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="values_use")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.values_use")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # Root-scope ``score`` is inlined.
@@ -2088,7 +2088,7 @@ async def test_dev1410_local_bare_ref_to_string_literal_lookalike_left_alone(
             ),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="label")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.label")])
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
     # The literal 'score=' (with the equals sign) stays intact.
@@ -2133,7 +2133,7 @@ async def test_dev1410_local_bare_ref_with_double_underscore_name(tmp_path) -> N
     )
     query = SlayerQuery(
         population="infrastructure",
-        dimensions=[QueryDimension(field="room_count_doubled")],
+        dimensions=[QueryDimension(field="infrastructure.room_count_doubled")],
     )
     sql = await _gen_sql(engine, query, model_a)
     norm = _norm(sql)
@@ -2162,7 +2162,7 @@ async def test_dev1410_local_bare_ref_cycle_raises_at_compile_time(tmp_path) -> 
             DatasetField(name="c2", sql="c1 - 1", datatype=DataType.FLOAT),
         ],
     )
-    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="c1")])
+    query = SlayerQuery(population="A", dimensions=[QueryDimension(field="A.c1")])
     with pytest.raises(DatasetFieldCycleError) as exc_info:
         await _gen_sql(engine, query, model_a)
     # Backwards compat: existing call sites that catch ValueError still work.
@@ -2221,7 +2221,7 @@ async def test_dev1410_exact_repro(tmp_path) -> None:
         ],
     )
     query = SlayerQuery(
-        population="infrastructure", dimensions=[QueryDimension(field="iqs")]
+        population="infrastructure", dimensions=[QueryDimension(field="infrastructure.iqs")]
     )
     sql = await _gen_sql(engine, query, model)
     norm = _norm(sql)

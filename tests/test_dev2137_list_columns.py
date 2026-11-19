@@ -212,7 +212,7 @@ class TestEligibility:
     async def test_counting_lists(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("count(skills)", "n")],
                                           filter=["name IN ('Cid', 'Dee', 'Eve')"]))
-        assert num(resp.data[0]["contractors.n"]) == 2
+        assert num(resp.data[0]["n"]) == 2
 
     async def test_counting_lists_unnamed_measure(self, engine) -> None:
         resp = await engine.execute(query(metrics=["count(skills)"]))
@@ -256,11 +256,11 @@ class TestNullElements:
                         {"field": "contains(skills, 'go')", "alias": "has_go"}],
             filter=bob))
         row = resp.data[0]
-        assert num(row["contractors.n"]) == 1
-        assert row["contractors.has_go"] in (False, 0)
+        assert num(row["n"]) == 1
+        assert row["has_go"] in (False, 0)
         elements = await engine.execute(query(dimensions=["skills.value"], metrics=[metric("count(skills.*)", "n")],
                                               filter=bob))
-        assert {r["contractors.skills.value"]: num(r["contractors.n"]) for r in elements.data} == {"sql": 1}
+        assert {r["contractors.skills.value"]: num(r["n"]) for r in elements.data} == {"sql": 1}
 
 
 GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])", "INSERT INTO grids VALUES (1, [[1, 2], [3]]), (2, NULL)")
@@ -277,16 +277,16 @@ class TestOpaqueElements:
         async with contractors_engine(datasets=[contractors_dataset(), _grids_dataset()], extra=GRIDS) as e:
             with pytest.raises(SlayerError, match="Opaque"):
                 await e.execute({"population": "grids", "dimensions": [
-                    "id", {"field": "length(grid)", "alias": "n"}]})
+                    "grids.id", {"field": "length(grids.grid)", "alias": "n"}]})
             with pytest.raises(SlayerError, match="Opaque"):
-                await e.execute({"population": "grids", "dimensions": ["grid.value"]})
+                await e.execute({"population": "grids", "dimensions": ["grids.grid.value"]})
             with pytest.raises(SlayerError, match="grid"):
-                await e.execute({"population": "grids", "dimensions": ["id"],
-                                 "filter": ["contains(grid, 1)"]})
+                await e.execute({"population": "grids", "dimensions": ["grids.id"],
+                                 "filter": ["contains(grids.grid, 1)"]})
 
     async def test_null_tests_run(self) -> None:
         async with contractors_engine(datasets=[contractors_dataset(), _grids_dataset()], extra=GRIDS) as e:
-            resp = await e.execute({"population": "grids", "dimensions": ["id"], "filter": ["grid IS NULL"]})
+            resp = await e.execute({"population": "grids", "dimensions": ["grids.id"], "filter": ["grids.grid IS NULL"]})
             assert {int(r["grids.id"]) for r in resp.data} == {2}
 
 
@@ -548,7 +548,7 @@ class TestSqlModeElementType:
     async def test_element_access_names_the_opaque_type(self) -> None:
         async with contractors_engine(datasets=[contractors_dataset(), _dev_skills({"datatype": "Array"})]) as e:
             with pytest.raises(SlayerError, match="Opaque"):
-                await e.execute({"population": "dev_skills", "dimensions": ["skills.value"]})
+                await e.execute({"population": "dev_skills", "dimensions": ["dev_skills.skills.value"]})
 
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_a_stored_model_loads_and_re_saves_unknown(self, tmp_path, backend: str) -> None:
@@ -570,8 +570,8 @@ class TestSqlModeElementType:
             assert _skills(loaded).element_type is DataType.STRING
             engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=os.path.join(tmp, "store")))
             try:
-                resp = await engine.execute({"population": "dev_skills", "dimensions": ["id"],
-                                             "filter": ["contains(skills, 'go')"]})
+                resp = await engine.execute({"population": "dev_skills", "dimensions": ["dev_skills.id"],
+                                             "filter": ["contains(dev_skills.skills, 'go')"]})
             finally:
                 engine.close()
         assert [int(r["dev_skills.id"]) for r in resp.data] == [1]

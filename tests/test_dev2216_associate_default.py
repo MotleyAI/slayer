@@ -46,7 +46,7 @@ LAST = QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="l
 WINDOWED = QueryMetric(metric="sum(customers.spend, window='90d')", alias="win")
 MIXED = QueryMetric(
     metric="last(customers.spend, customers.signup_at) + sum(customers.spend, window='90d')", alias="mix")
-STAGE_ROWS = QueryMetric(metric="count(*)", alias="k")
+STAGE_ROWS = QueryMetric(metric="count(s.*)", alias="k")
 SIGNUP_MONTH = [TimeDimension(field="customers.signup_at", granularity=TimeGranularity.MONTH)]
 FIRST_LAST = re.compile(r"first|last", re.IGNORECASE)
 WINDOW = re.compile(r"window", re.IGNORECASE)
@@ -121,7 +121,7 @@ class TestTheDefaultAssociates:
 
     async def test_local_metric_never_double_counts(self, engine) -> None:
         kw = {"population": "customers", "dimensions": ["orders.status"],
-              "metrics": [QueryMetric(metric="sum(spend)", alias="sp")]}
+              "metrics": [QueryMetric(metric="sum(customers.spend)", alias="sp")]}
         default = await engine.execute(_q(None, **kw))
         assoc = await engine.execute(_q("associate", **kw))
         cells = _status(default, "sp", root="customers")
@@ -132,12 +132,12 @@ class TestTheDefaultAssociates:
     @pytest.mark.parametrize("mode", MODES)
     async def test_derived_fanning_dimension(self, fanning_engine, mode) -> None:
         resp = await fanning_engine.execute(_q(mode, dimensions=[BAD_POP], metrics=[AMOUNT_SUM, SPEND_SUM]))
-        assert bad_pop_vals(resp, "orders.amt") == pytest.approx(ASSOC_AMOUNT_BY_BAD_POP)
-        assert bad_pop_vals(resp, "orders.csp") == pytest.approx(ASSOC_SPEND_BY_BAD_POP)
+        assert bad_pop_vals(resp, "amt") == pytest.approx(ASSOC_AMOUNT_BY_BAD_POP)
+        assert bad_pop_vals(resp, "csp") == pytest.approx(ASSOC_SPEND_BY_BAD_POP)
         assert associated_warnings(resp)
 
     async def test_host_safe_partition_key_associates(self, engine) -> None:
-        part = QueryMetric(metric="sum(customers.spend, partition_by=status)", alias="cm")
+        part = QueryMetric(metric="sum(customers.spend, partition_by=orders.status)", alias="cm")
         default = await engine.execute(_q(None, dimensions=["status"], metrics=[part]))
         assoc = await engine.execute(_q("associate", dimensions=["status"], metrics=[part]))
         assert _same_rows(default, assoc)
@@ -153,11 +153,11 @@ class TestModeInvariance:
         for r in runs:
             assert not broadcast_warnings(r)
             assert not associated_warnings(r)
-        total = await engine.execute(_q(None, metrics=[QueryMetric(metric="sum(amount)", alias="amt")]))
-        assert sum(float(r["orders.amt"]) for r in runs[0].data) == pytest.approx(float(total.data[0]["orders.amt"]))
+        total = await engine.execute(_q(None, metrics=[QueryMetric(metric="sum(orders.amount)", alias="amt")]))
+        assert sum(float(r["amt"]) for r in runs[0].data) == pytest.approx(float(total.data[0]["amt"]))
 
     async def test_an_associated_measure_is_cardinality_neutral(self, engine) -> None:
-        amt = QueryMetric(metric="sum(amount)", alias="amt")
+        amt = QueryMetric(metric="sum(orders.amount)", alias="amt")
         without = await engine.execute(_q(None, dimensions=["status"], metrics=[amt]))
         with_cm = await engine.execute(_q(None, dimensions=["status"], metrics=[amt, CM]))
         assert len(with_cm.data) == len(without.data)
@@ -196,7 +196,7 @@ class TestBroadcastFallback:
         assert _same_rows(default, bcast)
         by_month: dict[str, set] = {}
         for row in default.data:
-            by_month.setdefault(month_key(row["orders.customers.signup_at"]), set()).add(row["orders.win"])
+            by_month.setdefault(month_key(row["customers.signup_at"]), set()).add(row["win"])
         assert all(len(values) == 1 for values in by_month.values())
         (w,) = _fallbacks(default)
         assert WINDOW.search(w.association_unsupported or "")
@@ -243,11 +243,11 @@ class TestBroadcastFallback:
     async def test_a_root_error_mode_spares_a_default_stages_fallback(self, engine) -> None:
         stage = _q(None, name="s", dimensions=["status"], metrics=[LAST])
         resp = await engine.execute(query=[stage, _q("error", population="s", metrics=[STAGE_ROWS])])
-        assert resp.data[0]["s.k"] == len(ASSOC_SPEND_BY_STATUS)
+        assert resp.data[0]["k"] == len(ASSOC_SPEND_BY_STATUS)
         assert _fallbacks(resp)
 
     async def test_requested_grain_is_never_broadcast(self, engine) -> None:
-        part = QueryMetric(metric="last(customers.spend, customers.signup_at, partition_by=status)", alias="lp")
+        part = QueryMetric(metric="last(customers.spend, customers.signup_at, partition_by=orders.status)", alias="lp")
         default, associate = (_q(mode, dimensions=["status"], metrics=[part]) for mode in (None, "associate"))
         with pytest.raises(AssociationError) as by_default:
             await engine.execute(default)
@@ -263,13 +263,13 @@ class TestBroadcastFallback:
 
     async def test_partition_key_fanning_from_its_host_fails_by_default(self, fanning_engine) -> None:
         query = _q(None, population="regions", dimensions=["bad_pop"],
-                   metrics=[QueryMetric(metric="sum(pop, partition_by=bad_pop)", alias="w")])
+                   metrics=[QueryMetric(metric="sum(regions.pop, partition_by=regions.bad_pop)", alias="w")])
         with pytest.raises(PartitionKeyError, match="region_events"):
             await fanning_engine.execute(query)
 
     async def test_local_ranked_aggregate_never_raises(self, engine) -> None:
         kw = {"population": "customers", "dimensions": ["orders.status"],
-              "metrics": [QueryMetric(metric="last(spend, signup_at)", alias="l")]}
+              "metrics": [QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="l")]}
         default = await engine.execute(_q(None, **kw))
         bcast = await engine.execute(_q("broadcast", **kw))
         assert _same_rows(default, bcast)

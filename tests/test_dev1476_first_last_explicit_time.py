@@ -140,8 +140,8 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
-        "metrics": [{"metric": "last(amount, created_at)"}],
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "last(orders.amount, orders.created_at)"}],
     }))
     assert resp.data, resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
@@ -164,7 +164,7 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
         "metrics": [{"metric": "last(customers.amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
-    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    by_region = {row["customers.region"]: row for row in resp.data}
     last_key = next(
         k for k in by_region["NA"].keys() if "last" in k.lower()
     )
@@ -194,8 +194,8 @@ async def test_local_first_last_over_derived_column_expands_inner_refs(
 
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
-        "metrics": [{"metric": "last(net_amount, created_at)"}],
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "last(orders.net_amount, orders.created_at)"}],
     }))
     assert resp.data, resp.sql
 
@@ -243,7 +243,7 @@ async def test_cross_model_first_last_uses_target_default_time_dimension() -> No
         "dimensions": ["customers.region"],
         "metrics": [{"metric": "last(customers.amount)"}],
     }))
-    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    by_region = {row["customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
     assert by_region["NA"][last_key] == pytest.approx(50.0), resp.sql
@@ -302,7 +302,7 @@ async def test_d_cross_cross_model_derived_time_arg(
     resp = await engine.execute(SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.DAY,
         )],
         metrics=[{
@@ -355,7 +355,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
         "dimensions": ["customers.region"],
         "metrics": [{"metric": "last(customers.amount)"}],
     }))
-    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    by_region = {row["customers.region"]: row for row in resp.data}
     # Orders of a deleted customer read the filtered-out target as NULL.
     assert set(by_region) == {"NA", None}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
@@ -415,7 +415,7 @@ async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> Non
         "dimensions": ["customers.region"],
         "metrics": [{"metric": "last(customers.active_amount)"}],
     }))
-    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    by_region = {row["customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
     assert by_region["NA"][last_key] is None, resp.sql
@@ -479,10 +479,10 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"metric": "last(amount, created_day)"}],
+        "metrics": [{"metric": "last(orders.amount, orders.created_day)"}],
     }))
     assert resp.data, resp.sql
-    by_region = {row["orders.customers.region"]: row for row in resp.data}
+    by_region = {row["customers.region"]: row for row in resp.data}
     last_key = next(k for k in by_region["NA"].keys() if "last" in k.lower())
     assert by_region["NA"][last_key] == pytest.approx(20.0), resp.sql
 
@@ -637,8 +637,8 @@ class TestTimeArgJoinDiscovery:
         scope = self._run(
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "last(amount, customers.signup_at)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "last(orders.amount, customers.signup_at)"}],
             }),
             _u_orders(),
         )
@@ -648,8 +648,8 @@ class TestTimeArgJoinDiscovery:
         scope = self._run(
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "last(amount, customers.regions.opened_at)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "last(orders.amount, customers.regions.opened_at)"}],
             }),
             _u_orders(),
         )
@@ -663,8 +663,8 @@ class TestTimeArgJoinDiscovery:
         scope = self._run(
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": ["status"],
-                "metrics": [{"metric": "last(amount, cust_signup)"}],
+                "dimensions": ["orders.status"],
+                "metrics": [{"metric": "last(orders.amount, orders.cust_signup)"}],
             }),
             orders,
         )
@@ -673,9 +673,9 @@ class TestTimeArgJoinDiscovery:
     def test_composite_time_arg_registers_join(self) -> None:
         scope = self._run(
             SlayerQuery(
-                population="orders", dimensions=["status"],
+                population="orders", dimensions=["orders.status"],
                 metrics=[{
-                    "metric": "last(amount, customers.signup_at) + 1", "alias": "plus1",
+                    "metric": "last(orders.amount, customers.signup_at) + 1", "alias": "plus1",
                 }],
             ),
             _u_orders(),
@@ -804,8 +804,8 @@ async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
-        "metrics": [{"metric": "last(amount, customers.signup_at)"}],
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "last(orders.amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -819,8 +819,8 @@ async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
     engine = await _multi_hop_engine()
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
-        "metrics": [{"metric": "last(amount, customers.regions.opened_at)"}],
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "last(orders.amount, customers.regions.opened_at)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -860,8 +860,8 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
     )
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": ["status"],
-        "metrics": [{"metric": "last(amount, cust_signup)"}],
+        "dimensions": ["orders.status"],
+        "metrics": [{"metric": "last(orders.amount, orders.cust_signup)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -876,7 +876,7 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"metric": "last(amount, customers.signup_at)"}],
+        "metrics": [{"metric": "last(orders.amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     assert "_cm_" in resp.sql, (

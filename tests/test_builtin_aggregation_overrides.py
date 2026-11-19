@@ -19,7 +19,7 @@ class TestOwnCollect:
     async def test_the_empty_value_follows_the_formula(self, dialect: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_COLLECT_SUM])], dialect=dialect) as engine:
             resp = await engine.execute({"population": "t", "metrics": [metric("collect(a)")],
-                                         "filter": ["a > 100"]})
+                                         "filter": ["t.a > 100"]})
         assert value(resp) is None
 
     async def test_its_result_type_is_the_formulas(self, dialect: str) -> None:
@@ -41,7 +41,7 @@ class TestOtherClassificationSites:
         async with stored_engine(datasets=[t_doc(aggregations=[agg(name, formula)])]) as engine:
             resp = await engine.execute({"population": "t", "metrics": [
                 metric(f"{name}(a)")]})
-        assert float(resp.data[0]["t.v"]) == expected
+        assert float(resp.data[0]["v"]) == expected
 
     @pytest.mark.parametrize(("formula", "factor"), [("percentile(a, 2)", 2), ("percentile(a, 3)", 3)])
     async def test_positional_parameters_follow_the_definition(self, formula: str, factor: int) -> None:

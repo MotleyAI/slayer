@@ -106,7 +106,7 @@ class TestMultiOutputProducer:
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -118,7 +118,7 @@ class TestMultiOutputProducer:
                 {"field": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "alias": "band_n"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -131,7 +131,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
             filter=["not (band == 1)"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert "5000" not in cm_cte_bodies(sql)
 
@@ -140,7 +140,7 @@ class TestFilterClassifier:
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
             dimensions=["region", {"field": BAND, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         anded = await gen(_q(
             filter=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -156,7 +156,7 @@ class TestFilterClassifier:
         query = _q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
             filter=["band == 1 or status == 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(query)
         assert "status" in sql
@@ -165,7 +165,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
             filter=["coalesce(city, 'x') != 'Lyon'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert "Lyon" in cm_cte_bodies(sql)
 
@@ -176,7 +176,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
             filter=["status == 'ok'"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert "status" in cm_cte_bodies(sql)
         assert "status" in _consumer_body(sql)
@@ -187,7 +187,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
             filter=["sum(amount) > 0"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         assert "> 0" not in cm_cte_bodies(sql)
         assert "HAVING" in _consumer_body(sql).upper()
@@ -207,7 +207,7 @@ class TestDiscoveryGuards:
                 {"field": "CASE WHEN sum(customers.spend, partition_by=city) "
                                "> 100 THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"attributable from customers"):
@@ -216,7 +216,7 @@ class TestDiscoveryGuards:
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = _q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
             await _gen_with_reserved_column(q)
@@ -224,7 +224,7 @@ class TestDiscoveryGuards:
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = _q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await _gen_with_reserved_column(q)
         assert "SELECT" in sql

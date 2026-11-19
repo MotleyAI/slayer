@@ -102,12 +102,12 @@ def source_queries_equiv_dataset() -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name="city_region_total", population="sales",
-                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
-                metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
+                dimensions=[QueryDimension(field="sales.region"), QueryDimension(field="sales.city")],
+                metrics=[QueryMetric(metric="sum(sales.amount)", alias="city_total")],
             ),
             SlayerQuery(
                 population="city_region_total",
-                dimensions=[QueryDimension(field="region")],
+                dimensions=[QueryDimension(field="sales.region")],
                 metrics=[QueryMetric(metric="avg(city_total)", alias="acr")],
             ),
         ],

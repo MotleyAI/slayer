@@ -120,9 +120,9 @@ class TestParity:
         root = query(**_join("s1", "s2", [["customer_id", "customer_id"]]),
                      dimensions=["customer_id", "a", "s2.b"])
         resp = await engine.execute([s1, s2, root])
-        assert resp.columns == ["s1.customer_id", "s1.a", "s1.s2.b"]
+        assert resp.columns == ["s1.customer_id", "s1.a", "s2.b"]
         assert sorted_rows(resp.data) == sorted_rows([
-            {"s1.customer_id": c, "s1.a": CUST_REV[c], "s1.s2.b": CUST_TOP[c]} for c in CUST_REV])
+            {"s1.customer_id": c, "s1.a": CUST_REV[c], "s2.b": CUST_TOP[c]} for c in CUST_REV])
         assert len(planned) == 5, "cust_rev's two stages are spliced once, beside s1, s2 and the root"
 
     async def test_two_models_sharing_a_private_name_beside_a_user_stage(self, engine) -> None:
@@ -197,7 +197,7 @@ class TestOneFlatWith:
         resp = await engine.execute([s1, s2, root])
         expected = EMBEDDED_WITH[variant][1]
         assert sorted_rows(resp.data) == sorted_rows([
-            {"s1.customer_id": c, "s1.a": v, "s1.s2.b": CUST_REV[c]} for c, v in expected.items()])
+            {"s1.customer_id": c, "s1.a": v, "s2.b": CUST_REV[c]} for c, v in expected.items()])
 
 
 # --------------------------------------------------------------------------- #
@@ -209,19 +209,19 @@ class TestMetadata:
         got, ref = await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(monthly_dataset()), outer],
             columns=["monthly.status", "monthly.t"],
-            rows=[{"monthly.status": s, "monthly.t": v} for s, v in AMOUNT_BY_STATUS.items()])
+            rows=[{"monthly.status": s, "t": v} for s, v in AMOUNT_BY_STATUS.items()])
         assert got.attributes == ref.attributes
         status_meta = got.attributes.dimensions["monthly.status"]
         assert status_meta.label == STATUS_LABEL
-        t_meta = got.attributes.metrics["monthly.t"]
+        t_meta = got.attributes.metrics["t"]
         assert t_meta.format is not None
         assert t_meta.format.type == NumberFormatType.CURRENCY
 
     async def test_time_defaulting_through_a_spliced_model(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(query(
             population="monthly", dimensions=["status"], metrics=[m("last(rev)", "lr")]))
-        assert resp.columns == ["monthly.status", "monthly.lr"]
-        assert rows_by(resp.data, key="monthly.status", value="monthly.lr") == LAST_MONTHLY_BY_STATUS
+        assert resp.columns == ["monthly.status", "lr"]
+        assert rows_by(resp.data, key="monthly.status", value="lr") == LAST_MONTHLY_BY_STATUS
 
     async def test_join_cardinality_matches_the_explicit_splice(self, engine) -> None:
         measures = [m("sum(spend)", "sp"), m("sum(cust_rev.rev)", "r")]
@@ -277,7 +277,7 @@ class TestVariableLayering:
         runtime = {"th": present["runtime"]} if "runtime" in present else None
         async with dev1966_engine("sqlite", datasets=models) as e:
             resp = await e.execute(consumer, variables=runtime)
-        assert resp.data == [{"v_outer.t": _LAYERS[top][2]}]
+        assert resp.data == [{"t": _LAYERS[top][2]}]
 
     async def test_conflicting_contexts_fail_closed(self) -> None:
         models = _v_datasets(source=None, inner="18", outer="22", stage=None, dims=["status"])

@@ -44,9 +44,9 @@ from tests._gateway_harness import (
 )
 from tests.pg_facade.test_connection import _FakeWriter, _messages, _query, _startup, _terminate
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 REVENUE_BY_STATUS = {
-    "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+    "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 }
 
 
@@ -71,7 +71,7 @@ async def shop(tmp_path: Path) -> Shop:
 
 
 def _n(response: Any) -> int:
-    return response.data[0]["orders.n"]
+    return response.data[0]["n"]
 
 
 class TestStatementsReachTheFactoryClient:
@@ -146,7 +146,7 @@ class TestStatementsReachTheFactoryClient:
 
 _PUSHED = q(
     dimensions=["customers.tier"],
-    metrics=[QueryMetric(metric="sum(amount)", alias="m"), QueryMetric(metric="sum(customers.spend)", alias="cm")],
+    metrics=[QueryMetric(metric="sum(orders.amount)", alias="m"), QueryMetric(metric="sum(customers.spend)", alias="cm")],
     filter=["channel = 'app'"],
 )
 
@@ -281,14 +281,14 @@ class TestEngineOwnsItsClients:
             return sum(c.acloses for c in factory.clients)
 
         for _ in range(3):
-            assert client.query_sync(COUNT_ORDERS).data[0]["orders.n"] == 4
+            assert client.query_sync(COUNT_ORDERS).data[0]["n"] == 4
 
         async def _inside_a_loop() -> int:
-            return client.query_sync(COUNT_ORDERS).data[0]["orders.n"]
+            return client.query_sync(COUNT_ORDERS).data[0]["n"]
 
         assert asyncio.run(_inside_a_loop()) == 4
         with pytest.raises(SlayerError):
-            client.query_sync({"population": "no_such_model", "metrics": [{"metric": "count(*)"}]})
+            client.query_sync({"population": "no_such_model", "metrics": [{"metric": "count(orders.*)"}]})
         assert acloses() == 0
 
     def test_run_sync_leaves_custom_clients_open_when_cancelled(self, shop: Shop) -> None:
@@ -360,7 +360,7 @@ class TestEngineOwnsItsClients:
         factory = GatewayFactory()
         client = SlayerClient(storage=shop.storage, client_factory=factory)
         response = await client.query(COUNT_ORDERS)
-        assert response.data[0]["orders.n"] == 4
+        assert response.data[0]["n"] == 4
         assert response.sql in factory.all_statements()
 
     def test_remote_mode_rejects_a_factory(self) -> None:

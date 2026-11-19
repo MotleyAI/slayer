@@ -141,7 +141,7 @@ class TestDev1527KwargExpansion:
         ])
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="weighted_avg(amount, weight=dbl_qty)")],
+            metrics=[QueryMetric(metric="weighted_avg(orders.amount, weight=orders.dbl_qty)")],
         )
         sql = await _engine_generate(query=query, dataset=orders)
         assert "quantity * 2" in sql
@@ -152,7 +152,7 @@ class TestDev1527KwargExpansion:
         # str-kind path is byte-identical to today (regression guard).
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="percentile(amount, p=0.95)")],
+            metrics=[QueryMetric(metric="percentile(orders.amount, p=0.95)")],
         )
         sql = await _engine_generate(query=query, dataset=_orders())
         assert "PERCENTILE_CONT" in sql
@@ -161,7 +161,7 @@ class TestDev1527KwargExpansion:
     async def test_weighted_avg_plain_column_unchanged(self) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="weighted_avg(amount, weight=quantity)")],
+            metrics=[QueryMetric(metric="weighted_avg(orders.amount, weight=orders.quantity)")],
         )
         sql = await _engine_generate(query=query, dataset=_orders())
         assert "SUM(" in sql
@@ -173,7 +173,7 @@ class TestDev1527KwargExpansion:
         # (quantity) must appear in the CORR call, str-kind, byte-identical.
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="corr(amount, other=quantity)")],
+            metrics=[QueryMetric(metric="corr(orders.amount, other=orders.quantity)")],
         )
         sql = await _engine_generate(query=query, dataset=_orders())
         assert "CORR(" in sql.upper()
@@ -190,7 +190,7 @@ class TestDev1527KwargExpansion:
         ])
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="corr(amount, other=region_weight)")],
+            metrics=[QueryMetric(metric="corr(orders.amount, other=orders.region_weight)")],
         )
         sql = await _engine_generate(
             query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
@@ -214,7 +214,7 @@ class TestDev1527KwargExpansion:
         query = SlayerQuery(
             population="orders",
             metrics=[QueryMetric(
-                metric="weighted_avg(amount, weight=region_weight) + sum(quantity)")],
+                metric="weighted_avg(orders.amount, weight=orders.region_weight) + sum(orders.quantity)")],
         )
         sql = await _engine_generate(
             query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
@@ -239,9 +239,9 @@ class TestDev1527KwargExpansion:
         ])
         query = SlayerQuery(
             population="orders",
-            dimensions=["id"],
-            metrics=[QueryMetric(metric="weighted_avg(amount, weight=region_weight)")],
-            filter=["weighted_avg(amount, weight=region_weight) > 5"],
+            dimensions=["orders.id"],
+            metrics=[QueryMetric(metric="weighted_avg(orders.amount, weight=orders.region_weight)")],
+            filter=["weighted_avg(orders.amount, weight=orders.region_weight) > 5"],
         )
         sql = await _engine_generate(
             query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
@@ -267,7 +267,7 @@ class TestDev1527KwargExpansion:
         )]
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="scaled_sum(amount, scale=100)")],
+            metrics=[QueryMetric(metric="scaled_sum(orders.amount, scale=100)")],
         )
         sql = await _engine_generate(query=query, dataset=orders)
         assert "SUM(orders.amount)" in _norm(sql)
@@ -312,7 +312,7 @@ class TestDev1527F1BasePull:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="weighted_avg(amount, weight=li_weight)")],
+            metrics=[QueryMetric(metric="weighted_avg(orders.amount, weight=orders.li_weight)")],
         )
         line_items = _line_items()
         with pytest.raises(ValueError) as ei:
@@ -332,7 +332,7 @@ class TestDev1527F1BasePull:
         ])
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="weighted_avg(amount, weight=region_weight)")],
+            metrics=[QueryMetric(metric="weighted_avg(orders.amount, weight=orders.region_weight)")],
         )
         sql = await _engine_generate(
             query=query, dataset=orders, extra_datasets=[_customers(), _regions()],

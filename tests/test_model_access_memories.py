@@ -49,7 +49,7 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
 
 
 TWIN_DS = "acme2"
-HR_QUERY = SlayerQuery.model_validate({"population": "hr", "metrics": [{"metric": "sum(salary)"}]})
+HR_QUERY = SlayerQuery.model_validate({"population": "hr", "metrics": [{"metric": "sum(hr.salary)"}]})
 
 
 async def _twin_hr(store: AccessStore) -> None:

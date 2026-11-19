@@ -31,7 +31,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
-_MONTH = [TimeDimension(field="created_at", granularity="month")]
+_MONTH = [TimeDimension(field="orders.created_at", granularity="month")]
 
 # A bare ROW-column operand must fail closed with either error; both REJECT.
 # A row-column operand beside an aggregate now fails closed at the
@@ -247,8 +247,8 @@ class TestOrderItemEntryPoint:
     @pytest.mark.parametrize(("direction", "expected"), [("desc", ["paid", "open"]), ("asc", ["open", "paid"])])
     async def test_composite_over_declared_aliases_sorts(self, exec_engine, direction, expected) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}, {"metric": "count(*)", "alias": "cnt"}],
+            "population": "orders", "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}, {"metric": "count(orders.*)", "alias": "cnt"}],
             "order": [{"field": "rev / cnt", "direction": direction}],
         }))
         assert [r["orders.status"] for r in resp.data] == expected
@@ -265,8 +265,8 @@ class TestOrderItemEntryPoint:
         def query(order: str) -> SlayerQuery:
             return SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field="status")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                dimensions=[QueryDimension(field="orders.status")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
                 order=[OrderItem.model_validate({"field": order, "direction": "desc"})],
             )
 
@@ -293,16 +293,16 @@ class TestOrderItemEntryPoint:
         eng = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="odd",
-            dimensions=[QueryDimension(field="_expr_pending")],
+            dimensions=[QueryDimension(field="odd._expr_pending")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="_expr_pending", direction="asc")],
+            order=[OrderItem(field="odd._expr_pending", direction="asc")],
         )
         sql = await _sql(eng, query)
         assert "weird_col" in sql, sql
 
     def test_hand_built_order_item_without_raw_formula_is_not_formula_bound(self) -> None:
         """The sentinel alone is not the discriminator; raw_formula is."""
-        item = OrderItem(field="_expr_pending", direction="asc")
+        item = OrderItem(field="odd._expr_pending", direction="asc")
         assert item.raw_expression is None
 
 
@@ -311,8 +311,8 @@ class TestOrderOnlyTransform:
     async def test_rank_order_only_hidden_and_ordered(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -328,7 +328,7 @@ class TestOrderOnlyTransform:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem(field=formula, direction="desc")],
         )
         sql = await _sql(engine, query)
@@ -338,8 +338,8 @@ class TestOrderOnlyTransform:
     async def test_ntile_order_only(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "ntile(sum(amount), n=4)", "direction": "asc"})],
         )
         sql = await _sql(engine, query)
@@ -352,18 +352,18 @@ class TestOrderOnlyTransform:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="cumsum(sum(amount))", alias="cs")],
+            metrics=[QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs")],
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.created_at", "orders.cs"], sql
+        assert _outer_select_columns(sql) == ["orders.created_at", "cs"], sql
         _hidden_order_alias(sql)
 
     async def test_order_only_transform_with_limit_and_offset(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
             limit=2, offset=1,
         )
@@ -378,12 +378,12 @@ class TestOrderOnlyTransform:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="cumsum(sum(amount))", alias="cs")],
+            metrics=[QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs")],
             filter=["cs > 5"],
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.created_at", "orders.cs"], sql
+        assert _outer_select_columns(sql) == ["orders.created_at", "cs"], sql
         _hidden_order_alias(sql)
 
 
@@ -395,7 +395,7 @@ class TestOrderOnlyChangeFamily:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem(field=formula, direction="desc")],
         )
         sql = await _sql(engine, query)
@@ -413,7 +413,7 @@ class TestOrderOnlyChangeFamily:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "change(sum(amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -424,7 +424,7 @@ class TestOrderOnlyChangeFamily:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "cumsum(sum(amount)) / 2", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -438,8 +438,8 @@ class TestOrderOnlyCompositeLocal:
     async def test_composite_arithmetic_order_only(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -452,8 +452,8 @@ class TestOrderOnlyCompositeLocal:
     async def test_scalar_call_order_only(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "abs(sum(amount))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -465,9 +465,9 @@ class TestOrderOnlyCompositeLocal:
         """Neither operand may leak into the public projection (Law 2)."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
-            order=[OrderItem(field="sum(amount) / sum(fee)", direction="desc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            order=[OrderItem(field="sum(orders.amount) / sum(orders.fee)", direction="desc")],
         )
         sql = await _sql(engine, query)
         public = _outer_select_columns(sql)
@@ -477,8 +477,8 @@ class TestOrderOnlyCompositeLocal:
     async def test_composite_order_with_limit(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
             limit=1,
         )
@@ -493,8 +493,8 @@ class TestOrderOnlyCompositeCrossModel:
     async def test_local_over_cross_model_order_only(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / sum(customers.revenue)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -506,8 +506,8 @@ class TestOrderOnlyCompositeCrossModel:
         """Reversed operand order — routing must not depend on which side is remote."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(customers.revenue) / sum(amount)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -517,8 +517,8 @@ class TestOrderOnlyCompositeCrossModel:
     async def test_two_remote_models_in_one_order_composite(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({
                 "field": "sum(customers.revenue) / sum(suppliers.revenue)",
                 "direction": "desc",
@@ -532,8 +532,8 @@ class TestOrderOnlyCompositeCrossModel:
     async def test_scalar_call_wrapping_cross_model_order_only(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "abs(sum(customers.revenue))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -544,7 +544,7 @@ class TestOrderOnlyCompositeCrossModel:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "cumsum(sum(customers.revenue))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -560,7 +560,7 @@ class TestHiddenAliasUniqueness:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="cumsum(sum(amount)) + cumsum(count(id))", alias="both")],
+            metrics=[QueryMetric(metric="cumsum(sum(orders.amount)) + cumsum(count(orders.id))", alias="both")],
         )
         sql = await _sql(engine, query)
         assert not _duplicate_select_aliases(sql), (
@@ -568,7 +568,7 @@ class TestHiddenAliasUniqueness:
             f"both operands to the same column.\nSQL:\n{sql}"
         )
         idents = _all_quoted_idents(sql)
-        assert "orders._cumsum_inner" in idents, sql
+        assert "_cumsum_inner" in idents, sql
         assert "orders._cumsum_inner_2" in idents, sql
 
     @pytest.mark.parametrize("op", ["rank", "lag", "lead"])
@@ -587,8 +587,8 @@ class TestHiddenAliasUniqueness:
     async def test_two_order_items_same_transform_op(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[
                 OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"}),
                 OrderItem.model_validate({"field": "rank(sum(fee), direction='desc')", "direction": "asc"}),
@@ -607,8 +607,8 @@ class TestHiddenAliasUniqueness:
     async def test_two_hidden_composites_same_op(self, engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[
                 OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"}),
                 OrderItem.model_validate({"field": "sum(fee) / count(id)", "direction": "asc"}),
@@ -625,8 +625,8 @@ class TestHiddenAliasUniqueness:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[
-                QueryMetric(metric="time_shift(sum(amount), 1)", alias="s1"),
-                QueryMetric(metric="time_shift(sum(amount), 2)", alias="s2"),
+                QueryMetric(metric="time_shift(sum(orders.amount), 1)", alias="s1"),
+                QueryMetric(metric="time_shift(sum(orders.amount), 2)", alias="s2"),
             ],
         )
         sql = await _sql(engine, query)
@@ -638,8 +638,8 @@ class TestHiddenAliasUniqueness:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount)) + 1", alias="shifted"),
-                QueryMetric(metric="count(id)", alias="_cumsum_inner"),
+                QueryMetric(metric="cumsum(sum(orders.amount)) + 1", alias="shifted"),
+                QueryMetric(metric="count(orders.id)", alias="_cumsum_inner"),
             ],
         )
         sql = await _sql(engine, query)
@@ -647,7 +647,7 @@ class TestHiddenAliasUniqueness:
             f"a user measure named _cumsum_inner must not collide with the "
             f"hidden transform slot.\nSQL:\n{sql}"
         )
-        assert "orders._cumsum_inner" in _outer_select_columns(sql), sql
+        assert "_cumsum_inner" in _outer_select_columns(sql), sql
 
     async def test_user_measure_named_like_hidden_slot_declared_first(self, engine) -> None:
         """Reversed declaration order — must not depend on intern order."""
@@ -655,13 +655,13 @@ class TestHiddenAliasUniqueness:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[
-                QueryMetric(metric="count(id)", alias="_cumsum_inner"),
-                QueryMetric(metric="cumsum(sum(amount)) + 1", alias="shifted"),
+                QueryMetric(metric="count(orders.id)", alias="_cumsum_inner"),
+                QueryMetric(metric="cumsum(sum(orders.amount)) + 1", alias="shifted"),
             ],
         )
         sql = await _sql(engine, query)
         assert not _duplicate_select_aliases(sql), sql
-        assert "orders._cumsum_inner" in _outer_select_columns(sql), sql
+        assert "_cumsum_inner" in _outer_select_columns(sql), sql
 
     async def test_public_names_are_never_renamed(self, engine) -> None:
         """A user-declared name is the result-key contract; it survives verbatim."""
@@ -669,12 +669,12 @@ class TestHiddenAliasUniqueness:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[
-                QueryMetric(metric="cumsum(sum(amount))", alias="c1"),
-                QueryMetric(metric="cumsum(count(id))", alias="c2"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="c1"),
+                QueryMetric(metric="cumsum(count(orders.id))", alias="c2"),
             ],
         )
         sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.created_at", "orders.c1", "orders.c2"], sql
+        assert _outer_select_columns(sql) == ["orders.created_at", "c1", "c2"], sql
 
 
 # Group 7 — windowed ORDER BY targets (S-a top-level, S-b inside a composite).
@@ -684,7 +684,7 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -705,7 +705,7 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -719,7 +719,7 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d') / count(id)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -748,11 +748,11 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w90")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90")],
             order=[OrderItem.model_validate({"field": "sum(fee, window='30d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.created_at", "orders.w90"], sql
+        assert _outer_select_columns(sql) == ["orders.created_at", "w90"], sql
         assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 2, sql
 
     async def test_declared_windowed_also_used_as_order_target_stays_public(
@@ -762,13 +762,13 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w90")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.created_at", "orders.w90"], sql
+        assert _outer_select_columns(sql) == ["orders.created_at", "w90"], sql
         assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 1, sql
-        assert _outer_order_by_names(sql) == ["orders.w90"], sql
+        assert _outer_order_by_names(sql) == ["w90"], sql
 
     async def test_c13_two_aliases_for_one_windowed_key_plus_order(self, engine) -> None:
         """One windowed value under two names: both project; order must not collapse them."""
@@ -776,22 +776,22 @@ class TestWindowedOrderOnly:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[
-                QueryMetric(metric="sum(amount, window='90d')", alias="wa"),
-                QueryMetric(metric="sum(amount, window='90d')", alias="wb"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="wa"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="wb"),
             ],
             order=[OrderItem(field="wa", direction="desc")],
         )
         sql = await _sql(engine, query)
-        assert _outer_select_columns(sql) == ["orders.created_at", "orders.wa", "orders.wb"], sql
+        assert _outer_select_columns(sql) == ["orders.created_at", "wa", "wb"], sql
         assert len(re.findall(r"_cm_\w+ AS \(", sql)) == 1, sql
 
     async def test_order_only_windowed_with_grain_dimension(self, engine) -> None:
         """A hidden order target must not change the projected-row-slot grain."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -807,11 +807,11 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at", granularity="month",
+                field="orders.created_at", granularity="month",
                 date_range=["2025-02-01", "2025-02-28"],
             )],
-            metrics=[QueryMetric(metric="count(id)")],
-            filter=["status = 'paid'"],
+            metrics=[QueryMetric(metric="count(orders.id)")],
+            filter=["orders.status = 'paid'"],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -827,7 +827,7 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
             limit=1,
         )
@@ -839,7 +839,7 @@ class TestWindowedOrderOnly:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w90")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90")],
             filter=["w90 > 0"],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
@@ -856,7 +856,7 @@ class TestWindowedStillGuarded:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="sum(amount, window='90d') / count(id)", alias="x")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d') / count(orders.id)", alias="x")],
         )
         sql = await _sql(engine, query)
         assert_scope_closed(sql, dialect="sqlite")
@@ -868,7 +868,7 @@ class TestWindowedStillGuarded:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "cumsum(sum(amount, window='90d'))", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -879,7 +879,7 @@ class TestWindowedStillGuarded:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "sum(customers.revenue, window='90d')", "direction": "desc"})],
             to_many_handling="broadcast",
         )
@@ -896,7 +896,7 @@ class TestWindowedStillGuarded:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "max(amount, window='90d')", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -913,8 +913,8 @@ class TestStillGuarded:
         """A host-rooted CTE sort key must not change grain or reach the projection."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem(field="customers.region", direction="desc")],
         )
         sql = await _sql(engine, query)
@@ -938,9 +938,9 @@ class TestStillGuarded:
         """The split-emission path must be untouched."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
-            order=[OrderItem(field="created_at", direction="asc")],
+            order=[OrderItem(field="orders.created_at", direction="asc")],
         )
         sql = await _sql(engine, query)
         parsed = _outermost_select(sql, dialect="sqlite")
@@ -954,8 +954,8 @@ class TestStillGuarded:
         """A top-level ``IN`` over an aggregate orders through a hidden slot."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) in (1, 2)", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -966,8 +966,8 @@ class TestStillGuarded:
         """Control: a boolean composite that DOES slot must keep working (guard not over-broad)."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) > 1 and sum(amount) < 500", "direction": "desc"})],
         )
         sql = await _sql(engine, query)
@@ -985,8 +985,8 @@ class TestStillGuarded:
         """A row-column operand inside a scalar call must raise, not be stringified."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem(field=formula, direction="desc")],
         )
         with pytest.raises(error):
@@ -996,8 +996,8 @@ class TestStillGuarded:
         """The arithmetic sibling of the case above; pinned so the two cannot drift apart."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / id", "direction": "desc"})],
         )
         with pytest.raises(_ROW_OPERAND_REJECTED):
@@ -1042,8 +1042,8 @@ class TestStillGuarded:
         """The hidden-aggregate contract must be untouched."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
             limit=3,
         )
@@ -1072,8 +1072,8 @@ class TestDialectEmission:
         eng = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
         )
         resp = await eng.execute(query, dry_run=True)
@@ -1097,8 +1097,8 @@ class TestDialectEmission:
         eng = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
         )
         resp = await eng.execute(query, dry_run=True)
@@ -1119,10 +1119,10 @@ class TestExecution:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="cumsum(sum(amount)) + cumsum(count(id))", alias="both")],
+            metrics=[QueryMetric(metric="cumsum(sum(orders.amount)) + cumsum(count(orders.id))", alias="both")],
         )
         resp = await exec_engine.execute(query)
-        values = [float(r["orders.both"]) for r in resp.data]
+        values = [float(r["both"]) for r in resp.data]
         assert values == [52.0, 79.0], f"rows: {resp.data}"
 
     async def test_top_n_by_order_only_transform(self, exec_engine) -> None:
@@ -1130,8 +1130,8 @@ class TestExecution:
         the transform (not its operand) drives the sort."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -1141,8 +1141,8 @@ class TestExecution:
         """paid: 50/2 = 25.0   open: 25/2 = 12.5 -> paid first on DESC."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -1151,8 +1151,8 @@ class TestExecution:
     async def test_composite_order_direction_is_honoured(self, exec_engine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "asc"})],
         )
         resp = await exec_engine.execute(query)
@@ -1169,7 +1169,7 @@ class TestExecution:
             return SlayerQuery(
                 population="orders",
                 time_dimensions=_MONTH,
-                metrics=[QueryMetric(metric="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
                 order=[order],
             )
 
@@ -1185,7 +1185,7 @@ class TestExecution:
         assert set(resp_asc.columns) == {"orders.created_at", "orders.amount_sum"}
 
         resp_control = await exec_engine.execute(
-            _query(OrderItem(field="amount_sum", direction="desc")),
+            _query(OrderItem(field="orders.amount_sum", direction="desc")),
         )
         assert _months(resp_control.data) == ["2025-01", "2025-02"], (
             resp_control.data
@@ -1194,8 +1194,8 @@ class TestExecution:
     async def test_hidden_order_slots_stripped_from_response(self, exec_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
             order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -1212,8 +1212,8 @@ class TestExecution:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -1226,7 +1226,7 @@ class TestExecution:
         query = SlayerQuery(
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)")],
+            metrics=[QueryMetric(metric="count(orders.id)")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -1240,37 +1240,37 @@ class TestMultiStage:
         inner = SlayerQuery(
             name="s1",
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="amt"),
-                QueryMetric(metric="count(*)", alias="cnt"),
+                QueryMetric(metric="sum(orders.amount)", alias="amt"),
+                QueryMetric(metric="count(orders.*)", alias="cnt"),
             ],
         )
         outer = SlayerQuery(
             population="s1",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amt)", alias="total")],
+            dimensions=[QueryDimension(field="s1.status")],
+            metrics=[QueryMetric(metric="sum(s1.amt)", alias="total")],
             order=[OrderItem.model_validate({"field": "sum(amt) / sum(cnt)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query=[inner, outer])
-        assert resp.columns == ["s1.status", "s1.total"], resp.columns
+        assert resp.columns == ["s1.status", "total"], resp.columns
         assert [r["s1.status"] for r in resp.data] == ["paid", "open"], resp.data
 
     async def test_downstream_stage_order_only_transform(self, exec_engine: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="s1",
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="amt")],
         )
         outer = SlayerQuery(
             population="s1",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(amt)", alias="total")],
+            dimensions=[QueryDimension(field="s1.status")],
+            metrics=[QueryMetric(metric="sum(s1.amt)", alias="total")],
             order=[OrderItem.model_validate({"field": "rank(sum(amt), direction='desc')", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query=[inner, outer])
-        assert resp.columns == ["s1.status", "s1.total"], resp.columns
+        assert resp.columns == ["s1.status", "total"], resp.columns
         assert [r["s1.status"] for r in resp.data] == ["open", "paid"], resp.data
 
     async def test_downstream_stage_schema_excludes_hidden_order_slot(
@@ -1280,17 +1280,17 @@ class TestMultiStage:
         inner = SlayerQuery(
             name="s1",
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)", alias="cnt")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="cnt")],
             order=[OrderItem.model_validate({"field": "sum(amount) / count(id)", "direction": "desc"})],
         )
         outer = SlayerQuery(
             population="s1",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="sum(cnt)", alias="total")],
+            dimensions=[QueryDimension(field="s1.status")],
+            metrics=[QueryMetric(metric="sum(s1.cnt)", alias="total")],
         )
         resp = await exec_engine.execute(query=[inner, outer])
-        assert resp.columns == ["s1.status", "s1.total"], resp.columns
+        assert resp.columns == ["s1.status", "total"], resp.columns
 
     async def test_hidden_windowed_order_slot_absent_from_stage_schema(
         self, exec_engine: SlayerQueryEngine,
@@ -1300,16 +1300,16 @@ class TestMultiStage:
             name="s1",
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.id)", alias="n")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         outer = SlayerQuery(
             population="s1",
-            metrics=[QueryMetric(metric="sum(n)", alias="total")],
+            metrics=[QueryMetric(metric="sum(s1.n)", alias="total")],
         )
         resp = await exec_engine.execute(query=[inner, outer])
-        assert resp.columns == ["s1.total"], resp.columns
-        assert int(resp.data[0]["s1.total"]) == 4, resp.data
+        assert resp.columns == ["total"], resp.columns
+        assert int(resp.data[0]["total"]) == 4, resp.data
 
     async def test_outer_stage_cannot_bind_hidden_windowed_order_slot(
         self, exec_engine,
@@ -1319,12 +1319,12 @@ class TestMultiStage:
             name="s1",
             population="orders",
             time_dimensions=_MONTH,
-            metrics=[QueryMetric(metric="count(id)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.id)", alias="n")],
             order=[OrderItem.model_validate({"field": "sum(amount, window='90d')", "direction": "desc"})],
         )
         outer = SlayerQuery(
             population="s1",
-            metrics=[QueryMetric(metric="sum(amount_sum_window_90d)", alias="leaked")],
+            metrics=[QueryMetric(metric="sum(s1.amount_sum_window_90d)", alias="leaked")],
         )
         with pytest.raises(UnknownReferenceError) as ei:
             await exec_engine.execute(query=[inner, outer])
@@ -1340,16 +1340,16 @@ class TestMultiStage:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(
-                metric="cumsum(sum(amount)) + cumsum(count(id))", alias="both",
+                metric="cumsum(sum(orders.amount)) + cumsum(count(orders.id))", alias="both",
             )],
         )
         outer = SlayerQuery(
             population="s1",
-            metrics=[QueryMetric(metric="max(both)", alias="peak")],
+            metrics=[QueryMetric(metric="max(s1.both)", alias="peak")],
         )
         resp = await exec_engine.execute(query=[inner, outer])
-        assert resp.columns == ["s1.peak"], resp.columns
-        assert float(resp.data[0]["s1.peak"]) == 79.0, resp.data
+        assert resp.columns == ["peak"], resp.columns
+        assert float(resp.data[0]["peak"]) == 79.0, resp.data
 
 
 # Group 9 — two pins superseded by Phase 1, inverted here (not deleted) so the
@@ -1361,9 +1361,9 @@ class TestSupersededByDev1703Phase1:
         DESC puts open first; a no-op sort would scramble that."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=[QueryMetric(metric="count(*)")],
-            order=[OrderItem(field="created_at", direction="desc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=[QueryMetric(metric="count(orders.*)")],
+            order=[OrderItem(field="orders.created_at", direction="desc")],
         )
         resp = await exec_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
@@ -1377,7 +1377,7 @@ class TestSupersededByDev1703Phase1:
         aggregate induces a GROUP BY, so a 4-row table came back with 2 rows."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             distinct_dimension_values=False,
             order=[OrderItem.model_validate({"field": "rank(sum(amount), direction='desc')", "direction": "desc"})],
         )

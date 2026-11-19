@@ -45,7 +45,7 @@ async def test_round_trip_composes_to_the_customers_orders_total(seeded) -> None
     ((oracle,),) = _oracle(dialect, db, _TOTAL_SQL)
     assert float(oracle) == pytest.approx(117.0)
     resp = await engine.execute(q(metrics=[{"metric": "customers.order_total", "alias": "x"}]))
-    assert [float(r["orders.x"]) for r in resp.data] == pytest.approx([117.0])
+    assert [float(r["x"]) for r in resp.data] == pytest.approx([117.0])
 
 
 async def test_round_trip_is_attributed_per_host_tier(seeded) -> None:
@@ -58,6 +58,6 @@ async def test_round_trip_is_attributed_per_host_tier(seeded) -> None:
         dimensions=["customers.tier"],
         metrics=[{"metric": "customers.order_total", "alias": "x"}],
     ))
-    got = {r["orders.customers.tier"]: (None if r["orders.x"] is None else float(r["orders.x"]))
+    got = {r["customers.tier"]: (None if r["x"] is None else float(r["x"]))
            for r in resp.data}
     assert got == oracle

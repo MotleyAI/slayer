@@ -63,7 +63,7 @@ class TestTimeDimensionSource:
     async def test_key_equal_to_expression_source_is_its_bucket(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["region"], time_dimensions=[td(EFF)],
                                       metrics=[m(f"sum(amount, partition_by={EFF})")]))
-        assert by_bucket(resp, column(resp, EFF_NAME), "orders.v", by=["orders.region"]) == {
+        assert by_bucket(resp, column(resp, EFF_NAME), "v", by=["orders.region"]) == {
             ("EU", "2025-01"): 10.0, ("EU", "2025-02"): 50.0, ("EU", "2025-04"): 50.0,
             ("US", "2025-02"): 50.0, ("US", "2025-03"): 100.0,
         }, resp.sql

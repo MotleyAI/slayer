@@ -100,8 +100,8 @@ async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
     ]))
     restricted = await engine.execute(q(time_dimensions=MONTH, metrics=[m("avg(amount, window='90d')")],
                                          filter=[PAID]))
-    got = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in resp.data}
-    want = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in restricted.data}
+    got = {str(r["orders.order_date"])[:7]: num(r["v"]) for r in resp.data}
+    want = {str(r["orders.order_date"])[:7]: num(r["v"]) for r in restricted.data}
     assert want, (got, want)
     assert got.keys() >= want.keys(), (got, want)
     for month, value in want.items():
@@ -114,15 +114,15 @@ async def check_boolean_weight_partitioned(engine: SlayerQueryEngine) -> None:
     ]))
     assert len(resp.data) == 6, resp.data
     for row in resp.data:
-        assert num(row["orders.v"]) == pytest.approx(PAID_AVG_BY_CUSTOMER[int(row["orders.customer_id"])]), resp.sql
+        assert num(row["v"]) == pytest.approx(PAID_AVG_BY_CUSTOMER[int(row["orders.customer_id"])]), resp.sql
 
 
 async def check_boolean_weight_cross_dataset(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": "customers", "dimensions": ["name"],
+        "population": "customers", "dimensions": ["customers.name"],
         "metrics": [m("weighted_avg(orders.amount, weight=orders.status = 'paid')")],
     }))
-    got = {r["customers.name"]: num(r["customers.v"]) for r in resp.data}
+    got = {r["customers.name"]: num(r["v"]) for r in resp.data}
     assert got == pytest.approx(PAID_AVG_BY_NAME), resp.sql
 
 
@@ -132,7 +132,7 @@ async def check_boolean_weight_associated(engine: SlayerQueryEngine) -> None:
         dimensions=["status"], to_many_handling="associate",
         metrics=[m("weighted_avg(customers.credit, weight=customers.credit > 150)")],
     ))
-    got = {r["orders.status"]: num(r["orders.v"]) for r in resp.data}
+    got = {r["orders.status"]: num(r["v"]) for r in resp.data}
     assert got == pytest.approx({"open": CREDIT_ABOVE_150_AVG, "paid": CREDIT_ABOVE_150_AVG}), resp.sql
     assert "associated" in {w.kind for w in resp.warnings}
 

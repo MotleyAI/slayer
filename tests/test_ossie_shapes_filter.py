@@ -16,7 +16,7 @@ from tests._deprecated_input_helpers import deprecations, recorded
 from tests._engine_helpers import owned_query_engine
 from tests._ossie_shapes_fixtures import execute, shop_engine_store, sorted_rows
 
-BASE: dict[str, Any] = {"population": "orders", "dimensions": ["status"], "metrics": ["count(*)"]}
+BASE: dict[str, Any] = {"population": "orders", "dimensions": ["orders.status"], "metrics": ["count(orders.*)"]}
 
 
 def query(**extra: Any) -> SlayerQuery:
@@ -55,7 +55,7 @@ class TestDump:
         assert refinement.model_dump(mode="json", exclude_none=True)["filter"] == "amount > 15"
 
     def test_a_rest_request_takes_a_string(self) -> None:
-        request = QueryRequest.model_validate({**BASE, "filter": "amount > 15"})
+        request = QueryRequest.model_validate({**BASE, "filter": "orders.amount > 15"})
         assert request.filter == "amount > 15"
 
 
@@ -79,8 +79,8 @@ class TestRefinement:
 class TestExecution:
     async def test_a_string_filter_returns_the_list_forms_rows(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
-        as_string = await execute(storage, {**BASE, "filter": "amount > 15"})
-        as_list = await execute(storage, {**BASE, "filter": ["amount > 15"]})
+        as_string = await execute(storage, {**BASE, "filter": "orders.amount > 15"})
+        as_list = await execute(storage, {**BASE, "filter": ["orders.amount > 15"]})
         assert sorted_rows(as_string) == sorted_rows(as_list)
         assert sorted_rows(as_string) != sorted_rows(await execute(storage, BASE))
 
@@ -92,9 +92,9 @@ class TestExecution:
 
     async def test_a_saved_string_filter_and_a_refinement_both_apply(self, tmp_path: Path) -> None:
         storage = await shop_engine_store(tmp_path)
-        both = await execute(storage, {**BASE, "filter": ["amount > 15", "status = 'ok'"]})
+        both = await execute(storage, {**BASE, "filter": ["orders.amount > 15", "orders.status = 'ok'"]})
         async with owned_query_engine(storage=storage) as engine:
-            await engine.create_dataset_from_query(query={**BASE, "filter": "amount > 15"}, name="by_status")
-            refined = await engine.execute("by_status", refine={"filter": "status = 'ok'"})
+            await engine.create_dataset_from_query(query={**BASE, "filter": "orders.amount > 15"}, name="by_status")
+            refined = await engine.execute("by_status", refine={"filter": "orders.status = 'ok'"})
         assert sorted_rows(refined) == sorted_rows(both)
-        assert sorted_rows(refined) != sorted_rows(await execute(storage, {**BASE, "filter": "amount > 15"}))
+        assert sorted_rows(refined) != sorted_rows(await execute(storage, {**BASE, "filter": "orders.amount > 15"}))

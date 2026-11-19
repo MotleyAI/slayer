@@ -55,8 +55,8 @@ async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim,
     sliced = await engine.execute(
         assoc_q(dimensions=[dim], metrics=[measure]))
 
-    filtered_value = float(filtered.data[0]["orders.m"])
-    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["orders.m"]
+    filtered_value = float(filtered.data[0]["m"])
+    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["m"]
     assert filtered_value == pytest.approx(float(sliced_cell)), (
         f"LAW dice–slice violated for {measure_key} on {dim}={value!r}: "
         f"filtered {filtered_value} != sliced {sliced_cell}")
@@ -70,5 +70,5 @@ async def test_holds_by_default(exec_backend, measure_key, dim, value):
     filtered = await engine.execute(q(metrics=[measure], filter=[f"{dim} = '{value}'"]))
     sliced = await engine.execute(q(dimensions=[dim], metrics=[measure]))
 
-    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["orders.m"]
-    assert float(filtered.data[0]["orders.m"]) == pytest.approx(float(sliced_cell))
+    sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["m"]
+    assert float(filtered.data[0]["m"]) == pytest.approx(float(sliced_cell))

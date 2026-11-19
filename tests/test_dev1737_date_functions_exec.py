@@ -52,7 +52,7 @@ def _q(**kw) -> SlayerQuery:
 
 async def _count(engine, *filters: str, **kw) -> int:
     resp = await engine.execute(_q(metrics=[{"metric": "count(*)", "alias": "n"}], filter=list(filters), **kw))
-    return int(resp.data[0]["orders.n"])
+    return int(resp.data[0]["n"])
 
 
 async def _by_id(engine, expr: str, *, dataset: str = "orders") -> dict[int, object]:
@@ -66,7 +66,7 @@ class TestSpecScenarios:
             dimensions=[{"field": "date_part('day_of_week', created_at)", "alias": "dow"}],
             metrics=[{"metric": "count(*)", "alias": "n"}],
         ))
-        got = {int(r["orders.dow"]): int(r["orders.n"]) for r in resp.data}
+        got = {int(r["dow"]): int(r["n"]) for r in resp.data}
         assert got == {5: 1, 7: 1, 1: 2, 3: 1}
 
     async def test_filter(self, orders_engine) -> None:
@@ -81,7 +81,7 @@ class TestSpecScenarios:
 
     async def test_bucket_form_unchanged(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(dimensions=["date_trunc('month', created_at)"], metrics=[{"metric": "count(*)", "alias": "n"}]))
-        key = next(k for k in resp.data[0] if k != "orders.n")
+        key = next(k for k in resp.data[0] if k != "n")
         assert {str(r[key])[:10] for r in resp.data} == {"2024-01-01", "2024-03-01", "2024-06-01", "2024-12-01"}
 
     async def test_unit_case_folds(self, orders_engine) -> None:
@@ -89,7 +89,7 @@ class TestSpecScenarios:
             {"metric": "max(date_part('MONTH', created_at))", "alias": "a"},
             {"metric": "max(date_part('month', created_at))", "alias": "b"},
         ]))
-        assert resp.data[0]["orders.a"] == resp.data[0]["orders.b"] == 12
+        assert resp.data[0]["a"] == resp.data[0]["b"] == 12
 
     async def test_hour_of_a_date(self, orders_engine) -> None:
         assert set((await _by_id(orders_engine, "date_part('hour', order_date)")).values()) == {0}
@@ -131,14 +131,14 @@ class TestSpecScenarios:
         resp = await orders_engine.execute(_q(metrics=[
             {"metric": "date_diff('day', min(created_at), max(created_at))", "alias": "span"},
         ]))
-        assert resp.data[0]["orders.span"] == 334
+        assert resp.data[0]["span"] == 334
 
     async def test_coalesce_with_the_clock(self, orders_engine) -> None:
         resp = await orders_engine.execute(_q(metrics=[
             {"metric": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "alias": "age"},
         ]))
         open_days = (datetime.now(timezone.utc).date() - date(2024, 6, 3)).days
-        assert resp.data[0]["orders.age"] == pytest.approx((1 + 5 + 5 + 5 + open_days) / 5, abs=0.21)
+        assert resp.data[0]["age"] == pytest.approx((1 + 5 + 5 + 5 + open_days) / 5, abs=0.21)
 
     async def test_literal_anchor(self, orders_engine) -> None:
         assert await _count(orders_engine, "date_diff('day', '2024-01-01', created_at) < 30") == 0
@@ -148,7 +148,7 @@ class TestSpecScenarios:
         resp = await orders_engine.execute(_q(metrics=[
             {"metric": "min(date_part('year', coalesce(shipped_at, '2024-01-01')))", "alias": "y"},
         ]))
-        assert resp.data[0]["orders.y"] == 2024
+        assert resp.data[0]["y"] == 2024
         assert (await _by_id(orders_engine, "date_part('year', coalesce(shipped_at, '2023-06-01'))"))[3] == 2023
 
     async def test_placeholder(self, orders_engine) -> None:
@@ -160,7 +160,7 @@ class TestSpecScenarios:
             population="recent", metrics=[{"metric": "count(*)", "alias": "n"}],
             filter=["created_at >= date_add(current_date(), -30, 'day')"],
         ))
-        assert int(resp.data[0]["recent.n"]) == 1
+        assert int(resp.data[0]["n"]) == 1
 
     async def test_clock_relative_sanity(self, orders_engine) -> None:
         got = await _by_id(orders_engine, "date_diff('day', created_at, now())", dataset="recent")
@@ -180,7 +180,7 @@ class TestSpecScenarios:
         ops = await orders_engine.execute(_q(metrics=[{"metric": "max(shipped_at - interval(2, 'day'))", "alias": "m"}]))
         fn = await orders_engine.execute(_q(metrics=[{"metric": "max(date_add(shipped_at, -2, 'day'))", "alias": "m"}]))
         assert ops.sql == fn.sql
-        assert_value(ops.data[0]["orders.m"], datetime(2025, 1, 2, 12, 0), where="interval")
+        assert_value(ops.data[0]["m"], datetime(2025, 1, 2, 12, 0), where="interval")
 
     async def test_operator_auto_name_matches(self, orders_engine: SlayerQueryEngine) -> None:
         ops = await orders_engine.execute(_q(metrics=["max(shipped_at - interval(2, 'day'))"]))

@@ -35,8 +35,8 @@ class TestQueryBackedFailClosed:
     def test_direct_measures_on_query_backed_model_rejected(self) -> None:
         backing = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError):
@@ -46,8 +46,8 @@ class TestQueryBackedFailClosed:
     def test_rejection_names_model_and_remedy(self) -> None:
         backing = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(amount)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError) as ei:
@@ -92,8 +92,8 @@ class TestExtensionMeasuresOverQueryBacked:
                 name="qb_base", data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
-                    "dimensions": ["status"],
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                 })],
             ))
             engine = SlayerQueryEngine(storage=storage)
@@ -103,8 +103,8 @@ class TestExtensionMeasuresOverQueryBacked:
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
-                "dimensions": ["status"],
-                "metrics": [{"metric": "doubled", "alias": "r"}],
+                "dimensions": ["qb_base.status"],
+                "metrics": [{"metric": "qb_base.doubled", "alias": "r"}],
             })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
@@ -122,7 +122,7 @@ class TestExtensionMeasuresOverQueryBacked:
                 dataset="t",
                 metrics=[DatasetMetric(name="scaled", expression="sum(amount) * 100")],
             )],
-            "metrics": [{"metric": "scaled", "alias": "r"}],
+            "metrics": [{"metric": "t.scaled", "alias": "r"}],
         })
         sql = await _engine_generate(
             query=query, dataset=base, dialect="duckdb", validate=False,
@@ -147,7 +147,7 @@ class TestExtensionMeasuresOverQueryBacked:
                     metrics=[DatasetMetric(name="ext_aov", expression="customers.aov")],
                 )],
                 "dimensions": ["customers.tier"],
-                "metrics": [{"metric": "ext_aov", "alias": "r"}],
+                "metrics": [{"metric": "orders.ext_aov", "alias": "r"}],
             })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
@@ -169,7 +169,7 @@ class TestSameNameExtensionRejected:
                 dataset="t",
                 metrics=[DatasetMetric(name="sh", expression="sum(amount) * 100")],
             )],
-            "metrics": [{"metric": "sh", "alias": "r"}],
+            "metrics": [{"metric": "t.sh", "alias": "r"}],
         })
         with pytest.raises(ValueError, match=r"duplicate metric names"):
             await _engine_generate(
@@ -217,8 +217,8 @@ class TestStageExtensionMeasuresOverQueryBacked:
                 name="qb_base", data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
-                    "dimensions": ["status"],
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                 })],
             ))
             stage = SlayerQuery.model_validate({
@@ -227,10 +227,10 @@ class TestStageExtensionMeasuresOverQueryBacked:
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
-                "dimensions": ["status"],
-                "metrics": [{"metric": "doubled", "alias": "r"}],
+                "dimensions": ["qb_base.status"],
+                "metrics": [{"metric": "qb_base.doubled", "alias": "r"}],
             })
-            root = SlayerQuery(population="orders", dimensions=["status"])
+            root = SlayerQuery(population="orders", dimensions=["orders.status"])
             bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
                 query=root, storage=storage, data_source="ds",
                 named_queries={"s1": stage},

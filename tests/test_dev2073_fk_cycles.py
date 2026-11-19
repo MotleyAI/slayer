@@ -54,7 +54,7 @@ class TestCyclesIngestVerbatim:
             sales = await lv.dataset("sales")
             assert [j.name for j in sales.relationships] == [None]
             resp = await lv.query(population="sales", dimensions=["id", "stores.name"])
-            assert rows_set(resp, "sales.id", "sales.stores.name") == {
+            assert rows_set(resp, "sales.id", "stores.name") == {
                 (1, "North"), (2, "North"), (3, "South"),
             }
             resp = await lv.query(
@@ -72,7 +72,7 @@ class TestCyclesIngestVerbatim:
                 ("offices", "employees", (("manager_id", "id"),)),
             }
             resp = await lv.query(population="employees", dimensions=["name", "depts.offices.city"])
-            assert rows_set(resp, "employees.name", "employees.depts.offices.city") == {
+            assert rows_set(resp, "employees.name", "depts.offices.city") == {
                 ("Ann", "Paris"), ("Ben", "Rome"), ("Cy", "Paris"),
             }
 

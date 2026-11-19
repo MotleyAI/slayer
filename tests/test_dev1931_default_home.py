@@ -93,7 +93,7 @@ class TestDefinitionDefaultExecution:
     async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
             orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
-        return float(resp.data[0]["orders.w"])
+        return float(resp.data[0]["w"])
 
     async def test_root_local_direct_default_matches_explicit(self, engine):
         explicit = await self._value(
@@ -138,8 +138,8 @@ class TestDefinitionDefaultExecution:
             resp = await engine.execute(orders_q(
                 time_dimensions=month_td(),
                 metrics=[QueryMetric(metric=formula, alias="w")]))
-            return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"):
-                    r["orders.w"] for r in resp.data}
+            return {tuple(v for k, v in sorted(r.items()) if k != "w"):
+                    r["w"] for r in resp.data}
         explicit = await cells(
             "wsum_host(customers.spend, window='90d', weight=orders.amount)")
         default = await cells("wsum_host(customers.spend, window='90d')")

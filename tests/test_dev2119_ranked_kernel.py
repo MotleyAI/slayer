@@ -56,7 +56,7 @@ class TestExecutedValues:
     async def test_windowed_shapes(self, engine: SlayerQueryEngine, shape: str) -> None:
         formula, expected = WINDOWED_SHAPES[shape]
         resp = await engine.execute(_windowed_query(formula))
-        assert by_bucket(resp, "orders.created_at", "orders.v") == expected
+        assert by_bucket(resp, "orders.created_at", "v") == expected
 
 
 class TestTier1Emission:

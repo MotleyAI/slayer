@@ -60,7 +60,7 @@ class TestCaseSensitivity:
     async def test_sqlite_like_ignores_a_nocase_column(self) -> None:
         async with seeded_exec_engine(dialect="sqlite", seed=_nocase_seed, datasets=[_people_dataset()]) as (engine, _):
             resp = await engine.execute(SlayerQuery.model_validate({
-                "population": "people", "dimensions": ["id"], "filter": ["name LIKE 'ada%'"]}))
+                "population": "people", "dimensions": ["people.id"], "filter": ["people.name LIKE 'ada%'"]}))
             assert {int(r["people.id"]) for r in resp.data} == {1}
 
     async def test_ilike_is_case_insensitive(self, engine: SlayerQueryEngine) -> None:

@@ -656,16 +656,16 @@ class TestQueryTimeBackstop:
 
     async def test_aggregated_on_declaring_model(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(revisit_spend)", alias="w")]))
+            metrics=[QueryMetric(metric="sum(customers.revisit_spend)", alias="w")]))
 
     async def test_as_dimension(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
             dimensions=["revisit_spend"],
-            metrics=[QueryMetric(metric="sum(spend)", alias="s")]))
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")]))
 
     async def test_in_filter(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(spend)", alias="s")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")],
             filter=["revisit_spend > 0"]))
 
     async def test_raw_row_mode(self, qengine) -> None:
@@ -674,24 +674,24 @@ class TestQueryTimeBackstop:
 
     async def test_through_a_derived_chain(self, qengine) -> None:
         exc = await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(chain)", alias="w")]))
+            metrics=[QueryMetric(metric="sum(customers.chain)", alias="w")]))
         assert exc.field == "revisit_spend"  # the innermost expanded definition
 
     async def test_filter_kind_definition(self, qengine) -> None:
         # reference comes from the filter fragment, proving the filter surface.
         await _assert_circular(qengine, _cust_q(
-            metrics=[QueryMetric(metric="sum(filt_revisit)", alias="w")]))
+            metrics=[QueryMetric(metric="sum(customers.filt_revisit)", alias="w")]))
 
     async def test_leading_host_qualifier_keeps_full_spelling(self, qengine) -> None:
         # The door keeps the complete pre-strip reference (leading host qualifier).
         await _assert_circular(
-            qengine, _cust_q(metrics=[QueryMetric(metric="sum(revisit_lead)", alias="w")]),
+            qengine, _cust_q(metrics=[QueryMetric(metric="sum(customers.revisit_lead)", alias="w")]),
             reference="customers.regions.customers.spend")
 
     async def test_refused_before_sql_executes(self, qengine) -> None:
         # dry_run builds SQL but does not execute it — a raise here proves the
         # refusal is at compile time, before any SQL runs.
-        query = _cust_q(metrics=[QueryMetric(metric="sum(revisit_spend)", alias="w")])
+        query = _cust_q(metrics=[QueryMetric(metric="sum(customers.revisit_spend)", alias="w")])
         with pytest.raises(CircularRelationshipPathError):
             await qengine.execute(query, dry_run=True)
 
@@ -708,7 +708,7 @@ class TestQueryTimeBackstop:
 
     async def test_unresolved_model_refused_as_unresolvable(self, unresolved_engine) -> None:
         query = _cust_q(dimensions=["ghost_spend"],
-                        metrics=[QueryMetric(metric="sum(spend)", alias="s")])
+                        metrics=[QueryMetric(metric="sum(customers.spend)", alias="s")])
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await unresolved_engine.execute(query)
         msg = str(ei.value)
@@ -773,9 +773,9 @@ class TestViaHostRerootUnchanged:
         resp = await reroot_engine.execute(_dev1900_orders_q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="w")],
+                metric="sum(customers.spend, partition_by=orders.status)", alias="w")],
             to_many_handling="associate"))
-        got = {r["orders.status"]: r["orders.w"] for r in resp.data}
+        got = {r["orders.status"]: r["w"] for r in resp.data}
         assert got == pytest.approx({"new": 290.0, "ok": 420.0})
 
 
@@ -784,7 +784,7 @@ class TestDefinitionDefaultsUnchanged:
     async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
             _dev1931_orders_q(metrics=[QueryMetric(metric=expression, alias="w")]))
-        return float(resp.data[0]["orders.w"])
+        return float(resp.data[0]["w"])
 
     async def test_scalar_default_matches_explicit(self, default_engine) -> None:
         explicit = await self._value(

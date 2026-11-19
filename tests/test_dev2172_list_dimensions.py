@@ -29,19 +29,19 @@ class TestRawRows:
         async with list_engine() as engine:
             resp = await engine.execute(query(dimensions=["id", {"alias": "s", "field": "skills"}],
                                               distinct_dimension_values=False))
-        assert _lists(resp.data, key="contractors.id", value="contractors.s") == SKILLS
+        assert _lists(resp.data, key="contractors.id", value="s") == SKILLS
 
     async def test_identical_keyless_rows_stay_two_rows(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute({"population": "twins", "dimensions": ["name", "skills"],
+            resp = await engine.execute({"population": "twins", "dimensions": ["twins.name", "twins.skills"],
                                          "distinct_dimension_values": False})
         assert [list(r["twins.skills"]) for r in resp.data] == [["go"], ["go"]]
 
     async def test_list_through_a_to_one_join(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute({"population": "assignments", "dimensions": ["id", "contractors.skills"],
+            resp = await engine.execute({"population": "assignments", "dimensions": ["assignments.id", "contractors.skills"],
                                          "distinct_dimension_values": False})
-        assert _lists(resp.data, key="assignments.id", value="assignments.contractors.skills") == {
+        assert _lists(resp.data, key="assignments.id", value="contractors.skills") == {
             a: SKILLS.get(c) for a, c in ASSIGNMENTS}
 
     @pytest.mark.parametrize("distinct", [False, True])

@@ -70,9 +70,9 @@ class TestReachIsNotReading:
             resp = await e.execute(query(population="orders",
                                          dimensions=["status", "status_rev.rev"],
                                          metrics=[m("sum(amount)", "a")]))
-        assert resp.columns == ["orders.status", "orders.status_rev.rev", "orders.a"]
+        assert resp.columns == ["orders.status", "status_rev.rev", "a"]
         assert sorted_rows(resp.data) == sorted_rows([
-            {"orders.status": s, "orders.status_rev.rev": v, "orders.a": v}
+            {"orders.status": s, "status_rev.rev": v, "a": v}
             for s, v in AMOUNT_BY_STATUS.items()])
 
     async def test_an_unread_broken_model_is_inert(self, dialect) -> None:
@@ -82,7 +82,7 @@ class TestReachIsNotReading:
             resp = await e.execute(query(population="orders", metrics=[m("sum(amount)", "t")]))
             dry = await e.execute(query(population="orders", metrics=[m("sum(amount)", "t")]),
                                   dry_run=True)
-        assert resp.data == [{"orders.t": 145.0}]
+        assert resp.data == [{"t": 145.0}]
         assert resp.warnings == []
         assert dry.sql is not None
         assert "broken_qb" not in dry.sql
@@ -106,8 +106,8 @@ class TestStoredJoinReads:
         root = query(population="s", dimensions=["tier"], metrics=[m("sum(r)", "t")])
         async with dev1966_engine(dialect) as e:
             resp = await e.execute([s, root])
-        assert resp.columns == ["s.tier", "s.t"]
-        assert rows_by(resp.data, key="s.tier", value="s.t") == AMOUNT_BY_TIER
+        assert resp.columns == ["s.tier", "t"]
+        assert rows_by(resp.data, key="s.tier", value="t") == AMOUNT_BY_TIER
 
     async def test_a_derived_column_definition(self, dialect) -> None:
         clients = clients_dataset()
@@ -127,9 +127,9 @@ class TestStoredJoinReads:
                                            metrics=[m("sum(rev)", "t")]))
             b = await e.execute(query(population="reads_status_rev", dimensions=["status"],
                                       metrics=[m("max(status_rev__rev)", "rr")]))
-        assert rows_by(only_a.data, key="status_rev.status", value="status_rev.t") == AMOUNT_BY_STATUS
+        assert rows_by(only_a.data, key="status_rev.status", value="t") == AMOUNT_BY_STATUS
         assert rows_by(b.data, key="reads_status_rev.status",
-                       value="reads_status_rev.rr") == AMOUNT_BY_STATUS
+                       value="rr") == AMOUNT_BY_STATUS
 
 
 class TestFailedAttemptKeepsItsError:
@@ -183,15 +183,15 @@ class TestModeAVariables:
         async with dev1966_engine(dialect, datasets=models) as e:
             default = await e.execute(consumer)
             floored = await e.execute(consumer, variables={"floor": 20})
-        assert default.data == [{"floored_rev.t": 145.0}]
-        assert floored.data == [{"floored_rev.t": 115.0}]
+        assert default.data == [{"t": 145.0}]
+        assert floored.data == [{"t": 115.0}]
 
     async def test_a_user_stage_source_sql_takes_its_variables(self, dialect) -> None:
         s = query(name="s", population="floored", metrics=[m("sum(amount)", "a")],
                   variables={"floor": 30})
         async with dev1966_engine(dialect, datasets=[orders_dataset(), _floored()]) as e:
             resp = await e.execute([s, query(population="s", metrics=[m("sum(a)", "t")])])
-        assert resp.data == [{"s.t": 70.0}]
+        assert resp.data == [{"t": 70.0}]
 
     async def test_conflicting_mode_a_contexts_fail_closed(self) -> None:
         models = [orders_dataset(), customers_dataset(), _floored(), FLOORED_REV,
@@ -224,4 +224,4 @@ class TestCyclesThroughStoredJoins:
         orders = _joined(orders_dataset(), ("cyc_a", [["id", "amount"]]))
         async with dev1966_engine("sqlite", datasets=[orders, customers_dataset(), CYC_A, CYC_B]) as e:
             resp = await e.execute(query(population="orders", metrics=[m("sum(amount)", "t")]))
-        assert resp.data == [{"orders.t": 145.0}]
+        assert resp.data == [{"t": 145.0}]

@@ -28,7 +28,7 @@ def _bundle() -> ResolvedSourceBundle:
 def _query(expression: str) -> SlayerQuery:
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status"), QueryDimension(field="tier")],
+        dimensions=[QueryDimension(field="orders.status"), QueryDimension(field="orders.tier")],
         metrics=[QueryMetric(metric=expression, alias="mix")],
     )
 

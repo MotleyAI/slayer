@@ -109,7 +109,7 @@ def test_an_error_still_raises_with_a_listener(recorder: _Recorder) -> None:
 
 
 _LEGACY_FILTER_QUERY = {
-    "population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}], "filters": ["status == 'paid'"],
+    "population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}], "filters": ["status == 'paid'"],
 }
 
 

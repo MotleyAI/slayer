@@ -177,7 +177,7 @@ class TestMemberAccepted:
     async def test_member_key_executes(self, engine):
         resp = await engine.execute(sales_q(dimensions=CRP, metrics=[_metric(MEMBER)]))
         for (city, region, _), row in rows_by(resp, *(f"sales.{d}" for d in CRP)).items():
-            assert row["sales.r"] == MEMBER_RANKS[(region, city)], (city, region)
+            assert row["r"] == MEMBER_RANKS[(region, city)], (city, region)
 
     async def test_composite_union_member(self, engine):
         formula = ("rank(sum(amount, partition_by=[city, region]) "
@@ -193,8 +193,8 @@ class TestMemberAccepted:
     async def test_ungrained_inner_over_region_and_band(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=["region", BAND], metrics=[_metric(UNGRAINED)]))
-        got = {k: v["sales.r"]
-               for k, v in rows_by(resp, "sales.region", "sales.spend_band").items()}
+        got = {k: v["r"]
+               for k, v in rows_by(resp, "sales.region", "spend_band").items()}
         assert got == REGION_BAND_RANKS
 
 
@@ -203,7 +203,7 @@ class TestAggregateFreeInput:
         resp = await engine.execute(sales_q(
             dimensions=CRP, metrics=[_metric("rank(city, partition_by=region, direction='desc')")]))
         for (city, region, _), row in rows_by(resp, *(f"sales.{d}" for d in CRP)).items():
-            assert row["sales.r"] == CITY_NAME_RANKS[(region, city)], (city, region)
+            assert row["r"] == CITY_NAME_RANKS[(region, city)], (city, region)
 
     # Bind level only: execution is DEV-1962.
     def test_literal_input_takes_query_grain(self):

@@ -175,7 +175,7 @@ class TestUngrainedTransformConstituent:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             metrics=[QueryMetric(
-                metric="coalesce(sum(cumsum(sum(amount))), 0)", alias="m")],
+                metric="coalesce(sum(cumsum(sum(monthly.amount))), 0)", alias="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
 
@@ -195,7 +195,7 @@ class TestDualGranularityQueryGrain:
     def test_ungrained_inner_is_grained_at_both_buckets(self, tds):
         elab = elaborate_query(
             query=monthly_q(
-                metrics=[QueryMetric(metric="sum(rank(sum(amount), direction='desc'))", alias="m")],
+                metrics=[QueryMetric(metric="sum(rank(sum(monthly.amount), direction='desc'))", alias="m")],
                 time_dimensions=tds),
             bundle=_monthly_bundle())
         assert elab.prebound is not None
@@ -212,9 +212,9 @@ class TestDualGranularityQueryGrain:
         # per-column grain would rank the lone yearly total (1 everywhere).
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            metrics=[QueryMetric(metric="sum(rank(sum(amount), direction='desc'))", alias="m")],
+            metrics=[QueryMetric(metric="sum(rank(sum(monthly.amount), direction='desc'))", alias="m")],
             time_dimensions=[*month_td(), _year_td()]))
-        got = {month_key(row["monthly.ordered_at.month"]): row["monthly.m"]
+        got = {month_key(row["monthly.ordered_at.month"]): row["m"]
                for row in resp.data}
         assert got == {"2024-01": 3, "2024-02": 1, "2024-03": 2}
         assert degenerate_warnings(resp), "expected a degenerate-reaggregation warning"
@@ -227,8 +227,8 @@ class TestMixedTransformConstituent:
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
             dimensions=["region"], metrics=[QueryMetric(metric=RANK_MIXED, alias="m")]))
-        got = {k[0]: v["sales.m"] for k, v in rows_by(resp, "sales.region").items()
-               if v["sales.m"] is not None}
+        got = {k[0]: v["m"] for k, v in rows_by(resp, "sales.region").items()
+               if v["m"] is not None}
         assert got == pytest.approx(MIXED_RANK_SUM_BY_REGION)
 
     async def test_joined_model_row_leaf_mixed_by_status(self, exec_backend: tuple[str, SlayerQueryEngine]):
@@ -236,8 +236,8 @@ class TestMixedTransformConstituent:
         resp = await engine.execute(orders_q(
             dimensions=["status"],
             metrics=[QueryMetric(metric=JOINED_ROWLEAF_MIXED, alias="m")]))
-        got = {k: v["orders.m"] for k, v in status_key(resp).items()
-               if v["orders.m"] is not None}
+        got = {k: v["m"] for k, v in status_key(resp).items()
+               if v["m"] is not None}
         assert got == pytest.approx(JOINED_ROWLEAF_MIXED_BY_STATUS)
 
 
@@ -247,7 +247,7 @@ class TestMixedTransformConstituent:
 class TestTransformSourceRejections:
     async def test_row_leaf_under_transform_rejected(self):
         query = orders_q(
-            metrics=[QueryMetric(metric="sum(cumsum(weight) - 1)", alias="m")],
+            metrics=[QueryMetric(metric="sum(cumsum(orders.weight) - 1)", alias="m")],
             time_dimensions=month_td())
         with pytest.raises(ValueError, match="cannot consume the row-level") as ei:
             await gen(query)
@@ -259,8 +259,8 @@ class TestTransformSourceRejections:
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(rank(region, direction='desc'))", alias="m")]))
-        got = {k[0]: v["sales.m"] for k, v in rows_by(resp, "sales.region").items()}
+            metrics=[QueryMetric(metric="sum(rank(sales.region, direction='desc'))", alias="m")]))
+        got = {k[0]: v["m"] for k, v in rows_by(resp, "sales.region").items()}
         assert set(got) == {"North", "South", "East", "Gap", "Void"}
         assert all(v is not None for v in got.values())
         assert degenerate_warnings(resp), "expected a degenerate-reaggregation warning"
@@ -270,7 +270,7 @@ class TestTransformSourceRejections:
         # (check_dimension_temporal_axis → TimeAxisError), position-neutral.
         query = monthly_q(
             metrics=[QueryMetric(
-                metric="sum(cumsum(sum(amount, partition_by=region)))", alias="m")],
+                metric="sum(cumsum(sum(monthly.amount, partition_by=monthly.region)))", alias="m")],
             time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
             await gen(query)
@@ -280,12 +280,12 @@ class TestTransformSourceRejections:
         # measures (a coarser producer grain would else reach planning).
         axis_missing = "sum(cumsum(sum(amount, partition_by=region)))"
         filter_query = monthly_q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")],
             filter=[f"{axis_missing} > 5"], time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
             await gen(filter_query)
         order_query = monthly_q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")],
             order=[{"field": axis_missing, "direction": "desc"}],
             time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
@@ -296,7 +296,7 @@ class TestTransformSourceRejections:
         # reach the no-time-dimension guard (time attach + unresolved-time walk
         # descend into an aggregate arg).
         query = monthly_q(metrics=[QueryMetric(
-            metric="coalesce(sum(cumsum(sum(amount))), 0)", alias="m")])
+            metric="coalesce(sum(cumsum(sum(monthly.amount))), 0)", alias="m")])
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await gen(query)
 
@@ -304,7 +304,7 @@ class TestTransformSourceRejections:
         query = sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(
-                metric="first(quantity * avg(unit_price, partition_by=product), id)",
+                metric="first(sales.quantity * avg(sales.unit_price, partition_by=sales.product), sales.id)",
                 alias="m")])
         assert "ROW_NUMBER" in (await gen(query)).upper()
 
@@ -514,7 +514,7 @@ class TestReaggMixedSource:
     async def test_collapse_mixed_in_filter_position(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")],
             filter=[f"{COLLAPSE_MIXED} > 400"], time_dimensions=month_td()))
         # collapse-mixed is Jan 375 / Feb 825 / Mar 900 → only Feb, Mar survive,
         # each keeping its unfiltered amount:sum (a measure-typed filter prunes only).
@@ -523,7 +523,7 @@ class TestReaggMixedSource:
     async def test_collapse_mixed_in_order_position(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")],
             order=[{"field": COLLAPSE_MIXED, "direction": "desc"}],
             time_dimensions=month_td()))
         month_col = next(c for c in resp.columns if "ordered_at" in c)
@@ -558,10 +558,10 @@ class TestReaggMixedPlanStructure:
     async def test_adding_mixed_reagg_is_cardinality_neutral(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         base = await engine.execute(monthly_q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s")],
             time_dimensions=month_td()))
         with_mixed = await engine.execute(monthly_q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="s"),
+            metrics=[QueryMetric(metric="sum(monthly.amount)", alias="s"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="m")],
             time_dimensions=month_td()))
         assert len(with_mixed.data) == len(base.data)
@@ -580,7 +580,7 @@ class TestReaggMixedModeAxis:
             dimensions=[FAN_DIM],
             metrics=[QueryMetric(metric=MIXED_FAN, alias="m")],
             to_many_handling="broadcast"))
-        vals = [row["orders.m"] for row in resp.data if row["orders.m"] is not None]
+        vals = [row["m"] for row in resp.data if row["m"] is not None]
         # the SAME non-null value repeats across at least two fanning cells (the
         # region_events fixture has two distinct values) — not vacuously one/none.
         assert len(vals) >= 2
@@ -688,7 +688,7 @@ class TestCrossModelGrainedInnerBoundary:
             dimensions=["status"],
             metrics=[QueryMetric(metric=XMODEL_CONTRAST, alias="w")],
             to_many_handling="associate"))
-        by = {k: v["orders.w"] for k, v in status_key(resp).items()}
+        by = {k: v["w"] for k, v in status_key(resp).items()}
         assert by == pytest.approx({"new": 290.0, "ok": 420.0})
 
 

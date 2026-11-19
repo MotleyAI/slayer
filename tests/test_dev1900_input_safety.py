@@ -42,7 +42,7 @@ CM_POSITIONAL = QueryMetric(
 CM_KWARG_CHAIN = QueryMetric(
     metric="weighted_avg(customers.spend, weight=customers.regions.bad_pop2)", alias="w")
 LOCAL_KWARG = QueryMetric(
-    metric="weighted_avg(amount, weight=customers.regions.bad_pop)", alias="w")
+    metric="weighted_avg(orders.amount, weight=customers.regions.bad_pop)", alias="w")
 SOURCE_FANNING = QueryMetric(metric="sum(customers.regions.bad_pop)", alias="w")  # source crosses the hop
 CM_DEFAULT = QueryMetric(metric="wsumx(customers.spend)", alias="w")       # dotted default regions.bad_pop
 CM_DEFAULT_BARE = QueryMetric(metric="wbadbare(customers.regions.pop)", alias="w")  # bare owner-local default bad_pop
@@ -187,10 +187,10 @@ class TestReaggregationParameter:
 class TestLegalDerivedDependencies:
     async def test_to_one_derived_default_executes(self, engine):
         resp = await engine.execute(orders_q(metrics=[CM_GOOD]))
-        assert float(resp.data[0]["orders.w"]) == pytest.approx(WGOOD_TOONE_DEFAULT)
+        assert float(resp.data[0]["w"]) == pytest.approx(WGOOD_TOONE_DEFAULT)
 
     async def test_local_only_derived_reagg_parameter_executes(self, engine):
         """weight = regions.derived_pop (= pop * 2, local) over a grain pinning
         regions by its key: each region cell weighted by twice its population."""
         resp = await engine.execute(orders_q(metrics=[REAGG_GOOD]))
-        assert float(resp.data[0]["orders.ra"]) == pytest.approx(REAGG_DERIVED_POP_WAVG)
+        assert float(resp.data[0]["ra"]) == pytest.approx(REAGG_DERIVED_POP_WAVG)

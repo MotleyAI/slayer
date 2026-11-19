@@ -98,7 +98,7 @@ class TestMissingUniqueKey:
         resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[CM]))
         by = status_key(resp)
         for status, expected in ASSOC_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(expected)
+            assert float(by[(status,)]["cm"]) == pytest.approx(expected)
 
 
 class TestUnsafeInputInAssociate:
@@ -131,11 +131,11 @@ class TestColumnReferenceParameter:
         resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WAVG]))
         by = status_key(resp)
         for status, expected in ASSOC_WAVG_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.wavg"]) == pytest.approx(expected)
+            assert float(by[(status,)]["wavg"]) == pytest.approx(expected)
 
     async def test_column_default_param_executes(self, exec_backend_coldef):
         _, engine = exec_backend_coldef
         resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WSUM]))
         by = status_key(resp)
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
-            assert float(by[(status,)]["orders.wsum"]) == pytest.approx(expected)
+            assert float(by[(status,)]["wsum"]) == pytest.approx(expected)

@@ -58,7 +58,7 @@ class TestParallelEdgesFailClosed:
 
     async def test_filter_path_fails_closed(self, unnamed_engine) -> None:
         query = SlayerQuery(
-            population="orders", dimensions=["status"],
+            population="orders", dimensions=["orders.status"],
             filter=["customers.tier = 'gold'"])
         with pytest.raises(AmbiguousRelationshipPathError):
             await unnamed_engine.execute(query)
@@ -87,6 +87,6 @@ class TestModeAAmbiguity:
                 await storage.save_dataset(orders)
             # A definition stored without validation (migration write-back) still fails closed at query time.
             await storage.save_dataset(orders, _validate=False)
-            query = SlayerQuery(population="orders", dimensions=["cust_tier"])
+            query = SlayerQuery(population="orders", dimensions=["orders.cust_tier"])
             with pytest.raises(AmbiguousRelationshipPathError):
                 await engine.execute(query)

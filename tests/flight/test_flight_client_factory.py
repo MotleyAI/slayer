@@ -22,7 +22,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "n"}]}
 
 
 class _Args(BaseModel):
@@ -62,7 +62,7 @@ async def test_flight_builder_passes_the_factory_to_its_engine(tmp_path: Path, m
     )
     engine = captured["handlers"]._engine
     response = await engine.execute(COUNT_ORDERS)
-    assert response.data[0]["orders.n"] == 4
+    assert response.data[0]["n"] == 4
     assert response.sql in factory.all_statements()
 
 

@@ -22,10 +22,10 @@ def _recent_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="recent", data_source="test",
         source_queries=[SlayerQuery.model_validate({
-            "population": "ev", "dimensions": ["id"],
-            "time_dimensions": [{"field": "ts", "granularity": "day"}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
-            "filter": ["ts >= 'last 3 months'"],
+            "population": "ev", "dimensions": ["ev.id"],
+            "time_dimensions": [{"field": "ev.ts", "granularity": "day"}],
+            "metrics": [{"metric": "sum(ev.amount)", "alias": "rev"}],
+            "filter": ["ev.ts >= 'last 3 months'"],
         })],
     )
 
@@ -33,13 +33,13 @@ def _recent_dataset() -> SlayerDataset:
 def _stages() -> list[SlayerQuery | dict]:
     inner = SlayerQuery.model_validate({
         "name": "inner", "population": "recent",
-        "time_dimensions": [{"field": "ts", "granularity": "month", "date_range": [None, "last month"]}],
-        "metrics": [{"metric": "sum(rev)", "alias": "r"}],
-        "filter": ["ts < 'this month'"],
+        "time_dimensions": [{"field": "recent.ts", "granularity": "month", "date_range": [None, "last month"]}],
+        "metrics": [{"metric": "sum(recent.rev)", "alias": "r"}],
+        "filter": ["recent.ts < 'this month'"],
     })
     outer = SlayerQuery.model_validate({
-        "population": "inner", "metrics": [{"metric": "sum(r)", "alias": "total"}],
-        "filter": ["ts >= 'last 3 months'"],
+        "population": "inner", "metrics": [{"metric": "sum(inner.r)", "alias": "total"}],
+        "filter": ["inner.ts >= 'last 3 months'"],
     })
     return [inner, outer]
 
@@ -53,7 +53,7 @@ async def test_clock_read_once_per_execution(backend) -> None:
         resp = await engine.execute(_stages())
     assert clock.calls == 1
     # Every stage and the spliced model resolve against 2026-09-29: [2026-06-01, 2026-09-01).
-    assert resp.data[0]["inner.total"] == pytest.approx(float(sum(ids_in(D(2026, 6, 1), D(2026, 9, 1)))))
+    assert resp.data[0]["total"] == pytest.approx(float(sum(ids_in(D(2026, 6, 1), D(2026, 9, 1)))))
 
 
 async def test_dry_run_reads_the_clock_once() -> None:
@@ -68,8 +68,8 @@ async def test_dry_run_reads_the_clock_once() -> None:
 async def test_new_day_yields_new_sql() -> None:
     clock = PinnedClock(NOW)
     query = SlayerQuery.model_validate({
-        "population": "ev", "metrics": [{"metric": "count(*)", "alias": "n"}],
-        "filter": ["ts >= 'last 7 days'"],
+        "population": "ev", "metrics": [{"metric": "count(ev.*)", "alias": "n"}],
+        "filter": ["ev.ts >= 'last 7 days'"],
     })
     async with tp_engine("sqlite", clock=clock) as engine:
         first = (await engine.execute(query, dry_run=True)).sql
@@ -84,7 +84,7 @@ async def test_new_day_yields_new_sql() -> None:
 
 async def test_cache_never_serves_another_days_result() -> None:
     clock = PinnedClock(NOW)
-    query = SlayerQuery.model_validate({"population": "ev", "dimensions": ["id"], "filter": ["ts = 'today'"]})
+    query = SlayerQuery.model_validate({"population": "ev", "dimensions": ["ev.id"], "filter": ["ev.ts = 'today'"]})
     async with tp_engine("sqlite", clock=clock) as engine:
         first = await engine.execute(query, cache=True)
         clock.now = D(2026, 9, 28, 12)
@@ -104,7 +104,7 @@ async def test_same_day_relative_query_is_served_from_cache(monkeypatch: pytest.
     monkeypatch.setattr(SlayerSQLClient, "execute", spy)
     clock = PinnedClock(NOW)
     query = SlayerQuery.model_validate({
-        "population": "ev", "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": ["ts >= 'last 7 days'"],
+        "population": "ev", "metrics": [{"metric": "count(ev.*)", "alias": "n"}], "filter": ["ev.ts >= 'last 7 days'"],
     })
     async with tp_engine("sqlite", clock=clock) as engine:
         first = await engine.execute(query, cache=True)
@@ -121,8 +121,8 @@ async def test_default_clock_is_host_local_now() -> None:
         dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV, CUSTOMERS]), datasets=all_datasets(),
     ) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "metrics": [{"metric": "count(*)", "alias": "n"}],
-            "filter": ["ts = 'today'"],
+            "population": "ev", "metrics": [{"metric": "count(ev.*)", "alias": "n"}],
+            "filter": ["ev.ts = 'today'"],
         }), dry_run=True)
     assert resp.sql is not None
     assert any(

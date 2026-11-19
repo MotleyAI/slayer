@@ -40,9 +40,9 @@ class TestRankedTemporalValueNotTruncated:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="last(ordered_at)", alias="lt")],
+            metrics=[QueryMetric(metric="last(orders.ordered_at)", alias="lt")],
         ))
-        got = {r["orders.region"]: str(r["orders.lt"])[:10] for r in resp.data}
+        got = {r["orders.region"]: str(r["lt"])[:10] for r in resp.data}
         assert got == REGION_LAST_AT
 
     async def test_plain_first_of_timestamp_returns_the_full_date(
@@ -50,7 +50,7 @@ class TestRankedTemporalValueNotTruncated:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="first(ordered_at)", alias="ft")],
+            metrics=[QueryMetric(metric="first(orders.ordered_at)", alias="ft")],
         ))
-        got = {r["orders.region"]: str(r["orders.ft"])[:10] for r in resp.data}
+        got = {r["orders.region"]: str(r["ft"])[:10] for r in resp.data}
         assert got == REGION_FIRST_AT

@@ -24,7 +24,7 @@ from tests._doc_examples import (
     reference_failure,
 )
 
-COUNT = {"population": "orders", "metrics": ["count(*)"]}
+COUNT = {"population": "orders", "metrics": ["count(orders.*)"]}
 MARKER = '!!! note "Illustrative schema"'
 NOT_A_QUERY = "<!-- doc-check: not-a-query -->"
 HYPOTHETICAL = '{"population": "orders", "metrics": ["sum(website_visits)"]}'
@@ -59,7 +59,7 @@ class TestExtraction:
             "```",
         )
         assert _found(md) == [(3, [
-            {"name": "s", "population": "orders", "metrics": ["count(*)"], "dimensions": ["store_id"]},
+            {"name": "s", "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.store_id"]},
             {"population": "s", "metrics": ["max(_count)"]},
         ])]
 
@@ -143,12 +143,12 @@ class TestExtraction:
             """slayer query '{"population": "stores", "metrics": ["count(*)"]}' --format json""",
             "```",
         )
-        assert _found(md) == [(2, COUNT), (4, {"population": "stores", "metrics": ["count(*)"]})]
+        assert _found(md) == [(2, COUNT), (4, {"population": "stores", "metrics": ["count(orders.*)"]})]
 
     def test_placeholders_inside_strings(self) -> None:
         query = {
             "population": {"name": "m", "data_source": "jaffle_shop", "sql": "SELECT 1 WHERE {? x IN ({stores}) ?}"},
-            "metrics": ["count(*)"],
+            "metrics": ["count(orders.*)"],
             "filter": ["order_total >= {floor}"],
         }
         md = _md("```text", f"query = {json.dumps(query)}", "```")
@@ -296,7 +296,7 @@ class TestMarkersAndGuard:
 # ---------------------------------------------------------------------------
 
 COUNT_JSON = json.dumps(COUNT)
-STORES_COUNT = {"population": "stores", "metrics": ["count(*)"]}
+STORES_COUNT = {"population": "stores", "metrics": ["count(orders.*)"]}
 
 
 def _checked(markdown: str) -> list[tuple[int, Any]]:
@@ -426,7 +426,7 @@ class TestAltTextChecks:
 def test_readme_yields_its_headline_alt_text_query() -> None:
     headline = {
         "population": "orders",
-        "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
+        "metrics": ["sum(orders.order_total)", "change_pct(sum(orders.order_total))"],
         "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
     }
     assert headline in [q.query for q in load_page("README.md").checked_queries()]

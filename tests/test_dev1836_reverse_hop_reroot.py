@@ -99,7 +99,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 CM = QueryMetric(metric="sum(policy_amount.policy_amount)", alias="cm")
-MONTH = [TimeDimension(field="created_at",
+MONTH = [TimeDimension(field="policy.created_at",
                        granularity=TimeGranularity.MONTH)]
 
 
@@ -144,7 +144,7 @@ class TestSiblingFilterBindsTheHostInstance:
         opposite rows here."""
         resp = await engine.execute(SlayerQuery(
             population="policy",
-            dimensions=[QueryDimension(field="policy_number")],
+            dimensions=[QueryDimension(field="policy.policy_number")],
             metrics=[CM],
             filter=["party.code = 'X'"],
         ))

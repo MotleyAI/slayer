@@ -51,7 +51,7 @@ def _cells(resp, dim: str) -> dict:
     for r in resp.data:
         key = r[dim]
         out[(float(key) if isinstance(key, (int, float)) else key,
-             month_key(r["orders.ordered_at"]))] = r["orders.t"]
+             month_key(r["orders.ordered_at"]))] = r["t"]
     assert len(out) == len(resp.data), "duplicate result rows for one cell"
     return out
 
@@ -79,7 +79,7 @@ class TestPopulationRestriction:
         kw = {"dimensions": [EVENT_VALUE], "time_dimensions": month_td(),
               "to_many_handling": "associate"}
         resp = await exec_engine.execute(orders_q(
-            metrics=[QueryMetric(metric="time_shift(sum(amount), -1)", alias="t")], **kw))
+            metrics=[QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="t")], **kw))
         _assert_cells(_cells(resp, f"orders.{EVENT_VALUE}"), ASSOC_DIM_SHIFT)
         plain = await exec_engine.execute(orders_q(
             metrics=[QueryMetric(metric="sum(amount)", alias="s")], **kw))
@@ -91,9 +91,9 @@ class TestCrossModelPartitionKey:
         resp = await exec_engine.execute(orders_q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="time_shift(sum(amount) / sum(amount, partition_by=[customers.tier]), -1)",
+                metric="time_shift(sum(orders.amount) / sum(orders.amount, partition_by=[customers.tier]), -1)",
                 alias="t")]))
-        _assert_cells(_cells(resp, "orders.customers.tier"), TIER_SHARE)
+        _assert_cells(_cells(resp, "customers.tier"), TIER_SHARE)
 
     async def test_fanning_hop_key_is_typed_error(self, exec_engine) -> None:
         """Regression guard: the input-safety error, never a value."""

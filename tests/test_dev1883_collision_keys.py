@@ -52,13 +52,13 @@ class TestGranularitySuffixedKeys:
             metrics=[{"metric": "sum(amount)"}],
         ))
         assert resp.columns == [
-            "orders.customers.created_at.month",
-            "orders.customers.created_at.year",
+            "customers.created_at.month",
+            "customers.created_at.year",
             "orders.amount_sum",
         ]
         rows = {
-            r["orders.customers.created_at.month"]: (
-                r["orders.customers.created_at.year"], r["orders.amount_sum"]
+            r["customers.created_at.month"]: (
+                r["customers.created_at.year"], r["orders.amount_sum"]
             )
             for r in resp.data
         }
@@ -112,7 +112,7 @@ class TestGranularitySuffixedKeys:
         ))
         assert set(resp.columns) == {
             "orders.created_at",
-            "orders.customers.created_at",
+            "customers.created_at",
             "orders.amount_sum",
         }
 

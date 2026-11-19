@@ -15,7 +15,7 @@ from tests import _mcp_idiom_fixtures as fx
 
 _YEAR_2025 = [{"field": "order_date", "granularity": "month", "date_range": "2025"}]
 _MONTHLY = [{"field": "order_date", "granularity": "month"}]
-_REGION_CUSTOMER = ["customers.regions.name", "customers.name"]
+_REGION_CUSTOMER = ["regions.name", "customers.name"]
 
 
 @pytest.fixture
@@ -82,8 +82,8 @@ async def test_change_change_pct_and_time_shift_look_back_before_date_range(engi
 async def test_forward_time_shift_reads_after_date_range(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "population": "orders",
-        "time_dimensions": [{"field": "order_date", "granularity": "month", "date_range": ["2025-02-01", "2025-03-31"]}],
-        "metrics": [{"metric": "time_shift(sum(amount), 1)", "alias": "next"}],
+        "time_dimensions": [{"field": "orders.order_date", "granularity": "month", "date_range": ["2025-02-01", "2025-03-31"]}],
+        "metrics": [{"metric": "time_shift(sum(orders.amount), 1)", "alias": "next"}],
     })
     assert fx.value(fx.rows_by(resp, key="order_date")["2025-03"], ".next") == 60
 
@@ -100,7 +100,7 @@ async def test_non_time_filter_restricts_calendar_look_backs(
     async def value(filters: list[str]) -> Any:
         resp = await _run(engine, {
             "population": "orders",
-            "time_dimensions": [{"field": "order_date", "granularity": "month", "date_range": ["2025-01-01", "2025-04-30"]}],
+            "time_dimensions": [{"field": "orders.order_date", "granularity": "month", "date_range": ["2025-01-01", "2025-04-30"]}],
             "metrics": [{"metric": expression, "alias": "v"}], "filter": filters,
         })
         return fx.value(fx.rows_by(resp, key="order_date")[month], ".v")
@@ -112,7 +112,7 @@ async def test_non_time_filter_restricts_calendar_look_backs(
 async def test_trailing_window_reads_rows_before_date_range(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "population": "orders", "time_dimensions": _YEAR_2025,
-        "metrics": [{"metric": fx.TRAILING_WINDOW, "alias": "w"}, {"metric": "count_distinct(customer_id)", "alias": "nw"}],
+        "metrics": [{"metric": fx.TRAILING_WINDOW, "alias": "w"}, {"metric": "count_distinct(orders.customer_id)", "alias": "nw"}],
     })
     jan = fx.rows_by(resp, key="order_date")["2025-01"]
     assert fx.value(jan, ".w") == 3
@@ -130,13 +130,13 @@ async def test_cumsum_starts_at_the_range_start(engine: SlayerQueryEngine) -> No
 
 
 async def test_anti_join_keeps_rows_without_a_joined_row(engine: SlayerQueryEngine) -> None:
-    resp = await _run(engine, {"population": "customers", "dimensions": ["name"], "filter": [fx.ANTI_JOIN]})
+    resp = await _run(engine, {"population": "customers", "dimensions": ["customers.name"], "filter": [fx.ANTI_JOIN]})
     assert {fx.value(r, ".name") for r in resp.data} == {"Dan", "Eve"}
 
 
 async def test_root_model_keeps_every_row(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
-        "population": "regions", "dimensions": ["name"],
+        "population": "regions", "dimensions": ["regions.name"],
         "metrics": [
             {"metric": "count(customers.id)", "alias": "n_customers"},
             {"metric": fx.POPULATION_COUNT, "alias": "n_orders"},
@@ -167,8 +167,8 @@ def test_population_guidance_drops_factless_rows_only_at_a_fact_root() -> None:
 
 async def test_order_by_an_undisplayed_aggregate_with_limit(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
-        "population": "orders", "dimensions": ["customers.name"], "metrics": ["count(*)"],
-        "order": [{"field": "sum(amount)", "direction": "desc"}], "limit": 2,
+        "population": "orders", "dimensions": ["customers.name"], "metrics": ["count(orders.*)"],
+        "order": [{"field": "sum(orders.amount)", "direction": "desc"}], "limit": 2,
     })
     assert [fx.value(r, ".name") for r in resp.data] == ["Carol", "Alice"]
     assert not any("amount" in c for c in resp.columns)
@@ -177,7 +177,7 @@ async def test_order_by_an_undisplayed_aggregate_with_limit(engine: SlayerQueryE
 async def test_rank_filter_keeps_top_n_per_group(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "population": "orders", "dimensions": _REGION_CUSTOMER,
-        "metrics": [{"metric": "sum(amount)", "alias": "total"}], "filter": [fx.RANK_FILTER],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}], "filter": [fx.RANK_FILTER],
     })
     assert {fx.value(r, "customers.name") for r in resp.data} == {"Alice", "Carol"}
 
@@ -202,7 +202,7 @@ async def test_share_of_group_and_of_grand_total(engine: SlayerQueryEngine) -> N
 async def test_cross_model_aggregate_broadcasts_under_broadcast(engine: SlayerQueryEngine) -> None:
     with pytest.warns(BroadcastGrainWarning):
         resp = await _run(engine, {
-            "population": "orders", "dimensions": ["status"], "to_many_handling": "broadcast",
+            "population": "orders", "dimensions": ["orders.status"], "to_many_handling": "broadcast",
             "metrics": [{"metric": fx.CROSS_DATASET, "alias": "credit"}],
         })
     assert {k: fx.value(r, ".credit") for k, r in fx.rows_by(resp, key=".status").items()} == {
@@ -215,7 +215,7 @@ async def test_cross_model_aggregate_broadcasts_under_broadcast(engine: SlayerQu
 async def test_cross_model_aggregate_splits_by_association(engine: SlayerQueryEngine, mode: dict) -> None:
     with pytest.warns(AssociatedGrainWarning):
         resp = await _run(engine, {
-            "population": "orders", "dimensions": ["status"], **mode,
+            "population": "orders", "dimensions": ["orders.status"], **mode,
             "metrics": [{"metric": fx.CROSS_DATASET, "alias": "credit"}],
         })
     assert {k: fx.value(r, ".credit") for k, r in fx.rows_by(resp, key=".status").items()} == {
@@ -243,7 +243,7 @@ async def test_per_customer_examples_keep_namesakes_apart(namesake_engine: Slaye
     assert fx.value(rows["North"], ".avg_customer_total") == pytest.approx((170 + 130 + 40) / 3)
     bands = await _run(namesake_engine, {
         "population": "orders", "dimensions": [{"field": fx.SPEND_BAND, "alias": "spend_band"}],
-        "metrics": ["count(*)"],
+        "metrics": ["count(orders.*)"],
     })
     assert {k: fx.value(r, "._count") for k, r in fx.rows_by(bands, key=".spend_band").items()} == {
         "high": 8, "low": 4,
@@ -269,7 +269,7 @@ async def test_several_child_models_each_over_their_own_rows(child_engine: Slaye
         {"metric": "sum(orders.amount)", "alias": "ordered"},
         {"metric": fx.SECOND_CHILD, "alias": "returned"},
     ]
-    resp = await _run(child_engine, {"population": "customers", "dimensions": ["name"], "metrics": metrics})
+    resp = await _run(child_engine, {"population": "customers", "dimensions": ["customers.name"], "metrics": metrics})
     assert {
         fx.value(r, ".name"): (fx.value(r, ".ordered"), fx.value(r, ".returned")) for r in resp.data
     } == {"Alice": (30, 7), "Bob": (35, None), "Carol": (40, 8), "Dan": (50, None)}
@@ -319,11 +319,11 @@ async def test_outer_stage_reads_flattened_inner_dimension(engine: SlayerQueryEn
         {
             "name": "per_customer", "population": "orders",
             "dimensions": _REGION_CUSTOMER,
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
         },
         {
             "population": "per_customer", "dimensions": [fx.STAGE_COLUMN],
-            "metrics": ["count(*)", {"metric": "sum(total)", "alias": "region_total"}],
+            "metrics": ["count(per_customer.*)", {"metric": "sum(per_customer.total)", "alias": "region_total"}],
         },
     ])
     rows = fx.rows_by(resp, key=fx.STAGE_COLUMN)
@@ -397,7 +397,7 @@ async def test_non_time_filter_restricts_window_rows_before_the_range(engine: Sl
     async def jan(filters: list[str]) -> Any:
         resp = await _run(engine, {
             "population": "orders", "time_dimensions": _YEAR_2025,
-            "metrics": [{"metric": "sum(amount, window='3m')", "alias": "w"}], "filter": filters,
+            "metrics": [{"metric": "sum(orders.amount, window='3m')", "alias": "w"}], "filter": filters,
         })
         return fx.value(fx.rows_by(resp, key="order_date")["2025-01"], ".w")
 
@@ -409,11 +409,11 @@ async def test_rank_among_all_rows_needs_a_stage(engine: SlayerQueryEngine) -> N
     resp = await _run(engine, [
         {
             "name": "ranked", "population": "orders", "dimensions": ["customers.name"],
-            "metrics": [{"metric": "rank(sum(amount), direction='desc')", "alias": "rnk"}],
+            "metrics": [{"metric": "rank(sum(orders.amount), direction='desc')", "alias": "rnk"}],
         },
         {
-            "population": "ranked", "dimensions": ["customers__name", "rnk"],
-            "filter": ["customers__name == 'Alice'"],
+            "population": "ranked", "dimensions": ["ranked.customers__name", "ranked.rnk"],
+            "filter": ["ranked.customers__name == 'Alice'"],
         },
     ])
     assert [(fx.value(r, "customers__name"), fx.value(r, ".rnk")) for r in resp.data] == [("Alice", 2)]
@@ -422,7 +422,7 @@ async def test_rank_among_all_rows_needs_a_stage(engine: SlayerQueryEngine) -> N
 async def test_year_over_year_time_shift(last_year_engine: SlayerQueryEngine) -> None:
     resp = await _run(last_year_engine, {
         "population": "orders", "time_dimensions": _YEAR_2025,
-        "metrics": [{"metric": "time_shift(sum(amount), -1, 'year')", "alias": "yoy"}],
+        "metrics": [{"metric": "time_shift(sum(orders.amount), -1, 'year')", "alias": "yoy"}],
     })
     assert {k: fx.value(r, ".yoy") for k, r in fx.rows_by(resp, key="order_date").items()} == {
         "2025-01": 8, "2025-02": None, "2025-03": None, "2025-04": None, "2025-06": 12,
@@ -431,7 +431,7 @@ async def test_year_over_year_time_shift(last_year_engine: SlayerQueryEngine) ->
 
 async def test_ntile_puts_the_lowest_values_first(child_engine: SlayerQueryEngine) -> None:
     resp = await _run(child_engine, {
-        "population": "customers", "dimensions": ["name"],
+        "population": "customers", "dimensions": ["customers.name"],
         "metrics": [{"metric": "ntile(sum(orders.amount), n=4)", "alias": "quartile"}],
     })
     assert {fx.value(r, ".name"): fx.value(r, ".quartile") for r in resp.data} == {
@@ -442,14 +442,14 @@ async def test_ntile_puts_the_lowest_values_first(child_engine: SlayerQueryEngin
 async def test_filter_clause_restricts_the_aggregated_rows(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "population": "orders",
-        "metrics": [{"metric": fx.AGG_FILTER, "alias": "paid"}, {"metric": "count(*)", "alias": "all"}],
+        "metrics": [{"metric": fx.AGG_FILTER, "alias": "paid"}, {"metric": "count(orders.*)", "alias": "all"}],
     })
     assert [(fx.value(r, ".paid"), fx.value(r, ".all")) for r in resp.data] == [(7, 11)]
 
 
 async def test_granularity_calls_bucket_like_a_time_dimension(engine: SlayerQueryEngine) -> None:
     async def monthly(body: dict[str, Any]) -> dict[str, Any]:
-        resp = await _run(engine, {"population": "orders", "metrics": ["count(*)"], **body})
+        resp = await _run(engine, {"population": "orders", "metrics": ["count(orders.*)"], **body})
         col = next(c for c in resp.columns if "order_date" in c)
         return {str(r[col])[:7]: fx.value(r, "._count") for r in resp.data}
 
@@ -465,7 +465,7 @@ async def test_granularity_calls_bucket_like_a_time_dimension(engine: SlayerQuer
 async def test_computed_dimension_over_a_fixed_grain_aggregate(engine: SlayerQueryEngine) -> None:
     resp = await _run(engine, {
         "population": "orders", "dimensions": [{"field": fx.SPEND_BAND, "alias": "spend_band"}],
-        "metrics": ["count(*)"],
+        "metrics": ["count(orders.*)"],
     })
     assert {k: fx.value(r, "._count") for k, r in fx.rows_by(resp, key=".spend_band").items()} == {
         "high": 8, "low": 3,
@@ -478,13 +478,13 @@ async def test_computed_dimension_over_a_fixed_grain_aggregate(engine: SlayerQue
     ("order_date in '2025-Q1'", 4),
 ])
 async def test_time_points_are_half_open_periods(engine: SlayerQueryEngine, condition: str, count: int) -> None:
-    resp = await _run(engine, {"population": "orders", "metrics": ["count(*)"], "filter": [condition]})
+    resp = await _run(engine, {"population": "orders", "metrics": ["count(orders.*)"], "filter": [condition]})
     assert [fx.value(r, "._count") for r in resp.data] == [count]
 
 
 async def _codes(engine: SlayerQueryEngine, filters: list[str], variables: dict[str, Any] | None = None) -> set[str]:
     resp = await _run(engine, {
-        "population": "items", "dimensions": ["code"], "filter": filters,
+        "population": "items", "dimensions": ["items.code"], "filter": filters,
         **({"variables": variables} if variables is not None else {}),
     })
     return {fx.value(r, ".code") for r in resp.data}

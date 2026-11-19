@@ -141,11 +141,11 @@ class TestSameNameCollisionGuardLive:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"metric": "cumsum(sum(amount))", "alias": "dup"},
-                {"metric": "cumsum(sum(amount))", "alias": "dup"},
+                {"metric": "cumsum(sum(orders.amount))", "alias": "dup"},
+                {"metric": "cumsum(sum(orders.amount))", "alias": "dup"},
             ],
             time_dimensions=[
-                {"field": "created_at", "granularity": "month"},
+                {"field": "orders.created_at", "granularity": "month"},
             ],
         )
         model = self._orders()
@@ -243,8 +243,8 @@ class TestComputedDimFlattenCollision:
         must raise the clear D5 message, not a generic duplicate-name error."""
         query = SlayerQuery.model_validate({"population": "hostm", "dimensions": [
                 "customers.region",
-                {"field": "amount", "alias": "customers__region"},
-            ], "metrics": [{"metric": "sum(amount)"}]})
+                {"field": "hostm.amount", "alias": "customers__region"},
+            ], "metrics": [{"metric": "sum(hostm.amount)"}]})
         host = self._host()
         extras = [_customers()]
         with pytest.raises(ValueError, match=r"flatten to the same downstream name"):

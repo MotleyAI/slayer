@@ -462,9 +462,9 @@ class TestInspectModelQueryBacked:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"metric": "sum(amount)"}],
-                dimensions=["region"],
-                filter=["amount > {threshold}"],
+                metrics=[{"metric": "sum(upstream.amount)"}],
+                dimensions=["upstream.region"],
+                filter=["upstream.amount > {threshold}"],
                 dry_run=True,
             )],
             query_variables={"threshold": 100},
@@ -509,8 +509,8 @@ class TestInspectModelQueryBacked:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"metric": "sum(amount)"}],
-                filter=["amount > {threshold}"],
+                metrics=[{"metric": "sum(upstream.amount)"}],
+                filter=["upstream.amount > {threshold}"],
                 dry_run=True,
             )],
             # No query_variables → 'threshold' is required
@@ -1490,7 +1490,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_mixed_params(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_dataset", arguments={
             "name": "bad",
-            "query": {"population": "orders", "metrics": ["count(*)"]},
+            "query": {"population": "orders", "metrics": ["count(orders.*)"]},
             "sql_table": "public.orders",
         })
         assert "Error" in result
@@ -1500,7 +1500,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_data_source(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_dataset", arguments={
             "name": "bad",
-            "query": {"population": "orders", "metrics": ["count(*)"]},
+            "query": {"population": "orders", "metrics": ["count(orders.*)"]},
             "data_source": "mydb",
         })
         assert "Error" in result
@@ -1514,7 +1514,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_dataset", arguments={
             "name": "summary",
-            "query": {"population": "orders", "metrics": ["sum(amount)"]},
+            "query": {"population": "orders", "metrics": ["sum(orders.amount)"]},
             "dimensions": [],
             "metrics": [],
         })
@@ -1529,7 +1529,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_dataset", arguments={
             "name": "summary",
-            "query": {"population": "orders", "metrics": ["sum(amount)"]},
+            "query": {"population": "orders", "metrics": ["sum(orders.amount)"]},
         })
         # Should fail on missing datasource, not on "missing sql_table"
         assert "Datasource" in result
@@ -1550,7 +1550,7 @@ class TestCreateModel:
             "name": "summary",
             "query": {
                 "population": "orders",
-                "metrics": ["sum(amount)"],
+                "metrics": ["sum(orders.amount)"],
             },
         })
         assert "Error" not in result, result
@@ -1991,7 +1991,7 @@ class TestEditModel:
             "dataset_name": "orders",
             "source_queries": [{
                 "population": "orders_source",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders_source.amount)"}],
             }],
         })
         parsed = json.loads(result)
@@ -2020,8 +2020,8 @@ class TestEditModel:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"metric": "sum(amount)"}],
-                filter=["amount > {threshold}"],
+                metrics=[{"metric": "sum(upstream.amount)"}],
+                filter=["upstream.amount > {threshold}"],
                 dry_run=True,
             )],
             query_variables={"threshold": 100},
@@ -2232,7 +2232,7 @@ class TestEditModelDatasourceMoveSafety:
             data_source="db_a",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(orders.amount)"}],
             })],
         ))
         assert await storage.get_dataset("qb", data_source="db_a") is not None
@@ -2322,7 +2322,7 @@ class TestEditModelMultiStageRename:
                 SlayerQuery(
                     name="raw",
                     population="orders",
-                    dimensions=["region"],
+                    dimensions=["orders.region"],
                     metrics=inner_metrics,
                 ),
                 SlayerQuery(
@@ -2354,12 +2354,12 @@ class TestEditModelMultiStageRename:
                 {
                     "name": "raw",
                     "population": "orders",
-                    "dimensions": ["region"],
-                    "metrics": [{"metric": "sum(amount)", "alias": "new"}],
+                    "dimensions": ["orders.region"],
+                    "metrics": [{"metric": "sum(orders.amount)", "alias": "new"}],
                 },
                 {
                     "population": "raw",
-                    "metrics": [{"metric": "sum(new)"}],
+                    "metrics": [{"metric": "sum(raw.new)"}],
                 },
             ],
         })
@@ -2416,17 +2416,17 @@ class TestEditModelMultiStageRename:
                 {
                     "name": "raw",
                     "population": "orders",
-                    "dimensions": ["region"],
+                    "dimensions": ["orders.region"],
                     "metrics": [
-                        {"metric": "sum(amount)", "alias": "rev"},
-                        {"metric": "avg(amount)", "alias": "avg_amount"},
+                        {"metric": "sum(orders.amount)", "alias": "rev"},
+                        {"metric": "avg(orders.amount)", "alias": "avg_amount"},
                     ],
                 },
                 {
                     "population": "raw",
                     "metrics": [
-                        {"metric": "sum(rev)"},
-                        {"metric": "avg(avg_amount)"},
+                        {"metric": "sum(raw.rev)"},
+                        {"metric": "avg(raw.avg_amount)"},
                     ],
                 },
             ],
@@ -2473,7 +2473,7 @@ class TestEditModelColumnsRejected:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"metric": "sum(amount)"}],
+                metrics=[{"metric": "sum(upstream.amount)"}],
                 dry_run=True,
             )],
         ))
@@ -2516,7 +2516,7 @@ class TestInspectModelRequiredVariables:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"metric": "sum(amount)"}],
+                metrics=[{"metric": "sum(upstream.amount)"}],
                 filter=["amount > {x}"],
                 variables={"x": 1},
                 dry_run=True,
@@ -2547,7 +2547,7 @@ class TestRunByNamePlanFlagsMCP:
             data_source="test",
             source_queries=[SlayerQuery.model_validate({
                 "population": "upstream",
-                "metrics": [{"metric": "sum(amount)"}],
+                "metrics": [{"metric": "sum(upstream.amount)"}],
             })],
         ))
         execute_calls = 0
@@ -2589,7 +2589,7 @@ class TestQueryAcceptsInlineSourceModel:
         result = await _call(mcp_server, name="query", arguments={
             "query": {
                 "population": "orders",
-                "metrics": [{"metric": "count(*)"}],
+                "metrics": [{"metric": "count(orders.*)"}],
             },
             "dry_run": True,
         })
@@ -2665,14 +2665,14 @@ class TestQueryListMultiStage:
                 {
                     "name": "monthly",
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                     "time_dimensions": [
-                        {"field": "created_at", "granularity": "month"},
+                        {"field": "orders.created_at", "granularity": "month"},
                     ],
                 },
                 {
                     "population": "monthly",
-                    "metrics": [{"metric": "avg(amount_sum)"}],
+                    "metrics": [{"metric": "avg(monthly.amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -2698,16 +2698,16 @@ class TestQueryListMultiStage:
                 {
                     "name": "a",
                     "population": "b",
-                    "metrics": [{"metric": "avg(amount_sum)"}],
+                    "metrics": [{"metric": "avg(b.amount_sum)"}],
                 },
                 {
                     "name": "b",
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                 },
                 {
                     "population": "a",
-                    "metrics": [{"metric": "max(amount_sum_avg)"}],
+                    "metrics": [{"metric": "max(a.amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -2721,9 +2721,9 @@ class TestQueryListMultiStage:
         with pytest.raises(ToolError, match=r"[Cc]ycle"):
             await _call(mcp_server, name="query", arguments={
                 "query": [
-                    {"name": "a", "population": "b", "metrics": [{"metric": "sum(amount)"}]},
-                    {"name": "b", "population": "a", "metrics": [{"metric": "sum(amount)"}]},
-                    {"population": "orders", "metrics": [{"metric": "sum(amount)"}]},
+                    {"name": "a", "population": "b", "metrics": [{"metric": "sum(b.amount)"}]},
+                    {"name": "b", "population": "a", "metrics": [{"metric": "sum(a.amount)"}]},
+                    {"population": "orders", "metrics": [{"metric": "sum(orders.amount)"}]},
                 ],
                 "dry_run": True,
             })
@@ -2733,7 +2733,7 @@ class TestQueryListMultiStage:
         with pytest.raises(ToolError, match="Invalid format"):
             await _call(mcp_server, name="query", arguments={
                 "query": [
-                    {"population": "orders", "metrics": [{"metric": "count(*)"}]},
+                    {"population": "orders", "metrics": [{"metric": "count(orders.*)"}]},
                 ],
                 "format": "xml",
             })
@@ -3144,7 +3144,7 @@ class TestDatabaseFailuresAreToolErrors:
         assert "Database error:" in result.content[0].text
 
     async def test_query_rejected_by_the_database(self, db_storage: YAMLStorage) -> None:
-        result = await self._call_tool(db_storage, "query", {"query": {"population": "orders", "metrics": ["sum(broken)"]}})
+        result = await self._call_tool(db_storage, "query", {"query": {"population": "orders", "metrics": ["sum(orders.broken)"]}})
         self._assert_database_tool_error(result)
 
     async def test_validate_models_database_unreachable(self, db_storage: YAMLStorage) -> None:
@@ -3170,7 +3170,7 @@ class TestDatabaseFailuresAreToolErrors:
     @pytest.mark.parametrize(("method", "arguments"), [
         ("save_dataset", {"name": "m", "sql_table": "orders", "data_source": "down",
                         "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
-        ("create_dataset_from_query", {"name": "m", "query": {"population": "orders", "metrics": ["count(*)"]}}),
+        ("create_dataset_from_query", {"name": "m", "query": {"population": "orders", "metrics": ["count(orders.*)"]}}),
     ], ids=["table", "query"])
     async def test_create_model_database_unreachable(
         self, db_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch, method: str, arguments: dict[str, Any],

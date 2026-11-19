@@ -48,7 +48,7 @@ BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 def _flagship(**extra) -> SlayerQuery:
     return _q(
         dimensions=["region", {"field": BAND, "alias": "band"}],
-        metrics=[QueryMetric(metric="sum(amount)", alias="band_total")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="band_total")],
         **extra,
     )
 
@@ -60,8 +60,8 @@ class TestFlagship:
     async def test_single_stage_matches_hand_computed(self, exec_engine) -> None:
         resp = await exec_engine.execute(_flagship())
         got = band_value_tuples(
-            resp, region_key="orders.region", band_key="orders.band",
-            total_key="orders.band_total",
+            resp, region_key="orders.region", band_key="band",
+            total_key="band_total",
         )
         want = {(reg, band, round(v, 3)) for (reg, band), v in BAND_SUM.items()}
         assert got == want
@@ -70,21 +70,21 @@ class TestFlagship:
         single = await exec_engine.execute(_flagship())
         two = await exec_engine.execute(two_stage_banding())
         single_t = band_value_tuples(
-            single, region_key="orders.region", band_key="orders.band",
-            total_key="orders.band_total",
+            single, region_key="orders.region", band_key="band",
+            total_key="band_total",
         )
         two_t = band_value_tuples(
-            two, region_key="per_city.region", band_key="per_city.band",
-            total_key="per_city.band_total",
+            two, region_key="per_city.region", band_key="band",
+            total_key="band_total",
         )
         assert single_t == two_t
 
     async def test_null_city_group_survives(self, exec_engine) -> None:
         # The NULL-city order (6000) bands to 1 and must keep its US/1 group.
         resp = await exec_engine.execute(_flagship())
-        by = rows_by(resp, "orders.region", "orders.band")
-        assert ("US", 1) in {(r["orders.region"], int(r["orders.band"])) for r in resp.data}
-        assert float(by[("US", 1)]["orders.band_total"]) == pytest.approx(6000.0)
+        by = rows_by(resp, "orders.region", "band")
+        assert ("US", 1) in {(r["orders.region"], int(r["band"])) for r in resp.data}
+        assert float(by[("US", 1)]["band_total"]) == pytest.approx(6000.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -95,29 +95,29 @@ class TestAggregateOncePerGroup:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="s"),
-                QueryMetric(metric="count(*)", alias="n"),
-                QueryMetric(metric="avg(amount)", alias="a"),
-                QueryMetric(metric="sum(ok_amount)", alias="ok"),
-                QueryMetric(metric="count_distinct(customer_id)", alias="cd"),
+                QueryMetric(metric="sum(orders.amount)", alias="s"),
+                QueryMetric(metric="count(orders.*)", alias="n"),
+                QueryMetric(metric="avg(orders.amount)", alias="a"),
+                QueryMetric(metric="sum(orders.ok_amount)", alias="ok"),
+                QueryMetric(metric="count_distinct(orders.customer_id)", alias="cd"),
             ],
         ))
-        by = {(r["orders.region"], int(r["orders.band"])): r for r in resp.data}
+        by = {(r["orders.region"], int(r["band"])): r for r in resp.data}
         for k in BAND_SUM:
-            assert float(by[k]["orders.s"]) == pytest.approx(BAND_SUM[k])
-            assert int(by[k]["orders.n"]) == BAND_COUNT[k]
-            assert float(by[k]["orders.a"]) == pytest.approx(BAND_AVG[k])
-            assert float(by[k]["orders.ok"]) == pytest.approx(BAND_OK_SUM[k])
-            assert int(by[k]["orders.cd"]) == BAND_DISTINCT_CUST[k]
+            assert float(by[k]["s"]) == pytest.approx(BAND_SUM[k])
+            assert int(by[k]["n"]) == BAND_COUNT[k]
+            assert float(by[k]["a"]) == pytest.approx(BAND_AVG[k])
+            assert float(by[k]["ok"]) == pytest.approx(BAND_OK_SUM[k])
+            assert int(by[k]["cd"]) == BAND_DISTINCT_CUST[k]
 
     async def test_row_count_reconciles_across_bands(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         ))
         per_region: dict = {}
         for r in resp.data:
-            per_region[r["orders.region"]] = per_region.get(r["orders.region"], 0) + int(r["orders.n"])
+            per_region[r["orders.region"]] = per_region.get(r["orders.region"], 0) + int(r["n"])
         assert per_region == REGION_COUNT
         assert sum(per_region.values()) == 9
 
@@ -132,9 +132,9 @@ class TestCrossModelPartition:
                 "THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
-        by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
+        by = {(r["orders.region"], int(r["band"])): float(r["s"])
               for r in resp.data}
         assert by == {("EU", 1): pytest.approx(16000.0),
                       ("EU", 0): pytest.approx(1000.0),
@@ -148,9 +148,9 @@ class TestExtensionColumnPartition:
         band = "CASE WHEN sum(amount * 2, partition_by=city) > 10000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
-        by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
+        by = {(r["orders.region"], int(r["band"])): float(r["s"])
               for r in resp.data}
         want = {k: pytest.approx(v) for k, v in BAND_SUM.items()}
         assert by == want
@@ -164,7 +164,7 @@ class TestExtensionColumnPartition:
 class TestBandFilterAndOrder:
     async def test_filter_on_band_keeps_only_that_band(self, exec_engine) -> None:
         resp = await exec_engine.execute(_flagship(filter=["band == 1"]))
-        by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.band_total"])
+        by = {(r["orders.region"], int(r["band"])): float(r["band_total"])
               for r in resp.data}
         assert by == {("EU", 1): pytest.approx(16000.0),
                       ("US", 1): pytest.approx(6000.0)}
@@ -173,7 +173,7 @@ class TestBandFilterAndOrder:
         # region == 'EU' is an independent base-row filter; it drops US but does
         # not change any EU city's cross-5000 banding.
         resp = await exec_engine.execute(_flagship(filter=["band == 1", "region == 'EU'"]))
-        by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.band_total"])
+        by = {(r["orders.region"], int(r["band"])): float(r["band_total"])
               for r in resp.data}
         assert by == {("EU", 1): pytest.approx(16000.0)}
 
@@ -182,14 +182,14 @@ class TestBandFilterAndOrder:
         # falls to 5000 (NOT > 5000) -> band 0. Only Paris (EU) and NULL (US)
         # remain band 1.
         resp = await exec_engine.execute(_flagship(filter=["band == 1", "status == 'ok'"]))
-        by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.band_total"])
+        by = {(r["orders.region"], int(r["band"])): float(r["band_total"])
               for r in resp.data}
         assert by == {("EU", 1): pytest.approx(7000.0),
                       ("US", 1): pytest.approx(6000.0)}
 
     async def test_order_by_band(self, exec_engine) -> None:
         resp = await exec_engine.execute(_flagship(order=[{"field": "band", "direction": "asc"}]))
-        bands = [int(r["orders.band"]) for r in resp.data]
+        bands = [int(r["band"]) for r in resp.data]
         assert bands == sorted(bands)
 
 
@@ -203,9 +203,9 @@ class TestGrandTotalPartitionKey:
         band = "CASE WHEN sum(amount, partition_by=[]) > 20000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
-        by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
+        by = {(r["orders.region"], int(r["band"])): float(r["s"])
               for r in resp.data}
         assert by == {("EU", 1): pytest.approx(REGION_SUM["EU"]),
                       ("US", 1): pytest.approx(REGION_SUM["US"])}
@@ -219,10 +219,10 @@ class TestTimeBucketPartitionKey:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
         by = {(r["orders.region"], month_key(r["orders.ordered_at"]),
-               int(r["orders.band"])): float(r["orders.s"]) for r in resp.data}
+               int(r["band"])): float(r["s"]) for r in resp.data}
         assert by == {
             ("EU", "2024-01", 1): pytest.approx(8400.0),
             ("EU", "2024-02", 1): pytest.approx(8000.0),
@@ -245,9 +245,9 @@ class TestMultipleAggregatesInOneDimension:
                 "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"field": band, "alias": "band"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         ))
-        by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
+        by = {(r["orders.region"], int(r["band"])): float(r["s"])
               for r in resp.data}
         assert by == {("EU", 1): pytest.approx(16000.0),
                       ("EU", 0): pytest.approx(1000.0),
@@ -267,16 +267,16 @@ class TestSiblingStageSource:
     async def test_banding_over_a_prior_stage(self, exec_engine) -> None:
         stage1 = SlayerQuery(
             name="per_city", population="orders",
-            dimensions=["city", "region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="amt")],
+            dimensions=["orders.city", "orders.region"],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="amt")],
         )
         stage2 = SlayerQuery(
             population="per_city",
             dimensions=[
-                QueryDimension(field="region"),
-                QueryDimension(field="CASE WHEN sum(amt, partition_by=city) > 5000 THEN 1 ELSE 0 END", alias="band"),
+                QueryDimension(field="per_city.region"),
+                QueryDimension(field="CASE WHEN sum(per_city.amt, partition_by=per_city.city) > 5000 THEN 1 ELSE 0 END", alias="band"),
             ],
-            metrics=[QueryMetric(metric="sum(amt)", alias="band_total")],
+            metrics=[QueryMetric(metric="sum(per_city.amt)", alias="band_total")],
         )
         resp = await exec_engine.execute([stage1, stage2])
         got = {(_suffix(r, ".region"), int(_suffix(r, ".band")),
@@ -293,13 +293,13 @@ class TestCardinalityInvariant:
         banded = await exec_engine.execute(_flagship())
         plain = await exec_engine.execute(_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="band_total")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="band_total")],
         ))
-        plain_by = {r["orders.region"]: float(r["orders.band_total"]) for r in plain.data}
+        plain_by = {r["orders.region"]: float(r["band_total"]) for r in plain.data}
         summed: dict = {}
         for r in banded.data:
             summed[r["orders.region"]] = summed.get(r["orders.region"], 0.0) + float(
-                r["orders.band_total"]
+                r["band_total"]
             )
         for region, total in plain_by.items():
             assert summed[region] == pytest.approx(total)

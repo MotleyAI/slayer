@@ -77,24 +77,24 @@ class TestColumnAggregates:
             m("count_distinct(flag)", "cd"), m("sum(flag)", "s"),
         ]))
         row = resp.data[0]
-        assert as_bool(row["orders.mn"]) is FLAG_TOTALS["min"]
-        assert as_bool(row["orders.mx"]) is FLAG_TOTALS["max"]
-        assert row["orders.c"] == FLAG_TOTALS["count"]
-        assert row["orders.cd"] == FLAG_TOTALS["count_distinct"]
-        assert row["orders.s"] == FLAG_TOTALS["sum"]
-        assert not isinstance(row["orders.s"], bool)
+        assert as_bool(row["mn"]) is FLAG_TOTALS["min"]
+        assert as_bool(row["mx"]) is FLAG_TOTALS["max"]
+        assert row["c"] == FLAG_TOTALS["count"]
+        assert row["cd"] == FLAG_TOTALS["count_distinct"]
+        assert row["s"] == FLAG_TOTALS["sum"]
+        assert not isinstance(row["s"], bool)
 
     async def test_derived_boolean_column(self, engine) -> None:
         resp = await engine.execute(orders_q(metrics=[m("sum(big_order)", "s"), m("avg(big_order)", "a")]))
         row = resp.data[0]
-        assert row["orders.s"] == GT15_TOTALS["sum"]
-        assert not isinstance(row["orders.s"], bool)
-        assert _num(row["orders.a"]) == pytest.approx(GT15_TOTALS["avg"])
+        assert row["s"] == GT15_TOTALS["sum"]
+        assert not isinstance(row["s"], bool)
+        assert _num(row["a"]) == pytest.approx(GT15_TOTALS["avg"])
 
     async def test_measure_formats(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(metrics=[m("sum(flag)", "s"), m("avg(flag)", "a")]))
-        assert resp.attributes.metrics["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
-        assert resp.attributes.metrics["orders.a"].format == NumberFormat(type=NumberFormatType.PERCENT)
+        assert resp.attributes.metrics["s"].format == NumberFormat(type=NumberFormatType.INTEGER)
+        assert resp.attributes.metrics["a"].format == NumberFormat(type=NumberFormatType.PERCENT)
 
 
 class TestExpressionSources:
@@ -118,12 +118,12 @@ class TestExpressionSources:
             m("max(coalesce(flag, false))", "mc"),
         ]))
         row = resp.data[0]
-        assert row["orders.sc"] == 2
-        assert not isinstance(row["orders.sc"], bool)
-        assert _num(row["orders.ac"]) == pytest.approx(0.4)
-        assert row["orders.sn"] == 2
-        assert not isinstance(row["orders.sn"], bool)
-        assert as_bool(row["orders.mc"]) is True
+        assert row["sc"] == 2
+        assert not isinstance(row["sc"], bool)
+        assert _num(row["ac"]) == pytest.approx(0.4)
+        assert row["sn"] == 2
+        assert not isinstance(row["sn"], bool)
+        assert as_bool(row["mc"]) is True
 
     async def test_in_predicate(self, engine) -> None:
         resp = await engine.execute(orders_q(metrics=[
@@ -132,26 +132,26 @@ class TestExpressionSources:
             m("sum(status not in ('ok', 'hold'))", "sn"),
         ]))
         row = resp.data[0]
-        assert row["orders.s"] == STATUS_IN_SUM
-        assert not isinstance(row["orders.s"], bool)
-        assert row["orders.cd"] == 2
-        assert row["orders.sn"] == 1
+        assert row["s"] == STATUS_IN_SUM
+        assert not isinstance(row["s"], bool)
+        assert row["cd"] == 2
+        assert row["sn"] == 1
 
     async def test_time_point_comparison(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(metrics=[
             m("sum(ordered_at >= '2025-02')", "s"), m("max(ordered_at >= '2025-03')", "mx"),
         ]))
         row = resp.data[0]
-        assert row["orders.s"] == 3
-        assert not isinstance(row["orders.s"], bool)
-        assert as_bool(row["orders.mx"]) is True
-        assert resp.attributes.metrics["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
+        assert row["s"] == 3
+        assert not isinstance(row["s"], bool)
+        assert as_bool(row["mx"]) is True
+        assert resp.attributes.metrics["s"].format == NumberFormat(type=NumberFormatType.INTEGER)
 
     async def test_connective(self, engine) -> None:
         resp = await engine.execute(orders_q(metrics=[m("sum(flag and amount > 15)", "a"), m("sum(not flag)", "n")]))
         row = resp.data[0]
-        assert row["orders.a"] == 1
-        assert row["orders.n"] == 2
+        assert row["a"] == 1
+        assert row["n"] == 2
 
 
 class TestPredicateOverAttachedValue:
@@ -179,7 +179,7 @@ class TestPostAggregationFilters:
 class TestComposition:
     async def test_cross_model_sum(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "customers", "dimensions": ["name"], "metrics": [m("sum(orders.flag)")],
+            "population": "customers", "dimensions": ["customers.name"], "metrics": [m("sum(orders.flag)")],
         }))
         values = by_dim(resp, "name", dataset="customers")
         assert values == CROSS_MODEL_FLAG_SUM_BY_NAME
@@ -187,15 +187,15 @@ class TestComposition:
 
     async def test_stage_reaggregation(self, engine) -> None:
         resp = await engine.execute([
-            {"name": "s1", "population": "orders", "dimensions": ["customer_id"],
-             "metrics": [{"metric": "sum(flag)", "alias": "fs"}, {"metric": "max(flag)", "alias": "fm"}]},
+            {"name": "s1", "population": "orders", "dimensions": ["orders.customer_id"],
+             "metrics": [{"metric": "sum(orders.flag)", "alias": "fs"}, {"metric": "max(orders.flag)", "alias": "fm"}]},
             {"population": "s1",
-             "metrics": [{"metric": "sum(fs)", "alias": "a"}, {"metric": "max(fm)", "alias": "b"}]},
+             "metrics": [{"metric": "sum(s1.fs)", "alias": "a"}, {"metric": "max(s1.fm)", "alias": "b"}]},
         ])
         row = resp.data[0]
-        assert row["s1.a"] == sum(FLAG_SUM_BY_CUSTOMER.values())
-        assert not isinstance(row["s1.a"], bool)
-        assert as_bool(row["s1.b"]) is max(FLAG_MAX_BY_CUSTOMER.values())
+        assert row["a"] == sum(FLAG_SUM_BY_CUSTOMER.values())
+        assert not isinstance(row["a"], bool)
+        assert as_bool(row["b"]) is max(FLAG_MAX_BY_CUSTOMER.values())
 
     async def test_first_stage_values(self, engine) -> None:
         resp = await engine.execute(orders_q(
@@ -222,7 +222,7 @@ class TestComposition:
         resp = await engine.execute(orders_q(
             dimensions=["region", "status"], metrics=[m("sum(flag, partition_by=region)")],
         ))
-        got = {(r["orders.region"], r["orders.status"]): r["orders.v"] for r in resp.data}
+        got = {(r["orders.region"], r["orders.status"]): r["v"] for r in resp.data}
         assert got == {("east", "ok"): 2, ("east", "hold"): 2, ("west", "void"): 0, ("west", "ok"): 0}
         assert not any(isinstance(v, bool) for v in got.values())
 
@@ -280,11 +280,11 @@ class TestNumericPositions:
             m("sum(coalesce(flag, 0))", "c"), m("sum(iif(amount > 15, flag, 2))", "i"),
         ]))
         row = resp.data[0]
-        assert row["orders.fa"] == 30
-        assert row["orders.p1"] == 5
-        assert _num(row["orders.r"]) == 1
-        assert row["orders.c"] == 2
-        assert row["orders.i"] == 7
+        assert row["fa"] == 30
+        assert row["p1"] == 5
+        assert _num(row["r"]) == 1
+        assert row["c"] == 2
+        assert row["i"] == 7
 
     async def test_compared_with_a_number(self, engine) -> None:
         resp = await engine.execute(orders_q(metrics=[m("count(*)")], filter=["flag = 1"]))

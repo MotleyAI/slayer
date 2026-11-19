@@ -82,10 +82,10 @@ def _cases() -> dict:
             f"time_shift(sum(amount) / sum(amount, partition_by=[{_EVENT}]), -1)",
             dims=["status"]),
         "stage/share": [
-            {"name": "s1", "population": "monthly", "dimensions": ["region"],
-             "time_dimensions": [_TD], "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
-            {"population": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
-             "metrics": [{"metric": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
+            {"name": "s1", "population": "monthly", "dimensions": ["monthly.region"],
+             "time_dimensions": [_TD], "metrics": [{"metric": "sum(monthly.amount)", "alias": "rev"}]},
+            {"population": "s1", "dimensions": ["s1.region"], "time_dimensions": [_TD_DR],
+             "metrics": [{"metric": "time_shift(sum(s1.rev) / sum(s1.rev, partition_by=[s1.ordered_at]), -1)",
                            "alias": "t"}]}],
     }
 

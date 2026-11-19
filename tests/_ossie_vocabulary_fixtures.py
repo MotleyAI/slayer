@@ -95,7 +95,7 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
             "population": "orders",
             "dimensions": ["customers.name", {"field": "upper(status)", "alias": "status_uc"}],
             "time_dimensions": [{"field": "created_at", "granularity": "month"}],
-            "metrics": ["sum(amount)", {"metric": "avg(amount)", "alias": "avg_amount"}, "count(*)"],
+            "metrics": ["sum(orders.amount)", {"metric": "avg(amount)", "alias": "avg_amount"}, "count(*)"],
             "filter": ["amount > 5"],
             "order": [{"field": "customers.name"}],
         },
@@ -103,7 +103,7 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
     "dataset_qualified_dimension": (
         {"source_model": "orders", "dimensions": [{"name": "name", "model": "customers"}],
          "measures": ["sum(amount)"]},
-        {"population": "orders", "dimensions": ["customers.name"], "metrics": ["sum(amount)"]},
+        {"population": "orders", "dimensions": ["customers.name"], "metrics": ["sum(orders.amount)"]},
     ),
     "saved_metric_and_aggregation": (
         {"source_model": "orders", "dimensions": ["status"], "measures": ["revenue", "doubled(amount)"]},
@@ -139,7 +139,7 @@ GOLDEN_QUERIES: dict[str, tuple[Any, Any]] = {
         ],
         [
             {"name": "per_customer", "population": "orders", "dimensions": ["customer_id"],
-             "metrics": [{"metric": "sum(amount)", "alias": "revenue_total"}], "filter": ["amount > 5"]},
+             "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue_total"}], "filter": ["amount > 5"]},
             {"population": "per_customer",
              "metrics": [{"metric": "avg(revenue_total)", "alias": "avg_revenue"}, "count(*)"],
              "order": [{"field": "avg_revenue", "direction": "desc"}]},
@@ -158,9 +158,9 @@ MONTHLY_REVENUE: dict[Spelling, dict[str, Any]] = {
     },
     "new": {
         "population": "orders",
-        "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
-        "metrics": [{"metric": "sum(amount)", "alias": "revenue"}],
-        "filter": ["status = 'paid'"],
+        "time_dimensions": [{"field": "orders.ordered_at", "granularity": "month"}],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "revenue"}],
+        "filter": ["orders.status = 'paid'"],
     },
 }
 #: Refinements of ``monthly_revenue``: name -> (pre-2.0 spelling, Ossie spelling).

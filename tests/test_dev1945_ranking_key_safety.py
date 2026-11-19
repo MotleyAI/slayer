@@ -78,7 +78,7 @@ async def _refused(
 
 def _by_month(resp: SlayerResponse) -> dict:
     time_key = next(k for k in resp.columns if k.endswith("created_at"))
-    return {month_key(r[time_key]): r["orders.l"] for r in resp.data}
+    return {month_key(r[time_key]): r["l"] for r in resp.data}
 
 
 def _joined_tables(select: exp.Select) -> set:
@@ -232,19 +232,19 @@ class TestSafeKeysExecute:
         resp = await engine.execute(orders_q(
             metrics=[metric("last(amount)"), metric("first(amount)", "f")],
         ))
-        assert resp.data == [{"orders.l": LAST_AMOUNT, "orders.f": FIRST_AMOUNT}]
+        assert resp.data == [{"l": LAST_AMOUNT, "f": FIRST_AMOUNT}]
 
     async def test_filter_only_temporal_column_without_default(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path))
         resp = await engine.execute(orders_q(
             filter=["created_at > '2023-01-01'"], metrics=[metric("last(amount)")],
         ))
-        assert resp.data == [{"orders.l": LAST_AMOUNT}]
+        assert resp.data == [{"l": LAST_AMOUNT}]
 
     async def test_derived_default_over_proven_hop(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="cust_signup")
         resp = await engine.execute(orders_q(metrics=[metric("last(amount)")]))
-        assert resp.data == [{"orders.l": LAST_AMOUNT}]
+        assert resp.data == [{"l": LAST_AMOUNT}]
         assert resp.sql is not None
         order_expr, ranked_select = _ranked_cte_order_expr(resp.sql)
         _assert_plain_ranking_expr(order_expr, leaf="signup_at")

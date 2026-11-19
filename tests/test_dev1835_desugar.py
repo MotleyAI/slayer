@@ -76,12 +76,12 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='1y')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='1y')", alias="w")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="sum(amount, window='1y', partition_by=region)", alias="w",
+                metric="sum(orders.amount, window='1y', partition_by=orders.region)", alias="w",
             )],
         ))
         _assert_map(_by_region_month(bare, "w"), COL_WM)
@@ -91,12 +91,12 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="last(amount)", alias="l")],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"],
             metrics=[QueryMetric(
-                metric="last(amount, partition_by=region)", alias="l",
+                metric="last(orders.amount, partition_by=orders.region)", alias="l",
             )],
         ))
         _assert_map(_by_region(bare, "l"), REGION_LAST)
@@ -107,9 +107,9 @@ class TestBareExplicitTwins:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, window='1y')", alias="wb"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="wb"),
                 QueryMetric(
-                    metric="sum(amount, window='1y', partition_by=region)",
+                    metric="sum(orders.amount, window='1y', partition_by=orders.region)",
                     alias="we",
                 ),
             ],
@@ -129,14 +129,14 @@ class TestMigratedFamilyValuePins:
         query = q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         )
         resp = await engine.execute(query)
         got = {
             (r["orders.region"], r["orders.city"],
-             month_key(r["orders.ordered_at"])): r["orders.w"]
+             month_key(r["orders.ordered_at"])): r["w"]
             for r in resp.data
         }
         _assert_map(got, CITY_WM)
@@ -148,7 +148,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='45d')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='45d')", alias="w")],
         ))
         _assert_map(_by_region_month(resp, "w"), TRAILING_45D_REGION)
 
@@ -156,11 +156,11 @@ class TestMigratedFamilyValuePins:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            metrics=[QueryMetric(metric="last(amount)", alias="l")],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], r["orders.city"]): r["orders.l"]
+            (r["orders.region"], r["orders.city"]): r["l"]
             for r in resp.data
         }
         _assert_map(got, CITY_LAST_RC)
@@ -171,11 +171,11 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="last(amount)", alias="l")],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         ))
         got = {
             (r["orders.region"], r["orders.city"],
-             month_key(r["orders.ordered_at"])): r["orders.l"]
+             month_key(r["orders.ordered_at"])): r["l"]
             for r in resp.data
         }
         _assert_map(got, CITY_MONTH_LAST)
@@ -184,7 +184,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="first(amount)", alias="f")],
+            metrics=[QueryMetric(metric="first(orders.amount)", alias="f")],
         ))
         _assert_map(_by_region(resp, "f"), REGION_FIRST)
 
@@ -194,10 +194,10 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='90d')", alias="w")],
         ))
         got = {
-            month_key(r["orders.ordered_at"]): r["orders.w"] for r in resp.data
+            month_key(r["orders.ordered_at"]): r["w"] for r in resp.data
         }
         _assert_map(got, {"2024-01": 55.0, "2024-02": 125.0, "2024-03": 210.0})
 
@@ -206,13 +206,13 @@ class TestMigratedFamilyValuePins:
         single-row CROSS JOIN attach post-migration)."""
         dialect, engine = exec_backend
         query = q(metrics=[
-            QueryMetric(metric="sum(amount)", alias="m"),
-            QueryMetric(metric="last(amount)", alias="l"),
+            QueryMetric(metric="sum(orders.amount)", alias="m"),
+            QueryMetric(metric="last(orders.amount)", alias="l"),
         ])
         resp = await engine.execute(query)
         assert len(resp.data) == 1
-        assert float(resp.data[0]["orders.m"]) == pytest.approx(GRAND_TOTAL)
-        assert float(resp.data[0]["orders.l"]) == pytest.approx(60.0)
+        assert float(resp.data[0]["m"]) == pytest.approx(GRAND_TOTAL)
+        assert float(resp.data[0]["l"]) == pytest.approx(60.0)
         await _clean_dry(engine, query, dialect)
 
 
@@ -230,7 +230,7 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             order=[{"field": "sum(amount, window='90d')", "direction": "desc"}],
         ))
         got = [
@@ -238,7 +238,7 @@ class TestOrderOnlyHiddenProducers:
             for r in resp.data
         ]
         assert got == ORDER_BY_W90_DESC
-        assert set(resp.data[0]) == {"orders.region", "orders.ordered_at", "orders.m"}
+        assert set(resp.data[0]) == {"orders.region", "orders.ordered_at", "m"}
 
     async def test_order_only_bare_last_orders_by_the_ranked_value(
         self, exec_backend,
@@ -246,19 +246,19 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             order=[{"field": "last(amount)", "direction": "desc"}],
         ))
         # REGION_LAST desc: NULL 60, North 30, South 25.
         assert [r["orders.region"] for r in resp.data] == [None, "North", "South"]
-        assert set(resp.data[0]) == {"orders.region", "orders.m"}
+        assert set(resp.data[0]) == {"orders.region", "m"}
 
     async def test_filter_only_bare_last(self, exec_backend) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
             filter=["last(amount) > 28"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ))
         _assert_map(_by_region(resp, "m"), {"North": 100.0, None: 60.0})
 
@@ -270,13 +270,13 @@ class TestFilteredMeasureNeutrality:
         _, engine = exec_backend
         base = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ))
         plus = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(ok_amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="w"),
             ],
         ))
         _assert_map(_by_region_month(plus, "m"), _by_region_month(base, "m"))
@@ -292,15 +292,15 @@ class TestFilteredMeasureNeutrality:
         resp = await engine.execute(q(
             dimensions=["region"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="last(ok_amount)", alias="ol"),
-                QueryMetric(metric="last(nomatch)", alias="nl"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="last(orders.ok_amount)", alias="ol"),
+                QueryMetric(metric="last(orders.nomatch)", alias="nl"),
             ],
         ))
         assert len(resp.data) == 3
         _assert_map(_by_region(resp, "m"), REGION_TOTAL)
         _assert_map(_by_region(resp, "ol"), OK_LAST)
-        assert all(r["orders.nl"] is None for r in resp.data)
+        assert all(r["nl"] is None for r in resp.data)
 
 
 class TestDerivedColumnDimension:
@@ -312,10 +312,10 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"],
-            metrics=[QueryMetric(metric="last(amount)", alias="l")],
+            metrics=[QueryMetric(metric="last(orders.amount)", alias="l")],
         ))
         got = {
-            (r["orders.region"], r["orders.city_key"]): r["orders.l"]
+            (r["orders.region"], r["orders.city_key"]): r["l"]
             for r in resp.data
         }
         _assert_map(got, {
@@ -330,11 +330,11 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"], time_dimensions=month_td(),
-            metrics=[QueryMetric(metric="sum(amount, window='1y')", alias="w")],
+            metrics=[QueryMetric(metric="sum(orders.amount, window='1y')", alias="w")],
         ))
         got = {
             (r["orders.region"], r["orders.city_key"],
-             month_key(r["orders.ordered_at"])): r["orders.w"]
+             month_key(r["orders.ordered_at"])): r["w"]
             for r in resp.data
         }
         _assert_map(got, {
@@ -360,16 +360,16 @@ class TestDualRoleWithBareWindowed:
             dimensions=["region", {"field": band, "alias": "rband"}],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.rband"]),
+            (r["orders.region"], int(r["rband"]),
              month_key(r["orders.ordered_at"])):
-                (r["orders.m"], r["orders.rt"], r["orders.w"])
+                (r["m"], r["rt"], r["w"])
             for r in resp.data
         }
         expected = {

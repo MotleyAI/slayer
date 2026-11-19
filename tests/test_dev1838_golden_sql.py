@@ -32,27 +32,27 @@ def _cases() -> dict:
     return {
         "fuse/plain_hidden_order": q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             order=[OrderItem.model_validate({"field": "avg(amount)", "direction": "desc"})],
         ),
         "fuse/post_filter_on_transform": q(
             dimensions=["status"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="cumsum(sum(amount))", alias="x"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="x"),
             ],
             filter=["cumsum(sum(amount)) > 50"],
         ),
         "fuse/multi_alias": q(
             dimensions=["status"],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m1"),
-                QueryMetric(metric="sum(amount)", alias="m2"),
+                QueryMetric(metric="sum(orders.amount)", alias="m1"),
+                QueryMetric(metric="sum(orders.amount)", alias="m2"),
             ],
         ),
         "fuse/dim_only_dedup": q(dimensions=["region", "city"]),
         "fuse/scalar_local": q(
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ),
         "fuse/scalar_cm_spine": q(
             metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")],

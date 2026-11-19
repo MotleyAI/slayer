@@ -104,9 +104,9 @@ class TestOneTopLevelWith:
         async with exec_engine(dialect) as engine:
             resp = await engine.execute(cumsum_chain(order=_DESC_CREATED, limit=2, offset=1))
         assert [
-            (month_key(r["orders.created_at"]), float(r["orders.running"])) for r in resp.data
+            (month_key(r["orders.created_at"]), float(r["running"])) for r in resp.data
         ] == [("2024-03", 210.0), ("2024-02", 100.0)]
-        assert set(resp.data[0]) == {"orders.created_at", "orders.running"}
+        assert set(resp.data[0]) == {"orders.created_at", "running"}
 
     async def test_tsql_offset_without_order_gets_a_noop_ordering(self) -> None:
         # An inner stage: a final stage with dimensions is default-ordered.
@@ -156,7 +156,7 @@ class TestOuterOrderBy:
         assert [month_key(r["orders.created_at"]) for r in resp.data] == [
             "2024-04", "2024-03", "2024-02",
         ]
-        assert set(resp.data[0]) == {"orders.created_at", "orders.running"}
+        assert set(resp.data[0]) == {"orders.created_at", "running"}
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_order_by_carries_no_chain_qualifier(self, dialect: str) -> None:
@@ -194,7 +194,7 @@ class TestPostFilter:
     async def test_post_filter_keeps_the_transform_inputs(self, dialect: str) -> None:
         async with exec_engine(dialect) as engine:
             resp = await engine.execute(cumsum_chain(filter=["cumsum(sum(amount)) > 50"]))
-        got = {month_key(r["orders.created_at"]): float(r["orders.running"]) for r in resp.data}
+        got = {month_key(r["orders.created_at"]): float(r["running"]) for r in resp.data}
         assert got == {m: v for m, v in CUMSUM_BY_MONTH.items() if v > 50}
 
     _COMPOSITE = {
@@ -215,7 +215,7 @@ class TestPostFilter:
         async with exec_engine(dialect) as engine:
             resp = await engine.execute(cumsum_chain(**self._COMPOSITE))
         assert sorted(
-            (r["orders.ls"], month_key(r["orders.created_at"]), float(r["orders.running"]))
+            (r["ls"], month_key(r["orders.created_at"]), float(r["running"]))
             for r in resp.data
         ) == [("a", "2024-03", 90.0), ("b", "2024-02", 60.0), ("b", "2024-04", 130.0),
               ("c", "2024-03", 60.0)]
@@ -338,7 +338,7 @@ class TestQueryBackedWrap:
         ) as (engine, _db):
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "qb", "dimensions": [f"customers__{LONG}"],
-                "metrics": ["sum(amount_sum)"],
+                "metrics": ["sum(qb.amount_sum)"],
             }))
         assert {
             r[f"qb.customers__{LONG}"]: float(r["qb.amount_sum_sum"]) for r in resp.data
@@ -362,10 +362,10 @@ def _stat_seams(expression: str) -> dict:
         }),
         "non_root_stage": [
             {"name": "s1", "population": "orders", "time_dimensions": month, "metrics": measure},
-            {"population": "s1", "metrics": [{"metric": "max(w)", "alias": "mx"}]},
+            {"population": "s1", "metrics": [{"metric": "max(s1.w)", "alias": "mx"}]},
         ],
         "root_stage": [
-            {"name": "s1", "population": "orders", "dimensions": ["id"]},
+            {"name": "s1", "population": "orders", "dimensions": ["orders.id"]},
             {"population": "orders", "time_dimensions": month, "metrics": measure},
         ],
     }

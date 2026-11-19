@@ -41,7 +41,7 @@ def _per(resp, key: str, value: str = "n", *, dataset: str = "contractors") -> d
 class TestTheChild:
     async def test_counting_element_occurrences(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("count(skills.*)", "n")]))
-        assert num(resp.data[0]["contractors.n"]) == 5
+        assert num(resp.data[0]["n"]) == 5
 
     async def test_keyless_model(self, keyless) -> None:
         resp = await keyless.execute(query(dimensions=["name"], filter=["skills.value = 'go'"]))
@@ -50,7 +50,7 @@ class TestTheChild:
     async def test_parent_columns_attributable_from_the_child(self, engine) -> None:
         resp = await engine.execute(query(dimensions=["skills.value", "name"],
                                           metrics=[metric("count(skills.*)", "n")]))
-        got = {(r["contractors.skills.value"], r["contractors.name"]): num(r["contractors.n"]) for r in resp.data}
+        got = {(r["contractors.skills.value"], r["contractors.name"]): num(r["n"]) for r in resp.data}
         assert got == {("go", "Ann"): 2, ("sql", "Ann"): 1, ("sql", "Bob"): 1, ("go", "Eve"): 1}
 
     def test_double_underscore_names_keep_distinct_children(self) -> None:
@@ -95,8 +95,8 @@ class TestTheChild:
 
     async def test_element_type_is_the_columns(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "contractors", "dimensions": ["scores.value"],
-            "metrics": [metric("count(scores.*)", "n")], "filter": ["scores.value > '2'"]}))
+            "population": "contractors", "dimensions": ["contractors.scores.value"],
+            "metrics": [metric("count(scores.*)", "n")], "filter": ["contractors.scores.value > '2'"]}))
         assert _per(resp, "scores.value") == {3: 1, 9: 1, 5: 1}
 
 
@@ -104,12 +104,12 @@ class TestElementFilters:
     async def test_restricting_by_an_element(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("count(*)", "n"), metric("sum(rate)", "s")],
                                           filter=["skills.value = 'go'"]))
-        assert (num(resp.data[0]["contractors.n"]), num(resp.data[0]["contractors.s"])) == (2, 60)
+        assert (num(resp.data[0]["n"]), num(resp.data[0]["s"])) == (2, 60)
 
     async def test_any_of_several_elements(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("count(*)", "n")],
                                           filter=["skills.value IN ('go', 'sql')"]))
-        assert num(resp.data[0]["contractors.n"]) == 3
+        assert num(resp.data[0]["n"]) == 3
 
     async def test_negated_element_filter(self, engine) -> None:
         resp = await engine.execute(query(dimensions=["name"], filter=["NOT (skills.value = 'go')"]))
@@ -146,7 +146,7 @@ class TestKeylessAssociation:
 
     async def test_identical_parent_rows_stay_distinct(self, keyless) -> None:
         q = SlayerQuery.model_validate({
-            "population": "twins", "dimensions": ["skills.value"], "metrics": [metric("count(*)", "n")],
+            "population": "twins", "dimensions": ["twins.skills.value"], "metrics": [metric("count(*)", "n")],
             "to_many_handling": "associate"})
         with pytest.warns(UserWarning):
             resp = await keyless.execute(q)
@@ -161,7 +161,7 @@ class TestKeylessAssociation:
         async with list_engine(datasets=[contractors, assignments, twins_dataset()]) as e:
             resp = await e.execute(query(dimensions=["skills.value", "assignments.id"],
                                          metrics=[metric("count(*)", "n")], to_many_handling="associate"))
-        cells = {(r["contractors.skills.value"], r["contractors.assignments.id"]): r["contractors.n"] for r in resp.data}
+        cells = {(r["contractors.skills.value"], r["assignments.id"]): r["n"] for r in resp.data}
         assert cells == {("go", 1): 1, ("go", 2): 1, ("go", 5): 1, ("sql", 1): 1, ("sql", 2): 1, ("sql", 3): 1}
         assert [w for w in resp.warnings or [] if w.kind == "associated"]
 
@@ -170,7 +170,7 @@ class TestNoFanOut:
     async def test_parent_and_element_aggregates_together(self, engine) -> None:
         resp = await engine.execute(query(dimensions=["team"], metrics=[
             metric("count(*)", "n"), metric("sum(rate)", "s"), metric("count_distinct(skills.value)", "d")]))
-        got = {r["contractors.team"]: (num(r["contractors.n"]), num(r["contractors.s"]), num(r["contractors.d"]))
+        got = {r["contractors.team"]: (num(r["n"]), num(r["s"]), num(r["d"]))
                for r in resp.data}
         assert got == {"A": (2, 30, 2), "B": (3, 120, 1)}
 
@@ -178,7 +178,7 @@ class TestNoFanOut:
 class TestComposition:
     async def test_through_a_to_one_join(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "assignments", "dimensions": ["id"], "filter": ["contractors.skills.value = 'sql'"]}))
+            "population": "assignments", "dimensions": ["assignments.id"], "filter": ["contractors.skills.value = 'sql'"]}))
         assert {int(r["assignments.id"]) for r in resp.data} == {1, 2, 3}
 
     async def test_element_dimension_through_a_to_one_join(self, engine) -> None:
@@ -206,17 +206,17 @@ class TestComposition:
             resp = await e.execute(query(dimensions=["team"], filter=["assignments.id = 1"], metrics=[
                 metric("count(skills.*)", "n"), metric("count_distinct(skills.value)", "d"),
                 metric("collect(skills.value)", "c")]))
-        got = {r["contractors.team"]: (num(r["contractors.n"]), num(r["contractors.d"]), list(r["contractors.c"]))
+        got = {r["contractors.team"]: (num(r["n"]), num(r["d"]), list(r["c"]))
                for r in resp.data}
         assert got == {"A": (3, 2, ["go", "sql"])}
 
     async def test_a_collected_list_in_a_later_stage(self, engine) -> None:
-        stage = {"name": "s", "population": "contractors", "dimensions": ["team"],
+        stage = {"name": "s", "population": "contractors", "dimensions": ["contractors.team"],
                  "metrics": [metric("collect(skills.value)", "team_skills")]}
-        kept = await engine.execute([stage, {"population": "s", "dimensions": ["team"],
-                                             "filter": ["contains(team_skills, 'go')"]}])
+        kept = await engine.execute([stage, {"population": "s", "dimensions": ["s.team"],
+                                             "filter": ["contains(s.team_skills, 'go')"]}])
         assert {_cell(r, "team") for r in kept.data} == {"A", "B"}
-        per_skill = await engine.execute([stage, {"population": "s", "dimensions": ["team_skills.value"],
+        per_skill = await engine.execute([stage, {"population": "s", "dimensions": ["s.team_skills.value"],
                                                   "metrics": [metric("count(team_skills.*)", "n")]}])
         assert {_cell(r, "team_skills.value"): num(_cell(r, "n")) for r in per_skill.data} == {"go": 2, "sql": 1}
 
@@ -334,7 +334,7 @@ async def test_element_filter_through_a_to_one_join_reads_the_parents_row(
     dialect: str, function: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _correlating)
-    q = SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+    q = SlayerQuery.model_validate({"population": "assignments", "dimensions": ["assignments.id"],
                                     "filter": ["contractors.skills.value = 'sql'"]})
     sql = await emit_contractors(q, dialect=dialect, datasets=all_datasets())
     tree = sqlglot.parse_one(sql, read=dialect)

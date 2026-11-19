@@ -113,18 +113,18 @@ class TestMeasurePosition:
 
     async def test_cross_model_measure(self) -> None:
         f = await _dry(_q(metrics=["sum(customers.score)"], dimensions=["status"]))
-        assert "orders.customers.score_sum" in f.columns
+        assert "customers.score_sum" in f.columns
 
     async def test_cross_model_star_count(self) -> None:
         f = await _dry(_q(metrics=["count(customers.*)"], dimensions=["status"]))
-        assert "orders.customers._count" in f.columns
+        assert "customers._count" in f.columns
 
     async def test_percentile_measure(self) -> None:
         f = await _dry(_q(metrics=["percentile(price, p=0.9)"]))
         assert "orders.price_percentile_p_0_9" in f.columns
 
     async def test_windowed_measure(self) -> None:
-        td = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
+        td = [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)]
         await _dry(_q(metrics=["sum(revenue, window='90d')"], dimensions=["status"], time_dimensions=td))
 
     async def test_weighted_avg_measure(self) -> None:
@@ -151,7 +151,7 @@ class TestFilterPosition:
         # No model context at construction — the unknown functional name defers to binding.
         q = SlayerQuery(
             population="orders",
-            metrics=["my_agg(price)"],
+            metrics=["my_agg(orders.price)"],
             filter=["my_agg(price) > 0"],
         )
         assert q.filter
@@ -183,7 +183,7 @@ class TestOrderPosition:
         q1 = _q(
             metrics=["sum(revenue)"],
             dimensions=["status"],
-            order=[OrderItem(field="sum(revenue)", direction="desc")],
+            order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
         )
         q2 = SlayerQuery.model_validate(q1.model_dump())
         # The author's functional spelling survives coercion and round-trip.
@@ -235,8 +235,8 @@ class TestExtensionPositions:
         f = await _dry(SlayerQuery.model_validate({
             "population": "orders",
             "extensions": [ext],
-            "metrics": ["rev"],
-            "dimensions": ["status"],
+            "metrics": ["orders.rev"],
+            "dimensions": ["orders.status"],
         }))
         assert "orders.rev" in f.columns
 
@@ -248,8 +248,8 @@ class TestExtensionPositions:
         f = await _dry(SlayerQuery.model_validate({
             "population": "orders",
             "extensions": [inline],
-            "metrics": ["rev"],
-            "dimensions": ["status"],
+            "metrics": ["orders.rev"],
+            "dimensions": ["orders.status"],
         }))
         assert "orders.rev" in f.columns
 
@@ -264,13 +264,13 @@ class TestStagePositions:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "sum(revenue)"}],
+            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "sum(orders.revenue)"}],
         })
         root = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": ["status"],
-            "metrics": [{"metric": "max(revenue_sum)"}],
+            "dimensions": ["stage1.status"],
+            "metrics": [{"metric": "max(stage1.revenue_sum)"}],
         })
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -290,15 +290,15 @@ class TestStagePositions:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "dimensions": ["status"],
-                    "metrics": [{"metric": "sum(revenue)", "alias": "rev"}],
+                    "dimensions": ["orders.status"],
+                    "metrics": [{"metric": "sum(orders.revenue)", "alias": "rev"}],
                 })
             ],
         )
         query = SlayerQuery.model_validate({
             "population": "daily",
-            "dimensions": ["status"],
-            "metrics": ["max(rev)"],
+            "dimensions": ["daily.status"],
+            "metrics": ["max(daily.rev)"],
         })
         f = await _dry(query, dataset=_orders(), extra_datasets=[_customers(), backed])
         assert "daily.rev_max" in f.columns
@@ -311,12 +311,12 @@ class TestStagePositions:
 
 class TestCompositePositions:
     async def test_transform_over_functional_agg(self) -> None:
-        td = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
+        td = [TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)]
         await _dry(_q(metrics=["cumsum(sum(revenue))"], time_dimensions=td))
 
     async def test_arithmetic_of_functional_aggs(self) -> None:
         f = await _dry(_q(metrics=[{"metric": "sum(revenue) / count(*)", "alias": "aov"}], dimensions=["status"]))
-        assert "orders.aov" in f.columns
+        assert "aov" in f.columns
 
 
 # ===========================================================================
@@ -329,7 +329,7 @@ _CASE_FUNC = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 def _band_query(expr: str, **kw) -> SlayerQuery:
     kw.setdefault("population", "orders")
     kw.setdefault("dimensions", ["region", {"field": expr, "alias": "band"}])
-    kw.setdefault("metrics", [QueryMetric(metric="sum(amount)", alias="t")])
+    kw.setdefault("metrics", [QueryMetric(metric="sum(orders.amount)", alias="t")])
     return SlayerQuery(**kw)
 
 
@@ -390,9 +390,9 @@ class TestExecuted:
         f = await engine.execute(
             _q(
                 metrics=["sum(revenue)", "count(*)"],
-                dimensions=[QueryDimension(field="status")],
+                dimensions=[QueryDimension(field="orders.status")],
                 filter=["sum(revenue) > 10"],
-                order=[OrderItem(field="sum(revenue)", direction="desc")],
+                order=[OrderItem(field="sum(orders.revenue)", direction="desc")],
             )
         )
         assert list(f.columns) == ["orders.status", "orders.revenue_sum", "orders._count"]

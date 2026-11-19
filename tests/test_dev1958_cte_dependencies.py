@@ -34,7 +34,7 @@ DEGENERATE_SHARE = "sum(amount) / max(sum(amount, partition_by=[region]), partit
 
 
 def _q(expression: str, *, date_range: bool = False):
-    td = ([TimeDimension(field="ordered_at",
+    td = ([TimeDimension(field="monthly.ordered_at",
                          granularity=TimeGranularity.MONTH,
                          date_range=["2024-02-01", "2024-03-31"])]
           if date_range else month_td())
@@ -129,7 +129,7 @@ class TestIdentityDeduplicatedTraversal:
     async def test_carried_warning_not_duplicated(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(DEGENERATE_SHARE))
         assert len(degenerate_warnings(resp)) == 1
-        got = {(r["monthly.region"], month_key(r["monthly.ordered_at"])): r["monthly.t"]
+        got = {(r["monthly.region"], month_key(r["monthly.ordered_at"])): r["t"]
                for r in resp.data}
         assert len(got) == len(resp.data) == 6
         expected = {("North", "2024-02"): 10 / 60, ("North", "2024-03"): 20 / 60,

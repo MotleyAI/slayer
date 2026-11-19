@@ -46,20 +46,20 @@ class TestStoredShadow:
             resp = await engine.execute({
                 "population": "t", "dimensions": [{"field": "reverse(customers.name)", "alias": "rn"}],
                 "metrics": [metric("count(*)", "n")]})
-        assert {r["t.rn"] for r in resp.data} == {"cba", "zyx"}
+        assert {r["rn"] for r in resp.data} == {"cba", "zyx"}
 
     async def test_a_literal_argument_keeps_the_library_function(self) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[agg("reverse")])]) as engine:
             resp = await engine.execute({
-                "population": "t", "dimensions": [{"field": "concat(s, reverse('abc'))", "alias": "lit"}],
+                "population": "t", "dimensions": [{"field": "concat(t.s, reverse('abc'))", "alias": "lit"}],
                 "metrics": [metric("count(*)", "n")]})
-        assert {r["t.lit"] for r in resp.data} == {"xcba", "ycba", "zcba"}
+        assert {r["lit"] for r in resp.data} == {"xcba", "ycba", "zcba"}
 
     @pytest.mark.parametrize("spelling", sorted(SCALAR_SPELLINGS))
     async def test_a_parser_spelling_is_shadowed_by_its_own_name(self, spelling: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[agg(spelling)])]) as engine:
             resp = await engine.execute(_query(metric(f"{spelling}(a)")))
-        assert float(resp.data[0]["t.v"]) == SUM_A
+        assert float(resp.data[0]["v"]) == SUM_A
 
     @pytest.mark.parametrize(("formula", "expected"), [
         pytest.param("left(a)", SUM_A, id="default"),
@@ -109,7 +109,7 @@ class TestCaseResolution:
         async with stored_engine(datasets=[t_doc(aggregations=aggs)]) as engine:
             resp = await engine.execute(_query(metric("reverse(a)", "lo"), metric("REVERSE(a)", "up")))
         row = resp.data[0]
-        assert (float(row["t.lo"]), float(row["t.up"])) == (SUM_A, MAX_A)
+        assert (float(row["lo"]), float(row["up"])) == (SUM_A, MAX_A)
 
     async def test_an_ambiguous_case_insensitive_match(self) -> None:
         aggs = [agg("Reverse"), agg("REVERSE", "MAX({value})")]
@@ -163,9 +163,9 @@ class TestLibraryErrorsKept:
     async def test_the_library_function_still_answers_without_a_definition(self) -> None:
         async with stored_engine(datasets=[t_doc()]) as engine:
             resp = await engine.execute({
-                "population": "t", "dimensions": [{"field": "reverse(s)", "alias": "rs"}],
+                "population": "t", "dimensions": [{"field": "reverse(t.s)", "alias": "rs"}],
                 "metrics": [metric("count(*)", "n")]})
-        assert {r["t.rs"] for r in resp.data} == {"x", "y", "z"}
+        assert {r["rs"] for r in resp.data} == {"x", "y", "z"}
 
 
 class TestStillReserved:

@@ -34,7 +34,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -71,9 +71,9 @@ class TestSharedAcrossScopes:
         query = _band_wm_query("1y")
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
+            (r["orders.region"], int(r["band"]),
              month_key(r["orders.ordered_at"])):
-                (float(r["orders.m"]), float(r["orders.w1"]))
+                (float(r["m"]), float(r["w1"]))
             for r in resp.data
         }
         assert set(got) == set(BAND_WM)
@@ -96,14 +96,14 @@ class TestSharedAcrossScopes:
         query = _band_wm_query("90d", "45d")
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
+            (r["orders.region"], int(r["band"]),
              month_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
         cell = got[("North", 1, "2024-02")]
-        assert float(cell["orders.w90"]) == pytest.approx(60.0)
+        assert float(cell["w90"]) == pytest.approx(60.0)
         # 45d back from Feb's end (~Jan 15) drops the Jan 10 row.
-        assert float(cell["orders.w45"]) == pytest.approx(50.0)
+        assert float(cell["w45"]) == pytest.approx(50.0)
         dry = await engine.execute(query, dry_run=True)
         # One shared city producer + the two windowed producers.
         assert _cm_count(dry.sql, dialect) == 3, cte_aliases(
@@ -123,8 +123,8 @@ class TestSharedAcrossScopes:
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
-             month_key(r["orders.ordered_at"])): float(r["orders.w90"])
+            (r["orders.region"], int(r["band"]),
+             month_key(r["orders.ordered_at"])): float(r["w90"])
             for r in resp.data
         }
         assert got[("North", 1, "2024-02")] == pytest.approx(30.0)
@@ -149,9 +149,9 @@ class TestSharedAcrossScopes:
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.customers.tier"], r["orders.sband"]):
-                (float(r["orders.m"]),
-                 None if r["orders.rt"] is None else float(r["orders.rt"]))
+            (r["customers.tier"], r["sband"]):
+                (float(r["m"]),
+                 None if r["rt"] is None else float(r["rt"]))
             for r in resp.data
         }
         assert got == {
@@ -182,13 +182,13 @@ class TestProducersThatMustStaySeparate:
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"], metrics=[
-            QueryMetric(metric="last(amount)", alias="lb"),
-            QueryMetric(metric="last(amount, customers.signup_at)", alias="ls"),
+            QueryMetric(metric="last(orders.amount)", alias="lb"),
+            QueryMetric(metric="last(orders.amount, customers.signup_at)", alias="ls"),
         ])
         resp = await engine.execute(query)
         by = {r["orders.status"]: r for r in resp.data}
-        assert float(by["ok"]["orders.lb"]) == pytest.approx(7.0)
-        assert float(by["ok"]["orders.ls"]) == pytest.approx(5.0)
+        assert float(by["ok"]["lb"]) == pytest.approx(7.0)
+        assert float(by["ok"]["ls"]) == pytest.approx(5.0)
         dry = await engine.execute(query, dry_run=True)
         assert _cm_count(dry.sql, dialect) == 2, cte_aliases(
             dry.sql, "_cm_", dialect=dialect,
@@ -201,20 +201,20 @@ class TestProducersThatMustStaySeparate:
         query = q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
-                QueryMetric(metric="sum(ok_amount, window='90d')", alias="wok"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="wok"),
             ],
         )
         resp = await engine.execute(query)
         got = {
-            (r["orders.region"], int(r["orders.band"]),
+            (r["orders.region"], int(r["band"]),
              month_key(r["orders.ordered_at"])): r
             for r in resp.data
         }
         cell = got[("North", 1, "2024-01")]
-        assert float(cell["orders.w"]) == pytest.approx(30.0)
+        assert float(cell["w"]) == pytest.approx(30.0)
         # ok_amount drops the Jan 20 'new' row.
-        assert float(cell["orders.wok"]) == pytest.approx(10.0)
+        assert float(cell["wok"]) == pytest.approx(10.0)
         dry = await engine.execute(query, dry_run=True)
         # One shared city producer + one windowed producer per source column.
         assert _cm_count(dry.sql, dialect) == 3, cte_aliases(
@@ -273,9 +273,9 @@ class TestWarningsUnchangedBySharing:
         assert len({w.metric for w in pushed}) == 2, pushed
         assert all("city" in w.filter_text for w in pushed)
         (row,) = resp.data
-        assert row["orders.sband"] == "lo"
-        assert float(row["orders.m"]) == pytest.approx(30.0)
-        assert float(row["orders.cm"]) == pytest.approx(100.0)
+        assert row["sband"] == "lo"
+        assert float(row["m"]) == pytest.approx(30.0)
+        assert float(row["cm"]) == pytest.approx(100.0)
 
     async def test_shared_producer_pushed_filter_reports_once(
         self, exec_backend,
@@ -294,11 +294,11 @@ class TestWarningsUnchangedBySharing:
         pushed = pushed_filter_infos(resp)
         assert len(pushed) == 1, [w.metric for w in pushed]
         (row,) = resp.data
-        assert (row["orders.customers.tier"], row["orders.sband"]) == (
+        assert (row["customers.tier"], row["sband"]) == (
             "gold", "lo",
         )
-        assert float(row["orders.m"]) == pytest.approx(30.0)
-        assert float(row["orders.rt"]) == pytest.approx(100.0)
+        assert float(row["m"]) == pytest.approx(30.0)
+        assert float(row["rt"]) == pytest.approx(100.0)
 
     async def test_shared_producer_shape_carries_no_spurious_warning(
         self, exec_backend,

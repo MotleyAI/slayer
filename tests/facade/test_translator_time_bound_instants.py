@@ -133,7 +133,7 @@ async def _revenue(tmp_path, where: str, *, column: str | None = "ordered_at") -
         resp = await engine.execute(_translate(f"SELECT {grain}revenue_sum FROM orders WHERE {where}", "postgres"))
     finally:
         engine.close()
-    return sum(r["orders.revenue_sum"] for r in resp.data)
+    return sum(r["revenue_sum"] for r in resp.data)
 
 
 class TestExecutedMidnightSemantics:

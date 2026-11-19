@@ -57,7 +57,7 @@ async def test_unset_or_blank_keeps_host_clock(monkeypatch: pytest.MonkeyPatch, 
     before = date.today()
     async with now_engine() as engine:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "ev", "metrics": COUNT, "filter": ["ts = 'today'"],
+            "population": "ev", "metrics": COUNT, "filter": ["ev.ts = 'today'"],
         }), dry_run=True)
     assert resp.sql is not None
     assert any(

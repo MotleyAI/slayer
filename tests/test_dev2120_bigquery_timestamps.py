@@ -80,8 +80,8 @@ class TestZonedColumn:
         assert "WHERE LIB.TS = LIB.TS" in await _sql("ts = ts", filtered=True, zoned=True)
 
     async def test_a_stage_reads_the_zoned_column_naive(self) -> None:
-        s1 = SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["id", "ts"]})
-        root = SlayerQuery.model_validate({"population": "s1", "dimensions": ["id"], "filter": ["ts < now()"]})
+        s1 = SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["lib.id", "lib.ts"]})
+        root = SlayerQuery.model_validate({"population": "s1", "dimensions": ["s1.id"], "filter": ["s1.ts < now()"]})
         sql = " ".join((await _engine_generate(query=[s1, root], dataset=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "CAST(LIB.TS AS DATETIME) AS `LIB___TS`" in sql, sql
         assert "WHERE S1.TS < CURRENT_DATETIME()" in sql, sql
@@ -103,9 +103,9 @@ class TestZonedColumnReadsNaive:
     async def test_time_dimension_bucket_and_date_range(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "lib",
-            "metrics": [{"metric": "count(*)"}],
+            "metrics": [{"metric": "count(lib.*)"}],
             "time_dimensions": [
-            {"field": "ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}],
+            {"field": "lib.ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}],
         })
         sql = " ".join((await _engine_generate(query=query, dataset=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)" in sql, sql
@@ -123,7 +123,7 @@ class TestZonedColumnReadsNaive:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
             name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
-        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "max(ts_shifted)",
+        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "max(lib.ts_shifted)",
                                                                                  "alias": "agg_v"}]})
         sql = " ".join((await _engine_generate(query=query, dataset=model, dialect="bigquery")).upper().split())
         assert "MAX(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME))" in sql, sql
@@ -134,7 +134,7 @@ class TestZonedColumnReadsNaive:
         query = SlayerQuery.model_validate({
             "population": "lib",
             "metrics": [{"metric": f"{agg}(ts)", "alias": "agg_v"}],
-            "time_dimensions": [{"field": "ts", "granularity": "month"}],
+            "time_dimensions": [{"field": "lib.ts", "granularity": "month"}],
         })
         sql = " ".join((await _engine_generate(query=query, dataset=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "CAST(LIB.TS AS DATETIME) AS _VAL_1" in sql, sql
@@ -143,8 +143,8 @@ class TestZonedColumnReadsNaive:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
             name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.DATETIME, db_type="TIMESTAMP")]})
-        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "count(*)"}],
-                                            "time_dimensions": [{"field": "ts_shifted", "granularity": "month"}]})
+        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": "count(lib.*)"}],
+                                            "time_dimensions": [{"field": "lib.ts_shifted", "granularity": "month"}]})
         sql = " ".join((await _engine_generate(query=query, dataset=model, dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME), MONTH)" in sql, sql
 

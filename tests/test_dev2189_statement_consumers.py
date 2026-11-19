@@ -100,7 +100,7 @@ async def test_policy_hop_tables_count_for_refresh_keys() -> None:
 # --------------------------------------------------------------------------- #
 # Result columns
 # --------------------------------------------------------------------------- #
-JOINED_KEYS = ["orders.customers.name", "orders.customers.regions.name", "orders.amount_sum"]
+JOINED_KEYS = ["customers.name", "customers.regions.name", "orders.amount_sum"]
 
 
 @pytest.mark.parametrize("policy", [None, "join_multi_hop"])
@@ -135,7 +135,7 @@ LONG = "a" * 70
 @pytest.mark.parametrize("policy", [None, "join_multi_hop"])
 async def test_length_fitted_result_names_come_back_canonical(policy: Optional[str]) -> None:
     long_query = SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": LONG}],
+        "population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "sum(orders.amount)", "alias": LONG}],
     })
     async with emission_engine("postgres") as (base, _):
         engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES[policy] if policy else None)

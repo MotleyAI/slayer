@@ -190,7 +190,7 @@ class TestExecution:
         stage = stored_query(dimensions=["status"], measures=[{"name": "rev", "formula": "amount:sum"}])
         storage = await make_store(backend=backend, models=[
             orders_doc(), customers_doc(), regions_doc(), query_backed_doc(name="rev_q", stage=stage)])
-        resp = await run(storage, {"population": "rev_q", "dimensions": ["status"], "metrics": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "dimensions": ["rev_q.status"], "metrics": ["sum(rev_q.rev)"]})
         assert {r["rev_q.status"]: r["rev_q.rev_sum"] for r in rows(resp)} == {"paid": 80.0, "new": 70.0}
         extended = stored_query(source_model={"source_name": "orders", "measures": [
             {"name": "m", "formula": "amount:sum"}]}, measures=["m"])
@@ -206,7 +206,7 @@ KEYED_DIMENSIONS = [
 ]
 KEYED_MEASURES = ["amount:sum / *:count", "amount:sum + price:sum + balance:sum + *:count + price:max + price:min"]
 RECORDED_KEYS = [
-    "orders.amount_sum_partition_by_region", "orders.iif_amount_sum_partition_by_002eb04b_gh_other", "orders.band",
+    "amount_sum_partition_by_region", "iif_amount_sum_partition_by_002eb04b_gh_other", "band",
     "orders.amount_sum_count", "orders.amount_sum_price_sum_balance_4ffaf4a2_rice_min",
 ]
 
@@ -253,7 +253,7 @@ class TestMemories:
             loaded = await storage.get_memory("m_rev")
             assert loaded.query is not None
             assert [m.metric for m in loaded.query.metrics or []] == ["sum(amount)"]
-            assert rows(await run(storage, loaded.query)) == [{"orders.rev": 150.0}]
+            assert rows(await run(storage, loaded.query)) == [{"rev": 150.0}]
         assert raw_documents(backend=backend, base=store_base(tmp_path, backend=backend))["memories/m_rev"] == before
 
 
@@ -295,7 +295,7 @@ async def test_stored_colon_call_to_a_shadowing_aggregation_answers() -> None:
         model = await engine.storage.get_dataset("t", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ["reverse(a)"]
-        resp = await engine.execute({"population": "t", "metrics": ["c"]})
+        resp = await engine.execute({"population": "t", "metrics": ["t.c"]})
     assert float(value(resp, name="c")) == SUM_A
 
 

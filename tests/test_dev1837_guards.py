@@ -103,7 +103,7 @@ class TestLiftedDirection:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric=formula, alias="x"),
             ],
         ))
@@ -116,9 +116,9 @@ class TestLiftedDirection:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(orders.amount), -1)", alias="prev"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -135,8 +135,8 @@ class TestRemainingArmsExactMessages:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -146,8 +146,8 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="last(amount)", alias="l"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="last(orders.amount)", alias="l"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -159,7 +159,7 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ))
@@ -192,7 +192,7 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
@@ -201,7 +201,7 @@ class TestCteBodyArms:
         planned = plan_query(query=q(
             dimensions=["region"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
@@ -230,7 +230,7 @@ class TestStalePlannerRefsRepointed:
         )
         query = q(
             dimensions=["region", {"field": cband, "alias": "cband"}],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

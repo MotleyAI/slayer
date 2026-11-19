@@ -56,7 +56,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=region)", alias="region_rev",
+                    metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -71,7 +71,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=region)", alias="region_rev",
+                    metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -92,7 +92,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=region)", alias="region_rev",
+                    metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -118,7 +118,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
             query=_q(
                 dimensions=["region", "city"],
                 metrics=[QueryMetric(
-                    metric="sum(amount, partition_by=[])", alias="g",
+                    metric="sum(orders.amount, partition_by=[])", alias="g",
                 )],
             ),
             bundle=_bundle(),
@@ -135,8 +135,8 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "city"],
                 metrics=[
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="rsum"),
-                    QueryMetric(metric="avg(amount, partition_by=region)", alias="ravg"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rsum"),
+                    QueryMetric(metric="avg(orders.amount, partition_by=orders.region)", alias="ravg"),
                 ],
             ),
             bundle=_bundle(),
@@ -152,8 +152,8 @@ class TestSamePartitionSetInterning:
         sql = await gen(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rsum"),
-                QueryMetric(metric="avg(amount, partition_by=region)", alias="ravg"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rsum"),
+                QueryMetric(metric="avg(orders.amount, partition_by=orders.region)", alias="ravg"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -163,8 +163,8 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "city"],
                 metrics=[
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="a"),
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="b"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="a"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="b"),
                 ],
             ),
             bundle=_bundle(),
@@ -179,8 +179,8 @@ class TestSamePartitionSetInterning:
         sql = await gen(_q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="a"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="b"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="a"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="b"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -194,9 +194,9 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "channel", "city"],
                 metrics=[
-                    QueryMetric(metric="sum(amount, partition_by=region)", alias="rr"),
+                    QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rr"),
                     QueryMetric(
-                        metric="sum(amount, partition_by=[region, channel])", alias="rc",
+                        metric="sum(orders.amount, partition_by=[orders.region, orders.channel])", alias="rc",
                     ),
                 ],
             ),
@@ -221,7 +221,7 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region", "city"],
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
                 QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         )
@@ -240,8 +240,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
-                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -259,8 +259,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
-                QueryMetric(metric="last(amount)", alias="lst"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
+                QueryMetric(metric="last(orders.amount)", alias="lst"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -278,8 +278,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="region_rev"),
-                QueryMetric(metric="cumsum(sum(amount))", alias="cs"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev"),
+                QueryMetric(metric="cumsum(sum(orders.amount))", alias="cs"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -299,7 +299,7 @@ class TestCoexistenceWithIsolatedFamilies:
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=region)", alias="region_rev",
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_rev",
             )],
         )
         planned = plan_query(query=q, bundle=_bundle())

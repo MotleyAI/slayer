@@ -86,13 +86,13 @@ class TestDedupPositive:
         query = q(
             dimensions=["region", {"field": band, "alias": "rband"}],
             metrics=[
-                QueryMetric(metric="sum(amount)", alias="m"),
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount)", alias="m"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
             ],
         )
         resp = await engine.execute(query)
         got = {
-            r["orders.region"]: (int(r["orders.rband"]), float(r["orders.rt"]))
+            r["orders.region"]: (int(r["rband"]), float(r["rt"]))
             for r in resp.data
         }
         assert got == {
@@ -113,9 +113,9 @@ class TestDedupPositive:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, window='1y')", alias="wb"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="wb"),
                 QueryMetric(
-                    metric="sum(amount, window='1y', partition_by=region)",
+                    metric="sum(orders.amount, window='1y', partition_by=orders.region)",
                     alias="we",
                 ),
             ],
@@ -133,8 +133,8 @@ class TestDedupPositive:
         query = q(
             dimensions=["region"],
             metrics=[
-                QueryMetric(metric="last(amount)", alias="lb"),
-                QueryMetric(metric="last(amount, partition_by=region)", alias="le"),
+                QueryMetric(metric="last(orders.amount)", alias="lb"),
+                QueryMetric(metric="last(orders.amount, partition_by=orders.region)", alias="le"),
             ],
         )
         resp = await engine.execute(query)
@@ -154,14 +154,14 @@ class TestDedupPositive:
             dimensions=["region", {"field": band, "alias": "rband"}],
             time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
-                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
+                QueryMetric(metric="sum(orders.amount, partition_by=orders.region)", alias="rt"),
+                QueryMetric(metric="sum(orders.amount, window='1y')", alias="w"),
             ],
         )
         resp = await engine.execute(query)
         _assert_map(_by_region_month(resp, "w"), COL_WM)
         for r in resp.data:
-            assert float(r["orders.rt"]) == pytest.approx(
+            assert float(r["rt"]) == pytest.approx(
                 REGION_TOTAL[r["orders.region"]],
             )
         counts = await _producer_counts(engine, query, dialect)
@@ -176,8 +176,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, window='90d')", alias="w90"),
-                QueryMetric(metric="sum(amount, window='45d')", alias="w45"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w90"),
+                QueryMetric(metric="sum(orders.amount, window='45d')", alias="w45"),
             ],
         )
         resp = await engine.execute(query)
@@ -193,8 +193,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
-                QueryMetric(metric="sum(ok_amount, window='90d')", alias="wok"),
+                QueryMetric(metric="sum(orders.amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(orders.ok_amount, window='90d')", alias="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -212,8 +212,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"],
             metrics=[
-                QueryMetric(metric="last(amount)", alias="lo"),
-                QueryMetric(metric="last(amount, shipped_at)", alias="ls"),
+                QueryMetric(metric="last(orders.amount)", alias="lo"),
+                QueryMetric(metric="last(orders.amount, orders.shipped_at)", alias="ls"),
             ],
         )
         resp = await engine.execute(query)

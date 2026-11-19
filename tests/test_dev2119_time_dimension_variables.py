@@ -52,12 +52,12 @@ class TestExecution:
         self, engine: SlayerQueryEngine, days: int, expected: dict,
     ) -> None:
         resp = await engine.execute(_query(time_dimensions=[td(SHIFTED)], variables={"days": days}))
-        assert by_bucket(resp, KEY, "orders.v") == expected
+        assert by_bucket(resp, KEY, "v") == expected
 
     async def test_named_time_dimension_keeps_its_name(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_query(time_dimensions=[td(SHIFTED, alias="effective_at")],
                                            variables={"days": 30}))
-        assert by_bucket(resp, "orders.effective_at", "orders.v")["2025-03"] == 3.0
+        assert by_bucket(resp, "effective_at", "v")["2025-03"] == 3.0
 
     async def test_missing_variable_is_rejected(self, engine: SlayerQueryEngine) -> None:
         query = _query(time_dimensions=[td(SHIFTED)])
@@ -79,5 +79,5 @@ class TestTemplateIdentity:
         resp = await engine.execute(_query(time_dimensions=[td(shifted % "a"), td(shifted % "b")],
                                            variables={"a": 0, "b": 0}))
         assert resp.columns == [
-            "orders.created_at_interval_a_day.month", "orders.created_at_interval_b_day.month", "orders.v",
+            "orders.created_at_interval_a_day.month", "orders.created_at_interval_b_day.month", "v",
         ]

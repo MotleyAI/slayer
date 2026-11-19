@@ -153,7 +153,7 @@ class TestPostMemories:
                 "learning": "Revenue by status",
                 "linked_entities": {
                     "population": "orders",
-                    "metrics": [{"metric": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(orders.amount)"}],
                 },
             },
         )

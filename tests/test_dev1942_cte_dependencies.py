@@ -157,7 +157,7 @@ class TestDualPhaseEmissionOrder:
             dimensions=["region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
-                      QueryMetric(metric="cumsum(sum(amount))", alias="c")],
+                      QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
             time_dimensions=month_td())
         resp = await engine.execute(query)
         assert resp.data

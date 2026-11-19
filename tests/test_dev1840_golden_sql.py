@@ -37,7 +37,7 @@ _MODEL_SETS = {
     "amb": ambiguity_datasets,
 }
 
-M = QueryMetric(metric="sum(amount)", alias="m")
+M = QueryMetric(metric="sum(orders.amount)", alias="m")
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
 SM = QueryMetric(metric="sum(agents.score)", alias="sm")

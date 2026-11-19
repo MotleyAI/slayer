@@ -116,7 +116,7 @@ class TestResolveMainTimeDimension:
     def test_single_td_returns_it(self) -> None:
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td])
@@ -126,11 +126,11 @@ class TestResolveMainTimeDimension:
     def test_multi_td_no_disambiguator_returns_none(self) -> None:
         model = _orders_dataset()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
@@ -139,17 +139,17 @@ class TestResolveMainTimeDimension:
     def test_multi_td_main_time_dimension_matches_by_leaf(self) -> None:
         model = _orders_dataset()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_a, td_b],
-            main_time_dimension="reviewed_at",
+            main_time_dimension="orders.reviewed_at",
         )
         resolved = _resolve_main_time_dimension(query=q, dataset=model)
         assert resolved is td_b
@@ -157,7 +157,7 @@ class TestResolveMainTimeDimension:
     def test_multi_td_main_time_dimension_matches_by_full_name(self) -> None:
         model = _orders_with_customers_join()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
@@ -218,7 +218,7 @@ class TestResolveMainTimeDimension:
         # is only consulted as a disambiguator for 2+ TDs.
         model = _orders_dataset()
         td = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
@@ -232,11 +232,11 @@ class TestResolveMainTimeDimension:
     def test_multi_td_default_time_dimension_falls_back_when_no_main(self) -> None:
         model = _orders_dataset(default_td="reviewed_at")
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
@@ -246,17 +246,17 @@ class TestResolveMainTimeDimension:
     def test_query_main_td_wins_over_model_default(self) -> None:
         model = _orders_dataset(default_td="reviewed_at")
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_a, td_b],
-            main_time_dimension="created_at",
+            main_time_dimension="orders.created_at",
         )
         resolved = _resolve_main_time_dimension(query=q, dataset=model)
         assert resolved is td_a
@@ -264,11 +264,11 @@ class TestResolveMainTimeDimension:
     def test_unknown_main_time_dimension_raises(self) -> None:
         model = _orders_dataset()
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(
@@ -315,7 +315,7 @@ class TestResolveMainTimeDimension:
         q = SlayerQuery(
             population="orders",
             time_dimensions=[td_a, td_b],
-            main_time_dimension="created_at",
+            main_time_dimension="orders.created_at",
         )
         with pytest.raises(AmbiguousReferenceError) as excinfo:
             _resolve_main_time_dimension(query=q, dataset=host)
@@ -368,7 +368,7 @@ class TestResolveMainTimeDimension:
             default_time_dimension="created_at",  # doesn't match any LOCAL TD
         )
         td_local = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         td_joined2 = TimeDimension(
@@ -399,11 +399,11 @@ class TestResolveMainTimeDimension:
             default_time_dimension="created_at",
         )
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
@@ -417,11 +417,11 @@ class TestResolveMainTimeDimension:
         # didn't include this query).
         model = _orders_dataset(default_td="not_in_query")
         td_a = TimeDimension(
-            field="created_at",
+            field="orders.created_at",
             granularity=TimeGranularity.MONTH,
         )
         td_b = TimeDimension(
-            field="reviewed_at",
+            field="orders.reviewed_at",
             granularity=TimeGranularity.MONTH,
         )
         q = SlayerQuery(population="orders", time_dimensions=[td_a, td_b])
@@ -467,7 +467,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -486,7 +486,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="reviewed_at",
+                    field="orders.reviewed_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03"],
                 ),
@@ -502,7 +502,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -518,7 +518,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -551,11 +551,11 @@ class TestDateRangeFilter:
         # legacy WHERE order: date_range first, user filter second.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(amount)"}],
-            "filter": ["amount > 0"],
+            "metrics": [{"metric": "sum(orders.amount)"}],
+            "filter": ["orders.amount > 0"],
             "time_dimensions": [
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -584,12 +584,12 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
                 TimeDimension(
-                    field="reviewed_at",
+                    field="orders.reviewed_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-02-01", "2024-04-01"],
                 ),
@@ -624,7 +624,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01"],
                 ),
@@ -641,7 +641,7 @@ class TestDateRangeFilter:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -673,7 +673,7 @@ class TestDateRangeHiddenSlot:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),
@@ -711,7 +711,7 @@ class TestDateRangeBindsToUnderlyingColumn:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-01-01", "2024-03-01"],
                 ),

@@ -153,7 +153,7 @@ class TestBindDispatch:
         )
 
     @pytest.mark.parametrize("formula, kw", [
-        ("first(qty * avg(revenue, partition_by=store))", {"dimensions": ["store"]}),
+        ("first(qty * avg(revenue, partition_by=store))", {"dimensions": ["sales.store"]}),
         ("first(1)", {}),
     ])
     def test_row_grain_expression_binds_to_ranked_aggregate(self, formula, kw):

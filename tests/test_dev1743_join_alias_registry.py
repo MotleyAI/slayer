@@ -71,7 +71,7 @@ class TestSpellingCollisionMintsDistinctAliases:
         #   direct_val (sql=a__b.val) -> the direct model literally named a__b
         sql = await _engine_generate(
             query=SlayerQuery(population="host",
-                              dimensions=["chain_val", "direct_val"]),
+                              dimensions=["host.chain_val", "host.direct_val"]),
             dataset=host, extra_datasets=extra,
         )
         tbl = _join_table_to_alias(sql)
@@ -127,8 +127,8 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
                 "population": "host",
-                "dimensions": ["direct_val"],
-                "metrics": ["count(*)"],
+                "dimensions": ["host.direct_val"],
+                "metrics": ["count(host.*)"],
                 "order": [{"field": "a.b.val", "direction": "asc"}],
             }),
             dataset=host, extra_datasets=extra,

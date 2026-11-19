@@ -51,7 +51,7 @@ class TestShiftedCteFragmentDefaultParam:
 
     async def test_shifted_cte_joins_the_fragment_hops(self) -> None:
         sql = await gen(_q(metrics=[
-            QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
+            QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
         ]))
         # The shift reads the crossing producer; the fragment's two hops + the
         # qualified weight fragment + the host ``amount`` operand all live there.
@@ -66,8 +66,8 @@ class TestShiftedCteFragmentDefaultParam:
         """The shifted re-aggregation belongs to the shifted CTE, not the host
         ``base`` — a leak there would double-join ``regions`` at host grain."""
         sql = await gen(_q(metrics=[
-            QueryMetric(metric="sum(amount)", alias="s"),
-            QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
+            QueryMetric(metric="sum(orders.amount)", alias="s"),
+            QueryMetric(metric="time_shift(wscaled_sum(orders.amount), -1)", alias="prev"),
         ]))
         base = base_cte_body(sql)
         # The local sibling ``sum(amount)`` lives in the base; the crossing
@@ -84,7 +84,7 @@ class TestShiftedCteFragmentUserKwarg:
     async def test_user_string_kwarg_crossing_join_registers(self) -> None:
         sql = await gen(_q(metrics=[
             QueryMetric(
-                metric="time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
+                metric="time_shift(wscaled_sum(orders.amount, w='customers.regions.weight'), -1)",
                 alias="prev",
             ),
         ]))
@@ -169,9 +169,9 @@ class TestCrossModelHiddenAliasReservation:
         # slot that would collide with the like-named user measure.
         sql = await gen(_q(metrics=[
             QueryMetric(metric="sum(customers.spend)", alias="cm"),
-            QueryMetric(metric="sum(amount)", alias="_time_shift_inner"),
+            QueryMetric(metric="sum(orders.amount)", alias="_time_shift_inner"),
             QueryMetric(
-                metric="sum(amount) - time_shift(sum(amount), -1)", alias="growth",
+                metric="sum(orders.amount) - time_shift(sum(orders.amount), -1)", alias="growth",
             ),
         ]))
         # The user measure keeps its own key (closing quote pins the exact

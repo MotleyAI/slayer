@@ -84,9 +84,9 @@ class TestAssociationColumnParameter:
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}  # grain unchanged
         for status, expected in ASSOC_WAVG_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
+            assert float(by[(status,)]["w"]) == pytest.approx(expected)
         # c1 has two ok orders: a naive join weights c1 twice — must be unreachable.
-        assert float(by[("ok",)]["orders.w"]) != pytest.approx(ASSOC_WAVG_OK_FAN_DEFECT)
+        assert float(by[("ok",)]["w"]) != pytest.approx(ASSOC_WAVG_OK_FAN_DEFECT)
 
     async def test_explicit_and_positional_spellings_identical(self, assoc_engine):
         """Requirement: a positional parameter folds onto the declared name —
@@ -100,8 +100,8 @@ class TestAssociationColumnParameter:
         pos_by = status_key(await assoc_engine.execute(
             assoc_q(dimensions=["status"], metrics=[pos])))
         for status in ("ok", "new"):
-            assert float(pos_by[(status,)]["orders.w"]) == pytest.approx(
-                float(kw_by[(status,)]["orders.w"]))
+            assert float(pos_by[(status,)]["w"]) == pytest.approx(
+                float(kw_by[(status,)]["w"]))
 
     async def test_to_one_weight_with_null(self, assoc_engine):
         """Scenario: parameter over a to-one chain from the entity key, with a
@@ -114,7 +114,7 @@ class TestAssociationColumnParameter:
                 alias="w")]))
         by = status_key(resp)
         for status, expected in ASSOC_WAVG_POP_BY_STATUS.items():
-            assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
+            assert float(by[(status,)]["w"]) == pytest.approx(expected)
 
     async def test_definition_default_parameter(self, assoc_coldef_engine):
         """Scenario: a definition default (``wsum`` weight -> spend) applies once
@@ -129,8 +129,8 @@ class TestAssociationColumnParameter:
                 metric="wsum(customers.spend, weight=customers.spend)", alias="w")]))
         by, ex = status_key(default), status_key(explicit)
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
-            assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
-            assert float(ex[(status,)]["orders.w"]) == pytest.approx(expected)
+            assert float(by[(status,)]["w"]) == pytest.approx(expected)
+            assert float(ex[(status,)]["w"]) == pytest.approx(expected)
 
     async def test_percentile_literal_parameter_over_association(self, assoc_engine):
         """Scenario: percentile attributes over the association — a literal ``p``
@@ -143,24 +143,24 @@ class TestAssociationColumnParameter:
         by = status_key(resp)
         bounds = {"ok": (30.0, 150.0), "new": (40.0, 150.0)}
         for status, (lo, hi) in bounds.items():
-            assert lo <= float(by[(status,)]["orders.p"]) <= hi
+            assert lo <= float(by[(status,)]["p"]) <= hi
 
     async def test_adding_weighted_measure_keeps_sibling(self, assoc_engine):
         """The weighted measure is cardinality-neutral — adding it changes
         neither the row set nor the sibling plain measure."""
         base = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m")]))
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")]))
         withw = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="m"),
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="m"),
                       QueryMetric(
                           metric="weighted_avg(customers.spend, weight=customers.spend)",
                           alias="w")]))
         a, b = status_key(base), status_key(withw)
         assert set(a) == set(b)
         for k in a:
-            assert a[k]["orders.m"] == b[k]["orders.m"]
+            assert a[k]["m"] == b[k]["m"]
 
 
 class TestReaggregationOperandParameter:
@@ -171,7 +171,7 @@ class TestReaggregationOperandParameter:
         resp = await reagg_engine.execute(sales_q(
             dimensions=["region"],
             metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
-        vals = _region_vals(resp, "sales.w")
+        vals = _region_vals(resp, "w")
         for region, expected in WAVG_CITY_BY_REGION.items():
             if expected is None:
                 assert vals[region] is None
@@ -188,7 +188,7 @@ class TestReaggregationOperandParameter:
             dimensions=["region"],
             metrics=[QueryMetric(metric=_WAVG_REAGG, alias="w")]))
         manual = await reagg_engine.execute("wavg_city_by_region")
-        got = _region_vals(reagg, "sales.w")
+        got = _region_vals(reagg, "w")
         man_r = next(c for c in manual.columns if c.endswith(".region"))
         man_w = next(c for c in manual.columns if c.endswith(".w"))
         want = {row[man_r]: row[man_w] for row in manual.data}
@@ -207,7 +207,7 @@ class TestReaggregationOperandParameter:
                 metric=("weighted_avg(sum(amount, partition_by=customer_id), "
                          "weight=customers.region_id)"),
                 alias="w")]))
-        got = float(resp.data[0]["corders.w"])
+        got = float(resp.data[0]["w"])
         assert got == pytest.approx(CORDERS_GLOBAL_WAVG)
         assert got != pytest.approx(CORDERS_GLOBAL_UNWEIGHTED)
 
@@ -223,9 +223,9 @@ class TestReaggregationOperandParameter:
         for key, row in by.items():
             expected = WAVG_CITY_BY_REGION[key[0]]
             if expected is None:
-                assert row["sales.w"] is None
+                assert row["w"] is None
             else:
-                assert float(row["sales.w"]) == pytest.approx(expected)
+                assert float(row["w"]) == pytest.approx(expected)
 
     async def test_positional_custom_weight_matches_keyword(self, reagg_engine):
         """Scenario: operand-grain parameter executes — the custom ``wavg`` with
@@ -241,7 +241,7 @@ class TestReaggregationOperandParameter:
             metrics=[QueryMetric(
                 metric=f"wavg({INNER_CR}, count(id, partition_by=[city, region]))",
                 alias="w")]))
-        kw_v, pos_v = _region_vals(kw, "sales.w"), _region_vals(pos, "sales.w")
+        kw_v, pos_v = _region_vals(kw, "w"), _region_vals(pos, "w")
         assert set(kw_v) == set(pos_v)
         for region in kw_v:
             if kw_v[region] is None:
@@ -259,7 +259,7 @@ class TestReaggregationOperandParameter:
                 metric=("weighted_avg(sum(amount, partition_by=region), "
                          "weight=count(id, partition_by=region))"),
                 alias="w")]))
-        vals = _region_vals(resp, "sales.w")
+        vals = _region_vals(resp, "w")
         for region, total in DEGENERATE_WAVG_BY_REGION.items():
             if total is None:
                 assert vals[region] is None
@@ -276,15 +276,15 @@ class TestWeightedValueAsConsumer:
         sibling equals its unfiltered value."""
         full = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         pruned = await reagg_engine.execute(sales_q(
             dimensions=["region"], filter=[f"{_WAVG_REAGG} > 50"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
+            metrics=[QueryMetric(metric="sum(sales.amount)", alias="tot")]))
         kept = {k[0] for k in region_key(pruned)}
         assert kept == {"South", "East"}
-        full_tot = _region_vals(full, "sales.tot")
+        full_tot = _region_vals(full, "tot")
         for region, row in region_key(pruned).items():
-            assert float(row["sales.tot"]) == pytest.approx(float(full_tot[region[0]]))
+            assert float(row["tot"]) == pytest.approx(float(full_tot[region[0]]))
 
 
 class TestAssociateModeNoSpuriousWarnings:

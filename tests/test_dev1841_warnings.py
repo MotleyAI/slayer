@@ -102,11 +102,11 @@ class TestAssociatedWarning:
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=status)", alias="cm")]))
+                metric="sum(customers.spend, partition_by=orders.status)", alias="cm")]))
         assert associated_warnings(resp) == []
         by = status_key(resp)
         for status, spend in ASSOC_SPEND_BY_STATUS.items():
-            assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend)
+            assert float(by[(status,)]["cm"]) == pytest.approx(spend)
 
 
 class TestPushedFilterInformational:
@@ -120,7 +120,7 @@ class TestPushedFilterInformational:
             _warnings.simplefilter("always")
             resp = await engine.execute(SlayerQuery(
                 population="orders", dimensions=["customers.tier"],
-                metrics=[CM], filter=["channel = 'app'"],
+                metrics=[CM], filter=["orders.channel = 'app'"],
                 to_many_handling=mode))
         (info,) = pushed_filter_infos(resp)
         assert "channel" in info.human_message() or "channel" in str(

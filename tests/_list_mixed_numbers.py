@@ -65,7 +65,7 @@ async def check_mixed_numbers(engine: SlayerQueryEngine) -> None:
     failures: list[str] = []
     for flt in MIXED_FILTERS:
         resp = await engine.execute(SlayerQuery.model_validate(
-            {"population": "mixed", "dimensions": ["id"], "filter": [flt]}))
+            {"population": "mixed", "dimensions": ["mixed.id"], "filter": [flt]}))
         kept = {int(r["mixed.id"]) for r in resp.data}
         if kept != {1}:
             failures.append(f"{flt}: kept {sorted(kept)}\nSQL:\n{resp.sql}")

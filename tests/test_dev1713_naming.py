@@ -162,13 +162,13 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.rev_x2")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         )
         resp = await engine.execute(query)
-        assert "orders.customers.rev_x2" in resp.columns, resp.columns
+        assert "customers.rev_x2" in resp.columns, resp.columns
         assert "orders.customers__rev_x2" not in resp.columns, resp.columns
-        assert "orders.customers.rev_x2" in resp.attributes.dimensions
-        assert "orders.customers.rev_x2" in resp.data[0]
+        assert "customers.rev_x2" in resp.attributes.dimensions
+        assert "customers.rev_x2" in resp.data[0]
 
     async def test_multi_hop_joined_dimension_key_is_dotted(self, engine: SlayerQueryEngine) -> None:
         """A two-hop joined dimension (``customers.regions.name``) surfaces
@@ -177,12 +177,12 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         )
         resp = await engine.execute(query)
-        assert "orders.customers.regions.name" in resp.columns, resp.columns
+        assert "customers.regions.name" in resp.columns, resp.columns
         assert "orders.customers__regions__name" not in resp.columns
-        assert "orders.customers.regions.name" in resp.data[0]
+        assert "customers.regions.name" in resp.data[0]
 
     async def test_joined_base_dimension_key_is_dotted(self, engine: SlayerQueryEngine) -> None:
         """Guard: a joined BASE column dimension (``ColumnKey`` with a path)
@@ -190,10 +190,10 @@ class TestJoinedDimensionDottedKeys:
         query = SlayerQuery(
             population="orders",
             dimensions=[QueryDimension(field="customers.region_id")],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         )
         resp = await engine.execute(query)
-        assert "orders.customers.region_id" in resp.columns, resp.columns
+        assert "customers.region_id" in resp.columns, resp.columns
 
     async def test_order_by_joined_dimension_matches_dotted_projection(
         self, engine: SlayerQueryEngine,
@@ -212,11 +212,11 @@ class TestJoinedDimensionDottedKeys:
         )
         # Executes without a "no such column" error and returns the dotted key.
         resp = await engine.execute(query)
-        assert "orders.customers.regions.name" in resp.columns, resp.columns
+        assert "customers.regions.name" in resp.columns, resp.columns
         dry = await engine.execute(query, dry_run=True)
         assert dry.sql is not None
         assert "orders.customers__regions__name" not in dry.sql, dry.sql
-        assert "orders.customers.regions.name" in dry.sql
+        assert "customers.regions.name" in dry.sql
 
     async def test_cross_model_measure_key_still_dotted(self, engine: SlayerQueryEngine) -> None:
         """Guard: cross-model MEASURES already surfaced dotted
@@ -227,7 +227,7 @@ class TestJoinedDimensionDottedKeys:
             metrics=[QueryMetric(metric="sum(customers.revenue)")],
         )
         resp = await engine.execute(query)
-        assert "orders.customers.revenue_sum" in resp.columns, resp.columns
+        assert "customers.revenue_sum" in resp.columns, resp.columns
 
     async def test_order_by_joined_dimension_in_cross_model_query(self, engine: SlayerQueryEngine) -> None:
         """Guard: the cross-model (combined) ORDER BY path also sorts a joined
@@ -241,8 +241,8 @@ class TestJoinedDimensionDottedKeys:
                              direction="asc")],
         )
         resp = await engine.execute(query)
-        assert "orders.customers.regions.name" in resp.columns, resp.columns
-        assert "orders.customers.revenue_sum" in resp.columns
+        assert "customers.regions.name" in resp.columns, resp.columns
+        assert "customers.revenue_sum" in resp.columns
 
     async def test_time_dimension_over_joined_column_dotted(self, engine: SlayerQueryEngine) -> None:
         """Codex F9: a time dimension over a JOINED column keeps the dotted
@@ -255,10 +255,10 @@ class TestJoinedDimensionDottedKeys:
                     granularity=TimeGranularity.MONTH,
                 )
             ],
-            metrics=[QueryMetric(metric="count(*)", alias="n")],
+            metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         )
         resp = await engine.execute(query)
-        assert "orders.customers.signup_at" in resp.columns, resp.columns
+        assert "customers.signup_at" in resp.columns, resp.columns
 
     async def test_response_attributes_agree_with_sql_aliases(self, engine: SlayerQueryEngine) -> None:
         """Codex F6: ``response_meta._slot_result_keys`` (which builds
@@ -279,13 +279,13 @@ class TestJoinedDimensionDottedKeys:
             population="orders",
             dimensions=[QueryDimension(field="customers.rev_x2")],  # labeled -> surfaces
             metrics=[
-                QueryMetric(metric="sum(amount)"),
-                QueryMetric(metric="count(*)", alias="n"),
+                QueryMetric(metric="sum(orders.amount)"),
+                QueryMetric(metric="count(orders.*)", alias="n"),
             ],
         )
         resp = await engine.execute(query, dry_run=True)
         # The labeled derived joined dim must appear under the DOTTED key.
-        assert "orders.customers.rev_x2" in resp.attributes.dimensions, (
+        assert "customers.rev_x2" in resp.attributes.dimensions, (
             resp.attributes.dimensions
         )
         assert "orders.customers__rev_x2" not in resp.attributes.dimensions
@@ -324,7 +324,7 @@ class TestJoinedDimensionDottedKeys:
             SlayerQuery(
                 population="orders",
                 dimensions=[
-                    QueryDimension(field="customer_id"),          # local ColumnKey
+                    QueryDimension(field="orders.customer_id"),          # local ColumnKey
                     QueryDimension(field="customers.region_id"),   # joined ColumnKey
                     QueryDimension(field="customers.rev_x2"),      # joined ColumnSqlKey (derived)
                 ],
@@ -335,24 +335,24 @@ class TestJoinedDimensionDottedKeys:
                     )
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount)"),        # local aggregate
-                    QueryMetric(metric="count(*)", alias="n"),  # star-count
+                    QueryMetric(metric="sum(orders.amount)"),        # local aggregate
+                    QueryMetric(metric="count(orders.*)", alias="n"),  # star-count
                 ],
             ),
             {
                 "orders.customer_id",
-                "orders.customers.region_id",
-                "orders.customers.rev_x2",
-                "orders.customers.signup_at",
+                "customers.region_id",
+                "customers.rev_x2",
+                "customers.signup_at",
                 "orders.amount_sum",
-                "orders.n",
+                "n",
             },
         )
         await _check(
             SlayerQuery(
                 population="orders",
                 dimensions=[
-                    QueryDimension(field="customer_id"),          # local ColumnKey
+                    QueryDimension(field="orders.customer_id"),          # local ColumnKey
                     QueryDimension(field="customers.region_id"),   # joined ColumnKey
                 ],
                 time_dimensions=[
@@ -362,18 +362,18 @@ class TestJoinedDimensionDottedKeys:
                     )
                 ],
                 metrics=[
-                    QueryMetric(metric="sum(amount)"),          # local aggregate
+                    QueryMetric(metric="sum(orders.amount)"),          # local aggregate
                     QueryMetric(metric="sum(customers.revenue)"),  # cross-model aggregate
-                    QueryMetric(metric="count(*)", alias="n"),   # star-count
+                    QueryMetric(metric="count(orders.*)", alias="n"),   # star-count
                 ],
             ),
             {
                 "orders.customer_id",
-                "orders.customers.region_id",
-                "orders.customers.signup_at",
+                "customers.region_id",
+                "customers.signup_at",
                 "orders.amount_sum",
-                "orders.customers.revenue_sum",
-                "orders.n",
+                "customers.revenue_sum",
+                "n",
             },
         )
 
@@ -384,15 +384,15 @@ class TestJoinedDimensionDottedKeys:
             population="orders",
             dimensions=[QueryDimension(field="customers.regions.name")],
             metrics=[
-                QueryMetric(metric="sum(amount)"),
-                QueryMetric(metric="count(*)"),
-                QueryMetric(metric="sum(amount)", alias="my_total"),
+                QueryMetric(metric="sum(orders.amount)"),
+                QueryMetric(metric="count(orders.*)"),
+                QueryMetric(metric="sum(orders.amount)", alias="my_total"),
             ],
         )
         resp = await engine.execute(query, dry_run=True)
         cols = set(_outer_select_columns(resp.sql, dialect="sqlite"))
         assert {"orders.amount_sum", "orders._count",
-                "orders.customers.regions.name", "orders.my_total"} <= cols, cols
+                "customers.regions.name", "my_total"} <= cols, cols
 
 
 # ---------------------------------------------------------------------------
@@ -420,19 +420,19 @@ class TestMultiStageNaming:
             name="stage1",
             population="orders",
             dimensions=[QueryDimension(field="customers.region_id")],
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         root = SlayerQuery(
             population="stage1",
-            dimensions=[QueryDimension(field="customers__region_id")],
-            metrics=[QueryMetric(metric="max(amount_sum)", alias="peak")],
+            dimensions=[QueryDimension(field="stage1.customers__region_id")],
+            metrics=[QueryMetric(metric="max(stage1.amount_sum)", alias="peak")],
         )
         sql = await _new_sql(storage=storage, stages=[stage1, root])
         # The inner stage CTE carries the FLAT column name.
         assert "customers__region_id" in sql, sql
         # And it executes and returns the expected root keys.
         resp = await engine.execute([stage1, root])
-        assert set(resp.columns) == {"stage1.customers__region_id", "stage1.peak"}, (
+        assert set(resp.columns) == {"stage1.customers__region_id", "peak"}, (
             resp.columns
         )
 
@@ -448,25 +448,25 @@ class TestMultiStageNaming:
             name="s1",
             population="orders",
             dimensions=[QueryDimension(field="customers.rev_x2")],  # inner: derived join
-            metrics=[QueryMetric(metric="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(orders.amount)")],
         )
         s2 = SlayerQuery(
             name="s2",
             population="s1",
-            dimensions=[QueryDimension(field="customers__rev_x2")],  # consumes flat
-            metrics=[QueryMetric(metric="max(amount_sum)", alias="peak")],
+            dimensions=[QueryDimension(field="s1.customers__rev_x2")],  # consumes flat
+            metrics=[QueryMetric(metric="max(s1.amount_sum)", alias="peak")],
         )
         root = SlayerQuery(
             population="s2",
-            dimensions=[QueryDimension(field="customers__rev_x2")],  # re-exports flat
-            metrics=[QueryMetric(metric="min(peak)", alias="floor")],
+            dimensions=[QueryDimension(field="s2.customers__rev_x2")],  # re-exports flat
+            metrics=[QueryMetric(metric="min(s2.peak)", alias="floor")],
         )
         sql = await _new_sql(storage=engine.storage, stages=[s1, s2, root])
         # The inner stage CTE binds the joined derived dim under the FLAT name.
         assert "customers__rev_x2" in sql, sql
         chain = await engine.execute([s1, s2, root])
         # Downstream binds stayed flat end-to-end; no dotted join key leaks up.
-        assert set(chain.columns) == {"s2.customers__rev_x2", "s2.floor"}, (
+        assert set(chain.columns) == {"s2.customers__rev_x2", "floor"}, (
             chain.columns
         )
         assert not any("customers.rev_x2" in c for c in chain.columns)
@@ -476,10 +476,10 @@ class TestMultiStageNaming:
             SlayerQuery(
                 population="orders",
                 dimensions=[QueryDimension(field="customers.rev_x2")],
-                metrics=[QueryMetric(metric="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(orders.amount)")],
             )
         )
-        assert "orders.customers.rev_x2" in single.columns, single.columns
+        assert "customers.rev_x2" in single.columns, single.columns
         assert "orders.customers__rev_x2" not in single.columns
 
 
@@ -526,7 +526,7 @@ class TestBareNamedMeasureResultKey:
         model = _orders_named_dataset(
             metrics=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
         )
-        query = SlayerQuery(population="orders", metrics=["rev_total"])
+        query = SlayerQuery(population="orders", metrics=["orders.rev_total"])
         sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql)
         assert "orders.rev_total" in cols, cols
@@ -540,11 +540,11 @@ class TestBareNamedMeasureResultKey:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[QueryMetric(metric="rev_total", alias="custom")],
+            metrics=[QueryMetric(metric="orders.rev_total", alias="custom")],
         )
         sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql)
-        assert "orders.custom" in cols, cols
+        assert "custom" in cols, cols
         assert "orders.rev_total" not in cols
 
     async def test_bare_named_measure_order_by_with_dimension(self) -> None:
@@ -555,9 +555,9 @@ class TestBareNamedMeasureResultKey:
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
-            metrics=["companies"],
-            order=[OrderItem(field="companies", direction="desc")],
+            dimensions=[QueryDimension(field="orders.status")],
+            metrics=["orders.companies"],
+            order=[OrderItem(field="orders.companies", direction="desc")],
         )
         sql = await _engine_generate(query=query, dataset=model)
         assert '"orders.companies"' in sql, sql
@@ -622,21 +622,21 @@ class TestTimeShiftCteDecollision:
             population="orders",
             time_dimensions=[
                 TimeDimension(
-                    field="created_at",
+                    field="orders.created_at",
                     granularity=TimeGranularity.MONTH,
                 )
             ],
             metrics=[
                 QueryMetric(
-                    metric="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+                    metric="sum(orders.revenue) - time_shift(sum(orders.revenue), -1, 'month')",
                     alias="g1",
                 ),
                 QueryMetric(
-                    metric="sum(revenue) - time_shift(sum(revenue), -2, 'month')",
+                    metric="sum(orders.revenue) - time_shift(sum(orders.revenue), -2, 'month')",
                     alias="g2",
                 ),
                 QueryMetric(
-                    metric="sum(revenue) - time_shift(sum(revenue), -3, 'month')",
+                    metric="sum(orders.revenue) - time_shift(sum(orders.revenue), -3, 'month')",
                     alias="g3",
                 ),
             ],
@@ -675,14 +675,14 @@ class TestTimeShiftCteDecollision:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
                 # A user measure whose name collides with the hidden placeholder.
-                QueryMetric(metric="sum(revenue)", alias="_time_shift_inner"),
+                QueryMetric(metric="sum(orders.revenue)", alias="_time_shift_inner"),
                 QueryMetric(
-                    metric="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+                    metric="sum(orders.revenue) - time_shift(sum(orders.revenue), -1, 'month')",
                     alias="growth",
                 ),
             ],
@@ -690,7 +690,7 @@ class TestTimeShiftCteDecollision:
         sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql, dialect="postgres")
         # The user measure keeps its own key.
-        assert "orders._time_shift_inner" in cols, cols
+        assert "_time_shift_inner" in cols, cols
         # The hidden shift alias was bumped off the user's name, not collided.
         assert "orders._time_shift_inner_2" in sql, sql
 
@@ -714,15 +714,15 @@ class TestTimeShiftCteDecollision:
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field="status")],
+            dimensions=[QueryDimension(field="orders.status")],
             time_dimensions=[TimeDimension(
-                field="created_at",
+                field="orders.created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                QueryMetric(metric="consecutive_periods(sum(revenue) > 0) + 1",
+                QueryMetric(metric="consecutive_periods(sum(orders.revenue) > 0) + 1",
                              alias="rev_streak"),
-                QueryMetric(metric="consecutive_periods(sum(quantity) > 0) + 1",
+                QueryMetric(metric="consecutive_periods(sum(orders.quantity) > 0) + 1",
                              alias="qty_streak"),
             ],
         )

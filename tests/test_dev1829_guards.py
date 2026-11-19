@@ -37,7 +37,7 @@ class TestDeferredMeasureShapesStillRaise:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="sum(amount, window='90d', partition_by=region)",
+                metric="sum(orders.amount, window='90d', partition_by=orders.region)",
             )],
         )
         assert "__regroup__" not in await gen(q)
@@ -61,7 +61,7 @@ class TestDeferredMeasureShapesStillRaise:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="cumsum(sum(amount, partition_by=region))",
+                metric="cumsum(sum(orders.amount, partition_by=orders.region))",
             )],
         )
         assert "__regroup__" not in await gen(q)
@@ -73,7 +73,7 @@ class TestDeferredMeasureShapesStillRaise:
         q = _q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -89,7 +89,7 @@ class TestSharedAggregateRowPlusCombined:
         q = _q(
             dimensions=["region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(
-                metric="sum(amount, partition_by=region)", alias="region_total",
+                metric="sum(orders.amount, partition_by=orders.region)", alias="region_total",
             )],
         )
         # Renders with both a row and a combined attach; no placeholder leaks.
@@ -106,7 +106,7 @@ class TestGrainGuardsPreserved:
         # discovery must NOT relax this to the computed-dimension leniency.
         q = _q(
             dimensions=["region"],
-            metrics=[QueryMetric(metric="sum(amount, partition_by=city)")],
+            metrics=[QueryMetric(metric="sum(orders.amount, partition_by=orders.city)")],
         )
         with pytest.raises(
             ValueError, match=r"partition_by.*not a query dimension",
@@ -120,7 +120,7 @@ class TestGrainGuardsPreserved:
         q = _q(
             dimensions=["region", "customers.tier"],
             metrics=[QueryMetric(
-                metric="sum(customers.spend, partition_by=region)",
+                metric="sum(customers.spend, partition_by=orders.region)",
             )],
             to_many_handling="broadcast",
         )
@@ -143,7 +143,7 @@ class TestGuardOrderingWithActiveRegroup:
         q = _q(
             dimensions=["region", {"field": BAND_CITY, "alias": "band"}],
             filter=["sum(amount, partition_by=region) > 50"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -153,7 +153,7 @@ class TestGuardOrderingWithActiveRegroup:
         q = _q(
             dimensions=["region", {"field": BAND_CITY, "alias": "band"}],
             filter=["band == 1"],
-            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
+            metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await gen(q)
         assert "SELECT" in sql

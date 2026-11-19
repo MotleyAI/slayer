@@ -55,7 +55,7 @@ class TestExplicitVsInferredReporting:
 
     async def test_explicit_string_flag_false(self, engine) -> None:
         resp = await engine.execute(SlayerQuery(
-            population="customers", dimensions=["region"],
+            population="customers", dimensions=["customers.region"],
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
@@ -67,7 +67,7 @@ class TestExplicitVsInferredReporting:
                 "dataset": "customers",
                 "metrics": [{"name": "n", "expression": "count(*)"}],
             })],
-            dimensions=["region"],
+            dimensions=["customers.region"],
         ))
         assert resp.population == "customers"
         assert resp.population_inferred is False
@@ -76,8 +76,8 @@ class TestExplicitVsInferredReporting:
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="customers",
-                dimensions=["region"],
-                metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
+                dimensions=["customers.region"],
+                metrics=[QueryMetric(metric="sum(customers.orders.amount)", alias="rev")],
             ),
             name="cust_by_region",
         )
@@ -88,10 +88,10 @@ class TestExplicitVsInferredReporting:
     @pytest.mark.parametrize("dry_run", [False, True])
     async def test_stage_population_reports_the_stage_name(self, engine, dry_run) -> None:
         stage = SlayerQuery.model_validate({
-            "name": "by_region", "population": "customers", "dimensions": ["region"],
+            "name": "by_region", "population": "customers", "dimensions": ["customers.region"],
             "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
-        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"metric": "sum(rev)"}]})
+        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"metric": "sum(by_region.rev)"}]})
         resp = await engine.execute([stage, main], dry_run=dry_run)
         assert resp.population == "by_region"
         assert resp.population_inferred is False

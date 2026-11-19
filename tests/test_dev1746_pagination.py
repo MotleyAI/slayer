@@ -47,8 +47,8 @@ def _plain_query(
     """Single-model aggregate — no isolation CTE, no hidden slot."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
-        metrics=[QueryMetric(metric="sum(amount)", alias="revenue")],
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="sum(orders.amount)", alias="revenue")],
         order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
@@ -61,8 +61,8 @@ def _outer_trim_query(
     """Ordering by a non-projected aggregate produces the outer-trim wrapper shape."""
     return SlayerQuery(
         population="orders",
-        dimensions=[QueryDimension(field="status")],
-        metrics=[QueryMetric(metric="count(*)", alias="n")],
+        dimensions=[QueryDimension(field="orders.status")],
+        metrics=[QueryMetric(metric="count(orders.*)", alias="n")],
         order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
@@ -319,13 +319,13 @@ class TestPaginationExecution:
             _plain_query(limit=1, offset=None, ordered=True),
         )
         assert [r["orders.status"] for r in top.data] == ["paid"], top.data
-        assert top.data[0]["orders.revenue"] == pytest.approx(30.0), top.data
+        assert top.data[0]["revenue"] == pytest.approx(30.0), top.data
 
         second = await exec_engine.execute(
             _plain_query(limit=1, offset=1, ordered=True),
         )
         assert [r["orders.status"] for r in second.data] == [None], second.data
-        assert second.data[0]["orders.revenue"] == pytest.approx(12.0), second.data
+        assert second.data[0]["revenue"] == pytest.approx(12.0), second.data
 
     async def test_outer_trim_shape_limit_and_offset(
         self, exec_engine: SlayerQueryEngine,
@@ -352,15 +352,15 @@ class TestPaginationExecution:
             _combined_query(limit=1, offset=None, ordered=True),
         )
         assert len(top.data) == 1, f"LIMIT 1 returned {len(top.data)} rows:\n{top.data}"
-        assert top.data[0]["orders.customers.tier"] == "gold", top.data
-        assert top.data[0]["orders.spend"] == pytest.approx(1000.0), top.data
+        assert top.data[0]["customers.tier"] == "gold", top.data
+        assert top.data[0]["spend"] == pytest.approx(1000.0), top.data
 
         second = await exec_engine.execute(
             _combined_query(limit=1, offset=1, ordered=True),
         )
         assert len(second.data) == 1, second.data
-        assert second.data[0]["orders.customers.tier"] is None, second.data
-        assert second.data[0]["orders.spend"] == pytest.approx(325.0), second.data
+        assert second.data[0]["customers.tier"] is None, second.data
+        assert second.data[0]["spend"] == pytest.approx(325.0), second.data
 
     async def test_offset_past_the_end_returns_no_rows(
         self, exec_engine: SlayerQueryEngine,

@@ -155,14 +155,14 @@ def test_current_spec_document_imports_end_to_end(duck_store, capsys) -> None:
     assert [j.column_pairs for j in orders.relationships] == [[("customer_id", "id")]]
 
     rows = run_sync(_rows(store, db, {"population": "orders",
-                                      "metrics": ["total_amount", "completed_amount", "order_count"]}))
+                                      "metrics": ["orders.total_amount", "orders.completed_amount", "orders.order_count"]}))
     assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
     assert float(rows[0]["orders.completed_amount"]) == pytest.approx(17)
     assert rows[0]["orders.order_count"] == 3
 
     rows = run_sync(_rows(store, db, {"population": "orders", "dimensions": ["customers.segment"],
-                                      "metrics": ["total_amount"]}))
-    assert {r["orders.customers.segment"]: float(r["orders.total_amount"]) for r in rows} == {"b2b": 15, "b2c": 7}
+                                      "metrics": ["orders.total_amount"]}))
+    assert {r["customers.segment"]: float(r["orders.total_amount"]) for r in rows} == {"b2b": 15, "b2c": 7}
 
     loaded = {name: run_sync(storage.get_dataset(name, data_source=DATASOURCE)) for name in ("orders", "customers")}
     [home] = [name for name, model in loaded.items()

@@ -48,7 +48,7 @@ def _unique(pairs: list) -> dict:
 async def _by_month(engine, query: SlayerQuery) -> dict:
     resp = await engine.execute(query)
     return _unique([
-        (month_of(r["orders.order_date"]), int_or_none(r["orders.v"])) for r in resp.data
+        (month_of(r["orders.order_date"]), int_or_none(r["v"])) for r in resp.data
     ])
 
 
@@ -64,7 +64,7 @@ class TestCalendarStreak:
         resp = await exec_engine.execute(orders_query(
             expression=_STREAK, dimensions=["customer_id"], filters=[]))
         got = _unique([
-            ((int(r["orders.customer_id"]), month_of(r["orders.order_date"])), int(r["orders.v"]))
+            ((int(r["orders.customer_id"]), month_of(r["orders.order_date"])), int(r["v"]))
             for r in resp.data
         ])
         assert got == {
@@ -111,17 +111,17 @@ class TestCalendarStreak:
     async def test_downstream_stage_time_dimension(self, exec_engine) -> None:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
-            "time_dimensions": [{"field": "order_date", "granularity": "month"}],
-            "filter": ["customer_id = 1"],
-            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
+            "time_dimensions": [{"field": "orders.order_date", "granularity": "month"}],
+            "filter": ["orders.customer_id = 1"],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "time_dimensions": [{"field": "order_date", "granularity": "month"}],
-            "metrics": [{"metric": "consecutive_periods(sum(total) > 100)", "alias": "v"}],
+            "time_dimensions": [{"field": "s1.order_date", "granularity": "month"}],
+            "metrics": [{"metric": "consecutive_periods(sum(s1.total) > 100)", "alias": "v"}],
         })
         resp = await exec_engine.execute(query=[inner, outer])
-        got = _unique([(month_of(r["s1.order_date"]), int(r["s1.v"])) for r in resp.data])
+        got = _unique([(month_of(r["s1.order_date"]), int(r["v"])) for r in resp.data])
         assert got == dict(zip(C1_MONTHS, C1_STREAK))
 
 

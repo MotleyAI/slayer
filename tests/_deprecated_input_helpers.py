@@ -26,8 +26,8 @@ from tests._engine_helpers import build_exec_engine
 
 SAVED = "by_status"
 CM = {"metric": "sum(customers.spend)", "alias": "cm"}
-CLEAN = {"population": "orders", "metrics": ["count(*)"]}
-CROSS = {"population": "orders", "dimensions": ["status"], "metrics": [CM]}
+CLEAN = {"population": "orders", "metrics": ["count(orders.*)"]}
+CROSS = {"population": "orders", "dimensions": ["orders.status"], "metrics": [CM]}
 
 
 @contextmanager
@@ -80,7 +80,7 @@ def mcp_payload(text: str) -> dict[str, Any]:
 
 def saved_stage() -> SlayerQuery:
     return SlayerQuery.model_validate(
-        {"population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]},
+        {"population": "orders", "dimensions": ["orders.status"], "metrics": [{"metric": "count(orders.*)", "alias": "n"}]},
     )
 
 

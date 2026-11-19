@@ -179,7 +179,7 @@ class TestExtensionOverlay:
                 "population": "orders",
                 "extensions": [DatasetExtension(dataset="orders", relationships=[
                     DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])])],
-                "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
                 "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):
                 await engine.execute(query, dry_run=True)
@@ -268,7 +268,7 @@ class TestPhysicalJoinPairs:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["customers.name"],
-                "metrics": [{"metric": "sum(amount)", "alias": "amt"}]})
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}]})
             with pytest.raises(RelationshipKeyError, match="'cust_key'"):
                 await engine.execute(query, dry_run=True)
 
