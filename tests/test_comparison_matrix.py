@@ -133,6 +133,8 @@ def test_output_checks_take_no_other_expectation(other):
         ({"buggy_error": "E"}, "need known_bug"),
         ({"buggy_row_count": 0}, "need known_bug"),
         ({"known_bug": "b", "warning": "w"}, "known_bug ignores warning"),
+        ({"known_bug": "b", "buggy_error": "E", "buggy_rows": [[1]]}, "buggy_error excludes"),
+        ({"known_bug": "b", "buggy_error": "E", "buggy_row_count": 0}, "buggy_error excludes"),
     ],
 )
 def test_expectations_that_would_be_skipped_are_rejected(expect, match):
@@ -141,10 +143,29 @@ def test_expectations_that_would_be_skipped_are_rejected(expect, match):
 
 
 @pytest.mark.parametrize(
-    "expect", [{"error": "E"}, {"warning": "w"}, {"known_bug": "b", "buggy_rows": [[1]], "buggy_row_count": 1}]
+    "expect",
+    [
+        {"error": "E"},
+        {"warning": "w"},
+        {"known_bug": "b", "buggy_rows": [[1]], "buggy_row_count": 1},
+        {"known_bug": "b", "buggy_error": "E"},
+    ],
 )
 def test_expectations_that_all_run_are_accepted(expect):
     run_slayer.SlayerBlock.model_validate({"query": _QUERY, "expect": expect})
+
+
+@pytest.mark.parametrize(
+    "source", [{"osi_roundtrip": {}, "query": _QUERY}, {"steps": [{"tool": "query", "args": {"format": "json"}}]}]
+)
+def test_a_policy_on_a_source_that_ignores_it_is_rejected(source):
+    with pytest.raises(ValidationError, match="options.policy applies only"):
+        run_slayer.SlayerBlock.model_validate({**source, "options": {"policy": "north"}})
+
+
+@pytest.mark.parametrize("source", [{"query": _QUERY}, {"run_by_name": "saved"}])
+def test_a_policy_on_a_query_or_saved_query_is_accepted(source):
+    run_slayer.SlayerBlock.model_validate({**source, "options": {"policy": "north"}})
 
 
 @pytest.mark.parametrize(

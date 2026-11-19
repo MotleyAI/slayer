@@ -88,6 +88,8 @@ class SlayerExpect(BaseModel):
                 raise ValueError(f"{label}: no other expectation")
         if given & {"buggy_rows", "buggy_row_count", "buggy_error"} and not self.known_bug:
             raise ValueError("buggy_rows / buggy_row_count / buggy_error need known_bug")
+        if "buggy_error" in given and given & {"buggy_rows", "buggy_row_count"}:
+            raise ValueError("buggy_error excludes buggy_rows / buggy_row_count")
         if self.known_bug and self.warning:
             raise ValueError("known_bug ignores warning")
         return self
@@ -159,6 +161,8 @@ class SlayerBlock(BaseModel):
             raise ValueError("refine applies only to run_by_name")
         if self.steps and self.steps[-1].tool is None:
             raise ValueError("the last step must be a tool call")
+        if "policy" in self.options and (self.steps or self.osi_roundtrip is not None):
+            raise ValueError("options.policy applies only to query / run_by_name")
         return self
 
     @model_validator(mode="after")
