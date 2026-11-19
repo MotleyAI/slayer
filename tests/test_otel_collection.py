@@ -10,6 +10,7 @@ import pytest
 from opentelemetry.trace import SpanKind, StatusCode
 
 from slayer import otel
+from slayer.async_utils import run_sync
 from slayer.core import probes
 from slayer.core.models import DatasourceConfig
 from slayer.database import client as client_module
@@ -28,6 +29,16 @@ def _run(query: dict[str, Any], **kwargs: Any) -> None:
             await engine.execute(query, **kwargs)
 
     asyncio.run(main())
+
+
+def _explain() -> tuple[str, int]:
+    """``(db_path, explain row count)`` of one EXPLAIN of ``_REVENUE``."""
+    async def main() -> tuple[str, int]:
+        async with refine_engine("sqlite") as (engine, db_path):
+            result = await engine.execute(_REVENUE, explain=True)
+            return db_path, len(result.data)
+
+    return asyncio.run(main())
 
 
 def _run_twice_cached() -> None:
@@ -100,6 +111,39 @@ def test_a_failing_query_marks_its_span_as_an_error(otel_env: OtelCapture) -> No
     assert (span.status.status_code, dict(span.attributes or {}).get("error.type")) == (
         StatusCode.ERROR, "DatasetNotFoundError",
     )
+
+
+def test_an_explain_is_one_database_explain_span(otel_env: OtelCapture) -> None:
+    db_path, rows = _explain()
+    database_spans = [span for span in otel_env.spans() if span.name.startswith("slayer.db.")]
+    assert [span.name for span in database_spans] == ["slayer.db.explain"]
+    (span,) = database_spans
+    attributes = dict(span.attributes or {})
+    assert (span.kind, otel_env.parent_name("slayer.db.explain"), attributes["db.system.name"],
+            attributes["db.namespace"], attributes.get("db.response.returned_rows")) == (
+        SpanKind.CLIENT, "slayer.query", "sqlite", db_path, rows,
+    )
+
+
+def test_an_explain_runs_no_data_query(otel_env: OtelCapture) -> None:
+    _explain()
+    assert "slayer.query.run" not in otel_env.span_names()
+
+
+def test_an_explain_keeps_its_sql_in_the_process_by_default(otel_env: OtelCapture) -> None:
+    _explain()
+    assert "db.query.text" not in otel_env.attributes("slayer.db.explain")
+
+
+def test_an_explain_sends_its_sql_with_the_content_capture() -> None:
+    capturing = OtelCapture.build()
+    capturing.instrument(capture_content=True)
+    try:
+        _explain()
+        text = str(capturing.attributes("slayer.db.explain")["db.query.text"])
+    finally:
+        capturing.close()
+    assert text.upper().startswith("EXPLAIN")
 
 
 def test_ingest_is_one_span_with_its_outcome(otel_env: OtelCapture) -> None:
@@ -264,6 +308,40 @@ def test_database_server_attributes_follow_the_connection_used(
     assert actual == expected
 
 
+def _env_backed_client(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> client_module.SlayerSQLClient:
+    with transaction(tmp_path / "first.db"):  # creates the empty database file
+        pass
+    monkeypatch.setenv("SLAYER_OTEL_TEST_DB", str(tmp_path / "first.db"))
+    return client_module.SlayerSQLClient(
+        DatasourceConfig(name="shop", type="sqlite", database="${SLAYER_OTEL_TEST_DB}"),
+    )
+
+
+def test_database_attributes_name_the_cached_sync_engine(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _env_backed_client(tmp_path, monkeypatch)
+    try:
+        client._get_sync_engine_for_client()
+        monkeypatch.setenv("SLAYER_OTEL_TEST_DB", str(tmp_path / "second.db"))
+        namespace = client.connection_url().database
+    finally:
+        client.close()
+    assert namespace == str(tmp_path / "first.db")
+
+
+async def test_database_attributes_name_the_loops_async_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL_TEST_HOST", "first-db")
+    client = client_module.SlayerSQLClient(
+        DatasourceConfig(name="shop", type="postgres", host="${SLAYER_OTEL_TEST_HOST}", database="sales", username="u"),
+    )
+    try:
+        client._get_async_engine()  # builds the engine without connecting
+        monkeypatch.setenv("SLAYER_OTEL_TEST_HOST", "second-db")
+        host = client.connection_url().host
+    finally:
+        await client.aclose()
+    assert host == "first-db"
+
+
 def test_direct_synchronous_execution_is_a_database_span(
     otel_env: OtelCapture, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,6 +355,19 @@ def test_direct_synchronous_execution_is_a_database_span(
     finally:
         client.close()
     assert otel_env.attributes("slayer.db.execute")["db.response.returned_rows"] == 1
+
+
+def test_a_synchronous_call_inside_a_running_loop_keeps_its_parent(otel_env: OtelCapture) -> None:
+    async def query() -> None:
+        with probes.scope(name="query"):
+            pass
+
+    async def request() -> None:
+        with probes.scope(name="request", attributes={"surface": "rest"}):
+            run_sync(query())
+
+    asyncio.run(request())
+    assert otel_env.parent_name("slayer.query") == "slayer.request"
 
 
 def test_a_probe_with_an_error_type_is_a_failed_span(otel_env: OtelCapture) -> None:

@@ -9,10 +9,11 @@ import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import pytest
 
-from slayer.otel import control, settings
+from slayer.otel import control, exporters, settings
 from slayer.otel.settings import DecidingRule
 from tests._usage_reporting_capture import CaptureServer, RefusedEndpoint
 from tests._usage_reporting_helpers import cli, run_python
@@ -326,6 +327,32 @@ def test_test_sends_the_span_whatever_the_sampler(backend: CaptureServer, clean_
     assert (code, "Test span: sent" in report) == (0, True), report
 
 
+def test_test_sends_the_span_to_the_endpoint_it_probed(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "   ")
+    report, code = control.test()
+    assert (code, "Test span: sent" in report) == (0, True), report
+
+
+def test_exporters_send_where_the_diagnostics_point(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")
+    for signal in settings.SIGNALS:
+        clean_env.setenv(f"OTEL_EXPORTER_OTLP_{signal.upper()}_ENDPOINT", "   ")
+    used: dict[str, str] = {}
+
+    def spy(*, signal: str, original: Any) -> Any:
+        def build(*args: Any, **kwargs: Any) -> Any:
+            exporter = original(*args, **kwargs)
+            used[signal] = exporter._endpoint
+            return exporter
+        return build
+
+    for signal, name in (("traces", "OTLPSpanExporter"), ("metrics", "OTLPMetricExporter"), ("logs", "OTLPLogExporter")):
+        clean_env.setattr(exporters, name, spy(signal=signal, original=getattr(exporters, name)))
+    configured = exporters.configure()
+    exporters.shutdown_all(configured.owned)
+    assert used == {signal: f"http://127.0.0.1:9/v1/{signal}" for signal in settings.SIGNALS}
+
+
 def test_test_names_the_decoded_service(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=Sales%20API")
     report, _ = control.test()
@@ -388,6 +415,7 @@ def test_test_reports_a_redirected_test_span_as_failed(clean_env: pytest.MonkeyP
     try:
         host, port = server.server_address[:2]
         clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"http://{host}:{port}")
+        gc.collect()  # objects other tests leaked warn here, not inside the capture
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             report, code = control.test()
