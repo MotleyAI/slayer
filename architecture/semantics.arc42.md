@@ -100,6 +100,7 @@ principles every layer obeys.
    [enforced: test:tests/test_dev1931_default_home.py]
    [enforced: test:tests/test_dev1908_default_cancellation.py]
    [enforced: test:tests/test_dev2013_expression_attribution.py]
+   [enforced: test:tests/test_dev2367_list_elements_across_joins.py]
 3. **Association**: any join path — to-one or not — defines which rows belong
    together; everything that crosses a non-determining path is defined in terms
    of it. [review] Association is derivable from forward join declarations
@@ -164,7 +165,7 @@ principles every layer obeys.
    per-query row number)
    [enforced: test:tests/test_dev1841_association_exec.py]
    [enforced: test:tests/test_dev1910_home_rooted_association.py]
-   [enforced: test:tests/test_dev2216_keyless_association.py]; broadcast (the
+   [enforced: test:tests/test_dev2216_keyless_association.py] [enforced: test:tests/test_dev2367_list_elements_across_joins.py]; broadcast (the
    value repeats across the dimension's cells, with a self-announcing warning;
    spec: `queries/semantics` › Loud degradation)
    [enforced: test:tests/test_dev1836_broadcast_strict.py]; and error (refuse)
