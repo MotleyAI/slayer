@@ -927,7 +927,7 @@ An inherited edge keeps its name, its target and (for a stored relationship) its
 
 **Order doesn't matter for runtime lists.** Stages can be submitted in any order — the engine auto-sorts them topologically so every stage appears after the siblings it references (a reference whose first segment names a relationship of the stage's population reads that relationship, not a same-named sibling). The **last entry** of the input list is always the entry point / DAG root (its result is what's returned); only the non-final entries are reordered. Cycles and self-references are rejected with a clear error naming the offending stages. A non-final stage may not reference the root (the root must be the dependency sink). Stages that aren't reachable from the root are accepted as utility sub-queries — they're silently dropped from the emitted SQL.
 
-`SlayerDataset.source_queries` (stored, YAML-defined) keeps stricter top-to-bottom rules: any reference must point to a stage defined *earlier* in the list, so the file reads top-to-bottom as the execution order.
+`SlayerDataset.source_queries` (stored, YAML-defined) follows the same rules: its stages are ordered by their references, so a stage may read one listed after it.
 
 **Surface coverage.** Query lists work via every surface:
 
