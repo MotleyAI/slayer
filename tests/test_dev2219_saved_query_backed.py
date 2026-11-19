@@ -46,8 +46,8 @@ from tests._dev2219_fixtures import (
 def _saved(name: str = "customer_revenue", *, relationships: list[dict] | None = None,
            metrics: list[dict] | None = None, dry_run: bool = False) -> SlayerDataset:
     """Query-backed: ``orders`` grouped by ``customer_id``."""
-    stage: dict[str, Any] = {"population": "orders", "dimensions": ["customer_id"],
-                             "metrics": metrics or [m("sum(amount)", "revenue")]}
+    stage: dict[str, Any] = {"population": "orders", "dimensions": ["orders.customer_id"],
+                             "metrics": metrics or [m("sum(orders.amount)", "revenue")]}
     if dry_run:
         stage["dry_run"] = True
     return SlayerDataset.model_validate({"name": name, "data_source": DS, "source_queries": [stage],
@@ -84,8 +84,8 @@ class TestExecution:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_a_filtered_saved_relation_restricts_what_is_reached_through_it(self, dialect: str) -> None:
-        saved = _raw_saved("filtered_revenue", {"population": "orders", "dimensions": ["customer_id"],
-                                                "metrics": [m("sum(amount)", "revenue")], "filter": ["amount > 25"]})
+        saved = _raw_saved("filtered_revenue", {"population": "orders", "dimensions": ["orders.customer_id"],
+                                                "metrics": [m("sum(orders.amount)", "revenue")], "filter": ["orders.amount > 25"]})
         async with shop(dialect) as engine:
             await engine.save_dataset(saved)
             resp = await engine.execute(over("filtered_revenue", dimensions=[], metric="count(customers.id)"))
@@ -116,7 +116,7 @@ class TestExecution:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_ordinary_stage_hides_a_source_edge_whose_key_it_drops(self, dialect: str) -> None:
-        stage = per_customer(dimensions=["status"])
+        stage = per_customer(dimensions=["orders.status"])
         async with shop(dialect) as engine:
             stages: list[Any] = [stage, over("per_customer", dimensions=["customers.region"])]
             with pytest.raises(UnrelatedDatasetError):
@@ -140,21 +140,21 @@ async def _seed(storage: YAMLStorage) -> None:
                                          relationships=[join("customers", [("customer_id", "id")])]))
     finally:
         await engine.aclose()
-    await storage.save_dataset(_raw_saved(_CYCLE[0], {"population": _CYCLE[1], "dimensions": ["customer_id"]}))
-    await storage.save_dataset(_raw_saved(_CYCLE[1], {"population": _CYCLE[0], "dimensions": ["customer_id"]}))
-    await storage.save_dataset(_raw_saved("bad_key", {"population": "orders", "dimensions": ["nope_column"],
-                                                      "metrics": [m("sum(amount)", "revenue")]}))
+    await storage.save_dataset(_raw_saved(_CYCLE[0], {"population": _CYCLE[1], "dimensions": [f"{_CYCLE[1]}.customer_id"]}))
+    await storage.save_dataset(_raw_saved(_CYCLE[1], {"population": _CYCLE[0], "dimensions": [f"{_CYCLE[0]}.customer_id"]}))
+    await storage.save_dataset(_raw_saved("bad_key", {"population": "orders", "dimensions": ["orders.nope_column"],
+                                                      "metrics": [m("sum(orders.amount)", "revenue")]}))
     await storage.save_dataset(_raw_saved("needs_var", {
-        "population": "orders", "dimensions": ["customer_id"], "metrics": [m("sum(amount)", "revenue")],
-        "filter": ["amount > {threshold_var}"]}))
+        "population": "orders", "dimensions": ["orders.customer_id"], "metrics": [m("sum(orders.amount)", "revenue")],
+        "filter": ["orders.amount > {threshold_var}"]}))
     await storage.save_dataset(_raw_saved("stale_key", {
-        "population": "orders", "dimensions": ["customer_id"], "metrics": [m("sum(amount)", "revenue")]},
+        "population": "orders", "dimensions": ["orders.customer_id"], "metrics": [m("sum(orders.amount)", "revenue")]},
         relationships=[join("customers", [("stale_col", "id")])]))
     await storage.save_dataset(SlayerDataset.model_validate({
         "name": "stage_cycle", "data_source": DS,
-        "source_queries": [{"name": "a", "population": "b", "dimensions": ["customer_id"]},
-                           {"name": "b", "population": "a", "dimensions": ["customer_id"]},
-                           {"population": "a", "dimensions": ["customer_id"]}]}))
+        "source_queries": [{"name": "a", "population": "b", "dimensions": ["b.customer_id"]},
+                           {"name": "b", "population": "a", "dimensions": ["a.customer_id"]},
+                           {"population": "a", "dimensions": ["a.customer_id"]}]}))
 
 
 def _seed_sync(storage: YAMLStorage) -> None:

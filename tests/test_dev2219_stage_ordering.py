@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+from slayer.core.errors import UnknownReferenceError
+
 from slayer.core.query import SlayerQuery
 from slayer.engine import query_engine as query_engine_module
 from slayer.engine.stage_ordering import stage_sibling_reads, topologically_order_stages
@@ -33,18 +35,18 @@ from tests._dev2219_fixtures import (
 
 def _reader(name: str, sibling: str) -> SlayerQuery:
     """Over ``customers``; reads ``sibling`` only through ``max(<sibling>.ne)``."""
-    return q(name=name, population="customers", dimensions=["tier"], metrics=[m(f"max({sibling}.ne)", "ev")])
+    return q(name=name, population="customers", dimensions=["customers.tier"], metrics=[m(f"max({sibling}.ne)", "ev")])
 
 
 def _events(name: str) -> SlayerQuery:
-    return q(name=name, population="events", metrics=[m("count(*)", "ne")])
+    return q(name=name, population="events", metrics=[m("count(events.*)", "ne")])
 
 
 def _expression_list(reader: str, sibling: str, *, reader_first: bool = True) -> list[SlayerQuery | dict]:
     stages: list[SlayerQuery | dict] = [_reader(reader, sibling), _events(sibling)]
     if not reader_first:
         stages.reverse()
-    return [*stages, over(reader, dimensions=["tier"], metric="max(ev)", alias="ev_max")]
+    return [*stages, over(reader, dimensions=[f"{reader}.tier"], metric=f"max({reader}.ev)", alias="ev_max")]
 
 
 class TestExpressionOnlySibling:
@@ -69,11 +71,11 @@ class TestExpressionOnlySibling:
             "filter": ["z_ev.ne > 0"],
             "order": [{"field": "max(z_ev.ne)", "direction": "desc"}],
         }[field]
-        query = q(name="r", population="customers", metrics=[m("count(*)", "n")], **{field: value})
+        query = q(name="r", population="customers", metrics=[m("count(customers.*)", "n")], **{field: value})
         assert stage_sibling_reads(query=query, siblings={"r", "z_ev"}) == {"z_ev"}
 
     def test_a_dataset_named_like_no_sibling_is_not_a_read(self) -> None:
-        query = q(name="r", population="orders", dimensions=["customers.tier"], metrics=[m("count(*)", "n")])
+        query = q(name="r", population="orders", dimensions=["customers.tier"], metrics=[m("count(orders.*)", "n")])
         assert stage_sibling_reads(query=query, siblings={"r", "z_ev"}) == set()
 
     @pytest.mark.parametrize("names", [("a_reader", "z_ev"), ("z_reader", "a_ev")])
@@ -85,9 +87,9 @@ class TestExpressionOnlySibling:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_permutations_agree(self, dialect: str) -> None:
         stages = {"r": _reader("r", "z_ev"), "z_ev": _events("z_ev"),
-                  "pc": q(name="pc", population="orders", dimensions=["customer_id"],
-                          metrics=[m("sum(amount)", "revenue")])}
-        root = over("r", dimensions=["tier"], metric="max(ev)", alias="ev_max")
+                  "pc": q(name="pc", population="orders", dimensions=["orders.customer_id"],
+                          metrics=[m("sum(orders.amount)", "revenue")])}
+        root = over("r", dimensions=["r.tier"], metric="max(r.ev)", alias="ev_max")
         async with shop(dialect) as engine:
             results = {perm: await outcome(engine, [*(stages[n] for n in perm), root])
                        for perm in itertools.permutations(stages)}
@@ -102,11 +104,11 @@ class TestJoinGraphMembership:
         return with_datasets(customers(to_regions=False), orders(ship_region=True))
 
     def _sib(self) -> SlayerQuery:
-        return q(name="sib", population="orders", dimensions=["customer_id", "region_id"],
-                 metrics=[m("sum(amount)", "revenue")])
+        return q(name="sib", population="orders", dimensions=["orders.customer_id", "orders.region_id"],
+                 metrics=[m("sum(orders.amount)", "revenue")])
 
     def _root(self) -> SlayerQuery:
-        return q(population="customers", dimensions=["regions.name"], metrics=[m("count(*)", "n")])
+        return q(population="customers", dimensions=["regions.name"], metrics=[m("count(customers.*)", "n")])
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_routing_never_passes_through_an_unnamed_sibling(self, dialect: str) -> None:
@@ -117,11 +119,11 @@ class TestJoinGraphMembership:
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_named_sibling_is_a_route_candidate(self, dialect: str) -> None:
-        root = q(population="customers", dimensions=["name", "sib.ship_region.name"],
-                 metrics=[m("count(*)", "n")])
+        root = q(population="customers", dimensions=["customers.name", "sib.ship_region.name"],
+                 metrics=[m("count(customers.*)", "n")])
         async with shop(dialect, self._datasets()) as engine:
             resp = await engine.execute([self._sib(), root])
-        got = {(r["customers.name"], r["customers.sib.ship_region.name"]) for r in resp.data}
+        got = {(r["customers.name"], r["sib.ship_region.name"]) for r in resp.data}
         assert got == {("Ann", "North"), ("Ann", "South"), ("Bob", "South"), ("Cid", "North"),
                        ("Dee", "East"), ("Eve", None)}
 
@@ -129,19 +131,28 @@ class TestJoinGraphMembership:
 class TestEdgeAwareExtractor:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_a_relationship_named_like_a_sibling_is_not_a_sibling_reference(self, dialect: str) -> None:
-        a = q(name="a", population="orders", dimensions=["ship_region.name"], metrics=[m("count(*)", "n")])
-        sibling = q(name="ship_region", population="a", dimensions=["ship_region__name"], metrics=[m("sum(n)", "nn")])
-        root = q(population="ship_region", metrics=[m("sum(nn)", "t")])
         async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
-            resp = await engine.execute([a, sibling, root])
+            resp = await engine.execute(self._ship_region_list("orders.ship_region.name"))
         assert [float(v) for v in resp.data[0].values()] == [7.0]
 
     @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_first_segment_naming_a_sibling_reads_the_sibling(self, dialect: str) -> None:
+        async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
+            with pytest.raises(ValueError, match=r"Cycle in query list: stages \['a', 'ship_region'\]"):
+                await engine.execute(self._ship_region_list("ship_region.name"))
+
+    @staticmethod
+    def _ship_region_list(dimension: str) -> list[SlayerQuery | dict]:
+        a = q(name="a", population="orders", dimensions=[dimension], metrics=[m("count(orders.*)", "n")])
+        sibling = q(name="ship_region", population="a", dimensions=["a.ship_region__name"], metrics=[m("sum(a.n)", "nn")])
+        return [a, sibling, q(population="ship_region", metrics=[m("sum(ship_region.nn)", "t")])]
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_an_inherited_edge_reaches_its_sibling_target(self, dialect: str) -> None:
-        totals = q(name="totals", population="orders", dimensions=["region_id"], metrics=[m("sum(amount)", "total")])
-        keyed = q(name="keyed", population="orders", dimensions=["region_id"], metrics=[m("count(*)", "n")],
+        totals = q(name="totals", population="orders", dimensions=["orders.region_id"], metrics=[m("sum(orders.amount)", "total")])
+        keyed = q(name="keyed", population="orders", dimensions=["orders.region_id"], metrics=[m("count(orders.*)", "n")],
                   extensions=[ext("orders", join("totals", [("region_id", "region_id")], name="totals_link"))])
-        root = q(population="keyed", dimensions=["region_id", "totals_link.total"], metrics=[m("sum(n)", "nn")])
+        root = q(population="keyed", dimensions=["keyed.region_id", "keyed.totals_link.total"], metrics=[m("sum(keyed.n)", "nn")])
         async with shop(dialect) as engine:
             resp = await engine.execute([totals, keyed, root])
         assert by(resp, key="region_id", value="totals_link.total") == {1: 22.0, 2: 50.0, 3: 40.0, None: None}
@@ -157,19 +168,28 @@ class TestEdgeAwareExtractor:
             return planned
 
         monkeypatch.setattr(query_engine_module, "plan_stages", spy)
-        sibling = q(name="ship_region", population="customers", metrics=[m("count(*)", "nc")])
-        z = q(name="z", population="orders", dimensions=["ship_region.name"], metrics=[m("count(*)", "n")])
+        sibling = q(name="ship_region", population="customers", metrics=[m("count(customers.*)", "nc")])
+        z = q(name="z", population="orders", dimensions=["orders.ship_region.name"], metrics=[m("count(orders.*)", "n")])
         async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
-            await engine.execute([sibling, z, q(population="z", metrics=[m("sum(n)", "t")])], dry_run=True)
+            await engine.execute([sibling, z, q(population="z", metrics=[m("sum(z.n)", "t")])], dry_run=True)
         (reader,) = [p for p in planned if p.stage_schema is not None and p.stage_schema.relation_name.endswith("_z")]
         assert reader.stage_reads == []
 
     @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_first_segment_naming_a_planned_sibling_is_a_read(self, dialect: str) -> None:
+        sibling = q(name="ship_region", population="customers", metrics=[m("count(customers.*)", "nc")])
+        z = q(name="z", population="orders", dimensions=["ship_region.name"], metrics=[m("count(orders.*)", "n")])
+        assert stage_sibling_reads(query=z, siblings={"ship_region", "z"}) == {"ship_region"}
+        async with shop(dialect, with_datasets(orders(ship_region=True))) as engine:
+            with pytest.raises(UnknownReferenceError, match="ship_region.name"):
+                await engine.execute([sibling, z, q(population="z", metrics=[m("sum(z.n)", "t")])], dry_run=True)
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_a_relationship_path_is_never_a_sibling_reference(self, dialect: str) -> None:
-        a = q(name="a", population="orders", dimensions=["customers.regions.name"], metrics=[m("count(*)", "n")])
-        sibling = q(name="regions", population="a", dimensions=["customers__regions__name"],
-                    metrics=[m("sum(n)", "nn")])
-        root = q(population="regions", metrics=[m("sum(nn)", "t")])
+        a = q(name="a", population="orders", dimensions=["customers.regions.name"], metrics=[m("count(orders.*)", "n")])
+        sibling = q(name="regions", population="a", dimensions=["a.customers__regions__name"],
+                    metrics=[m("sum(a.n)", "nn")])
+        root = q(population="regions", metrics=[m("sum(regions.nn)", "t")])
         async with shop(dialect) as engine:
             resp = await engine.execute([a, sibling, root])
         assert [float(v) for v in resp.data[0].values()] == [7.0]
@@ -178,17 +198,17 @@ class TestEdgeAwareExtractor:
 class TestExpressionReadErrors:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_an_expression_self_reference_is_rejected_by_its_name(self, dialect: str) -> None:
-        a = q(name="a", population="orders", dimensions=["status"], metrics=[m("count(*)", "n"), m("max(a.n)", "x")])
-        stages: list[SlayerQuery | dict] = [a, q(population="a", metrics=[m("sum(n)", "t")])]
+        a = q(name="a", population="orders", dimensions=["orders.status"], metrics=[m("count(orders.*)", "n"), m("max(a.n)", "x")])
+        stages: list[SlayerQuery | dict] = [a, q(population="a", metrics=[m("sum(a.n)", "t")])]
         async with shop(dialect) as engine:
             with pytest.raises(ValueError, match="Stage 'a' references itself"):
                 await engine.execute(stages)
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_an_expression_cycle_names_the_stages_as_written(self, dialect: str) -> None:
-        b = q(name="b", population="orders", dimensions=["status"], metrics=[m("max(c.n)", "x")])
-        c = q(name="c", population="customers", dimensions=["tier"], metrics=[m("count(*)", "n"), m("max(b.x)", "y")])
-        stages: list[SlayerQuery | dict] = [b, c, q(population="b", metrics=[m("sum(x)", "t")])]
+        b = q(name="b", population="orders", dimensions=["orders.status"], metrics=[m("max(c.n)", "x")])
+        c = q(name="c", population="customers", dimensions=["customers.tier"], metrics=[m("count(customers.*)", "n"), m("max(b.x)", "y")])
+        stages: list[SlayerQuery | dict] = [b, c, q(population="b", metrics=[m("sum(b.x)", "t")])]
         async with shop(dialect) as engine:
             with pytest.raises(ValueError, match=r"stages \['b', 'c'\]"):
                 await engine.execute(stages)
@@ -199,6 +219,6 @@ class TestReferenceHeads:
         query = q(name="cur", population="events", metrics=[m("max(z_orders.customers.id)", "mx")])
         assert stage_sibling_reads(query=query, siblings={"cur", "z_orders", "customers"}) == {"z_orders"}
 
-    def test_the_segment_after_a_root_qualifier_is_a_reference_head(self) -> None:
+    def test_a_route_hop_is_no_sibling_read(self) -> None:
         query = q(name="cur", population="customers", metrics=[m("max(customers.z_ev.ne)", "mx")])
-        assert stage_sibling_reads(query=query, siblings={"cur", "z_ev"}) == {"z_ev"}
+        assert stage_sibling_reads(query=query, siblings={"cur", "z_ev"}) == set()

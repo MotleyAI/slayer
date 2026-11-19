@@ -43,7 +43,7 @@ def _hint(err: BaseException) -> str:
 
 def _flattened(*extra: str):
     """Stage ``s`` over ``orders`` projecting ``customers.region`` (and ``extra``)."""
-    return q(name="s", population="orders", dimensions=[*extra, "customers.region"], metrics=[m("sum(amount)", "revenue")])
+    return q(name="s", population="orders", dimensions=[*extra, "customers.region"], metrics=[m("sum(orders.amount)", "revenue")])
 
 
 # --------------------------------------------------------------------------- #
@@ -51,22 +51,22 @@ def _flattened(*extra: str):
 # --------------------------------------------------------------------------- #
 class TestEdgeLessStage:
     async def test_flat_names(self, engine) -> None:
-        resp = await engine.execute([_flattened(), over("s", dimensions=["customers__region"])])
-        assert list(resp.data[0]) == ["s.customers__region", "s.total"]
+        resp = await engine.execute([_flattened(), over("s", dimensions=["s.customers__region"])])
+        assert list(resp.data[0]) == ["s.customers__region", "total"]
         assert by(resp, key="customers__region", value="total") == REVENUE_BY_REGION
 
     async def test_root_qualifier(self, engine) -> None:
         resp = await engine.execute([per_customer(), over("per_customer", dimensions=["per_customer.customer_id"])])
-        assert list(resp.data[0]) == ["per_customer.customer_id", "per_customer.total"]
+        assert list(resp.data[0]) == ["per_customer.customer_id", "total"]
         assert by(resp, key="customer_id", value="total") == REVENUE_BY_CUSTOMER
 
     async def test_time_dimension_re_bucketing(self, engine) -> None:
-        daily = q(name="d", population="orders", time_dimensions=[{"field": "ordered_at", "granularity": "day"}],
-                  metrics=[m("sum(amount)", "revenue")])
-        root = q(population="d", time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
-                 metrics=[m("sum(revenue)", "total")])
+        daily = q(name="d", population="orders", time_dimensions=[{"field": "orders.ordered_at", "granularity": "day"}],
+                  metrics=[m("sum(orders.amount)", "revenue")])
+        root = q(population="d", time_dimensions=[{"field": "d.ordered_at", "granularity": "month"}],
+                 metrics=[m("sum(d.revenue)", "total")])
         resp = await engine.execute([daily, root])
-        got = {str(r["d.ordered_at"])[:10]: r["d.total"] for r in resp.data}
+        got = {str(r["d.ordered_at"])[:10]: r["total"] for r in resp.data}
         assert got == {"2024-01-01": 30.0, "2024-02-01": 35.0, "2024-03-01": 62.0}
 
     async def test_population_inference_over_a_stage_root(self, engine) -> None:
@@ -77,16 +77,16 @@ class TestEdgeLessStage:
 
     async def test_list_elements(self) -> None:
         pytest.importorskip("duckdb")
-        stage = q(name="s", population="orders", dimensions=["customer_id"], metrics=[m("collect(status)", "sts")])
-        root = q(population="s", dimensions=["sts.value"], metrics=[m("count(sts.*)", "n")])
+        stage = q(name="s", population="orders", dimensions=["orders.customer_id"], metrics=[m("collect(orders.status)", "sts")])
+        root = q(population="s", dimensions=["s.sts.value"], metrics=[m("count(s.sts.*)", "n")])
         async with shop("duckdb") as engine:
             resp = await engine.execute([stage, root])
-        assert {r["s.sts.value"]: r["s.n"] for r in resp.data} == {"ok": 5, "new": 2}
+        assert {r["s.sts.value"]: r["n"] for r in resp.data} == {"ok": 5, "new": 2}
 
     async def test_a_count_over_a_list_element_is_an_integer_field(self) -> None:
         pytest.importorskip("duckdb")
-        stages = [q(name="s", population="orders", dimensions=["status"], metrics=[m("collect(id)", "items")]),
-                  q(population="s", dimensions=["status"], metrics=[m("count(items.value)", "c")])]
+        stages = [q(name="s", population="orders", dimensions=["orders.status"], metrics=[m("collect(orders.id)", "items")]),
+                  q(population="s", dimensions=["s.status"], metrics=[m("count(s.items.value)", "c")])]
         async with shop("duckdb") as engine:
             ds = await engine.create_dataset_from_query(stages, name="counted", save=False)
         (counted,) = [f for f in ds.fields if f.name == "c"]
@@ -94,8 +94,8 @@ class TestEdgeLessStage:
 
     async def test_an_unknown_list_element_field_leaks_no_minted_identity(self) -> None:
         pytest.importorskip("duckdb")
-        stage = q(name="s", population="orders", dimensions=["customer_id"], metrics=[m("collect(status)", "sts")])
-        root = q(population="s", metrics=[m("count(sts.nope)", "n")])
+        stage = q(name="s", population="orders", dimensions=["orders.customer_id"], metrics=[m("collect(orders.status)", "sts")])
+        root = q(population="s", metrics=[m("count(s.sts.nope)", "n")])
         async with shop("duckdb") as engine:
             with pytest.raises(UnknownReferenceError) as ei:
                 await engine.execute([stage, root])
@@ -127,16 +127,16 @@ class TestDottedReferences:
 
     async def test_routing_through_an_inherited_edge(self, engine) -> None:
         resp = await engine.execute([per_customer(), over("per_customer", dimensions=["regions.name"])])
-        assert "per_customer.customers.regions.name" in resp.data[0]
-        assert by(resp, key="customers.regions.name", value="total") == REVENUE_BY_REGION
+        assert "regions.name" in resp.data[0]
+        assert by(resp, key="regions.name", value="total") == REVENUE_BY_REGION
 
     async def test_a_dotted_path_no_edge_reaches_fails_as_from_a_stored_root(self, engine) -> None:
-        stored = await outcome(engine, over("orders", dimensions=["customers.nope.name"], metric="sum(amount)"))
+        stored = await outcome(engine, over("orders", dimensions=["customers.nope.name"], metric="sum(orders.amount)"))
         staged = await outcome(engine, [per_customer(), over("per_customer", dimensions=["customers.nope.name"])])
         assert stored[0] == staged[0] == "error"
         assert staged[1] == stored[1]
 
-    @pytest.mark.parametrize("dimension", ["nosuch.region", "per_customer.nosuch.x"])
+    @pytest.mark.parametrize("dimension", ["per_customer.nosuch.region", "per_customer.nosuch.x"])
     async def test_a_route_miss_names_the_stage_by_its_label(self, engine, dimension: str) -> None:
         stages = [per_customer(), over("per_customer", dimensions=[dimension])]
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:

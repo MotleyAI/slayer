@@ -290,7 +290,7 @@ def stored_join_collision_list() -> List[SlayerQuery]:
         metrics=[{"metric": "sum(orders.amount)", "alias": "a"}],
     )
     b = _query(
-        name="b", population="orders", dimensions=["customers.tier"],
+        name="b", population="orders", dimensions=["orders.customers.tier"],
         metrics=[{"metric": "sum(orders.amount)", "alias": "amt"}],
     )
     root = _query(

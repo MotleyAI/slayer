@@ -168,7 +168,7 @@ def qb_shadow_dataset() -> SlayerDataset:
         "qb_shadow",
         query(name="customers", population="orders", dimensions=["orders.status"],
               metrics=[m("sum(orders.amount)", "a")]),
-        query(population="orders", dimensions=["customers.tier"],
+        query(population="orders", dimensions=["orders.customers.tier"],
               metrics=[m("sum(orders.amount)", "amt")]),
     )
 

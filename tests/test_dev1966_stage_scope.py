@@ -65,7 +65,7 @@ class TestStoredDefinitionsNeverSeeStages:
         customers_stage = query(name="customers", population="orders", dimensions=["orders.status"],
                                 metrics=[m("sum(orders.amount)", "a")])
         resp = await engine.execute(
-            [customers_stage, _b_over("customers.tier", "orders"), _root_over_b("customers__tier")])
+            [customers_stage, _b_over("orders.customers.tier", "orders"), _root_over_b("customers__tier")])
         assert resp.columns == ["b.customers__tier", "total"]
         assert rows_by(resp.data, key="b.customers__tier", value="total") == AMOUNT_BY_TIER
 

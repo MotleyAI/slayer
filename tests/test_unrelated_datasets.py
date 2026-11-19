@@ -284,7 +284,7 @@ class TestStoredDefinitionsRefuse:
         ]), _validate=False)
         edge = DatasetRelationship(to="orgs", from_columns=["id"], to_columns=["id"], name="per_city")
         await engine.storage.save_dataset(customers_dataset(relationships=[edge]), _validate=False)
-        resp = await engine.execute(query(metrics=[m("count(per_city.id)", "n")]))
+        resp = await engine.execute(query(metrics=[m("count(customers.per_city.id)", "n")]))
         assert only_row(resp, "n") == (2.0,)
         assert unrelated_warnings(resp) == []
 
