@@ -71,8 +71,8 @@ def _same_rows(a, b) -> bool:
     return canon(a) == canon(b)
 
 
-def _status(resp, metric: str, root: str = "orders") -> dict:
-    return {k[0]: float(v[f"{root}.{metric}"]) for k, v in status_key(resp, root=root).items()}
+def _status(resp, metric: str) -> dict:
+    return {k[0]: float(v[metric]) for k, v in status_key(resp).items()}
 
 
 def _fallbacks(resp) -> list[BroadcastGrainWarningPayload]:
@@ -124,7 +124,7 @@ class TestTheDefaultAssociates:
               "metrics": [QueryMetric(metric="sum(customers.spend)", alias="sp")]}
         default = await engine.execute(_q(None, **kw))
         assoc = await engine.execute(_q("associate", **kw))
-        cells = _status(default, "sp", root="customers")
+        cells = _status(default, "sp")
         assert _same_rows(default, assoc)
         assert {k: cells[k] for k in ASSOC_LOCAL_SPEND_BY_STATUS} == ASSOC_LOCAL_SPEND_BY_STATUS
         assert cells["ok"] != LOCAL_OK_FAN_DEFECT

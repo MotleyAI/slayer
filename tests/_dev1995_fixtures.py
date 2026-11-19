@@ -103,8 +103,8 @@ async def materialise(engine: SlayerQueryEngine, *, name: str,
     grain = model.fields[0].name
     measures = [m["alias"] for m in payload["metrics"]]
     resp = await engine.execute(q({
-        "population": name, "dimensions": [grain, *measures]}))
-    return {m: cells(resp, f"{name}.{grain}", m) for m in measures}
+        "population": name, "dimensions": [f"{name}.{c}" for c in (grain, *measures)]}))
+    return {m: cells(resp, f"{name}.{grain}", f"{name}.{m}") for m in measures}
 
 
 def assert_parity(attached: Dict[Any, Any], oracle: Dict[Any, Any], *,

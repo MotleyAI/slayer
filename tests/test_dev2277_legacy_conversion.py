@@ -297,6 +297,16 @@ QUALIFIED_SAVED = _orders(dimensions=["orders.status"],
                           metrics=["sum(orders.amount)", "count(orders.*)", "orders.total_revenue"])
 
 
+async def test_a_saved_query_reading_another_dataset_converts_nothing(seed: SlayerQueryEngine) -> None:
+    """A query-backed dataset has no datasource of its own; its queries still anchor at the visible datasets."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        await seed.create_dataset_from_query(
+            query=_orders(dimensions=["customers.region"], metrics=["sum(orders.amount)"]), name="joined")
+    assert conversions(list(caught)) == []
+    assert '"customers.region"' in await _raw_text(seed, "joined")
+
+
 async def test_a_saved_query_stores_the_qualified_twin(seed: SlayerQueryEngine) -> None:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

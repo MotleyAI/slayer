@@ -300,15 +300,15 @@ def dim_key(row: dict, *, family: str, with_month: bool):
     """The oracle group key of one result row for a dimension family."""
     key: tuple = (row["orders.region"],)
     if family == "expr":
-        key += (row["orders.lc"],)
+        key += (row["lc"],)
     elif family == "band":
-        key += (int(row["orders.band"]),)
+        key += (int(row["band"]),)
     elif family == "bare":
-        key += (float(row["orders.ct"]),)
+        key += (float(row["ct"]),)
     elif family == "rank":
-        key += (int(row["orders.rr"]),)
+        key += (int(row["rr"]),)
     elif family == "mixed":
-        key += (row["orders.city"], int(row["orders.mr"]))
+        key += (row["orders.city"], int(row["mr"]))
     if with_month:
         key += (month_key(row["orders.ordered_at"]),)
     return key

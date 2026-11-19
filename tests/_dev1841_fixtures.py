@@ -135,10 +135,9 @@ ASSOC_BASIC_SPEND_BY_STATUS = {"ok": 240.0, "new": 100.0}  # sibling plans.level
 SPEND_BY_TIER = {"gold": 245.0, "silver": 230.0, "bronze": 40.0}  # attributable, mode-invariant
 
 
-def status_key(resp, root: str = "orders") -> dict:
-    """Rows keyed by the status cell for a ``root``-rooted query."""
-    col = f"{root}.status" if root == "orders" else f"{root}.orders.status"
-    return rows_by(resp, col)
+def status_key(resp) -> dict:
+    """Rows keyed by the ``orders.status`` cell."""
+    return rows_by(resp, "orders.status")
 
 
 __all__ = [

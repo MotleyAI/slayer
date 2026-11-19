@@ -84,7 +84,7 @@ class TestOrphanNullCell:
         resp = await base_engine.execute(q({
             "population": "customers", "dimensions": ["regions.name"],
             "metrics": _cross(), "to_many_handling": mode}))
-        dim = "customers.regions.name"
+        dim = "regions.name"
         assert float(cells(resp, dim, "s")[None]) == pytest.approx(
             ORPHAN_NULL_REGION_SUM)
         assert cells(resp, dim, "n")[None] == ORPHAN_NULL_REGION_COUNT
@@ -109,7 +109,7 @@ PARITY_CASES = [
           "customers.plan_code", "customers.plan_code",
           (SUM_BY_PLAN, COUNT_BY_PLAN), (SUM_BY_PLAN, COUNT_BY_PLAN), "single-hop-dangling"),
     _case({"population": "customers", "dimensions": ["regions.name"], "metrics": _cross()},
-          "customers.regions.name", "customers.regions.name",
+          "regions.name", "customers.regions.name",
           (SUM_BY_REGION, COUNT_BY_REGION), (SUM_BY_REGION, COUNT_BY_REGION), "multi-hop-grain"),
     _case({"population": "regions", "dimensions": ["regions.name"], "metrics": _cross("customers.")},
           "regions.name", "customers.regions.name",
@@ -146,8 +146,8 @@ class TestParityWithMaterialisedAggregate:
         grain = case["grain"]
         vm = await materialise(vm_engine, name="vm", payload=_local(grain))
         resp = await vm_engine.execute(q(_local(grain)))
-        s = cells(resp, f"orders.{grain}", "s")
-        n = cells(resp, f"orders.{grain}", "n")
+        s = cells(resp, grain, "s")
+        n = cells(resp, grain, "n")
         assert None in s
         assert_parity(s, vm["s"], empty=None)
         assert_parity(n, vm["n"], empty=0)
@@ -212,5 +212,5 @@ class TestCompositeGrainNullCell:
         """(South, NULL) holds c5's NULL-status order and the orderless c7: 80 + 55."""
         resp = await app_null_engine.execute(q(_orders_assoc(
             dimensions=["customers.regions.name", "orders.status"], metrics=[SPEND])))
-        by = rows_by(resp, "orders.customers.regions.name", "orders.status")
+        by = rows_by(resp, "customers.regions.name", "orders.status")
         _assert_cells({k: v["c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)

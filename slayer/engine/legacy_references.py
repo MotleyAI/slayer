@@ -212,10 +212,11 @@ def population_relative(query: SlayerQuery) -> SlayerQuery:
 async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], *,
                        data_source: Optional[str]) -> AnchorNames:
     """What a first segment of ``queries`` may anchor at: the datasets the caller sees in their populations'
-    datasources (``data_source`` when pinned), their stages and the spine."""
+    datasources (``data_source`` when pinned; a query-backed dataset's empty one pins nothing), their stages and the
+    spine."""
     identities = await storage._list_all_dataset_identities()
     stage_names = {q.name for q in queries if q.name}
-    if data_source is None:
+    if not data_source:
         sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
                    for ds, n in identities if n == p}
         chosen = sources or {ds for ds, _ in identities}

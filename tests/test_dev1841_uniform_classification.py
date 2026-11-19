@@ -35,7 +35,7 @@ async def exec_backend(request):
 
 
 def _ok(resp) -> float:
-    return float(status_key(resp, root="customers")[("ok",)]["sp"])
+    return float(status_key(resp)[("ok",)]["sp"])
 
 
 class TestBroadcastModeNeverMultiplies:
@@ -54,7 +54,7 @@ class TestBroadcastModeNeverMultiplies:
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[SP],
                    to_many_handling="broadcast"))
-        by = status_key(resp, root="customers")
+        by = status_key(resp)
         vals = {k: float(v["sp"]) for k, v in by.items()}
         assert vals[("ok",)] == pytest.approx(vals[("new",)])  # broadcast
         assert vals[("ok",)] != pytest.approx(LOCAL_OK_FAN_DEFECT)
@@ -70,7 +70,7 @@ class TestAssociateGivesDistinctEntityValue:
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[SP],
                    to_many_handling="associate"))
-        by = status_key(resp, root="customers")
+        by = status_key(resp)
         for status, spend in ASSOC_LOCAL_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["sp"]) == pytest.approx(spend)
         assert _ok(resp) != pytest.approx(LOCAL_OK_FAN_DEFECT)
@@ -87,7 +87,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], metrics=[composite],
                    to_many_handling="associate"))
-        by = status_key(resp, root="customers")
+        by = status_key(resp)
         assert float(by[("ok",)]["sp1"]) == pytest.approx(
             ASSOC_LOCAL_SPEND_BY_STATUS["ok"] + 1)
         assert float(by[("ok",)]["sp1"]) != pytest.approx(
@@ -104,7 +104,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
                    filter=["sum(customers.spend) > 450"],
                    to_many_handling="associate"))
         # Correct ok=420 fails > 450 → ok dropped; a fanned 520 would keep it.
-        keys = set(status_key(resp, root="customers"))
+        keys = set(status_key(resp))
         assert ("ok",) not in keys
 
     async def test_order_context(self, exec_backend):

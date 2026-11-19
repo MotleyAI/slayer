@@ -69,14 +69,13 @@ SPEND_WAVG_AMOUNT = QueryMetric(
     metric="weighted_avg(customers.spend, weight=amount)", alias="wa")
 
 
-def status_vals(resp, metric: str, *, root: str = "orders") -> dict:
-    col = "orders.status" if root == "orders" else "customers.orders.status"
-    return {k[0]: v[metric] for k, v in rows_by(resp, col).items()}
+def status_vals(resp, metric: str) -> dict:
+    return {k[0]: v[metric] for k, v in rows_by(resp, "orders.status").items()}
 
 
 def bad_pop_status_cells(resp, metric: str) -> dict:
     return {k: v[metric]
-            for k, v in rows_by(resp, "orders." + BAD_POP, "orders.status").items()}
+            for k, v in rows_by(resp, BAD_POP, "orders.status").items()}
 
 
 # Oracles traced to the DEV-1840 dataset (+ the extra NULL-status order).

@@ -153,7 +153,7 @@ class TestCustomersRootedTwinKeepsItsNullCell:
         resp = await null_engine.execute(cust_q(
             dimensions=["orders.status"], metrics=[LOCAL_SPEND_SUM],
             to_many_handling="associate"))
-        spend = status_vals(resp, "sp", root="customers")
+        spend = status_vals(resp, "sp")
         for cell, expected in SPEND_BY_STATUS_NULLSEED.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
 
@@ -208,7 +208,7 @@ class TestLocalSameBranchCoupling:
         resp = await engine.execute(cust_q(
             dimensions=["orders.status"], metrics=[LOCAL_SPEND_SUM],
             filter=["orders.channel = 'app'"], to_many_handling="associate"))
-        spend = status_vals(resp, "sp", root="customers")
+        spend = status_vals(resp, "sp")
         assert float(spend["ok"]) == pytest.approx(LOCAL_COUPLED_OK)
         assert float(spend["ok"]) != pytest.approx(LOCAL_DECOUPLED_OK)
 
