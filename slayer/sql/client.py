@@ -25,7 +25,7 @@ from sqlalchemy.exc import ArgumentError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from slayer.async_utils import on_caller_thread, run_sync
-from slayer.core.deprecation import warn_deprecated
+from slayer.core.deprecation import outside_stacklevel, warn_deprecated
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
@@ -44,6 +44,7 @@ from slayer.sql.dialects.reflection import (
 )
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.core import timing
+from slayer.core import probes
 
 logger = logging.getLogger(__name__)
 
@@ -533,6 +534,24 @@ class SqlClient(Protocol):
     def close(self) -> None: ...
 
 
+def _db_probe_attributes(bound: Any) -> dict[str, Any]:
+    client = bound.arguments["self"]
+    datasource = client.datasource
+    attributes: dict[str, Any] = {
+        "datasource.name": datasource.name,
+        "datasource.type": datasource.type or "",
+        "db.query.text": bound.arguments.get("sql"),
+    }
+    with contextlib.suppress(Exception):
+        url = client.connection_url()  # host, port and database only; never the credentials
+        attributes.update({"server.address": url.host, "server.port": url.port, "db.namespace": url.database})
+    return attributes
+
+
+def _returned_rows(executed: ExecutionResult) -> dict[str, int]:
+    return {"db.response.returned_rows": len(executed.rows)}
+
+
 class SlayerSQLClient:
     """Executes SQL against databases via SQLAlchemy, through one driver.
 
@@ -621,6 +640,12 @@ class SlayerSQLClient:
     def _dialect(self) -> SqlDialect:
         return dialect_for_ds_type(self.datasource.type)
 
+    def connection_url(self) -> URL:
+        """The URL this client connects through: its caller's engine's, else its datasource's."""
+        if self._sync_engine_owner == "caller" and self._sync_engine is not None:
+            return self._sync_engine.url
+        return make_url(self._connection_datasource().get_connection_string())
+
     def _async_url(self) -> URL | None:
         """The connection URL when its driver runs async; ``None`` for a caller's engine or a sync-only driver."""
         if self._sync_engine_owner is not None and self._sync_engine_owner != "factory":
@@ -654,7 +679,7 @@ class SlayerSQLClient:
                 f"motley-slayer[{facts.install_extra}] stops installing {url.get_driver_name()} in 2.0; "
                 "depend on it directly.",
                 removal="2.0",
-                stacklevel=3,
+                stacklevel=outside_stacklevel(),
             )
 
     def _get_async_engine(self) -> AsyncEngine:
@@ -750,6 +775,7 @@ class SlayerSQLClient:
         """Execute SQL asynchronously."""
         return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds)
 
+    @probes.probe(name="db.execute", extract=_db_probe_attributes, result=_returned_rows)
     async def _typed_execute(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
         try:
             return await self._execute(sql=sql, timeout_seconds=timeout_seconds)
@@ -833,6 +859,7 @@ class SlayerSQLClient:
 
     # Live metadata: one read on one open sync connection — the async engine's, else the sync engine's off the loop.
 
+    @probes.probe(name="db.metadata", extract=_db_probe_attributes)
     async def _metadata(self, read: Callable[[sa.Connection], _T]) -> _T:
         try:
             async_engine = self._async_engine_here()
@@ -976,6 +1003,10 @@ class SlayerSQLClient:
         """
         if self._async_url() is not None:
             return run_sync(self._execute_bridged(sql=sql, timeout_seconds=timeout_seconds))
+        return self._typed_execute_sync(sql=sql, timeout_seconds=timeout_seconds)
+
+    @probes.probe(name="db.execute", extract=_db_probe_attributes, result=_returned_rows)
+    def _typed_execute_sync(self, *, sql: str, timeout_seconds: int) -> ExecutionResult:
         try:
             return _execute_with_retry_sync(
                 sql=sql,
@@ -1153,6 +1184,7 @@ async def _retry_with_backoff(
         except _RETRYABLE_ERRORS as exc:
             _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay)
             await asyncio.sleep(delay)
+            _record_retry(exc=exc, attempt=attempt)
             delay = min(delay * 2, max_delay)
     return await do_call()
 
@@ -1163,6 +1195,13 @@ def _check_max_attempts(max_attempts: int) -> None:
 
 
 _RETRYABLE_ERRORS = (sqlalchemy.exc.OperationalError, sqlalchemy.exc.DisconnectionError)
+
+
+def _record_retry(*, exc: Exception, attempt: int) -> None:
+    """A retry event once the backoff is over and the next attempt starts."""
+    probes.current().add_event(
+        name="db.retry", attributes={"db.attempt": attempt + 1, "error.type": type(exc).__qualname__},
+    )
 
 
 def _log_transient_or_raise(*, exc: Exception, sql: str, attempt: int, delay: float) -> None:
@@ -1281,6 +1320,7 @@ def _execute_with_retry_sync(
         except _RETRYABLE_ERRORS as exc:
             _log_transient_or_raise(exc=exc, sql=sql, attempt=attempt, delay=delay)
             time.sleep(delay)
+            _record_retry(exc=exc, attempt=attempt)
             delay = min(delay * 2, max_delay)
     return _call()
 

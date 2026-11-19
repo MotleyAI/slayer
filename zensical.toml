@@ -44,6 +44,7 @@ nav = [
     { "Python Client" = "reference/python-client.md" },
     { "CLI" = "reference/cli.md" },
     { "Usage reporting" = "reference/usage-reporting.md" },
+    { "OpenTelemetry" = "reference/opentelemetry.md" },
     { "Database Support" = "database-support.md" },
   ]},
   { "Wire Protocols (BI Tools)" = [

@@ -325,6 +325,15 @@ async def test_bundled_non_default_driver_warns(engines: _Engines, ds: Datasourc
     assert any(driver in m and f"motley-slayer[{extra}]" in m and "2.0" in m for m in messages), messages
 
 
+async def test_bundled_driver_warning_names_the_callers_line(engines: _Engines) -> None:
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        with contextlib.suppress(*_EXPECTED_FAILURES):
+            await SlayerSQLClient(_ds("postgres", f"postgresql+psycopg2://{_PG}")).execute("SELECT 1")
+    bundled = [w for w in record if "stops installing" in str(w.message)]
+    assert [w.filename for w in bundled] == [__file__]
+
+
 @pytest.mark.parametrize(
     "ds",
     [

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
-from slayer.core.deprecation import warn_deprecated
+from slayer.core.deprecation import outside_stacklevel, warn_deprecated
 from slayer.core.enums import DataType, JoinCardinality, TimeGranularity, invert_cardinality
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_MODEL, spine_model
@@ -376,7 +376,7 @@ def warn_library_shadows(model: SlayerModel) -> None:
         if shadows_library_function(agg):
             warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
                 model=model.name, aggregation=agg.name, function=agg.name,
-            )), stacklevel=3)
+            )), stacklevel=outside_stacklevel())
 
 
 def storage_base_dir(path: str) -> str:

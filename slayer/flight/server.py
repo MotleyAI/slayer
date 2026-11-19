@@ -73,6 +73,8 @@ def _translation_error_to_flight(exc: TranslationError) -> fl.FlightServerError:
     Flight SQL clients render the message back to the user as a connection
     or query error; we tag all of these as ``INVALID_ARGUMENT`` per §11.
     """
+    # Clients often swallow the failed statement; log it server-side, as the Postgres facade does.
+    logger.warning("flight: cannot translate the statement: %s", exc)
     return fl.FlightServerError(str(exc))
 
 

@@ -33,15 +33,15 @@
 
 ## 3. Implementation
 
-- [ ] 3.1 Copy `slayer/core/probes.py` from `M`. Verify that 2.1 passes, apart from the warning-location test, which waits for 3.4.
-- [ ] 3.2 Copy `slayer/otel/{__init__,adapter,control,exporters,logs,middleware,recorder,settings}.py` from `M`. Verify that 2.3 passes.
-- [ ] 3.3 Three-way apply #602's hunks to the files at shared paths: `slayer/cli.py`, `slayer/api/server.py`, `slayer/mcp/server.py` (the request hook, plus the `has_changes` / `_updated_detail_lines` renderer with 1.x names), `slayer/flight/handlers.py`, `slayer/flight/server.py`, `slayer/pg_facade/connection.py`, `slayer/engine/query_engine.py`, `slayer/engine/cache.py`, `slayer/storage/v3_migration.py`, `slayer/usage_reporting/payload.py`.
-- [ ] 3.4 Warning location:
+- [x] 3.1 Copy `slayer/core/probes.py` from `M`. Verify that 2.1 passes, apart from the warning-location test, which waits for 3.4.
+- [x] 3.2 Copy `slayer/otel/{__init__,adapter,control,exporters,logs,middleware,recorder,settings}.py` from `M`. Verify that 2.3 passes.
+- [x] 3.3 Three-way apply #602's hunks to the files at shared paths: `slayer/cli.py`, `slayer/api/server.py`, `slayer/mcp/server.py` (the request hook, plus the `has_changes` / `_updated_detail_lines` renderer with 1.x names), `slayer/flight/handlers.py`, `slayer/flight/server.py`, `slayer/pg_facade/connection.py`, `slayer/engine/query_engine.py`, `slayer/engine/cache.py`, `slayer/storage/v3_migration.py`, `slayer/usage_reporting/payload.py`.
+- [x] 3.4 Warning location:
   - add `outside_stacklevel()` to `slayer/core/deprecation.py`;
   - use it at `query_engine._emit_python_warnings` and at every other fixed-`stacklevel` warning site that a probed call reaches. Audit 1.x's `stacklevel=<N>` sites against the probed call paths, mirroring `main`'s `storage/base.py` and `storage/document_loading.py` sites.
 
   Verify the warning-location test from 2.1.
-- [ ] 3.5 Re-apply the hooks by hand:
+- [x] 3.5 Re-apply the hooks by hand:
   - `slayer/sql/client.py`: `connection_url()`; `_db_probe_attributes` without the `statements` branch; `_returned_rows`; `db.execute` on `_typed_execute` and on a new `_typed_execute_sync` split out of `execute_sync`'s sync-driver path; `db.metadata` on `_metadata`; `_record_retry` after the backoff sleep in `_retry_with_backoff` and `_execute_with_retry_sync`.
   - `slayer/engine/ingestion.py`: `ingest` on `_ingest_idempotent`; `ingest.merge`, `ingest.scan.schema` and `ingest.embeddings`; `_ingest_probe_attributes` and `_ingest_outcome` (counting through `has_changes`); `metadata_changed` in `_addition_fields`; `+key metadata` in `_updated_detail_lines`.
   - `slayer/engine/schema_drift.py`: `ModelAddition.metadata_changed` and `has_changes`; `ingest.drift` on `_validate_datasource`.
