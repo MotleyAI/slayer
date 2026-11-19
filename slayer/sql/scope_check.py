@@ -239,7 +239,10 @@ def _projects(inner: Scope, name: str) -> bool:
         # A table function (``UNNEST``, ``LATERAL (…)``): its alias's column list, else its subquery's outputs.
         alias = expr.args.get("alias")
         if isinstance(alias, exp.TableAlias) and alias.columns and alias.this is not None:
-            return folded in {c.name.casefold() for c in alias.columns}
+            # ``WITH ORDINALITY AS u(value, pos)``: the offset is the alias's last column.
+            offset = expr.args.get("offset") if isinstance(expr, exp.Unnest) else None
+            named = [*alias.columns, *([offset] if isinstance(offset, exp.Identifier) else [])]
+            return folded in {c.name.casefold() for c in named}
         if not (isinstance(expr, exp.Lateral) and isinstance(expr.this, exp.Subquery)):
             return True  # unverifiable without the function's signature
         expr = expr.this.this

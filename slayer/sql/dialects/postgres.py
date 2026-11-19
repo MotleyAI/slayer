@@ -37,6 +37,7 @@ from slayer.sql.dialects.base import (
     is_null,
     lit,
     operand_copy,
+    ordinal_elements,
     pad_fill,
 )
 from slayer.sql.dialects.patterns import POSTGRES, RegexFlavour
@@ -335,6 +336,10 @@ class PostgresDialect(SqlDialect):
 
     def list_length(self, values: Expression) -> Expression:
         return anon("CARDINALITY", values)
+
+    def positioned_elements(self, values: Expression) -> exp.Select:
+        """The non-NULL elements ``WITH ORDINALITY``."""
+        return ordinal_elements(anon("ARRAY_REMOVE", values, exp.Null()))
 
     def build_list_set(self, values: Expression, element: Optional[DataType]) -> Expression:
         """``ARRAY(SELECT DISTINCT e FROM UNNEST(x) e … ORDER BY e)``, ``x`` read as its element's canonical array

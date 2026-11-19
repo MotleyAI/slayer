@@ -4,6 +4,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
@@ -109,15 +110,17 @@ class ResolvedSourceBundle(BaseModel):
             dataset = dataset.with_unrelated(frozenset())
         return dataset.as_population_factor(False) if dataset.population_spine else dataset
 
-    def rerooted(self, new_source: SlayerDataset) -> "ResolvedSourceBundle":
+    def rerooted(self, new_source: SlayerDataset, *, replacing: Sequence[SlayerDataset] = ()) -> "ResolvedSourceBundle":
         """Re-root at ``new_source``, keeping the former source in the universe
         (a reverse hop can target it — the map must not shrink); a producer never
-        sees a spine population's product hop."""
+        sees a spine population's product hop. ``replacing`` swaps same-named datasets in."""
         new_source = self.factor_free(new_source)
         refs = self.referenced_datasets
         old = self.population
         if old is not None and self.get_referenced_dataset(old.name) is None:
             refs = [*refs, old]
+        swaps = {d.name: d for d in replacing}
+        refs = [swaps.get(m.name, m) for m in refs]
         return self.model_copy(
             update={"population": new_source, "referenced_datasets": refs},
         )

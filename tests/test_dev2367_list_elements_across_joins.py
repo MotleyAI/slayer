@@ -165,7 +165,7 @@ class TestPositionsDoNotDependOnFilters:
 ELEMENTS_PER_ASSIGNMENT = SlayerQuery.model_validate(body("assignments", m(COUNT_ELEMENTS, "n"), dimensions=["id"]))
 #: The position marker each dialect's element expansion carries (ClickHouse: checked structurally).
 POSITION = {"postgres": "WITH ORDINALITY", "trino": "WITH ORDINALITY", "bigquery": "WITH OFFSET",
-            "duckdb": "ROW_NUMBER() OVER ()", "snowflake": r"\.INDEX\b"}
+            "duckdb": r"ROW_NUMBER\(\) OVER \(\)", "snowflake": r"\.INDEX\b"}
 
 
 async def _correlating(_self: Any) -> ServerProfile:

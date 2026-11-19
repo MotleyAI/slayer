@@ -603,6 +603,8 @@ def ascii_lower(name: str) -> str:
 
 #: A list child's element column, as every list relation exposes it.
 LIST_VALUE = "value"
+#: A positioned list relation's element position (``__slayer_`` is reserved: no stored field collides).
+LIST_POSITION = "__slayer_position"
 _UNNESTED = "__slayer_u"
 _EACH = "__slayer_each"
 
@@ -640,6 +642,13 @@ def kept_elements(values: Expression) -> exp.Select:
     unnested = exp.to_identifier(_UNNESTED)
     value = exp.column(LIST_VALUE, table=_UNNESTED)
     return exp.select(value).from_(unnest_elements(values, alias=unnested)).where(is_not_null(value))
+
+
+def ordinal_elements(values: Expression) -> exp.Select:
+    """``SELECT u.value, u.pos FROM UNNEST(values) WITH ORDINALITY AS u(value, pos)``."""
+    unnested = unnest_elements(values, alias=exp.to_identifier(_UNNESTED))
+    unnested.set("offset", exp.to_identifier(LIST_POSITION))
+    return exp.select(exp.column(LIST_VALUE, table=_UNNESTED), exp.column(LIST_POSITION, table=_UNNESTED)).from_(unnested)
 
 
 class ServerProfile(BaseModel):
@@ -1332,14 +1341,21 @@ class SqlDialect(BaseModel):
     def list_relation(
         self, values: Expression, *, alias: exp.Identifier,
         element: Optional[DataType],  # NOSONAR(S1172) — hook parameter read by dialect overrides
-        leading: bool, distinct: bool = False,
+        leading: bool, distinct: bool = False, positioned: bool = False,
     ) -> ListRelation:
         """The elements of ``values`` (non-NULL; ``distinct``: each once) as ``alias``; ``leading``: the first FROM
-        item (no LATERAL)."""
+        item (no LATERAL); ``positioned``: each element's position in its list as ``alias.<LIST_POSITION>``."""
+        assert not (distinct and positioned), "a distinct list relation carries no position"
         rows = kept_elements(values).distinct() if distinct else kept_elements(values)
+        if positioned:
+            rows = self.positioned_elements(values)
         table_alias = exp.TableAlias(this=alias.copy())
         subquery = exp.Subquery(this=rows, alias=table_alias) if leading else None
         return ListRelation(relation=subquery or exp.Lateral(this=exp.Subquery(this=rows), alias=table_alias))
+
+    def positioned_elements(self, values: Expression) -> exp.Select:
+        """``kept_elements(values)`` numbered once per list after NULL removal."""
+        return kept_elements(values).select(self.row_number().as_(exp.to_identifier(LIST_POSITION)))
 
     def list_exists(
         self, values: Expression, *, alias: exp.Identifier, element: Optional[DataType], predicate: Expr,

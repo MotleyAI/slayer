@@ -9,9 +9,9 @@
 
 ## 2. List-child identity (failure 1)
 
-- [ ] 2.1 Dialects: add `positioned` to `list_relation` in `slayer/sql/dialects/base.py` and every override (Postgres/Trino `WITH ORDINALITY`, BigQuery `WITH OFFSET`, Snowflake FLATTEN `INDEX`, DuckDB `ROW_NUMBER() OVER ()` inside the element subquery, ClickHouse one tuple array then one `ARRAY JOIN`); position numbered after NULL removal; never with `distinct`; verify 1.5 rendering tests pass
-- [ ] 2.2 Planner: `_association_entity` (`slayer/engine/compile/stages.py`) gives a list-child home identity keys = parent identity keys over the child→parent back hop (parent PK, else the parent augmented by `with_row_identity`) + the reserved element position; move `_AssociationEntity.entity_fields` / `host_grain` to value keys (design D3); return the augmented parent (D4)
-- [ ] 2.3 Generator: `_build_from_and_joins` (`slayer/sql/generator.py`) emits the augmented parent through `_emit_relation` and requests the position from `list_relation` only for a list-child association root; verify 1.1, 1.2 pass and no golden changes
+- [x] 2.1 Dialects: add `positioned` to `list_relation` in `slayer/sql/dialects/base.py` and every override (Postgres/Trino `WITH ORDINALITY`, BigQuery `WITH OFFSET`, Snowflake FLATTEN `INDEX`, DuckDB `ROW_NUMBER() OVER ()` inside the element subquery, ClickHouse one tuple array then one `ARRAY JOIN`); position numbered after NULL removal; never with `distinct`; verify 1.5 rendering tests pass
+- [x] 2.2 Planner: `_association_entity` (`slayer/engine/compile/stages.py`) gives a list-child home identity keys = parent identity keys over the child→parent back hop (parent PK, else the parent augmented by `with_row_identity`) + the reserved element position; move `_AssociationEntity.entity_fields` / `host_grain` to value keys (design D3); return the augmented parent (D4)
+- [x] 2.3 Generator: `_build_from_and_joins` (`slayer/sql/generator.py`) emits the augmented parent through `_emit_relation` and requests the position from `list_relation` only for a list-child association root; verify 1.1, 1.2 pass and no golden changes
 
 ## 3. Route by the resolved home (failure 2)
 

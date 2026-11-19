@@ -73,8 +73,9 @@ from slayer.core.query import (
     SlayerQuery,
 )
 from slayer.sql.naming import (
-    ROW_IDENTITY_FIELD, canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key, with_row_identity,
+    ROW_IDENTITY_FIELD, canonical_aggregate_alias, flat_name, identified_datasets, pick_slot_alias, slot_result_key,
 )
+from slayer.sql.dialects.base import LIST_POSITION
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import DatasetScope, StageField, StageSchema, host_dataset_name
@@ -2212,7 +2213,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     if associate:
         entity = _association_entity(
             root_dataset=root_dataset, target_path=target_path, unattributable=unattributable,
-            host_dataset=host_dataset, datasets_by_name=datasets_by_name,
+            host_dataset=host_dataset, datasets_by_name=datasets_by_name, bundle=bundle,
         )
         # The default broadcasts an ineligible implicit grain; requested grain is never broadcast.
         if policy.fallback and not explicit:
@@ -2315,9 +2316,10 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
         projected_dim_keys=projected_dim_keys, projected_td_keys=projected_td_keys,
         active_bucket=prebound.main_time_key,
     )
+    numbered: List[SlayerDataset] = []
     if associate and entity is not None:
-        root_dataset = entity.root_dataset
-    root_bundle = bundle.rerooted(root_dataset)
+        root_dataset, numbered = entity.root_dataset, entity.numbered
+    root_bundle = bundle.rerooted(root_dataset, replacing=numbered)
     root_scope = (
         DatasetScope(population=root_dataset)
         if isinstance(scope, DatasetScope) else scope
@@ -2612,18 +2614,18 @@ def _primary_key_fields(dataset: SlayerDataset) -> List[str]:
 
 
 class _AssociationEntity(NamedTuple):
-    """The entities an association producer deduplicates: the home (numbered when it has no primary key),
-    each unattributable dimension rerooted into it, and its entity key fields."""
+    """The entities an association producer deduplicates: the home (carrying the row identity or list position
+    its keys read), each unattributable dimension rerooted into it, the keys telling its rows apart in its
+    coordinates, and the parent numbered for them."""
 
     root_dataset: SlayerDataset
     assoc_pairs: List[Tuple[ValueKey, ValueKey]]
     list_rows: bool
-    entity_fields: List[str]
+    keys: List[ValueKey]
+    numbered: List[SlayerDataset]
 
     def host_grain(self, target_path: Tuple[str, ...]) -> Grain:
-        return Grain.of(
-            field_default_key(path=target_path, leaf=col, base=self.root_dataset) for col in self.entity_fields
-        )
+        return Grain.of(_host_coordinates(k, target_path=target_path, root=self.root_dataset) for k in self.keys)
 
     def determines_param(
         self, *, value: ValueKey, target_path: Tuple[str, ...], host_dataset: SlayerDataset,
@@ -2633,14 +2635,38 @@ class _AssociationEntity(NamedTuple):
         return _param_is_determined(
             value=value, grain=self.host_grain(target_path),
             host_dataset=host_dataset if target_path else self.root_dataset,
-            datasets_by_name={**datasets_by_name, self.root_dataset.name: self.root_dataset}, bundle=bundle,
+            datasets_by_name={
+                **datasets_by_name, **{d.name: d for d in self.numbered}, self.root_dataset.name: self.root_dataset,
+            },
+            bundle=bundle,
         )
+
+
+def _host_coordinates(key: ValueKey, *, target_path: Tuple[str, ...], root: SlayerDataset) -> ValueKey:
+    """Root-coordinates ``key`` read from the host: a list child's back hop is the hop that reached it."""
+    path = tuple(cast(FieldKey | FieldSqlKey, key).path)
+    if root.list_of is not None and path[:1] == (root.list_of[1],):
+        return key.model_copy(update={"path": (*target_path[:-1], *path[1:])})
+    return key.model_copy(update={"path": (*target_path, *path)})
+
+
+def _identity_keys(root: SlayerDataset, *, bundle: ResolvedSourceBundle) -> List[ValueKey]:
+    """What tells ``root``'s rows apart, in its coordinates: its primary key, else its per-query row identity; a
+    list child's, its parent row's (over the back hop) and the element's position (design D2/D3)."""
+    if root.list_of is None:
+        owner, path, position = root, (), []
+    else:
+        owner, path = bundle.datasets_by_name[root.list_of[0]], (root.list_of[1],)
+        position = [FieldKey(leaf=LIST_POSITION)]
+    # A standalone UNIQUE constraint can allow NULLs, which cannot identify individual rows.
+    keys = [field_default_key(path=path, leaf=col, base=owner) for col in _primary_key_fields(owner)]
+    return [*(keys or [FieldKey(path=path, leaf=ROW_IDENTITY_FIELD)]), *position]
 
 
 def _association_entity(
     *, root_dataset: SlayerDataset, target_path: Tuple[str, ...],
     unattributable: List[_UnattributableDim], host_dataset: SlayerDataset,
-    datasets_by_name: Dict[str, SlayerDataset],
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
 ) -> _AssociationEntity:
     assoc_pairs = [
         (u.key, reroot_from_root(
@@ -2654,14 +2680,15 @@ def _association_entity(
         _reached_by_root_lists(rerooted, root_dataset=root_dataset, datasets_by_name=datasets_by_name)
         for _key, rerooted in assoc_pairs
     ):
-        return _AssociationEntity(root_dataset=root_dataset, assoc_pairs=assoc_pairs, list_rows=True, entity_fields=[])
-    # A standalone UNIQUE constraint can allow NULLs, which cannot identify individual rows.
-    entity_fields = _primary_key_fields(root_dataset)
-    if not entity_fields:
-        root_dataset = with_row_identity(root_dataset)
-        entity_fields = [ROW_IDENTITY_FIELD]
+        return _AssociationEntity(
+            root_dataset=root_dataset, assoc_pairs=assoc_pairs, list_rows=True, keys=[], numbered=[],
+        )
+    keys = _identity_keys(root_dataset, bundle=bundle)
+    root_dataset, numbered = identified_datasets(
+        root=root_dataset, entity_keys=keys, datasets_by_name=bundle.datasets_by_name,
+    )
     return _AssociationEntity(
-        root_dataset=root_dataset, assoc_pairs=assoc_pairs, list_rows=False, entity_fields=entity_fields,
+        root_dataset=root_dataset, assoc_pairs=assoc_pairs, list_rows=False, keys=keys, numbered=numbered,
     )
 
 
@@ -2709,9 +2736,7 @@ def _association_arm(
     # rerooted into the home so the level-1 pick reads it there; the kernel dedups
     # by the entity key in ROOT coordinates.
     entity_grain = entity.host_grain(target_path)
-    entity_keys_root: List[ValueKey] = [
-        field_default_key(path=(), leaf=col, base=root_dataset) for col in entity.entity_fields
-    ]
+    entity_keys_root = list(entity.keys)
     picked_params: List[PickedParam] = []
     for name, value in _param_values(agg):
         # Attached kinds (aggregate- and transform-valued) are judged by the shared

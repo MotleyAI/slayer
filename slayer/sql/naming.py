@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple
 
 import sqlglot
@@ -40,6 +40,7 @@ from slayer.core.refs import (
 from slayer.core.syntax import AggCall, DottedRef, Ref, StarSource, canonical_metric_text, legacy_result_name_seed
 from slayer.sql._identifier_fit import fit_identifier
 from slayer.sql.dialects import SQLGLOT_NAMES, SqlDialect, get_dialect
+from slayer.sql.dialects.base import LIST_POSITION
 from slayer.sql.naming_bijection import (  # noqa: F401
     _ALIAS_SEP,
     decode_alias,
@@ -253,6 +254,28 @@ def with_row_identity(dataset: SlayerDataset) -> SlayerDataset:
 
 def is_row_identity(key: ValueKey) -> bool:
     return isinstance(key, FieldKey) and not key.path and key.leaf == ROW_IDENTITY_FIELD
+
+
+def with_list_position(child: SlayerDataset) -> SlayerDataset:
+    """List child ``child`` with each element's position in its list, which its positioned relation emits."""
+    position = DatasetField.model_construct(name=LIST_POSITION, datatype=DataType.INTEGER, primary_key=True)
+    return child.model_copy(update={"fields": [*child.fields, position]})
+
+
+def identified_datasets(
+    *, root: SlayerDataset, entity_keys: Sequence[ValueKey], datasets_by_name: Mapping[str, SlayerDataset],
+) -> Tuple[SlayerDataset, list[SlayerDataset]]:
+    """Association root ``root`` and the parent it reads, each carrying the row identity or list position
+    ``entity_keys`` read; the parent is listed only when numbered."""
+    reads = {(tuple(k.path), k.leaf) for k in entity_keys if isinstance(k, FieldKey)}
+    if root.list_of is None:
+        return (with_row_identity(root) if ((), ROW_IDENTITY_FIELD) in reads else root), []
+    parent_name, column = root.list_of
+    if ((), LIST_POSITION) in reads:
+        root = with_list_position(root)
+    if ((column,), ROW_IDENTITY_FIELD) not in reads:
+        return root, []
+    return root, [with_row_identity(datasets_by_name[parent_name])]
 
 
 # Written out, not ``\W``: Python's ``\W`` is Unicode-aware and would let non-ASCII letters into a bare ASCII identifier.
