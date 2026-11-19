@@ -125,18 +125,18 @@ _INVARIANT_QUERIES = [
     dict(metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="c")]),
     dict(metrics=[QueryMetric(metric="change(cumsum(sum(orders.amount)))", alias="n")]),
     dict(metrics=[QueryMetric(metric=CM, alias="s")]),
-    dict(metrics=[QueryMetric(metric=f"{CM} + sum(amount)", alias="c")]),
-    dict(metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")]),
+    dict(metrics=[QueryMetric(metric=f"{CM} + sum(orders.amount)", alias="c")]),
+    dict(metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c")]),
     dict(metrics=[QueryMetric(metric="consecutive_periods(sum(orders.amount) > 0)", alias="p")]),
     # filter predicate over a transform composite (a mask slot must be staged)
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-         filter=[f"change({CM}) + sum(amount) > 0"]),
+         filter=[f"change({CM}) + sum(orders.amount) > 0"]),
     # a row-typed and a measure-typed mask together
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
          filter=["orders.amount > 5", "sum(orders.amount) > 50"]),
     # ORDER-BY key over a transform composite (an order slot must be staged)
     dict(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-         order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}]),
+         order=[{"field": f"change({CM}) + sum(orders.amount)", "direction": "desc"}]),
     # the alternation class (D10): a transform over a composite over a transform,
     # beside the projected composite — the dev1859 stall shape
     dict(metrics=[QueryMetric(metric="change(sum(orders.amount))", alias="ch")],
@@ -208,7 +208,7 @@ class TestStageOrderingInvariants:
     def test_composite_over_a_transform_is_one_level_above_it(self) -> None:
         """A composite is not a relation boundary (D10): it sits one level above
         the deepest transform it reads, never in a terminal stage of its own."""
-        pq = _plan(metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")])
+        pq = _plan(metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c")])
         by_key = {s.key: s for s in _all_slots(pq)}
         composites = [c for c in _composite_slots(pq) if _transforms_read(key=c.key, by_key=by_key)]
         assert composites
@@ -237,7 +237,7 @@ class TestConcreteStages:
         assert {_stage(s).level for s in _transform_slots(pq)} == {1, 2}
 
     def test_combined_attach_placeholder_is_producer(self) -> None:
-        pq = _plan(metrics=[QueryMetric(metric=f"{CM} + sum(amount)", alias="c")])
+        pq = _plan(metrics=[QueryMetric(metric=f"{CM} + sum(orders.amount)", alias="c")])
         [attach] = pq.regroup_attach_plans
         assert attach.attach_phase == "combined"
         placeholders = [
@@ -251,7 +251,7 @@ class TestConcreteStages:
     def test_composite_over_a_combined_placeholder_is_combined(self) -> None:
         """No transform operand → the combined-SELECT expression is COMBINED,
         strictly later than the PRODUCER placeholder it reads (D1 F5)."""
-        pq = _plan(metrics=[QueryMetric(metric=f"{CM} + sum(amount)", alias="c")])
+        pq = _plan(metrics=[QueryMetric(metric=f"{CM} + sum(orders.amount)", alias="c")])
         [comp] = [s for s in pq.aggregate_slots if isinstance(s.key, ArithmeticKey)]
         assert comp.stage == Stage(kind=StageKind.COMBINED)
 
@@ -338,7 +338,7 @@ class TestTransparentCompositeLevels:
 # --------------------------------------------------------------------------- #
 class TestNeedsColumn:
     def test_hidden_operand_of_failing_composite_is_projected(self) -> None:
-        pq = _plan(metrics=[QueryMetric(metric=f"change({CM}) + sum(amount)", alias="c")])
+        pq = _plan(metrics=[QueryMetric(metric=f"change({CM}) + sum(orders.amount)", alias="c")])
         hidden_local = [
             s for s in pq.aggregate_slots
             if isinstance(s.key, AggregateKey) and s.hidden
@@ -370,7 +370,7 @@ class TestNeedsColumn:
 
     def test_derived_order_target_materialises_as_a_column(self) -> None:
         pq = _plan(metrics=[QueryMetric(metric="sum(orders.amount)", alias="a")],
-                   order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}])
+                   order=[{"field": f"change({CM}) + sum(orders.amount)", "direction": "desc"}])
         by_id = {s.id: s for s in _all_slots(pq)}
         targets = [by_id[e.slot_id] for e in pq.order]
         [comp] = [s for s in targets if isinstance(s.key, ArithmeticKey)]

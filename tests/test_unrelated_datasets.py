@@ -168,7 +168,7 @@ class TestExistingResolutionUnchanged:
 
 class TestNamesThatAreNotReachableDatasets:
     async def test_unknown_name(self, engine) -> None:
-        q = query(metrics=[m("count(customers.evnts.id)", "n")])
+        q = query(metrics=[m("count(evnts.id)", "n")])
         with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
             await engine.execute(q)
         assert "evnts.id" in str(exc.value)
@@ -186,7 +186,7 @@ class TestNamesThatAreNotReachableDatasets:
             name="widgets", sql_table="widgets", data_source="other",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
-        q = query(metrics=[m("count(customers.widgets.id)", "n")])
+        q = query(metrics=[m("count(widgets.id)", "n")])
         with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
             await engine.execute(q)
         assert "no route to target" in str(exc.value)
@@ -197,7 +197,7 @@ class TestNamesThatAreNotReachableDatasets:
         async with main_engine(backend, datasets=[customers_dataset(), hidden, users_dataset(), orgs_dataset()]) as eng:
             scoped = SlayerQueryEngine(storage=AccessFilteredStorage(eng.storage, tags=set(), bypass=False))
             hidden_q = query(metrics=[m("count(events.id)", "n")])
-            unknown_q = query(metrics=[m("count(customers.evnts.id)", "n")])
+            unknown_q = query(metrics=[m("count(evnts.id)", "n")])
             try:
                 with pytest.raises(UnresolvableDimensionRelationshipError) as hidden_exc:
                     await scoped.execute(hidden_q)
@@ -275,7 +275,7 @@ class TestStoredDefinitionsRefuse:
             query(dimensions=["customers.city"], metrics=[m("count(customers.nope)", "n")]),
         ]), _validate=False)
         q = SlayerQuery.model_validate({"population": "orgs", "metrics": [m("max(per_city.n)", "x")]})
-        with pytest.raises(UnknownReferenceError, match="'nope'"):
+        with pytest.raises(UnknownReferenceError, match="'customers.nope'"):
             await engine.execute(q)
 
     async def test_edge_named_like_an_unspliceable_model(self, engine: SlayerQueryEngine) -> None:

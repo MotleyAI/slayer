@@ -366,7 +366,7 @@ TD_PINS: dict[str, tuple[str, str]] = {
     "DATE_TRUNC('MONTH', created_at)": ("created_at", "month"),
     "date_trunc( 'month' , created_at )": ("created_at", "month"),
     "date_trunc('month', coalesce(shipped_at, created_at))": ("coalesce(shipped_at, created_at)", "month"),
-    "date_trunc('month', iif(note = 'a)b', created_at, created_at))": ("iif(orders.note = 'a)b', orders.created_at, orders.created_at)", "month"),
+    "date_trunc('month', iif(note = 'a)b', created_at, created_at))": ("iif(note = 'a)b', created_at, created_at)", "month"),
     "date_trunc('month', iif(note = 'a,b', created_at, created_at))": ("iif(note = 'a,b', created_at, created_at)", "month"),
     "date_trunc('month', iif(note = ')', created_at, created_at))": ("iif(note = ')', created_at, created_at)", "month"),
     "date_trunc('month', note || '(')": ("note || '('", "month"),
@@ -387,7 +387,7 @@ def test_functional_time_dimension_pin(entry: str, field: str) -> None:
 
 
 def test_a_datasource_granularity_time_dimension_pin() -> None:
-    query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": ["date_trunc('fiscal_year', orders.created_at)"]})
+    query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": ["date_trunc('fiscal_year', created_at)"]})
     assert [(td.field, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "fiscal_year")]
 
 
@@ -398,7 +398,7 @@ def test_functional_time_dimension_refusal_pin(entry: str) -> None:
 
 
 def test_a_non_granularity_call_stays_a_dimension() -> None:
-    query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(orders.status)"]})
+    query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(status)"]})
     assert not query.time_dimensions
     assert [d.field for d in query.dimensions or [] if d.ref is None] == ["upper(status)"]
 
@@ -419,7 +419,7 @@ def _misplaced(resp: Any) -> list[str]:
 
 
 async def test_a_bare_column_measure_moves_to_dimensions(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(metrics=["orders.status", "count(orders.*)"]))
+    resp = await engine.execute(_orders(metrics=["status", "count(orders.*)"]))
     assert _misplaced(resp) == ["status"]
     assert "orders.status" in resp.columns
 

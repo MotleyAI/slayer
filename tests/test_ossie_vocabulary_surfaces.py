@@ -135,7 +135,7 @@ class TestMcpArguments:
             storage, "query", query={"population": "orders", "metrics": ["sum(orders.amount)"]}, format="json"))
         with recorded():
             old = mcp_payload(await mcp_text(
-                storage, "query", query={"source_model": "orders", "measures": ["sum(amount)"]}, format="json"))
+                storage, "query", query={"source_model": "orders", "measures": ["sum(orders.amount)"]}, format="json"))
         assert old["data"] == new["data"]
         assert sorted((w["old"], w["new"]) for w in deprecated_in(old["warnings"])) == [
             ("measures", "metrics"), ("source_model", "population")]

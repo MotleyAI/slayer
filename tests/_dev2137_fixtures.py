@@ -86,7 +86,9 @@ def as_list(value: Any) -> Optional[list[Any]]:
 
 
 def by(resp: SlayerResponse, key: str, value: str, *, dataset: str = "contractors") -> dict[Any, Any]:
-    return {r[f"{dataset}.{key}"]: r[f"{dataset}.{value}"] for r in resp.data}
+    """``{key cell: value cell}``; a bare ``key`` is qualified by ``dataset``, ``value`` is an alias."""
+    qualified = key if "." in key else f"{dataset}.{key}"
+    return {r[qualified]: r[value] for r in resp.data}
 
 
 # --------------------------------------------------------------------------- #
@@ -138,15 +140,15 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
     assigned = [r for r in rows if r["id"] in {c for a, c in ASSIGNMENTS if a in (1, 4)}]
     return [
         Probe(name="count-elements", query=query(metrics=[metric("count(contractors.skills.*)", "n")]),
-              read=lambda resp: num(resp.data[0]["contractors.n"]), expected=len(elems)),
+              read=lambda resp: num(resp.data[0]["n"]), expected=len(elems)),
         Probe(name="element-filter",
               query=query(metrics=[metric("count(contractors.*)", "n"), metric("sum(contractors.rate)", "s")],
                           filter=["contractors.skills.value = 'go'"]),
-              read=lambda resp: (num(resp.data[0]["contractors.n"]), num(resp.data[0]["contractors.s"])),
+              read=lambda resp: (num(resp.data[0]["n"]), num(resp.data[0]["s"])),
               expected=(len(with_go), sum(r["rate"] for r in with_go))),
         Probe(name="element-in", query=query(metrics=[metric("count(contractors.*)", "n")],
                                              filter=["contractors.skills.value IN ('go', 'sql')"]),
-              read=lambda resp: num(resp.data[0]["contractors.n"]),
+              read=lambda resp: num(resp.data[0]["n"]),
               expected=len([r for r in rows if {"go", "sql"} & set(elements(r["skills"] or []))])),
         Probe(name="negated-element-filter",
               query=query(dimensions=["contractors.name"], filter=["NOT (contractors.skills.value = 'go')"]),
@@ -154,18 +156,18 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
               expected={r["name"] for r in rows if any(e != "go" for e in elements(r["skills"] or []))}),
         Probe(name="elements-per-skill",
               query=query(dimensions=["contractors.skills.value"], metrics=[metric("count(contractors.skills.*)", "n")]),
-              read=lambda resp: {k: num(v) for k, v in by(resp, "skills.value", "n").items()},
+              read=lambda resp: {k: num(v) for k, v in by(resp, "contractors.skills.value", "n").items()},
               expected={s: sum(1 for _, e in elems if e == s) for s in skills}),
         Probe(name="associate-per-skill",
               query=query(dimensions=["contractors.skills.value"], metrics=[metric("count(contractors.*)", "n")],
                           to_many_handling="associate"),
-              read=lambda resp: {k: num(v) for k, v in by(resp, "skills.value", "n").items()},
+              read=lambda resp: {k: num(v) for k, v in by(resp, "contractors.skills.value", "n").items()},
               expected={s: len({r["id"] for r, e in elems if e == s}) for s in skills}),
         Probe(name="parent-and-element",
               query=query(dimensions=["contractors.team"], metrics=[metric("count(contractors.*)", "n"), metric("sum(contractors.rate)", "s"),
                                                           metric("count_distinct(contractors.skills.value)", "d")]),
-              read=lambda resp: {r["contractors.team"]: (num(r["contractors.n"]), num(r["contractors.s"]),
-                                                         num(r["contractors.d"])) for r in resp.data},
+              read=lambda resp: {r["contractors.team"]: (num(r["n"]), num(r["s"]),
+                                                         num(r["d"])) for r in resp.data},
               expected=per_team(lambda rs: (len(rs), sum(r["rate"] for r in rs), len(set(team_elements(rs)))))),
         Probe(name="collect-city", query=query(dimensions=["contractors.team"], metrics=[metric("collect(contractors.city)", "c")]),
               read=lambda resp: {k: as_list(v) for k, v in by(resp, "team", "c").items()},
@@ -188,31 +190,31 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
               query=query(dimensions=["contractors.team"], metrics=[metric("count(contractors.skills.*)", "n"), metric("count(contractors.*)", "m"),
                                                           metric("collect(contractors.skills.value)", "c")],
                           filter=["assignments.id IN (1, 4)"]),
-              read=lambda resp: {r["contractors.team"]: (num(r["contractors.n"]), num(r["contractors.m"]),
-                                                         as_list(r["contractors.c"])) for r in resp.data},
+              read=lambda resp: {r["contractors.team"]: (num(r["n"]), num(r["m"]),
+                                                         as_list(r["c"])) for r in resp.data},
               expected={t: (len(team_elements(rs)), len(rs), _collect(team_elements(rs)))
                         for t in teams if (rs := [r for r in assigned if r["team"] == t])}),
         Probe(name="group-by-list", query=query(dimensions=["contractors.skills"], metrics=[metric("count(contractors.*)", "n")]),
-              read=lambda resp: {as_set(r["contractors.skills"]): num(r["contractors.n"]) for r in resp.data},
+              read=lambda resp: {as_set(r["contractors.skills"]): num(r["n"]) for r in resp.data},
               expected=dict(Counter(sets.values()))),
         Probe(name="compare-lists",
               query=query(metrics=[metric("count(contractors.*)", "n")], filter=["contractors.skills = ['sql', 'go', 'sql']"]),
-              read=lambda resp: num(resp.data[0]["contractors.n"]),
+              read=lambda resp: num(resp.data[0]["n"]),
               expected=sum(1 for s in sets.values() if s == ("go", "sql"))),
         Probe(name="list-in", query=query(dimensions=["contractors.id"], filter=["contractors.skills IN (['go'], ['sql'], [])"]),
               read=lambda resp: {int(r["contractors.id"]) for r in resp.data},
               expected={i for i, s in sets.items() if s in (("go",), ("sql",), ())}),
         Probe(name="count-distinct-lists", query=query(metrics=[metric("count_distinct(contractors.skills)", "n")]),
-              read=lambda resp: num(resp.data[0]["contractors.n"]),
+              read=lambda resp: num(resp.data[0]["n"]),
               expected=len(set(sets.values()) - {None})),
         Probe(name="partition-by-list",
               query=query(dimensions=["contractors.id", "contractors.skills"], metrics=[metric("count(contractors.*, partition_by=contractors.skills)", "n")]),
-              read=lambda resp: {int(r["contractors.id"]): num(r["contractors.n"]) for r in resp.data},
+              read=lambda resp: {int(r["contractors.id"]): num(r["n"]) for r in resp.data},
               expected={i: sum(1 for t in sets.values() if t == s) for i, s in sets.items()}),
         Probe(name="absent-list",
               query=SlayerQuery.model_validate({"population": "assignments", "dimensions": ["contractors.skills"],
                                                 "metrics": [metric("count(assignments.*)", "n")]}),
-              read=lambda resp: {as_set(r["assignments.contractors.skills"]): num(r["assignments.n"])
+              read=lambda resp: {as_set(r["contractors.skills"]): num(r["n"])
                                  for r in resp.data},
               expected=dict(Counter(sets[c] if c in sets else absent for _, c in ASSIGNMENTS))),
     ]

@@ -615,7 +615,15 @@ _LIST_VALUE = _on((LBRACK + _SEQ_ITEMS + RBRACK), lambda toks: tuple(toks[0]))
 _TUPLE_VALUE = _on((LPAR + pp.Group(expr + pp.OneOrMore(COMMA + expr) + pp.Optional(COMMA)) + RPAR), lambda toks: tuple(toks[0]))
 _DISTINCT_VALUE = _kw("distinct") + _fail(f"{_DISTINCT_ONLY}.")
 _KW_VALUE = _DISTINCT_VALUE | _LIST_VALUE | _TUPLE_VALUE | _STAR_ARG | _PATH_STAR_ARG | expr
-_KWARG = _on((_BARE + EQ + _KW_VALUE), lambda toks: NamedArg(name=toks[0].name, value=toks[1]))
+def _named_arg(toks: List[Any]) -> NamedArg:
+    """A ``name = value`` argument, the name's offsets recorded for ``reference_spans`` (a comparison reads it)."""
+    node = NamedArg(name=toks[1][0].name, value=toks[3])
+    if _STATE.refs is not None:
+        _STATE.refs[id(node)] = (node, toks[0], toks[2])
+    return node
+
+
+_KWARG = _on((pp.Located(_BARE) + EQ + _KW_VALUE), _named_arg)
 _PH_KWARG = (_PLACEHOLDER + EQ).set_parse_action(_reject_placeholder_kwarg)
 _VALUE_ARG = _STAR_ARG | _PATH_STAR_ARG | expr
 _DISTINCT_ARG = _on((pp.Suppress(_kw("distinct")) + _need(_VALUE_ARG, f"{_DISTINCT_ONLY}.")), lambda toks: _Distinct(value=toks[0]))

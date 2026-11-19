@@ -13,9 +13,9 @@ from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests import _mcp_idiom_fixtures as fx
 
-_YEAR_2025 = [{"field": "order_date", "granularity": "month", "date_range": "2025"}]
-_MONTHLY = [{"field": "order_date", "granularity": "month"}]
-_REGION_CUSTOMER = ["regions.name", "customers.name"]
+_YEAR_2025 = [{"field": "orders.order_date", "granularity": "month", "date_range": "2025"}]
+_MONTHLY = [{"field": "orders.order_date", "granularity": "month"}]
+_REGION_CUSTOMER = ["customers.regions.name", "customers.name"]
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ async def test_non_time_filter_restricts_calendar_look_backs(
         })
         return fx.value(fx.rows_by(resp, key="order_date")[month], ".v")
 
-    assert await value(["status == 'paid'"]) == paid
+    assert await value(["orders.status == 'paid'"]) == paid
     assert await value([]) == unfiltered
 
 
@@ -322,7 +322,7 @@ async def test_outer_stage_reads_flattened_inner_dimension(engine: SlayerQueryEn
             "metrics": [{"metric": "sum(orders.amount)", "alias": "total"}],
         },
         {
-            "population": "per_customer", "dimensions": [fx.STAGE_COLUMN],
+            "population": "per_customer", "dimensions": [f"per_customer.{fx.STAGE_COLUMN}"],
             "metrics": ["count(per_customer.*)", {"metric": "sum(per_customer.total)", "alias": "region_total"}],
         },
     ])
@@ -367,7 +367,7 @@ async def test_time_filter_restricts_cross_row_values_except_calendar_look_backs
         rows = fx.rows_by(resp, key="order_date")
         return fx.value(rows["2025-02"], ".v"), fx.value(rows["2025-03"], ".v")
 
-    assert await feb_mar(["order_date >= '2025-02-01'", "order_date < '2025-04-01'"]) == filtered
+    assert await feb_mar(["orders.order_date >= '2025-02-01'", "orders.order_date < '2025-04-01'"]) == filtered
     assert await feb_mar([]) == unfiltered
 
 
@@ -401,7 +401,7 @@ async def test_non_time_filter_restricts_window_rows_before_the_range(engine: Sl
         })
         return fx.value(fx.rows_by(resp, key="order_date")["2025-01"], ".w")
 
-    assert await jan(["status == 'paid'"]) == 195
+    assert await jan(["orders.status == 'paid'"]) == 195
     assert await jan([]) == 215
 
 
@@ -457,8 +457,8 @@ async def test_granularity_calls_bucket_like_a_time_dimension(engine: SlayerQuer
         "2024-10": 1, "2024-11": 1, "2024-12": 1,
         "2025-01": 2, "2025-02": 1, "2025-03": 1, "2025-04": 1, "2025-06": 3,
     }
-    assert await monthly({"dimensions": ["date_trunc('month', order_date)"]}) == expected
-    assert await monthly({"time_dimensions": ["date_trunc('month', order_date)"]}) == expected
+    assert await monthly({"dimensions": ["date_trunc('month', orders.order_date)"]}) == expected
+    assert await monthly({"time_dimensions": ["date_trunc('month', orders.order_date)"]}) == expected
     assert await monthly({"time_dimensions": _MONTHLY}) == expected
 
 
@@ -491,7 +491,7 @@ async def _codes(engine: SlayerQueryEngine, filters: list[str], variables: dict[
 
 
 async def test_regex_braces_are_pattern_text(items_engine: SlayerQueryEngine) -> None:
-    assert await _codes(items_engine, ["code ~ '^A[0-9]{3}'"]) == {"A123", "A1234"}
+    assert await _codes(items_engine, ["items.code ~ '^A[0-9]{3}'"]) == {"A123", "A1234"}
 
 
 @pytest.mark.parametrize(("condition", "codes"), [
@@ -515,7 +515,7 @@ async def test_list_column_filters(items_engine: SlayerQueryEngine, condition: s
 
 
 async def test_quoted_variable_binds_one_string_literal(items_engine: SlayerQueryEngine) -> None:
-    assert await _codes(items_engine, ["status = '{s}'"], {"s": "paid"}) == {"A123", "B123"}
+    assert await _codes(items_engine, ["items.status = '{s}'"], {"s": "paid"}) == {"A123", "B123"}
 
 
 async def test_list_variable_fills_a_whole_in_list(items_engine: SlayerQueryEngine) -> None:
@@ -531,6 +531,6 @@ async def test_empty_list_variable_in_an_in_list_fails_naming_it(items_engine: S
 
 
 async def test_empty_list_variable_binds_as_a_list_function_argument(items_engine: SlayerQueryEngine) -> None:
-    assert await _codes(items_engine, ["contains_all(tags, {wanted})"], {"wanted": []}) == {
+    assert await _codes(items_engine, ["contains_all(items.tags, {wanted})"], {"wanted": []}) == {
         "A123", "A12", "B123", "A1234",
     }

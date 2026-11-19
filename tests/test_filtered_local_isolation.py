@@ -620,7 +620,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         assert plans == []
 
     def test_local_template_fragment_does_not_trigger(self):
-        _, plans = _s5_plans("scaled_sum(orders.amount, scale='amount * 2')")
+        _, plans = _s5_plans("scaled_sum(orders.amount, scale='orders.amount * 2')")
         assert plans == []
 
     def test_unparseable_template_fragment_fails_at_binding(self):

@@ -110,7 +110,7 @@ class TestTemporalType:
         ("iif(amount > 10, shipped_at, created_at)", DataType.DATETIME),
         ("CASE WHEN amount > 10 THEN order_date ELSE NULL END", DataType.DATE),
         ("iif(amount > 10, order_date, 1)", None),
-        ("date_part('year', s1.created_at)", None),
+        ("date_part('year', orders.created_at)", None),
         ("date_diff('day', order_date, created_at)", None),
         ("orders.created_at + 1", None),
         ("'2024-01-01'", None),
@@ -194,34 +194,34 @@ class TestCountRules:
     @pytest.mark.parametrize("count", ["1.5", "True", "None", "'1'", "-0.5"])
     async def test_bad_literal_count(self, engine, count: str) -> None:
         with pytest.raises(ValueError, match=r"(?s)date_add.*count|count.*date_add"):
-            await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+            await _dry(engine, filter=[f"date_add(orders.order_date, {count}, 'day') > '2024-01-01'"])
 
     @pytest.mark.parametrize("count", ["1.5", "True", "None", "'1'", "-0.5"])
     async def test_bad_interval_literal_count(self, engine, count: str) -> None:
         with pytest.raises(ValueError, match=r"(?s)(date_add|interval).*count|count.*(date_add|interval)"):
-            await _dry(engine, filter=[f"order_date + interval({count}, 'day') > order_date"])
+            await _dry(engine, filter=[f"orders.order_date + interval({count}, 'day') > orders.order_date"])
 
-    @pytest.mark.parametrize("count", ["status", "created_at", "is_paid"])
+    @pytest.mark.parametrize("count", ["orders.status", "orders.created_at", "orders.is_paid"])
     async def test_non_numeric_interval_count(self, engine, count: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filter=[f"order_date - interval({count}, 'day') > order_date"])
+            await _dry(engine, filter=[f"orders.order_date - interval({count}, 'day') > orders.order_date"])
         _assert_type_error(exc, "date_add")
 
     @pytest.mark.parametrize("count", [
-        "status", "created_at", "order_date", "is_paid", "date_add(order_date, 1, 'day')", "now()",
+        "orders.status", "orders.created_at", "orders.order_date", "orders.is_paid", "date_add(orders.order_date, 1, 'day')", "now()",
     ])
     async def test_non_numeric_computed_count(self, engine, count: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+            await _dry(engine, filter=[f"date_add(orders.order_date, {count}, 'day') > '2024-01-01'"])
         _assert_type_error(exc, "date_add")
 
     @pytest.mark.parametrize("count", [
-        "status * 2", "coalesce(status, status)", "iif(amount > 1, status, status)", "amount > 1",
-        "lower(status)", "concat(status, status)", "like(status, 'x')",
+        "orders.status * 2", "coalesce(orders.status, orders.status)", "iif(orders.amount > 1, orders.status, orders.status)", "orders.amount > 1",
+        "lower(orders.status)", "concat(orders.status, orders.status)", "like(orders.status, 'x')",
     ])
     async def test_non_numeric_composite_count(self, engine, count: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+            await _dry(engine, filter=[f"date_add(orders.order_date, {count}, 'day') > '2024-01-01'"])
         _assert_type_error(exc, "date_add")
 
     async def test_non_numeric_aggregate_count(self, engine) -> None:
@@ -229,9 +229,9 @@ class TestCountRules:
             await _dry(engine, metrics=[{"metric": "date_add(max(orders.order_date), max(orders.status), 'day')", "alias": "m"}])
         _assert_type_error(exc, "date_add")
 
-    @pytest.mark.parametrize("count", ["3", "-3", "sla_days", "-sla_days", "sla_days * 2", "id"])
+    @pytest.mark.parametrize("count", ["3", "-3", "orders.sla_days", "-orders.sla_days", "orders.sla_days * 2", "orders.id"])
     async def test_numeric_counts_accepted(self, engine, count: str) -> None:
-        await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+        await _dry(engine, filter=[f"date_add(orders.order_date, {count}, 'day') > '2024-01-01'"])
 
     async def test_aggregate_count_accepted(self, engine) -> None:
         await _dry(engine, metrics=[{"metric": "date_add(max(orders.order_date), max(orders.sla_days), 'month')", "alias": "m"}])
@@ -287,11 +287,11 @@ class TestAcceptedOperands:
             )
 
     async def test_placeholder_unit(self, engine) -> None:
-        await _dry(engine, filter=["date_diff('{u}', created_at, shipped_at) > 1"], variables={"u": "day"})
+        await _dry(engine, filter=["date_diff('{u}', orders.created_at, orders.shipped_at) > 1"], variables={"u": "day"})
 
     async def test_placeholder_unit_must_be_listed(self, engine) -> None:
         with pytest.raises(ValueError, match="week_sunday"):
-            await _dry(engine, filter=["date_diff('{u}', created_at, shipped_at) > 1"], variables={"u": "fortnight"})
+            await _dry(engine, filter=["date_diff('{u}', orders.created_at, orders.shipped_at) > 1"], variables={"u": "fortnight"})
 
 
 class TestArityEndToEnd:
@@ -371,7 +371,7 @@ class TestResultTypes:
         ("date_add(max(orders.created_at), 1, 'month')", DataType.DATETIME),
         ("current_date()", DataType.DATE),
         ("now()", DataType.DATETIME),
-        ("max(date_add(s1.order_date, 1, 'day'))", DataType.DATE),
+        ("max(date_add(orders.order_date, 1, 'day'))", DataType.DATE),
         ("min(coalesce(shipped_at, created_at))", DataType.DATETIME),
     ])
     def test_measure_type(self, text: str, expected: DataType) -> None:

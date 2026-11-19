@@ -70,14 +70,14 @@ class TestExtensionDefinitionDependencies:
         assert _whole_dropped(qb=qb, dataset=_orders(), column="tax") == set()
 
     def test_extension_join_local_key_dropped(self) -> None:
-        qb = _qb(extension=_BUYER, dimensions=["buyer.name"], metrics=[{"metric": "count(orders.*)"}])
+        qb = _qb(extension=_BUYER, dimensions=["orders.buyer.name"], metrics=[{"metric": "count(orders.*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == {"qb"}
 
     def test_extension_join_foreign_key_dropped(self) -> None:
         ext = DatasetExtension(dataset="orders", relationships=[
             DatasetRelationship(to="customers", from_columns=["status"], to_columns=["code"], name="by_code"),
         ])
-        qb = _qb(extension=ext, dimensions=["by_code.name"], metrics=[{"metric": "count(orders.*)"}])
+        qb = _qb(extension=ext, dimensions=["orders.by_code.name"], metrics=[{"metric": "count(orders.*)"}])
         assert _whole_dropped(qb=qb, dataset=_customers(), column="code") == {"qb"}
 
     def test_extension_join_unused_by_the_stage(self) -> None:
@@ -90,7 +90,7 @@ class TestExtensionDefinitionDependencies:
         assert _whole_dropped(qb=qb, dataset=_orders(), column="amount") == {"qb"}
 
 
-_UPPER_BUYER = {"field": "UPPER(buyer.name)", "alias": "buyer_name"}
+_UPPER_BUYER = {"field": "UPPER(orders.buyer.name)", "alias": "buyer_name"}
 
 
 def _orders_with_stored_buyer() -> SlayerDataset:
@@ -119,7 +119,8 @@ class TestExtensionDefinitionJoinPaths:
         ext = DatasetExtension(dataset="s", relationships=_BUYER.relationships)
         qb = SlayerDataset(name="qb", data_source="ds", source_queries=[
             SlayerQuery.model_validate({"name": "s", "population": "orders", "dimensions": ["orders.buyer_ref"]}),
-            SlayerQuery.model_validate({"population": "s", "extensions": [ext], "dimensions": [_UPPER_BUYER]}),
+            SlayerQuery.model_validate({"population": "s", "extensions": [ext],
+                                        "dimensions": [{"field": "UPPER(s.buyer.name)", "alias": "buyer_name"}]}),
         ])
         assert _whole_dropped(qb=qb, dataset=_customers(), column="name") == {"qb"}
 
@@ -183,7 +184,7 @@ class TestExtensionDefinitionFrames:
         })
         ext = DatasetExtension(dataset="customers", metrics=[
             DatasetMetric(name="latest", expression="max(last_order.amount)")])
-        qb = _qb(extension=ext, metrics=[{"metric": "customer.latest", "alias": "l"}])
+        qb = _qb(extension=ext, metrics=[{"metric": "orders.customer.latest", "alias": "l"}])
         entries = field_dependents(datasets=[orders, customers, qb], dataset=customers, field="last_order_id")
         assert {e.dataset_name for e in entries if isinstance(e, WholeDatasetDelete)} == {"qb"}
 

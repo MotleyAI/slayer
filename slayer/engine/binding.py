@@ -79,7 +79,7 @@ from slayer.core.relationship_walker import (
     walk_miss,
     walk_terminal,
 )
-from slayer.core.names import match_name, match_path
+from slayer.core.names import match_name, match_path, spelled_name
 from slayer.core.models import (
     VALUE_PLACEHOLDER,
     Aggregation,
@@ -917,6 +917,7 @@ def _walk_relationship_chain(
     quoted: Tuple[bool, ...] = (),
     original_quoted: Tuple[bool, ...] = (),
     routes_short_form: bool = True,
+    anchor: Optional[Tuple[str, int]] = None,
 ):
     """Walk ``hop_path`` relationship hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
@@ -942,7 +943,7 @@ def _walk_relationship_chain(
     )
     refusal = partial(
         _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
-        written=written, quoted=quoted, datasets_by_name=datasets_by_name,
+        written=written, quoted=quoted, datasets_by_name=datasets_by_name, anchor=anchor,
     )
     try:
         walked = walk_terminal(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
@@ -996,9 +997,11 @@ def _flat_spelling_refusal(
     written: Tuple[str, ...],
     quoted: Tuple[bool, ...],
     datasets_by_name: Dict[str, SlayerDataset],
+    anchor: Optional[Tuple[str, int]] = None,
 ) -> Optional[UnknownReferenceError]:
     """The refusal of a failed walk whose remaining tokens, joined with ``__``, name a field of a dataset on its walked
-    prefix (nearest the root first); ``written`` is the dropped root qualifier, if any."""
+    prefix (nearest the root first); ``written`` is the dropped root qualifier, if any; ``anchor`` is an anchored
+    reference's written anchor and the number of route hops before it, which the hint spells as written."""
     tokens = (*hop_path, leaf)
     for k in range(len(hop_path)):
         try:
@@ -1011,7 +1014,11 @@ def _flat_spelling_refusal(
         exact = any(quoted[k:])
         col = peek_dataset_field(dataset=dataset, name="__".join(tokens[k:]), quoted=exact)
         if col is not None:
-            prefix = (*written, *(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted)))
+            segments = tuple(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted))
+            if anchor is None:
+                prefix = (*written, *segments)
+            else:
+                prefix = (anchor[0], *segments[anchor[1]:]) if k >= anchor[1] else (spelled_name(dataset.spelling),)
             flat = ".".join((*prefix, _quoted_segment(col.name, quoted=exact)))
             reference = ".".join(spelled)
             return UnknownReferenceError(
@@ -1199,6 +1206,7 @@ def _resolve_anchored(
     current, effective_hop_path = _walk_relationship_chain(
         hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
         routes_short_form=False,
+        anchor=(_quoted_segment(parts[0], quoted=quoted[0]), len(path) - len(parts) + 1),
     )
     if TIME_SPINE_DATASET in effective_hop_path[len(path) - len(parts) + 1:]:  # hops after the anchor's route
         raise UnresolvableDimensionRelationshipError(
@@ -1676,7 +1684,7 @@ def _filter_error(reason: str) -> AggregationFilterError:
     return AggregationFilterError(
         summary=f"{_FILTER_CLAUSE} {reason}",
         location=_FILTER_CLAUSE,
-        suggestion="filter on fields of the aggregated rows, e.g. sum(amount) FILTER (WHERE status = 'paid').",
+        suggestion="filter on fields of the aggregated rows, e.g. sum(orders.amount) FILTER (WHERE orders.status = 'paid').",
     )
 
 

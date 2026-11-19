@@ -784,7 +784,7 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
             raise ComputedDimensionError(
                 summary=f"The transform '{tk.op}' inside the computed dimension "
                 f"must take an aggregate input — a transform acts on "
-                f"aggregates, e.g. {tk.op}(sum(amount, partition_by=city)).",
+                f"aggregates, e.g. {tk.op}(sum(orders.amount, partition_by=orders.city)).",
                 location=f"dimension {name!r}",
             )
         ungrained = [a for a in inner_aggs if a.partition_keys is None]
@@ -813,7 +813,7 @@ def check_computed_dimension(*, name, bound, distinct_dimension_values) -> None:
             raise ComputedDimensionError(
                 summary="The aggregate inside the computed dimension must declare "
                 "the grain it aggregates over with partition_by=, e.g. "
-                "'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. "
+                "'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. "
                 "Without partition_by the group key is a function of the query's "
                 "own dimensions and adds no grouping.",
                 location=f"dimension {name!r}",

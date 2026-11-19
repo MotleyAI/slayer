@@ -120,7 +120,7 @@ class TestValidPathBindsAllJoins:
         is fully direct and resolves."""
         engine = await _engine(tmp_path, direct_customer=True)
         sql = await _dry_sql(engine, SlayerQuery(**_amount_query(
-            dimensions=["Customer.Consumer.name"],
+            dimensions=["Invoice.Customer.Consumer.name"],
         )))
         assert "AS Customer__Consumer " in sql
         sqlglot.parse_one(sql, dialect="postgres")
@@ -166,7 +166,7 @@ class TestValidPathBindsAllJoins:
 class TestShortFormRoutingAndBrokenChains:
     async def test_broken_explicit_chain_rejects_and_suggests_short_form(self, tmp_path) -> None:
         engine = await _engine(tmp_path)
-        q = SlayerQuery(**_amount_query(dimensions=["Customer.Consumer.name"]))
+        q = SlayerQuery(**_amount_query(dimensions=["Invoice.Customer.Consumer.name"]))
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _dry_sql(engine, q)
         assert ei.value.suggested_path == "Consumer.name"
@@ -185,7 +185,7 @@ class TestShortFormRoutingAndBrokenChains:
         q = SlayerQuery(**_amount_query(dimensions=["Consumer.name"]))
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await _dry_sql(engine, q)
-        assert ei.value.suggested_path == "Customer.Consumer.name"
+        assert ei.value.suggested_path == "Invoice.Customer.Consumer.name"
 
     async def test_unreachable_target_rejects_without_suggestion(self, tmp_path) -> None:
         engine = await _engine(tmp_path, drop_customer_consumer=True)
@@ -201,7 +201,7 @@ class TestShortFormRoutingAndBrokenChains:
             "population": "Invoice",
             "metrics": [{"metric": "sum(Invoice.amount)", "alias": "amt"}],
             "time_dimensions": [{
-                "field": "Customer.Consumer.signup_at",
+                "field": "Invoice.Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
         })
@@ -210,7 +210,7 @@ class TestShortFormRoutingAndBrokenChains:
 
     async def test_missing_terminal_column_on_valid_path_rejects(self, tmp_path) -> None:
         engine = await _engine(tmp_path, direct_customer=True)
-        query = SlayerQuery.model_validate(_amount_query(dimensions=["Customer.Consumer.does_not_exist"]))
+        query = SlayerQuery.model_validate(_amount_query(dimensions=["Invoice.Customer.Consumer.does_not_exist"]))
         with pytest.raises(UnknownReferenceError):
             await _dry_sql(engine, query)
 

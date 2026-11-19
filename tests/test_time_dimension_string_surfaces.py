@@ -88,7 +88,7 @@ class TestMcpSurface:
                 f"dimensions docs must name granularity {gran!r}"
             )
         for arg in ("dimensions", "time_dimensions"):
-            assert "date_trunc('month', created_at)" in (props[arg].get("description") or ""), (
+            assert "date_trunc('month', orders.created_at)" in (props[arg].get("description") or ""), (
                 f"{arg} docs must show the date_trunc form"
             )
 
@@ -144,5 +144,5 @@ class TestRestSurface:
         })
         query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert query.time_dimensions == [
-            fx.td(field="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]

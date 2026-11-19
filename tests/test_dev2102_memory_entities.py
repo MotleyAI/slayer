@@ -249,7 +249,8 @@ class TestRootlessQueries:
         assert "mydb.orders.premium" not in result.canonical_forms
 
     async def test_inferred_population_is_the_engines(self, storage: StorageBackend) -> None:
-        q = SlayerQuery(dimensions=[QueryDimension(field="customers.name")], metrics=[QueryMetric(metric="count(*)")])
+        q = SlayerQuery(dimensions=[QueryDimension(field="customers.name")],
+                        metrics=[QueryMetric(metric="count(customers.*)")])
         result = await extract_entities_from_query(q, storage=storage)
         assert result.canonical_forms == ["mydb.customers", "mydb.customers.name"]
 

@@ -77,12 +77,12 @@ class TestDump:
         dumped = [s.model_dump(mode="json") for s in stages]
         for stage in dumped:
             assert_ossie_stage(stage)
-        assert dumped[0]["time_dimensions"][0]["field"] == "created_at"
+        assert dumped[0]["time_dimensions"][0]["field"] == "orders.created_at"
         [ext] = dumped[0]["extensions"]
         assert {"dataset", "metrics", "relationships"} <= ext.keys()
         assert ext["relationships"][0]["to"] == "customers"
         assert ext["metrics"][0]["expression"] == "sum(amount) / count(*)"
-        assert dumped[0]["metrics"][0]["metric"] == "sum(amount)"
+        assert dumped[0]["metrics"][0]["metric"] == "sum(orders.amount)"
 
     def test_a_field_reference_names_its_dataset(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)"],
@@ -114,7 +114,7 @@ class TestDump:
             request = QueryRequest.model_validate(fresh(TWO_STAGES[0]))
         assert deprecations(caught) == []
         assert request.population == "orders"
-        assert request.filter == ["amount > 5"]
+        assert request.filter == ["orders.amount > 5"]
         assert request.metrics is not None
         assert len(request.metrics) == 2
 

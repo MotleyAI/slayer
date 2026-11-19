@@ -11,7 +11,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2015_fixtures import DS_GRANULARITIES
 from tests._dev2119_fixtures import BACKENDS, by_bucket, engine_for, m, q, td
 
-SHIFTED = "coalesce(shipped_at, created_at + INTERVAL '{days}' DAY)"
+SHIFTED = "coalesce(orders.shipped_at, orders.created_at + INTERVAL '{days}' DAY)"
 KEY = "orders.coalesce_shipped_at_created_at_interval_days_day"
 
 
@@ -75,7 +75,7 @@ class TestTemplateIdentity:
         assert keys[0] == keys[30]
 
     async def test_equal_values_keep_distinct_templates_apart(self, engine: SlayerQueryEngine) -> None:
-        shifted = "created_at + INTERVAL '{%s}' DAY"
+        shifted = "orders.created_at + INTERVAL '{%s}' DAY"
         resp = await engine.execute(_query(time_dimensions=[td(shifted % "a"), td(shifted % "b")],
                                            variables={"a": 0, "b": 0}))
         assert resp.columns == [

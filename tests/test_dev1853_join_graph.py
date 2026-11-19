@@ -98,8 +98,8 @@ class TestRecommendRootModel:
         assert rec.reachable is True
         assert rec.population is not None
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
-        crossing = next(p for p in paths.values() if "." in p)
-        assert crossing.split(".")[0] in {"billing_customer",
+        crossing = next(p for p in paths.values() if p.count(".") > 1)
+        assert crossing.split(".")[1] in {"billing_customer",
                                           "shipping_customer"}, crossing
         # Executable means executable: the emitted paths bind and run.
         resp = await named_rec_engine.execute(SlayerQuery.model_validate(

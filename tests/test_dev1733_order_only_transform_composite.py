@@ -227,12 +227,12 @@ class TestOrderItemEntryPoint:
     def test_composite_string_yields_placeholder_and_raw_formula(self) -> None:
         item = OrderItem.model_validate({"field": "sum(orders.amount) / count(orders.id)", "direction": "desc"})
         assert item.ref is None, item.ref
-        assert item.raw_expression == "sum(amount) / count(id)", item.raw_expression
+        assert item.raw_expression == "sum(orders.amount) / count(orders.id)", item.raw_expression
 
     def test_transform_call_string_keeps_funcstyle_placeholder(self) -> None:
         item = OrderItem.model_validate({"field": "change(sum(orders.amount))", "direction": "desc"})
         assert item.ref is None, item.ref
-        assert item.raw_expression == "change(sum(amount))"
+        assert item.raw_expression == "change(sum(orders.amount))"
 
     def test_arithmetic_over_transform_yields_placeholder(self) -> None:
         item = OrderItem.model_validate({"field": "change(sum(amount)) / 2", "direction": "desc"})
@@ -259,7 +259,7 @@ class TestOrderItemEntryPoint:
         assert dotted is not None
         assert (dotted.dataset, dotted.name) == ("customers", "region")
         agg = OrderItem.model_validate({"field": "sum(orders.amount)"})
-        assert (agg.ref, agg.raw_expression) == (None, "sum(amount)")
+        assert (agg.ref, agg.raw_expression) == (None, "sum(orders.amount)")
 
     async def test_root_qualified_composite_order_equals_bare(self, exec_engine) -> None:
         def query(order: str) -> SlayerQuery:
@@ -568,7 +568,7 @@ class TestHiddenAliasUniqueness:
             f"both operands to the same column.\nSQL:\n{sql}"
         )
         idents = _all_quoted_idents(sql)
-        assert "_cumsum_inner" in idents, sql
+        assert "orders._cumsum_inner" in idents, sql
         assert "orders._cumsum_inner_2" in idents, sql
 
     @pytest.mark.parametrize("op", ["rank", "lag", "lead"])
@@ -578,7 +578,7 @@ class TestHiddenAliasUniqueness:
             population="orders",
             time_dimensions=_MONTH,
             metrics=[QueryMetric(
-                metric=f"{op}(sum(amount){kw}) + {op}(count(id){kw})", alias="both",
+                metric=f"{op}(sum(orders.amount){kw}) + {op}(count(orders.id){kw})", alias="both",
             )],
         )
         sql = await _sql(engine, query)
@@ -1383,4 +1383,4 @@ class TestSupersededByDev1703Phase1:
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await _sql(engine, query)
-        assert "rank(sum(amount), direction='desc')" in str(ei.value), ei.value
+        assert "rank(sum(orders.amount), direction='desc')" in str(ei.value), ei.value

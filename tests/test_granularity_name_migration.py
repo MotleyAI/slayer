@@ -50,6 +50,8 @@ from tests._stored_upgrade_fixtures import run
 #: Calendar-month buckets of ``sum(amount)``.
 CALENDAR_BUCKETS = {"2025-01-01": 1.0, "2025-02-01": 6.0, "2025-03-01": 8.0}
 CONTROL = "mid_month"
+#: ``SUM`` and the ``created_at`` time dimension as a current-version stage spells them.
+QUALIFIED_SUM = {"formula": "sum(events.amount)", "name": "s"}
 
 
 class _Store:
@@ -175,10 +177,10 @@ class TestLeft:
         assert other is not None
         assert [m.expression for m in other.metrics] == ["count_distinct(left(status, 1))"]
         mem_query = await _memory_query(store.storage, "m_other")
-        assert [d.field for d in mem_query.dimensions or []] == ["left(status, 1)"]
-        resp = await run(store.storage, {"population": "other_events", "metrics": ["initials"]})
+        assert [d.field for d in mem_query.dimensions or []] == ["left(other_events.status, 1)"]
+        resp = await run(store.storage, {"population": "other_events", "metrics": ["other_events.initials"]})
         assert [int(v) for v in resp.data[0].values()] == [2]
-        by_initial = {r["other_events.initial"]: float(r["other_events.s"]) for r in (await run(store.storage, mem_query)).data}
+        by_initial = {r["initial"]: float(r["s"]) for r in (await run(store.storage, mem_query)).data}
         assert by_initial == {"o": 5.0, "n": 10.0}
 
 
@@ -302,7 +304,8 @@ async def test_a_foreign_dotted_model_file_does_not_block_the_rename(tmp_path: A
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path: Any, backend: str) -> None:
-    stage = _current(stage_doc(dimensions=["date_trunc('left', created_at)"], measures=[SUM]), "SlayerQuery")
+    stage = _current(stage_doc(dimensions=["date_trunc('left', events.created_at)"], measures=[QUALIFIED_SUM]),
+                     "SlayerQuery")
     storage = await write_raw_store(
         backend=backend, base=str(tmp_path),
         datasources=[_current(datasource_doc(db_path=live_db(str(tmp_path)), granularities=["left"]),
@@ -313,7 +316,7 @@ async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path:
     assert await _granularity_names(storage) == ["left_granularity"]
     loaded = await _stage(storage, "bucketed")
     assert [(str(t.field), str(t.granularity)) for t in loaded.time_dimensions or []] == [
-        ("created_at", "left_granularity")]
+        ("events.created_at", "left_granularity")]
     resp = await run(storage, {"population": "bucketed", "dimensions": ["bucketed.created_at"], "metrics": ["sum(bucketed.s)"]})
     assert {str(r["bucketed.created_at"])[:10]: float(r["bucketed.s_sum"]) for r in resp.data} == EXPECTED_BUCKETS
 
@@ -386,7 +389,7 @@ QUERY_POSITIONS: dict[str, Callable[[str], dict]] = {
 MODEL_POSITIONS: dict[str, tuple[Callable[[str], dict], Callable[[str], dict]]] = {
     "column-granularity": (
         lambda g: events_doc(name="dep", column_granularity=g),
-        lambda g: {"population": "dep", "metrics": [SUM],
+        lambda g: {"population": "dep", "metrics": [{"metric": "sum(dep.amount)", "alias": "s"}],
                    "time_dimensions": [{"field": "dep.created_at", "granularity": g}]},
     ),
     "model-measure": (
@@ -508,7 +511,8 @@ def _assert_consistent(raw: dict[str, str]) -> None:
 class TestInterruptedLoad:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_half_migrated_store_completes(self, tmp_path: Any, backend: str) -> None:
-        done_stage = _current(bucket_stage("left_granularity"), "SlayerQuery")
+        done_stage = _current(stage_doc(time_dimensions=[
+            {"dimension": "events.created_at", "granularity": "left_granularity"}], measures=[QUALIFIED_SUM]), "SlayerQuery")
         store = await _store(
             tmp_path=tmp_path, backend=backend, granularities=[granularity_definition("left")],
             models=[events_doc(),

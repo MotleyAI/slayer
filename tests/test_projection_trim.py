@@ -343,7 +343,7 @@ class TestWindowArgReuse:
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
-        expected = ["orders.created_at", "total", f"orders.{measure_name}"]
+        expected = ["orders.created_at", "total", measure_name]
         assert outer_cols == expected, (
             f"{transform_formula}: outer SELECT must be {expected}, got {outer_cols}.\n"
             f"SQL:\n{sql}"
@@ -354,7 +354,7 @@ class TestWindowArgReuse:
         )
         # The reused alias (orders.total) must appear inside the SQL — it
         # is the OVER clause's reference target.
-        assert '"orders.total"' in sql, (
+        assert '"total"' in sql, (
             f"{transform_formula}: declared measure alias 'orders.total' must "
             f"be referenced (typically inside OVER (...)).\nSQL:\n{sql}"
         )
@@ -407,7 +407,7 @@ class TestOrderByPolicy:
         assert outer_cols == ["orders.status", "total"]
         # ORDER BY references the declared alias.
         norm = _norm(sql)
-        assert 'ORDER BY "orders.total"' in norm or '"orders.total" DESC' in norm
+        assert 'ORDER BY "total"' in norm or '"total" DESC' in norm
 
     async def test_order_by_unbound_agg_not_projected(
         self, orders_dataset: SlayerDataset,
@@ -1173,7 +1173,7 @@ class TestWindowChainReuse:
         # Look for an OVER clause that mentions "orders.total" near it.
         over_match = re.search(r"OVER\s*\([^)]*\)", sql)
         assert over_match is not None
-        assert '"orders.total"' in over_match.group(0), (
+        assert '"total"' in over_match.group(0), (
             f"Rank OVER (...) must reference declared 'orders.total' alias, "
             f"got: {over_match.group(0)}\nSQL:\n{sql}"
         )

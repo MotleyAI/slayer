@@ -317,7 +317,7 @@ class TestCompileRejects:
             distinct_dimension_values=False,
         )
         msg = await self._expect_reject(q, model)
-        assert "sum(amount)" in msg or "aggregation" in msg.lower()
+        assert "sum(orders.amount)" in msg or "aggregation" in msg.lower()
 
     async def test_filter_star_count(self) -> None:
         """Case 4: ``"count(*) > 0"`` → reject."""
@@ -474,7 +474,7 @@ class TestErrorMessage:
         with pytest.raises(DistinctDimensionValuesError) as exc:
             await _engine_generate(query=q, dataset=model)
         # The offending filter text must appear in the message.
-        assert "sum(amount) > 100" in str(exc.value)
+        assert "sum(orders.amount) > 100" in str(exc.value)
 
     async def test_message_points_at_the_fix(self) -> None:
         """Case 30: error message includes the remediation hint."""

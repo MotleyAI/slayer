@@ -176,6 +176,6 @@ class TestCrossModelHiddenAliasReservation:
         ]))
         # The user measure keeps its own key (closing quote pins the exact
         # name, not the ``_2`` suffix).
-        assert '"orders._time_shift_inner"' in sql, sql
+        assert '"_time_shift_inner"' in sql, sql
         # The hidden shift alias was bumped off the user's name, not collided.
-        assert '"orders._time_shift_inner_2"' in sql, sql
+        assert '"_time_shift_inner_2"' in sql, sql

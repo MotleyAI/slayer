@@ -372,7 +372,7 @@ class TestDev1702B2ForwardMaterialization:
         assert "SUM(regions.population)" in norm_cm, norm_cm
         norm = _norm(sql)
         assert "HAVING" not in norm, norm
-        assert '"customers_v2.deep_pop_sum" + 1' in norm, norm
+        assert '"deep_pop_sum" + 1' in norm, norm
 
     async def test_local_value_first_last_is_materialised_exactly_once(
         self,
@@ -457,7 +457,7 @@ class TestDerivedSharedGrainRenders:
         assert_scope_closed(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "regions.population" in cm_body, cm_body
-        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "deep_pop"' in cm_body, cm_body
 
     async def test_derived_source_unaffected_by_grain_guard(self) -> None:
         """The guard fires ONLY for a shared-grain dim — a derived aggregate

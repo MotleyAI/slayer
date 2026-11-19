@@ -250,8 +250,8 @@ class TestRouting:
             query = spine_query(metrics=[m("count(shipments.id)", "c")])
             with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
                 await eng.execute(query)
-            assert "shipments.orders" in str(exc.value)
-            assert "shipments.returns" in str(exc.value)
+            assert "orders.shipments" in str(exc.value)
+            assert "returns.shipments" in str(exc.value)
             # Only a query needing that route raises.
             resp = await eng.execute(spine_query(metrics=TWO_FACTS))
             assert by_bucket(resp, ["o", "r", "n"]) == TWO_FACT_ROWS
@@ -343,9 +343,10 @@ def _monthly_stage(*, metrics=None, date_range=JAN_MAR, **extra) -> SlayerQuery:
                        name="monthly", **extra)
 
 
-def _over_monthly(**extra) -> SlayerQuery:
+def _over_monthly(*, population: str = "monthly", **extra) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "population": "monthly", "metrics": [m("sum(monthly.o)", "t"), m("count(monthly.*)", "c")], **extra,
+        "population": population, "metrics": [m(f"sum({population}.o)", "t"), m(f"count({population}.*)", "c")],
+        **extra,
     })
 
 
@@ -634,11 +635,16 @@ class TestTenancyAndCache:
 # The hand-made calendar pattern keeps working
 # ---------------------------------------------------------------------------
 
+#: ``TWO_FACTS`` from ``calendar``: each fact by its own calendar relationship.
+CALENDAR_FACTS = [m("sum(calendar.orders.amount)", "o"), m("sum(calendar.returns.amount)", "r"),
+                  m("count(calendar.orders.id)", "n")]
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_calendar_model_parity(backend) -> None:
     async with spine_engine(backend, datasets=calendar_datasets()) as eng:
         cal = await eng.execute(SlayerQuery.model_validate({
-            "population": "calendar", "metrics": TWO_FACTS,
+            "population": "calendar", "metrics": CALENDAR_FACTS,
             "time_dimensions": [{"field": "calendar.date", "granularity": "month", "date_range": JAN_JUN}],
         }))
         spine = await eng.execute(spine_query(metrics=TWO_FACTS))

@@ -35,38 +35,38 @@ from tests._dev1919_fixtures import RANKED, ranked_by_tier, ranked_global
 # Formula constants (one per delta scenario shape).
 # --------------------------------------------------------------------------- #
 RANKED_POSITIONAL = ("weighted_avg(customers.spend, "
-                     "rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
-LAST_PARAM = ("weighted_avg(customers.spend, weight=last(sum(amount, "
-              "partition_by=[customers.regions.name, ordered_at])))")
-DET_CUMSUM = ("weighted_avg(customers.spend, weight=cumsum(sum(amount, "
+                     "rank(sum(orders.amount, partition_by=customers.regions.name), direction='desc'))")
+LAST_PARAM = ("weighted_avg(customers.spend, weight=last(sum(orders.amount, "
+              "partition_by=[customers.regions.name, orders.ordered_at])))")
+DET_CUMSUM = ("weighted_avg(customers.spend, weight=cumsum(sum(orders.amount, "
               "partition_by=[customers.regions.name, customers.signup_at])))")
-NOAXIS_CUMSUM = ("weighted_avg(customers.spend, weight=cumsum(sum(amount, "
+NOAXIS_CUMSUM = ("weighted_avg(customers.spend, weight=cumsum(sum(orders.amount, "
                  "partition_by=customers.regions.name)))")
-UNGRAINED_RANK = "weighted_avg(customers.spend, weight=rank(sum(amount), direction='desc'))"
-WINDOWED_INNER = ("weighted_avg(customers.spend, weight=rank(sum(amount, "
+UNGRAINED_RANK = "weighted_avg(customers.spend, weight=rank(sum(orders.amount), direction='desc'))"
+WINDOWED_INNER = ("weighted_avg(customers.spend, weight=rank(sum(orders.amount, "
                   "window='1y', partition_by=customers.regions.name), direction='desc'))")
 WINDOWED_OUTER = ("weighted_avg(customers.spend, window='1y', "
-                  "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'))")
-NESTED = ("weighted_avg(customers.spend, weight=weighted_avg(amount, "
-          "weight=rank(sum(amount, partition_by=customers.regions.name), direction='desc'), "
+                  "weight=rank(sum(orders.amount, partition_by=customers.regions.name), direction='desc'))")
+NESTED = ("weighted_avg(customers.spend, weight=weighted_avg(orders.amount, "
+          "weight=rank(sum(orders.amount, partition_by=customers.regions.name), direction='desc'), "
           "partition_by=customers.regions.name))")
-XMODEL_LOCAL = ("weighted_avg(amount, weight=rank(sum(customers.spend, "
+XMODEL_LOCAL = ("weighted_avg(orders.amount, weight=rank(sum(customers.spend, "
                 "partition_by=customers.regions.name), direction='desc'))")
 OWN_PARTITION = ("weighted_avg(customers.spend, weight=rank("
-                 "sum(amount, partition_by=[customers.regions.name, customers.tier]), "
+                 "sum(orders.amount, partition_by=[customers.regions.name, customers.tier]), "
                  "partition_by=customers.regions.name, direction='desc'))")
 #: refused at bind: a transform is not a valid first/last ranking key.
-LAST_RANK_KEY = ("last(customers.spend, rank(sum(amount, "
+LAST_RANK_KEY = ("last(customers.spend, rank(sum(orders.amount, "
                  "partition_by=customers.regions.name), direction='desc'))")
 #: refused at bind (non-goal): an expression-valued parameter.
-EXPR_ARG = "weighted_avg(amount, weight=quantity * 2)"
+EXPR_ARG = "weighted_avg(orders.amount, weight=orders.quantity * 2)"
 
-LOCAL_SALES = "weighted_avg(amount, weight=rank(sum(amount, partition_by=region), direction='desc'))"
-LOCAL_SALES_CITY = "weighted_avg(amount, weight=rank(sum(amount, partition_by=city), direction='desc'))"
-REAGG_RANK_COUNT = ("weighted_avg(sum(amount, partition_by=[city, region]), "
-                    "weight=rank(count(id, partition_by=[city, region]), direction='desc'))")
-REAGG_RANK_PRODUCT = ("weighted_avg(sum(amount, partition_by=[city, region]), "
-                      "weight=rank(count(id, partition_by=product), direction='desc'))")
+LOCAL_SALES = "weighted_avg(sales.amount, weight=rank(sum(sales.amount, partition_by=sales.region), direction='desc'))"
+LOCAL_SALES_CITY = "weighted_avg(sales.amount, weight=rank(sum(sales.amount, partition_by=sales.city), direction='desc'))"
+REAGG_RANK_COUNT = ("weighted_avg(sum(sales.amount, partition_by=[sales.city, sales.region]), "
+                    "weight=rank(count(sales.id, partition_by=[sales.city, sales.region]), direction='desc'))")
+REAGG_RANK_PRODUCT = ("weighted_avg(sum(sales.amount, partition_by=[sales.city, sales.region]), "
+                      "weight=rank(count(sales.id, partition_by=sales.product), direction='desc'))")
 
 # --------------------------------------------------------------------------- #
 # Raw-row projections.
@@ -372,7 +372,7 @@ def tier_month_vals(resp, name: str = "w") -> Dict[Tuple, Any]:
     for r in resp.data:
         month = (None if r["orders.ordered_at"] is None
                  else month_key(r["orders.ordered_at"]))
-        out[(r["orders.customers.tier"], month)] = r[name]
+        out[(r["customers.tier"], month)] = r[name]
     return out
 
 

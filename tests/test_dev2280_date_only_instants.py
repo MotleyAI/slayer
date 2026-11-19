@@ -66,10 +66,10 @@ class TestInstantReading:
         assert await _ids(engine, filt) == expected
 
     async def test_date_column_is_unchanged(self, engine: SlayerQueryEngine) -> None:
-        assert await _ids(engine, "order_date <= '2024-04-10'") == {1, 2}
+        assert await _ids(engine, "orders.order_date <= '2024-04-10'") == {1, 2}
 
     async def test_variable_passed_at_execution(self, engine: SlayerQueryEngine) -> None:
-        assert await _ids(engine, "created_at <= '{cutoff}'", variables={"cutoff": "2024-04-10"}) == {1}
+        assert await _ids(engine, "orders.created_at <= '{cutoff}'", variables={"cutoff": "2024-04-10"}) == {1}
 
     async def test_variable_saved_default(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(
@@ -83,19 +83,21 @@ class TestInstantReading:
 class TestInsideMeasures:
     FILTERED = "count(orders.*) FILTER (WHERE orders.created_at <= '2024-04-10')"
     CASED = "sum(CASE WHEN orders.created_at > '2024-04-10' THEN 1 ELSE 0 END)"
+    STORED_FILTERED = "count(*) FILTER (WHERE created_at <= '2024-04-10')"
+    STORED_CASED = "sum(CASE WHEN created_at > '2024-04-10' THEN 1 ELSE 0 END)"
 
     @pytest.mark.parametrize("formula", [FILTERED, CASED])
     async def test_query_measure(self, engine: SlayerQueryEngine, formula: str) -> None:
         resp = await engine.execute(q(metrics=[m(formula)], filter=[FIRST_TWO]))
         assert int(single(resp)) == 1
 
-    @pytest.mark.parametrize("formula", [FILTERED, CASED])
+    @pytest.mark.parametrize("formula", [STORED_FILTERED, STORED_CASED])
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_saved_measure(self, backend: str, formula: str) -> None:
         model = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="v", expression=formula)]})
         async with dev2215_engine(backend, datasets=[model, *_others()]) as eng:
             resp = await eng.execute(q(metrics=["orders.v"], filter=[FIRST_TWO]))
-        assert int(single(resp)) == 1
+        assert int(single(resp, "orders.v")) == 1
 
 
 def _others() -> list[SlayerDataset]:
@@ -104,8 +106,8 @@ def _others() -> list[SlayerDataset]:
 
 class TestFrameBounds:
     @pytest.mark.parametrize(("date_only", "instant"), [
-        ("ev.ts >= '2025-01-01'", "ts >= '2025-01-01 00:00:00'"),
-        ("ev.ts > '2024-12-31'", "ts > '2024-12-31 00:00:00'"),
+        ("ev.ts >= '2025-01-01'", "ev.ts >= '2025-01-01 00:00:00'"),
+        ("ev.ts > '2024-12-31'", "ev.ts > '2024-12-31 00:00:00'"),
         ("ev.ts <= '2024-12-31'", "ev.ts <= '2024-12-31 00:00:00'"),
     ])
     async def test_date_only_range_bound_is_an_instant_frame_bound(self, tp, date_only: str, instant: str) -> None:
@@ -118,7 +120,7 @@ class TestFrameBounds:
 
     async def test_date_only_equality_restricts_the_window_input(self, tp) -> None:
         got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ev.ts = '2024-06-01'"])
-        instant = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ts = '2024-06-01 00:00:00'"])
+        instant = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ev.ts = '2024-06-01 00:00:00'"])
         assert got == instant == {"2024-06": {"w": pytest.approx(3.0), "s": pytest.approx(3.0)}}
 
 
@@ -152,7 +154,7 @@ class TestNotice:
         self, engine: SlayerQueryEngine, period: str, op: str, everything: bool,
     ) -> None:
         every = await _ids(engine, "orders.id > 0")
-        assert await _ids(engine, f"created_at {op} '{period}'") == (every if everything else set())
+        assert await _ids(engine, f"orders.created_at {op} '{period}'") == (every if everything else set())
 
     @pytest.mark.parametrize("point", ["9999-12-31", "9999-12-31 10:00:00", "9999-12", "9999"])
     @pytest.mark.parametrize(("op", "everything"), [
@@ -162,7 +164,7 @@ class TestNotice:
         self, engine: SlayerQueryEngine, point: str, op: str, everything: bool,
     ) -> None:
         every = await _ids(engine, "orders.id > 0")
-        found = await _ids(engine, f"date_trunc('month', created_at) {op} '{point}'")
+        found = await _ids(engine, f"date_trunc('month', orders.created_at) {op} '{point}'")
         assert found == (every if everything else set())
 
     async def test_inside_a_measure(self, engine: SlayerQueryEngine) -> None:
@@ -236,8 +238,8 @@ class TestNotice:
         assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
 
     @pytest.mark.parametrize(("operand", "announced"), [
-        ("date_trunc('hour', created_at)", 1), ("date_trunc('day', created_at)", 0),
-        ("date_trunc('month', created_at)", 0),
+        ("date_trunc('hour', orders.created_at)", 1), ("date_trunc('day', orders.created_at)", 0),
+        ("date_trunc('month', orders.created_at)", 0),
     ])
     async def test_a_bucket_finer_than_a_day_is_announced(
         self, engine: SlayerQueryEngine, operand: str, announced: int,

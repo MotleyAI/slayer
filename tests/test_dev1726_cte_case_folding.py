@@ -368,10 +368,7 @@ def _assert_result_keys_survive(sql: str, *, dialect: str) -> None:
         p.alias_or_name
         for p in _outer_select(sql, dialect=dialect).expressions
     }
-    if dialect in ("bigquery", "tsql"):
-        expected = {"orders___up", "orders___down"}
-    else:
-        expected = {"up", "down"}
+    expected = {"up", "down"}
     assert expected <= aliases, (aliases, sql)
 
 

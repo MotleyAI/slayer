@@ -58,12 +58,12 @@ class TestStoredShadow:
     @pytest.mark.parametrize("spelling", sorted(SCALAR_SPELLINGS))
     async def test_a_parser_spelling_is_shadowed_by_its_own_name(self, spelling: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[agg(spelling)])]) as engine:
-            resp = await engine.execute(_query(metric(f"{spelling}(a)")))
+            resp = await engine.execute(_query(metric(f"{spelling}(t.a)")))
         assert float(resp.data[0]["v"]) == SUM_A
 
     @pytest.mark.parametrize(("formula", "expected"), [
         pytest.param("left(t.a)", SUM_A, id="default"),
-        pytest.param("left(t.a, t.n=2)", 2 * SUM_A, id="functional-kwarg"),
+        pytest.param("left(t.a, n=2)", 2 * SUM_A, id="functional-kwarg"),
         pytest.param("t.left(a, n=2)", 2 * SUM_A, id="method-kwarg"),
     ])
     async def test_parameters_the_library_function_would_refuse(self, formula: str, expected: float) -> None:
@@ -77,8 +77,8 @@ class TestStoredShadow:
         own = agg("json_extract_path_text", formula, k1="id", k2="id")
         twin = agg("twin", formula, k1="id", k2="id")
         async with stored_engine(datasets=[t_doc(aggregations=[own]), t_doc(name="u", aggregations=[twin])]) as engine:
-            spelled = await engine.execute(_query(metric("json_extract_path_text(t.a, 'id', 'cust_id')")))
-            expected = await engine.execute(_query(metric("twin(a, 'id', 'cust_id')"), source="u"))
+            spelled = await engine.execute(_query(metric("json_extract_path_text(t.a, 't.id', 't.cust_id')")))
+            expected = await engine.execute(_query(metric("twin(u.a, 'u.id', 'u.cust_id')"), source="u"))
         assert float(value(spelled)) == float(value(expected))
 
     async def test_a_spelling_inside_a_method_call_reads_through_its_path(self) -> None:
@@ -89,7 +89,7 @@ class TestStoredShadow:
         assert value(shadowing) == value(plain)
 
     @pytest.mark.parametrize("name", ["date_part", "interval"])
-    @pytest.mark.parametrize("call", ["{name}(a, 2)", "{name}(a, k = 2)"], ids=["positional", "keyword"])
+    @pytest.mark.parametrize("call", ["{name}(t.a, 2)", "{name}(t.a, k = 2)"], ids=["positional", "keyword"])
     async def test_a_date_function_name_with_the_library_arity(self, name: str, call: str) -> None:
         own = agg(name, "SUM({value}) * {k}", k="1")
         async with stored_engine(datasets=[t_doc(aggregations=[own])]) as engine:
@@ -128,7 +128,7 @@ class TestContainers:
     async def test_a_stored_measure(self) -> None:
         doc = t_doc(aggregations=[agg("reverse")], metrics=[{"name": "rev", "formula": "reverse(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
-            resp = await engine.execute(_query(metric("rev")))
+            resp = await engine.execute(_query(metric("t.rev")))
         assert float(value(resp)) == SUM_A
 
     async def test_a_saved_query(self) -> None:
@@ -149,7 +149,7 @@ class TestContainers:
 class TestLibraryErrorsKept:
     async def test_an_undefined_name_keeps_the_library_error(self) -> None:
         async with stored_engine(datasets=[t_doc()]) as engine:
-            query = _query(metric("left(t.a, t.n=2)"))
+            query = _query(metric("left(t.a, n=2)"))
             with pytest.raises(UnknownReferenceError, match="scalar functions take positional arguments"):
                 await engine.execute(query)
 

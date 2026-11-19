@@ -166,9 +166,9 @@ class TestStoredResultsUnchanged:
         assert model is not None
         [loaded] = model.source_queries or []
         assert isinstance(loaded, SlayerQuery)
-        assert loaded.filter == ["status = 'ok'"]
+        assert loaded.filter == ["orders.status = 'ok'"]
         assert loaded.metrics is not None
-        assert loaded.metrics[0].metric == "sum(iif(status = 'ok', amount, 0))"
+        assert loaded.metrics[0].metric == "sum(iif(orders.status = 'ok', orders.amount, 0))"
         resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev_q.rev)"]})
         assert measure_total(resp, measure="rev_sum") == 80.0
 
@@ -178,7 +178,7 @@ class TestStoredResultsUnchanged:
         model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         stage = (model.source_queries or [])[0]
-        assert stage.filter == ["ordered_at >= '2024-01-01T00:00:00'"]
+        assert stage.filter == ["orders.ordered_at >= '2024-01-01T00:00:00'"]
         resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev_q.rev)"]})
         assert measure_total(resp, measure="rev_sum") == 200.0
 
@@ -199,7 +199,7 @@ class TestStoredResultsUnchanged:
                                   memories=[memory_v2(memory_id="m_q", query=query)])
         mem = await storage.get_memory("m_q")
         assert mem.query is not None
-        assert mem.query.filter == ["status = 'ok'"]
+        assert mem.query.filter == ["orders.status = 'ok'"]
         assert measure_total(await run(storage, mem.query), measure="rev") == 80.0
 
     async def test_resave_writes_the_new_spelling(self, tmp_path, shop_ds) -> None:

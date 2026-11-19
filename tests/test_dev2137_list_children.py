@@ -185,7 +185,7 @@ class TestComposition:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "assignments", "dimensions": ["contractors.skills.value"],
             "metrics": [metric("count(contractors.skills.*)", "n")]}))
-        assert _per(resp, "contractors.skills.value", dataset="assignments") == {"go": 3, "sql": 2}
+        assert _per(resp, "skills.value") == {"go": 3, "sql": 2}
 
     async def test_derived_list_column(self) -> None:
         derived = DatasetField(name="a_skills", sql="CASE WHEN team = 'A' THEN skills END", datatype=DataType.ARRAY,

@@ -42,7 +42,7 @@ class TestRestatementCollapses:
 
     @pytest.mark.parametrize("form", sorted(RESTATEMENTS))
     def test_picks_the_named_entry_among_several(self, form: str) -> None:
-        base = saved({"metric": "count(orders.*)", "alias": "orders_n"}, REVENUE)
+        base = saved({"metric": "count(*)", "alias": "orders_n"}, REVENUE)
         assert merge(base, RESTATEMENTS[form]) == base
 
     @pytest.mark.parametrize("field", sorted(FIELD_VALUES))
@@ -69,7 +69,7 @@ class TestRestatementConflicts:
         assert "revenue" in message
 
     def test_another_entry_named_like_the_saved_one_still_conflicts(self) -> None:
-        message = conflict(saved(REVENUE), RESTATEMENTS["named"], {"metric": "count(orders.*)", "alias": "revenue"})
+        message = conflict(saved(REVENUE), RESTATEMENTS["named"], {"metric": "count(*)", "alias": "revenue"})
         assert "revenue" in message
 
     def test_same_name_other_formula_still_conflicts(self) -> None:
@@ -79,19 +79,19 @@ class TestRestatementConflicts:
 class TestNotARestatement:
     def test_other_name_appends(self) -> None:
         merged = merge(saved(REVENUE), {"metric": "revenue", "alias": "r2"})
-        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(amount)"), ("r2", "revenue")]
+        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(orders.amount)"), ("r2", "revenue")]
 
     def test_bare_name_of_no_saved_entry_appends(self) -> None:
         merged = merge(saved(REVENUE), "amount_total")
-        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(amount)"), (None, "amount_total")]
+        assert [(m.alias, m.metric) for m in merged.metrics or []] == [("revenue", "sum(orders.amount)"), (None, "amount_total")]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("form", sorted(RESTATEMENTS))
 async def test_executed_restatement_equals_refinement_without_it(backend: str, form: str) -> None:
     async with refine_engine(backend) as (eng, _):
-        healed = await eng.execute("monthly_revenue", refine={"metrics": [RESTATEMENTS[form], "count(orders.*)"]})
-        expected = await eng.execute("monthly_revenue", refine={"metrics": ["count(orders.*)"]})
+        healed = await eng.execute("monthly_revenue", refine={"metrics": [RESTATEMENTS[form], "count(*)"]})
+        expected = await eng.execute("monthly_revenue", refine={"metrics": ["count(*)"]})
     assert healed.columns == expected.columns
     assert table(healed, ordered=False) == table(expected, ordered=False)
     assert healed.sql == expected.sql

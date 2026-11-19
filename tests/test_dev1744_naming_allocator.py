@@ -169,7 +169,7 @@ async def _isolated_then_combined(
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[QueryDimension(field=dimension)],
+                dimensions=[QueryDimension(field=f"orders.{dimension}")],
                 metrics=[m],
             )
         )
@@ -183,7 +183,7 @@ async def _isolated_then_combined(
     resp = await engine.execute(
         SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field=dimension)],
+            dimensions=[QueryDimension(field=f"orders.{dimension}")],
             metrics=metrics,
         )
     )
@@ -328,6 +328,16 @@ class TestCrossModelCteNameAllocation:
         all_aliases = Counter(re.findall(r'AS "([^"]+)"', resp.sql))
         assert "customers.revenue_sum" in all_aliases, all_aliases
 
+    async def test_an_alias_named_like_a_hidden_aggregate_column_executes(self, engine) -> None:
+        resp = await engine.execute(SlayerQuery(
+            population="orders",
+            time_dimensions=[TimeDimension(field="orders.created_at", granularity=TimeGranularity.MONTH)],
+            metrics=[QueryMetric(metric="cumsum(sum(customers.revenue))", alias="run"),
+                     QueryMetric(metric="sum(customers.Rev)", alias="revenue_sum")],
+            to_many_handling="broadcast",
+        ))
+        assert resp.columns == ["orders.created_at", "run", "revenue_sum"]
+
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
         resp = await engine.execute(
             SlayerQuery(
@@ -385,7 +395,7 @@ class TestAllocatorRouting:
     def test_cte_name_from_alias_requires_an_allocator(self) -> None:
         alloc = AliasAllocator(folds_case=True)
         first = naming.cte_name_from_alias(
-            prefix="_cm_", alias="customers.revenue_sum", allocator=alloc,
+            prefix="_cm_", alias="orders.customers.revenue_sum", allocator=alloc,
         )
         assert first == "_cm_orders__customers__revenue_sum"
         # A different alias that sanitises to the same string gets its own name.
@@ -542,7 +552,7 @@ class TestInternalNamesDoNotCollideWithUserColumns:
                 population="orders",
                 dimensions=[QueryDimension(field="orders.status")],
                 metrics=[
-                    QueryMetric(metric=f"sum({column})", alias="hostile_sum"),
+                    QueryMetric(metric=f"sum(orders.{column})", alias="hostile_sum"),
                     QueryMetric(metric="sum(orders.amount)", alias="amt"),
                 ],
             )
@@ -671,7 +681,7 @@ _MATRIX: List[tuple] = [
     (
         "columnkey_path",
         _key(FieldKey(path=("customers",), leaf="revenue"), "sum"),
-        "customers.revenue_sum", "revenue_sum", "revenue_sum",
+        "orders.customers.revenue_sum", "revenue_sum", "revenue_sum",
         "customers.revenue_sum",
     ),
     (

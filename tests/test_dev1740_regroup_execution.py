@@ -128,7 +128,7 @@ class TestAggregateOncePerGroup:
 # --------------------------------------------------------------------------- #
 class TestCrossModelPartition:
     async def test_partition_by_joined_column(self, exec_engine) -> None:
-        band = ("CASE WHEN sum(amount, partition_by=customers.region_id) > 10000 "
+        band = ("CASE WHEN sum(orders.amount, partition_by=customers.region_id) > 10000 "
                 "THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["orders.region", {"field": band, "alias": "band"}],
@@ -241,8 +241,8 @@ class TestMultipleAggregatesInOneDimension:
     async def test_two_distinct_partition_sets(self, exec_engine) -> None:
         # band = 1 iff the city total > 5000 AND the region total > 10000.
         # city>5000: Paris, Berlin, NULL ; region>10000: EU only.
-        band = ("CASE WHEN sum(amount, partition_by=city) > 5000 "
-                "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
+        band = ("CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
+                "AND sum(orders.amount, partition_by=orders.region) > 10000 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["orders.region", {"field": band, "alias": "band"}],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
@@ -279,8 +279,8 @@ class TestSiblingStageSource:
             metrics=[QueryMetric(metric="sum(per_city.amt)", alias="band_total")],
         )
         resp = await exec_engine.execute([stage1, stage2])
-        got = {(_suffix(r, ".region"), int(_suffix(r, ".band")),
-                round(float(_suffix(r, ".band_total")), 3)) for r in resp.data}
+        got = {(_suffix(r, ".region"), int(_suffix(r, "band")),
+                round(float(_suffix(r, "band_total")), 3)) for r in resp.data}
         want = {(reg, band, round(v, 3)) for (reg, band), v in BAND_SUM.items()}
         assert got == want
 

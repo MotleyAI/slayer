@@ -58,7 +58,7 @@ class TestStoredEdgeReuse:
         async with shop(dialect) as engine:
             resp = await engine.execute(repeat)
             assert await _sql(engine, repeat) == await _sql(engine, q(**_tier_amounts()))
-        assert by_key(resp, "orders.customers.tier", "a") == AMOUNT_BY_TIER
+        assert by_key(resp, "customers.tier", "a") == AMOUNT_BY_TIER
 
     async def test_a_differing_unnamed_join_stays_parallel_and_fails_closed(self, dialect) -> None:
         query = q(**_tier_amounts(extensions=[ext("orders", relationships=[join("customers", [["referrer_id", "id"]])])]))
@@ -90,7 +90,7 @@ class TestStoredEdgeReuse:
             join("customers", CUSTOMER_PAIRS, join_type="inner")])]))
         async with shop(dialect) as engine:
             resp = await engine.execute(query)
-        assert by_key(resp, "orders.customers.tier", "a") == {
+        assert by_key(resp, "customers.tier", "a") == {
             tier: amount for tier, amount in AMOUNT_BY_TIER.items() if tier is not None}
 
 
@@ -98,11 +98,11 @@ class TestAliases:
     async def test_alias_resolves_to_the_stored_edge_under_its_canonical_spelling(self, dialect) -> None:
         aliased = q(population="orders", dimensions=["orders.c.name", "customers.tier"],
                     extensions=[ext("orders", relationships=[join("customers", CUSTOMER_PAIRS, name="c")])])
-        canonical = q(population="orders", dimensions=["customers.name", "customers.tier"])
+        canonical = q(population="orders", dimensions=["orders.customers.name", "customers.tier"])
         async with shop(dialect) as engine:
             resp = await engine.execute(aliased)
             assert await _sql(engine, aliased) == await _sql(engine, canonical)
-        assert resp.columns == ["orders.customers.name", "orders.customers.tier"]
+        assert resp.columns == ["orders.customers.name", "customers.tier"]
 
     async def test_alias_selects_one_of_two_parallel_stored_edges(self, dialect) -> None:
         aliased = q(population="orders", dimensions=["orders.b.city"],

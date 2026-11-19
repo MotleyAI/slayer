@@ -148,7 +148,7 @@ class TestCrossModelRenameSingleStage:
             f"got {aliases!r}\nSQL:\n{sql}"
         )
         assert (
-            'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"'
+            'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "revenue_sum"'
             in sql
         ), (
             f"inner cross-model CTE column must stay canonical after the "
@@ -168,7 +168,7 @@ class TestCrossModelRenameSingleStage:
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
-        assert '"orders.cust_rev"' in sql, (
+        assert '"cust_rev"' in sql, (
             f"renamed alias must appear in projected SQL:\n{sql}"
         )
         aliases = _public_projection_aliases(sql)
@@ -274,7 +274,7 @@ class TestCrossModelRenameNestedDAG:
             f"public column; got {aliases!r}\nSQL:\n{sql}"
         )
         assert (
-            'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"'
+            'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "revenue_sum"'
             in sql
         ), f"expected the hoisted cross-model aggregate inside a _cm_ CTE:\n{sql}"
         assert any(name.startswith("_cm_") for name in _cte_names(sql)), (
@@ -324,7 +324,7 @@ class TestCrossModelStarAndCountDistinctRename:
             f"cross-model count(*) rename must surface as the public key; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'COUNT(*) AS "customers._count"' in sql, (
+        assert 'COUNT(*) AS "_count"' in sql, (
             f"cross-model count(*) CTE column must stay canonical:\n{sql}"
         )
 
@@ -350,7 +350,7 @@ class TestCrossModelStarAndCountDistinctRename:
             f"key; got {aliases!r}\nSQL:\n{sql}"
         )
         assert (
-            'COUNT(DISTINCT customers.id) AS "customers.id_count_distinct"'
+            'COUNT(DISTINCT customers.id) AS "id_count_distinct"'
             in sql
         ), f"cross-model count_distinct CTE column must stay canonical:\n{sql}"
 
@@ -377,7 +377,7 @@ class TestCrossModelDeclaredTypeCast:
         sql = resp.sql or ""
         assert (
             'CAST(SUM(customers.lifetime_revenue) AS INTEGER)'
-            ' AS "customers.revenue_sum"' in sql
+            ' AS "revenue_sum"' in sql
         ), f"declared type must win over the source column's:\n{sql}"
 
     async def test_declared_int_count_still_casts(
@@ -395,7 +395,7 @@ class TestCrossModelDeclaredTypeCast:
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
-        assert 'CAST(COUNT(*) AS INTEGER) AS "customers._count"' in sql, (
+        assert 'CAST(COUNT(*) AS INTEGER) AS "_count"' in sql, (
             f"explicitly declared INT must still cast:\n{sql}"
         )
 
@@ -456,9 +456,9 @@ class TestCrossModelRenameCollisionGuards:
         assert len(set(cm_ctes)) == 2, (
             f"expected 2 distinct cross-model CTEs, got {cm_ctes!r}\nSQL:\n{sql}"
         )
-        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "revenue_sum"' in sql
         assert (
-            'COUNT(DISTINCT customers.id) AS "customers.id_count_distinct"'
+            'COUNT(DISTINCT customers.id) AS "id_count_distinct"'
             in sql
         )
 
@@ -479,15 +479,15 @@ class TestCrossModelRenameCollisionGuards:
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         aliases = _public_projection_aliases(sql)
-        assert aliases == ["orders.status", "revenue_avg", "orders.revenue_sum"], (
+        assert aliases == ["orders.status", "revenue_avg", "revenue_sum"], (
             f"the symmetric rename swap must keep both measures distinct; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
         # The swap didn't swap bodies: ``revenue_avg`` is still the SUM.
-        assert 'SUM(orders.amount) AS REAL) AS "orders.revenue_avg"' in sql, (
+        assert 'SUM(orders.amount) AS REAL) AS "revenue_avg"' in sql, (
             f"'revenue_avg' must carry the declared sum(revenue) body:\n{sql}"
         )
-        assert 'AVG(orders.amount) AS REAL) AS "orders.revenue_sum"' in sql, (
+        assert 'AVG(orders.amount) AS REAL) AS "revenue_sum"' in sql, (
             f"'revenue_sum' must carry the declared avg(revenue) body:\n{sql}"
         )
 
@@ -566,8 +566,8 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'COUNT(*) AS "customers._count"' in sql, sql
-        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
+        assert 'COUNT(*) AS "_count"' in sql, sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_collides_with_dimension_downstream_short_raises(
         self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerDataset],
@@ -612,7 +612,7 @@ class TestCrossModelRenameCollisionGuards:
             f"public projection has a duplicate alias — silent merge; got "
             f"{aliases!r}\nSQL:\n{sql}"
         )
-        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_vs_arithmetic_mangled_name_stay_distinct(
         self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerDataset],
@@ -646,7 +646,7 @@ class TestCrossModelRenameCollisionGuards:
             f"{aliases!r}\nSQL:\n{sql}"
         )
         assert 'SUM(orders.amount) AS REAL) / 100 AS "orders.revenue_sum_100"' in sql, sql
-        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
+        assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "revenue_sum"' in sql, sql
 
     async def test_two_local_renames_distinct_canonicals_pass(
         self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerDataset],
@@ -703,7 +703,7 @@ class TestRenameRegressionGuards:
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         assert _public_projection_aliases(sql) == ["orders.status", "rev"], sql
-        assert 'SUM(orders.amount) AS REAL) AS "orders.rev"' in sql, sql
+        assert 'SUM(orders.amount) AS REAL) AS "rev"' in sql, sql
 
     async def test_cross_model_canonical_unreachable_via_user_name(self) -> None:  # NOSONAR(S7503) — sibling tests in this class do await
         """Invariant: cross-model canonicals contain dots but ``ModelMeasure.name``
@@ -770,7 +770,7 @@ class TestCrossModelRenameLabelAndType:
         ], sql
         assert (
             'CAST(SUM(customers.lifetime_revenue) AS INTEGER) '
-            'AS "customers.revenue_sum"' in sql
+            'AS "revenue_sum"' in sql
         ), (
             f"declared type=INT must survive the rename as a CAST on the "
             f"cross-model aggregate:\n{sql}"
@@ -799,7 +799,7 @@ class TestCrossModelRenameOrderBy:
         sql = resp.sql or ""
         assert "ORDER BY" in sql, sql
         order_clause = sql.split("ORDER BY", 1)[1]
-        assert '"customers.revenue_sum"' in order_clause, (
+        assert '"revenue_sum"' in order_clause, (
             f"ORDER BY via bare user alias must resolve to the cross-model "
             f"CTE's output column:\n{sql}"
         )
@@ -828,7 +828,7 @@ class TestCrossModelRenameFilters:
             "orders.status", "cust_rev",
         ], sql
         assert (
-            '_cm_orders__customers__revenue_sum."customers.revenue_sum" > 100'
+            '_cm_orders__customers__revenue_sum."revenue_sum" > 100'
             in _norm(sql)
         ), (
             f"the bare user alias must resolve to a WHERE on the cross-model "
@@ -861,7 +861,7 @@ class TestDeferredCrossModelFilterScope:
             "orders.status", "cust_rev",
         ], sql
         assert (
-            '_cm_orders__customers__revenue_sum."customers.revenue_sum" > 100'
+            '_cm_orders__customers__revenue_sum."revenue_sum" > 100'
             in _norm(sql)
         ), (
             f"cross-model aggregate filter must land as a WHERE on the "
@@ -898,7 +898,7 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
             f"(no __-flattened hops); got {aliases!r}\nSQL:\n{sql}"
         )
         assert (
-            'CAST(SUM(regions.population) AS REAL) AS "regions.population_sum"'
+            'CAST(SUM(regions.population) AS REAL) AS "population_sum"'
             in sql
         ), f"multi-hop CTE column stays canonical (target-rooted):\n{sql}"
 

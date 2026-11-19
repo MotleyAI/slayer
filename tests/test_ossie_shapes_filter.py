@@ -30,10 +30,10 @@ def merged_filter(*, saved: Any, refined: Any) -> Any:
 
 class TestDump:
     def test_a_string_dumps_as_that_string(self) -> None:
-        assert query(filter="orders.amount > 15").model_dump(mode="json")["filter"] == "amount > 15"
+        assert query(filter="orders.amount > 15").model_dump(mode="json")["filter"] == "orders.amount > 15"
 
     def test_a_list_dumps_as_that_list(self) -> None:
-        assert query(filter=["orders.amount > 15"]).model_dump(mode="json")["filter"] == ["amount > 15"]
+        assert query(filter=["orders.amount > 15"]).model_dump(mode="json")["filter"] == ["orders.amount > 15"]
         assert query(filter=["a > 1", "b < 2"]).model_dump(mode="json")["filter"] == ["a > 1", "b < 2"]
 
     @pytest.mark.parametrize("empty", [None, []], ids=["null", "empty_list"])
@@ -52,11 +52,11 @@ class TestDump:
 
     def test_a_refinement_string_dumps_as_written(self) -> None:
         refinement = QueryRefinement.model_validate({"filter": "orders.amount > 15"})
-        assert refinement.model_dump(mode="json", exclude_none=True)["filter"] == "amount > 15"
+        assert refinement.model_dump(mode="json", exclude_none=True)["filter"] == "orders.amount > 15"
 
     def test_a_rest_request_takes_a_string(self) -> None:
         request = QueryRequest.model_validate({**BASE, "filter": "orders.amount > 15"})
-        assert request.filter == "amount > 15"
+        assert request.filter == "orders.amount > 15"
 
 
 class TestRefinement:

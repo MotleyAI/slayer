@@ -12,7 +12,7 @@ from slayer.engine.plan import plan_query, plan_stages
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1836_fixtures import dev1836_datasets
 
-MONTH = [{"field": "ordered_at", "granularity": "month"}]
+MONTH = [{"field": "orders.ordered_at", "granularity": "month"}]
 AMOUNT = {"metric": "sum(orders.amount)", "alias": "t"}
 CHANNEL_TOTAL = {"field": "sum(orders.amount, partition_by=orders.channel)", "alias": "ct"}
 

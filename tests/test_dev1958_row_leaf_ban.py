@@ -92,7 +92,7 @@ class TestOneMessageForEveryOp:
     @pytest.mark.parametrize("op", RULED_OPS)
     def test_bare_row_leaf_message(self, op) -> None:
         query = _q(time_dimensions=month_td(),
-                   metrics=[QueryMetric(metric=_call(op, "weight"), alias="t")])
+                   metrics=[QueryMetric(metric=_call(op, "sales.weight"), alias="t")])
         bundle = _bundle()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)

@@ -430,7 +430,7 @@ class TestEntityRefsFunctional:
         try:
             f = await engine.recommend_population(["sum(orders.amount)"])
             assert f.population == "orders"
-            assert [ip.path for ip in f.item_paths] == ["sum(amount)"]
+            assert [ip.path for ip in f.item_paths] == ["sum(orders.amount)"]
         finally:
             await engine.aclose()
 

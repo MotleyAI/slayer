@@ -274,7 +274,7 @@ class TestOnlyEmittedStagesGate:
         engine = await _ch_engine(tmp_path)
         unused = PUSHED.model_copy(update={"name": "unused"})
         await engine.storage.save_dataset(
-            SlayerDataset(name="qb", data_source="test", source_queries=[unused, q(dimensions=["qb.status"], metrics=[M])]),
+            SlayerDataset(name="qb", data_source="test", source_queries=[unused, q(dimensions=["orders.status"], metrics=[M])]),
             _validate=False,
         )
         sql = await _dry_sql(engine, q(population="qb", dimensions=["qb.status"]))

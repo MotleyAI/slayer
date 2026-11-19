@@ -50,7 +50,7 @@ class TestQuerySurfaces:
     @pytest.mark.parametrize("dimension", ["orders.amount * {k}", {"field": "orders.amount * {k}"}])
     async def test_computed_dimension(self, exec_engine, dimension) -> None:
         resp = await exec_engine.execute(q(dimensions=[dimension], metrics=["count(orders.*)"], variables={"k": 10}))
-        got = {float(r["amount_k"]): r["orders._count"] for r in resp.data}
+        got = {float(r["orders.amount_k"]): r["orders._count"] for r in resp.data}
         assert got == {100.0: 1, 200.0: 1, 250.0: 2, 300.0: 1, 400.0: 1, 600.0: 1}
 
     async def test_order_expression(self, exec_engine) -> None:
@@ -140,7 +140,7 @@ class TestTemplateNaming:
         elab = elaborate_query(query=query, bundle=bundle(dev1739_datasets()))
         assert elab.prebound is not None
         got = [(dm.public_name, dm.name_is_explicit) for dm in elab.prebound.declared_metrics]
-        assert got == [("amount_k", False), ("amount_sum_k", False)]
+        assert got == [("orders.amount_k", False), ("orders.amount_sum_k", False)]
 
     async def test_filter_and_order_by_template_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
@@ -165,7 +165,7 @@ class TestTemplateNaming:
         resp = await exec_engine.execute(q(
             dimensions=["orders.amount * {k}"], metrics=["count(orders.*)"], filter=["orders.amount_k > 450"], variables={"k": 10},
         ))
-        assert {float(r["amount_k"]) for r in resp.data} == {600.0}
+        assert {float(r["orders.amount_k"]) for r in resp.data} == {600.0}
 
     async def test_multi_stage_reads_template_name(self, exec_engine) -> None:
         stage1 = SlayerQuery.model_validate({

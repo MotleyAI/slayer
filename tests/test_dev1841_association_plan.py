@@ -57,7 +57,7 @@ class TestModeThreadsIntoNestedProducer:
         an unattributable computed-dimension aggregate resolves via the kernel."""
         band = {
             "field": (
-                "CASE WHEN sum(customers.spend, partition_by=status) > 400 "
+                "CASE WHEN sum(customers.spend, partition_by=orders.status) > 400 "
                 "THEN 'hi' ELSE 'lo' END"),
             "alias": "band",
         }

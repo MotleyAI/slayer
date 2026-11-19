@@ -211,7 +211,7 @@ async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
     assert cte_names(top)[:2] == ["base", "step1"], sql
     assert from_name(outer_derived(top)) == cte_names(top)[-1], sql
     assert [e.sql(dialect="tsql") for e in top.expressions] == [
-        "[orders___created_at]", "[orders___running]",
+        "[orders___created_at]", "[running]",
     ]
 
 
@@ -224,7 +224,7 @@ async def test_tsql_outer_wrap_without_ctes_has_no_top_level_with() -> None:
 
 async def test_tsql_outer_wrap_uses_brackets_for_aliases() -> None:
     sql = await _tsql(cumsum_chain(order=_DESC_CREATED))
-    assert "[orders___running]" in sql
+    assert "[running]" in sql
     assert '"orders.' not in sql
     assert "`orders" not in sql
 
@@ -575,14 +575,14 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
     # pipeline names the shifted CTE ``shifted__time_shift_inner``; the
     # legacy stack spelled it ``shifted__ts_pct``. Same CTE, same assertion.)
     lookup = "DATEADD(MONTH, -1, base.[orders___created_at])"
-    assert f"{lookup} = shifted__time_shift_inner.[orders___created_at]" in sql, (
+    assert f"{lookup} = shifted__time_shift_inner.[created_at]" in sql, (
         f"Self-join ON clause must use mangled bracketed identifiers:\n{sql}"
     )
     assert f"{lookup} IS NULL" in sql, sql
     # Outer ORDER BY references the mangled alias.
     assert "[orders___created_at]" in sql
     # Computed expression's column references in step2 use mangled brackets.
-    assert "[orders____time_shift_inner]" in sql, (
+    assert "[_time_shift_inner]" in sql, (
         f"Inner computed expression's column refs must be mangled-bracket "
         f"form:\n{sql}"
     )

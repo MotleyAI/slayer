@@ -83,7 +83,7 @@ class TestCustomSteps:
 async def test_month_without_home_rows_reads_its_trailing_interval(backend) -> None:
     async with spine_engine(backend, datasets=calendar_datasets()) as eng:
         resp = await eng.execute(SlayerQuery.model_validate({
-            "population": "calendar", "metrics": [m("sum(orders.amount, window='2m')", "w")],
+            "population": "calendar", "metrics": [m("sum(calendar.orders.amount, window='2m')", "w")],
             "time_dimensions": [{"field": "calendar.date", "granularity": "month", "date_range": JAN_JUN}],
         }))
     got = by_bucket(resp, ["w"], bucket="calendar.date")

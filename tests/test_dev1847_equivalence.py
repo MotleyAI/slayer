@@ -38,8 +38,8 @@ def _sq_dataset(outer: str) -> SlayerDataset:
                 metrics=[QueryMetric(metric="sum(sales.amount)", alias="ct")]),
             SlayerQuery(
                 population=f"s1_{outer}",
-                dimensions=[QueryDimension(field="sales.region")],
-                metrics=[QueryMetric(metric=f"{outer}(ct)", alias="v")]),
+                dimensions=[QueryDimension(field=f"s1_{outer}.region")],
+                metrics=[QueryMetric(metric=f"{outer}(s1_{outer}.ct)", alias="v")]),
         ])
 
 
@@ -64,8 +64,8 @@ class TestEquivalenceVsSourceQueries:
         reagg_resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region"], metrics=[reagg(outer, INNER_CR, name="v")]))
         manual_resp = await exec_engine.execute(f"sq_{outer}")
-        got = _by_region_suffix(reagg_resp, ".v")
-        want = _by_region_suffix(manual_resp, ".v")
+        got = _by_region_suffix(reagg_resp, "v")
+        want = _by_region_suffix(manual_resp, "v")
         assert set(got) == set(want)
         for region in want:
             g, w = got[region], want[region]

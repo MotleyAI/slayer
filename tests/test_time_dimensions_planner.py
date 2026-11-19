@@ -485,7 +485,7 @@ class TestStagePlannerTimeDimensions:
             s for s in all_slots if isinstance(s.key, TimeTruncKey)
         )
         assert td_slot.phase == Phase.ROW
-        assert td_slot.public_name == "created_at"
+        assert td_slot.public_name == "orders.created_at"
 
     def test_label_propagates_to_stage_column(self) -> None:
         query = SlayerQuery(

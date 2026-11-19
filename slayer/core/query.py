@@ -747,13 +747,30 @@ class QueryDimension(BaseModel):
 
 
 def computed_dimension_name(expression: str) -> str:
-    """An unnamed computed dimension's name: its expression's legacy naming seed, sanitised, so every
-    spelling of one expression names it alike."""
+    """An unnamed computed dimension's name: its expression's legacy naming seed read from its references' common
+    leading segments, sanitised, so every spelling of one expression names it alike."""
     try:
-        seed = legacy_result_name_seed(parse_expr(expression))
+        parsed = parse_expr(expression)
+        for head in () if isinstance(parsed, (Ref, DottedRef)) else _common_head(parsed):
+            parsed = root_relative(parsed, head)
+        seed = legacy_result_name_seed(parsed)
     except Exception:  # noqa: BLE001 — an unparseable expression is reported at binding
         seed = expression
     return auto_name_from_expression(seed)
+
+
+def _common_head(parsed: Any) -> tuple[str, ...]:
+    """The leading segments every reference in ``parsed`` shares before its leaf; empty with any bare reference."""
+    paths = [n.parts[:-1] if isinstance(n, DottedRef) else () for n in walk_parsed(parsed) if isinstance(n, (Ref, DottedRef))]
+    if not paths:
+        return ()
+    head = paths[0]
+    for path in paths[1:]:
+        k = 0
+        while k < min(len(head), len(path)) and head[k] == path[k]:
+            k += 1
+        head = head[:k]
+    return tuple(head)
 
 
 def _time_dimension_name_identity(td: "TimeDimension") -> tuple[str, tuple] | None:
@@ -1676,8 +1693,8 @@ class SlayerQuery(BaseModel):
             "{placeholder} values scoped to this query object / stage; the "
             "tool-level variables argument overrides. A placeholder binds a literal value only: "
             "its text inside quotes ('{s}'), a number, numeric string or boolean in a bare slot, "
-            "a list as the whole right-hand side of IN (status in ({statuses}); over a list field, one "
-            "list: tags in ({wanted})) or as a list literal anywhere else (tags = {wanted}, a "
+            "a list as the whole right-hand side of IN (items.status in ({statuses}); over a list field, one "
+            "list: items.tags in ({wanted})) or as a list literal anywhere else (items.tags = {wanted}, a "
             "list-function argument). A placeholder in a name position is an error."
         ),
     )

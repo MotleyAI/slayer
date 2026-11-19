@@ -184,8 +184,8 @@ class TestSamePartitionSetInterning:
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
-        assert '"orders.a"' in sql
-        assert '"orders.b"' in sql
+        assert '"a"' in sql
+        assert '"b"' in sql
 
     def test_distinct_partition_sets_produce_separate_attaches(self) -> None:
         # D3 grouping is by partition set: two DIFFERENT sets must NOT collapse
@@ -295,7 +295,7 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=[
                 "orders.region", "orders.city",
-                {"field": "CASE WHEN sum(amount, partition_by=city) > 5000 "
+                {"field": "CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 "
                                "THEN 1 ELSE 0 END", "alias": "band"},
             ],
             metrics=[QueryMetric(

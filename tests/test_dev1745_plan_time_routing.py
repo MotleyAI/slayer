@@ -142,7 +142,7 @@ class TestGeneratorConsumesThePlanVerbatim:
             col = gt.this
             if (
                 isinstance(col, exp.Column)
-                and col.name == "orders.eu"
+                and col.name == "eu"
                 and col.table.startswith("_cm_")
                 and gt.expression == exp.Literal.number(100)
             ):

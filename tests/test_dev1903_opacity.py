@@ -144,7 +144,7 @@ class TestOwnClosureStillJudged:
         assert_cells(status_vals(resp), {"ok": 4310.0 / 365.0, "new": 4225.0 / 145.0})
 
     @pytest.mark.parametrize("formula", [
-        "weighted_avg(amount, weight=sum(customers.flagged_spend, "
+        "weighted_avg(orders.amount, weight=sum(customers.flagged_spend, "
         "partition_by=customers.regions.name))",
         "sum(orders.amount * sum(customers.flagged_spend, partition_by=customers.regions.name))",
     ], ids=["kwarg", "source"])

@@ -90,7 +90,7 @@ class TestOrderItem:
     def test_funcstyle_builtin_agg_preserved(self) -> None:
         """The functional spelling is preserved verbatim — a
         placeholder defers resolution to binding (like custom aggs)."""
-        item = OrderItem(field="sum(orders.revenue)", direction="desc")
+        item = OrderItem(field="sum(revenue)", direction="desc")
         assert item.ref is None
         assert item.raw_expression == "sum(revenue)"
 
@@ -112,7 +112,7 @@ class TestOrderItem:
 
     def test_plain_column_no_raw_formula(self) -> None:
         """A plain column reference has no raw_formula."""
-        item = OrderItem(field="orders.status", direction="asc")
+        item = OrderItem(field="status", direction="asc")
         assert item.field == "status"
         assert item.raw_expression is None
 
@@ -144,7 +144,7 @@ class TestOrderShorthandHealing:
     def test_shorthand_equals_canonical(self) -> None:
         shorthand = SlayerQuery(population="orders", order=[{"status": "desc"}])
         canonical = SlayerQuery.model_validate({
-            "population": "orders", "order": [{"field": "orders.status", "direction": "desc"}]
+            "population": "orders", "order": [{"field": "status", "direction": "desc"}]
         })
         assert shorthand.order == canonical.order
 
@@ -169,7 +169,7 @@ class TestOrderShorthandHealing:
     # --- formula key composes with existing normalization ---
 
     def test_shorthand_formula_key(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(orders.revenue)": "desc"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
         assert q.order is not None
         assert q.order[0].ref is None
         assert q.order[0].raw_expression == "sum(revenue)"
@@ -208,7 +208,7 @@ class TestOrderShorthandHealing:
         assert q.order[0].direction == "desc"
 
     def test_bare_canonical_dict_wrapped(self) -> None:
-        q = SlayerQuery(population="orders", order={"field": "orders.status", "direction": "asc"})  # pyright: ignore[reportArgumentType] — a bare dict on purpose: the coercion under test
+        q = SlayerQuery(population="orders", order={"field": "status", "direction": "asc"})  # pyright: ignore[reportArgumentType] — a bare dict on purpose: the coercion under test
         assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].field == "status"
@@ -219,7 +219,7 @@ class TestOrderShorthandHealing:
         assert [(o.field, o.direction) for o in q.order or []] == [("a", "desc"), ("b", "asc")]
 
     def test_bare_orderitem_wrapped(self) -> None:
-        item = OrderItem(field="orders.status", direction="desc")
+        item = OrderItem(field="status", direction="desc")
         q = SlayerQuery(population="orders", order=item)
         assert q.order is not None
         assert len(q.order) == 1
@@ -229,7 +229,7 @@ class TestOrderShorthandHealing:
     # --- canonical preserved; latent uppercase-direction bug fixed ---
 
     def test_canonical_unchanged(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "order": [{"field": "orders.status", "direction": "desc"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "order": [{"field": "status", "direction": "desc"}]})
         assert q.order is not None
         assert q.order[0].field == "status"
         assert q.order[0].direction == "desc"
@@ -339,7 +339,7 @@ class TestOrderShorthandHealing:
     def test_multikey_formula_keys_preserve_raw_formula(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "order": [{"sum(orders.revenue)": "desc", "max(amount)": "asc"}],
+            "order": [{"sum(revenue)": "desc", "max(amount)": "asc"}],
         })
         assert q.order is not None
         assert len(q.order) == 2
@@ -807,7 +807,7 @@ class TestSourceQueryStages:
             "name": "saved",
             "data_source": "ds",
             "source_queries": [
-                {"population": "orders", "metrics": [{"metric": "count(orders.*)"}]}
+                {"population": "orders", "metrics": [{"metric": "count(*)"}]}
             ],
         })
         assert m.source_queries is not None
@@ -1431,7 +1431,7 @@ class TestStringCoercion:
         assert query.metrics[1] == QueryMetric(metric="sum(orders.revenue)")
 
     def test_dimensions_plain_strings(self) -> None:
-        query = SlayerQuery(population="orders", dimensions=["orders.status", "customers.name"])
+        query = SlayerQuery(population="orders", dimensions=["status", "customers.name"])
         assert query.dimensions is not None
         assert len(query.dimensions) == 2
         assert [d.field for d in query.dimensions or []] == ["status", "customers.name"]
@@ -1449,7 +1449,7 @@ class TestStringCoercion:
     def test_dimensions_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["orders.status", {"field": "customers.name", "label": "Customer"}],
+            "dimensions": ["status", {"field": "customers.name", "label": "Customer"}],
         })
         assert query.dimensions is not None
         assert len(query.dimensions) == 2
@@ -1460,10 +1460,10 @@ class TestStringCoercion:
     def test_dict_syntax_still_works(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "count(orders.*)"}],
-            "dimensions": ["orders.status"],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
         })
-        assert query.metrics[0] == QueryMetric(metric="count(orders.*)")
+        assert query.metrics[0] == QueryMetric(metric="count(*)")
         assert query.dimensions[0].field == "status"
 
     def test_none_fields_and_dimensions(self) -> None:
@@ -1482,7 +1482,7 @@ class TestStringCoercion:
         assert (ref.dataset, ref.name) == ("customers", "_count")
 
     def test_time_dimension_string(self) -> None:
-        td = TimeDimension(field="orders.created_at", granularity="month")
+        td = TimeDimension(field="created_at", granularity="month")
         assert td.field == "created_at"
 
     def test_time_dimension_dotted_string(self) -> None:
@@ -1496,8 +1496,8 @@ class TestStringCoercion:
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": ["count(orders.*)"],
-            "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
+            "metrics": ["count(*)"],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
             "order": [{"field": "_count", "direction": "desc"}],
         })
         assert query.time_dimensions is not None
@@ -1529,19 +1529,19 @@ class TestCoerceFieldsAndDimensions:
             SlayerQuery(population="orders", dimensions="orders.status")
 
     def test_fields_list_of_strings_coerced(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(orders.*)", "sum(orders.revenue)"]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": ["count(*)", "sum(revenue)"]})
         assert q.metrics is not None
         assert q.metrics[0].metric == "count(*)"
         assert q.metrics[1].metric == "sum(revenue)"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": "cnt"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": "cnt"}]})
         assert q.metrics is not None
         assert q.metrics[0].metric == "count(*)"
         assert q.metrics[0].alias == "cnt"
 
     def test_dimensions_list_of_strings_coerced(self) -> None:
-        q = SlayerQuery(population="orders", dimensions=["orders.status", "region"])
+        q = SlayerQuery(population="orders", dimensions=["status", "region"])
         assert [d.field for d in q.dimensions or []] == ["status", "region"]
 
     def test_the_v1_fields_key_is_reported_as_written(self) -> None:
@@ -1636,11 +1636,11 @@ class TestMeasureFilter:
         assert m.filter is None
 
     def test_filter_set(self) -> None:
-        m = DatasetField(name="active_revenue", sql="amount", filter="orders.status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         assert m.filter == "status = 'active'"
 
     def test_filter_in_model_dump(self) -> None:
-        m = DatasetField(name="x", sql="amount", filter="orders.status = 'active'", datatype=DataType.FLOAT)
+        m = DatasetField(name="x", sql="amount", filter="status = 'active'", datatype=DataType.FLOAT)
         data = m.model_dump(exclude_none=True)
         assert data["filter"] == "status = 'active'"
 
@@ -1696,7 +1696,7 @@ class TestSubstituteVariables:
 
     def test_no_variables_no_change(self) -> None:
 
-        result = bind_mode_a("orders.status = 'active'", {}, dialect=_SQLITE, field="f")
+        result = bind_mode_a("status = 'active'", {}, dialect=_SQLITE, field="f")
         assert result == "status = 'active'"
 
     def test_variable_in_slayer_query(self) -> None:

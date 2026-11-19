@@ -218,6 +218,6 @@ class TestCollectorIdentityUnits:
             stages=[SimpleNamespace(name=None)],
         )
         message = w.human_message()
-        assert "'orders.cm'" in message
+        assert "'cm'" in message
         assert "stages[0]" in message
         assert "status (crosses an unproven join hop to x)" in message

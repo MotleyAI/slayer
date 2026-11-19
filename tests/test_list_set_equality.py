@@ -258,7 +258,7 @@ def test_the_fixture_has_the_scenario_groups() -> None:
 # --------------------------------------------------------------------------- #
 #: A list-valued expression → its value per record.
 LIST_EXPRESSIONS: dict[str, Callable[[dict[str, Any]], Optional[list[Any]]]] = {
-    "skills": lambda r: r["skills"],
+    "contractors.skills": lambda r: r["skills"],
     "coalesce(contractors.skills, contractors.required)": lambda r: r["skills"] if r["skills"] is not None else r["required"],
     "CASE WHEN contractors.team = 'A' THEN contractors.skills ELSE contractors.required END": lambda r: r["skills"] if r["team"] == "A" else r["required"],
 }
@@ -366,7 +366,7 @@ class TestPartitionKeys:
 # --------------------------------------------------------------------------- #
 # Time transforms over a list-grouped series
 # --------------------------------------------------------------------------- #
-YEARLY = {"field": "hired", "granularity": "year"}
+YEARLY = {"field": "contractors.hired", "granularity": "year"}
 SERIES: Counter[tuple[Any, int]] = Counter((elset(r["skills"]), int(r["hired"][:4])) for r in ROWS)
 
 
@@ -378,14 +378,14 @@ class TestTimeTransforms:
 
     async def test_running_total_per_list(self, engine: SlayerQueryEngine) -> None:
         expected = {(s, y): sum(n for (s2, y2), n in SERIES.items() if s2 == s and y2 <= y) for s, y in SERIES}
-        assert await self._series(engine, "cumsum(count(*))") == expected
+        assert await self._series(engine, "cumsum(count(contractors.*))") == expected
 
     async def test_previous_period_per_list(self, engine: SlayerQueryEngine) -> None:
         expected = {(s, y): SERIES.get((s, y - 1)) for s, y in SERIES}
-        assert await self._series(engine, "time_shift(count(*), -1)") == expected
+        assert await self._series(engine, "time_shift(count(contractors.*), -1)") == expected
 
     async def test_windowed_aggregate_per_list(self, engine: SlayerQueryEngine) -> None:
-        assert set(await self._series(engine, "sum(rate, window='400d')")) == set(SERIES)
+        assert set(await self._series(engine, "sum(contractors.rate, window='400d')")) == set(SERIES)
 
 
 # --------------------------------------------------------------------------- #
@@ -425,8 +425,8 @@ class TestComparisons:
         assert await names(engine, filter_) == expected
 
     async def test_in_is_the_or_of_equalities(self, engine: SlayerQueryEngine) -> None:
-        assert await names(engine, "skills IN (['go'], ['sql', 'go'])") == await names(
-            engine, "skills = ['go'] OR skills = ['sql', 'go']") == {"Ann", "Eve", "Fay"}
+        assert await names(engine, "contractors.skills IN (['go'], ['sql', 'go'])") == await names(
+            engine, "contractors.skills = ['go'] OR contractors.skills = ['sql', 'go']") == {"Ann", "Eve", "Fay"}
 
     async def test_comparison_as_a_value(self, engine: SlayerQueryEngine) -> None:
         got = {k: truth(v) for k, v in (await values(engine, "contractors.skills = ['go', 'sql']")).items()}
@@ -450,17 +450,17 @@ class TestListVariables:
         assert await names(engine, filter_, variables={"wanted": ["sql", "go"]}) == expected
 
     async def test_an_empty_list_variable_is_the_empty_list(self, engine: SlayerQueryEngine) -> None:
-        assert await names(engine, "skills IN ({wanted})", variables={"wanted": []}) == {"Cid", "Gil"}
+        assert await names(engine, "contractors.skills IN ({wanted})", variables={"wanted": []}) == {"Cid", "Gil"}
 
     async def test_a_scalar_left_side_takes_the_whole_list(self, engine: SlayerQueryEngine) -> None:
-        assert await names(engine, "team IN ({teams})", variables={"teams": ["A", "C"]}) == {
+        assert await names(engine, "contractors.team IN ({teams})", variables={"teams": ["A", "C"]}) == {
             "Ann", "Bob", "Fay", "Gil"}
 
     async def test_list_variables_as_items(self, engine: SlayerQueryEngine) -> None:
-        assert await names(engine, "skills IN ({a}, {b})", variables={"a": ["go"], "b": ["sql"]}) == {"Bob", "Eve"}
+        assert await names(engine, "contractors.skills IN ({a}, {b})", variables={"a": ["go"], "b": ["sql"]}) == {"Bob", "Eve"}
 
     async def test_scalar_variables_as_items(self, engine: SlayerQueryEngine) -> None:
-        assert await names(engine, "id IN (1, {b}, {c})", variables={"b": 2, "c": 5}) == {"Ann", "Bob", "Eve"}
+        assert await names(engine, "contractors.id IN (1, {b}, {c})", variables={"b": 2, "c": 5}) == {"Ann", "Bob", "Eve"}
 
     @pytest.mark.parametrize("formula", ["count(contractors.*) FILTER (WHERE contractors.team IN ({v}))",
                                          "count(contractors.*) FILTER (WHERE contractors.skills IN ({v}))"])
@@ -564,8 +564,8 @@ class TestRefusals:
         assert _names_the_list_type(str(info.value)), str(info.value)
 
     async def test_null_test(self, duck: SlayerQueryEngine) -> None:
-        assert await names(duck, "skills IS NULL") == {"Dee"}
-        assert await names(duck, "skills IS NOT NULL") == {"Ann", "Bob", "Cid", "Eve", "Fay", "Gil"}
+        assert await names(duck, "contractors.skills IS NULL") == {"Dee"}
+        assert await names(duck, "contractors.skills IS NOT NULL") == {"Ann", "Bob", "Cid", "Eve", "Fay", "Gil"}
 
 
 # --------------------------------------------------------------------------- #
@@ -711,7 +711,7 @@ def _python_warnings(caught: list[warnings.WarningMessage]) -> list[str]:
 class TestWarning:
     @pytest.mark.parametrize(("body", "alternative"), [
         ({"dimensions": ["contractors.skills"], "metrics": [metric("count(contractors.*)", "n")]}, "skills.value"),
-        ({"metrics": [metric("count_distinct(contractors.skills)", "n")]}, "count_distinct(contractors.skills.value)"),
+        ({"metrics": [metric("count_distinct(contractors.skills)", "n")]}, "count_distinct(skills.value)"),
     ])
     async def test_warns_on_both_channels(self, duck: SlayerQueryEngine, body: dict[str, Any],
                                           alternative: str) -> None:
@@ -1086,8 +1086,8 @@ class TestPostgresArrayTypes:
     ])
     async def test_columns_of_one_family_compare_in_both_orders(self, widths: SlayerQueryEngine, left: str,
                                                                 right: str, expected: set[int]) -> None:
-        assert await _width_ids(widths, f"{left} = {right}") == expected
-        assert await _width_ids(widths, f"{right} = {left}") == expected
+        assert await _width_ids(widths, f"widths.{left} = widths.{right}") == expected
+        assert await _width_ids(widths, f"widths.{right} = widths.{left}") == expected
 
     @pytest.mark.parametrize(("filter_", "expected"), [
         ("widths.v = ['a', 'b']", {1}), ("widths.b = [1, 2]", {1}), ("widths.s = [2, 1]", {1}), ("widths.r = [2.5, 1.5]", {1}),
@@ -1099,10 +1099,10 @@ class TestPostgresArrayTypes:
 
     @pytest.mark.parametrize("column", ["v", "t", "s", "i", "b", "r", "d"])
     async def test_grouping_and_distinct_counting_each_type(self, widths: SlayerQueryEngine, column: str) -> None:
-        resp = await widths.execute({"population": "widths", "dimensions": [column],
+        resp = await widths.execute({"population": "widths", "dimensions": [f"widths.{column}"],
                                      "metrics": [metric("count(widths.*)", "n"),
-                                                  metric(f"count({column}, partition_by={column})", "p")]})
+                                                  metric(f"count(widths.{column}, partition_by=widths.{column})", "p")]})
         assert sum(num(r["n"]) or 0 for r in resp.data) == 3
         total = await widths.execute({"population": "widths",
-                                      "metrics": [metric(f"count_distinct({column})", "sets")]})
-        assert num(total.data[0]["widths.sets"]) == len(resp.data)
+                                      "metrics": [metric(f"count_distinct(widths.{column})", "sets")]})
+        assert num(total.data[0]["sets"]) == len(resp.data)

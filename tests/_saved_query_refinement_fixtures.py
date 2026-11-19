@@ -28,7 +28,7 @@ ORDERS_ROWS = [
 ]
 
 REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
-MONTH_TD = {"field": "ordered_at", "granularity": "month"}
+MONTH_TD = {"field": "orders.ordered_at", "granularity": "month"}
 Q1_RANGE = ["2025-01-01", "2025-02-28"]
 
 MONTHLY_REVENUE: Dict[str, Any] = {

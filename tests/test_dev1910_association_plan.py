@@ -21,7 +21,7 @@ from tests._dev1900_fixtures import dev1900_datasets, orders_q
 
 CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 HEADLINE = ("weighted_avg(customers.spend, "
-            "weight=sum(amount, partition_by=customers.regions.name))")
+            "weight=sum(orders.amount, partition_by=customers.regions.name))")
 
 
 def _bundle1900():

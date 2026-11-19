@@ -34,11 +34,11 @@ from tests._dev1953_fixtures import (
 )
 from tests._dev1919_fixtures import ordered_month_td
 
-CRP = ["city", "region", "product"]
+CRP = ["sales.city", "sales.region", "sales.product"]
 NONMEMBER = "rank(sum(sales.amount, partition_by=[sales.city, sales.region]), partition_by=sales.product, direction='desc')"
 MEMBER = "rank(sum(sales.amount, partition_by=[sales.city, sales.region]), partition_by=sales.region, direction='desc')"
 UNGRAINED = "rank(sum(sales.amount), partition_by=sales.region, direction='desc')"
-LAST_INNER = "last(sum(amount, partition_by=[customers.regions.name, ordered_at]))"
+LAST_INNER = "last(sum(orders.amount, partition_by=[customers.regions.name, orders.ordered_at]))"
 LAST_SHIFT = "last(time_shift(customers.regions.name, -1))"
 
 MEMBER_RANKS = {
@@ -122,15 +122,15 @@ class TestNonMemberRejected:
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
     async def test_dimension_position_plain_column(self, engine):
-        dim = {"field": "rank(sum(amount, partition_by=[city, product]), "
-                             "partition_by=region, direction='desc')", "alias": "r"}
+        dim = {"field": "rank(sum(sales.amount, partition_by=[sales.city, sales.product]), "
+                             "partition_by=sales.region, direction='desc')", "alias": "r"}
         query = sales_q(dimensions=["sales.region", dim], metrics=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'region'", grain="city, product")
 
     async def test_dimension_position_computed_dimension(self, engine):
-        dim = {"field": "rank(sum(amount, partition_by=[city, region]), "
+        dim = {"field": "rank(sum(sales.amount, partition_by=[sales.city, sales.region]), "
                              "partition_by=ureg, direction='desc')", "alias": "r"}
         query = sales_q(dimensions=[UREG, dim], metrics=[AMOUNT])
         with pytest.raises(ValueError) as ei:
@@ -158,15 +158,15 @@ class TestNonMemberRejected:
         ("dense_rank", ", direction='desc'"), ("percent_rank", ""), ("ntile", ", n=2"),
     ])
     async def test_every_rank_family_op(self, engine, op, extra):
-        formula = f"{op}(sum(amount, partition_by=[city, region]){extra}, partition_by=product)"
+        formula = f"{op}(sum(sales.amount, partition_by=[sales.city, sales.region]){extra}, partition_by=sales.product)"
         query = sales_q(dimensions=CRP, metrics=[_metric(formula)])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region", op=op)
 
     async def test_composite_union_without_key(self, engine):
-        formula = ("rank(sum(amount, partition_by=[city, region]) "
-                   "+ sum(amount, partition_by=city), partition_by=product, direction='desc')")
+        formula = ("rank(sum(sales.amount, partition_by=[sales.city, sales.region]) "
+                   "+ sum(sales.amount, partition_by=sales.city), partition_by=sales.product, direction='desc')")
         query = sales_q(dimensions=CRP, metrics=[_metric(formula)])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
@@ -176,12 +176,12 @@ class TestNonMemberRejected:
 class TestMemberAccepted:
     async def test_member_key_executes(self, engine):
         resp = await engine.execute(sales_q(dimensions=CRP, metrics=[_metric(MEMBER)]))
-        for (city, region, _), row in rows_by(resp, *(f"sales.{d}" for d in CRP)).items():
+        for (city, region, _), row in rows_by(resp, *CRP).items():
             assert row["r"] == MEMBER_RANKS[(region, city)], (city, region)
 
     async def test_composite_union_member(self, engine):
-        formula = ("rank(sum(amount, partition_by=[city, region]) "
-                   "+ sum(amount, partition_by=[city, product]), partition_by=product, direction='desc')")
+        formula = ("rank(sum(sales.amount, partition_by=[sales.city, sales.region]) "
+                   "+ sum(sales.amount, partition_by=[sales.city, sales.product]), partition_by=sales.product, direction='desc')")
         resp = await engine.execute(sales_q(dimensions=CRP, metrics=[_metric(formula)]))
         assert resp.data
 
@@ -202,7 +202,7 @@ class TestAggregateFreeInput:
     async def test_leaf_input_takes_query_grain(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=CRP, metrics=[_metric("rank(sales.city, partition_by=sales.region, direction='desc')")]))
-        for (city, region, _), row in rows_by(resp, *(f"sales.{d}" for d in CRP)).items():
+        for (city, region, _), row in rows_by(resp, *CRP).items():
             assert row["r"] == CITY_NAME_RANKS[(region, city)], (city, region)
 
     # Bind level only: execution is DEV-1962.
@@ -234,18 +234,18 @@ class TestPrecedence:
 
 def _bind_monthly(expression: str):
     query = orders_q(dimensions=["customers.regions.name"],
-                     time_dimensions=ordered_month_td(), metrics=[_metric(expression)])
+                     time_dimensions=ordered_month_td("orders"), metrics=[_metric(expression)])
     return bind_query_inputs(query=query, bundle=orders_bundle())
 
 
 class TestOperandGrainTimeAxis:
     def test_windowed_inner_admits_active_bucket(self):
-        _bind_monthly("rank(sum(amount, window='1y', partition_by=customers.regions.name), "
-                      "partition_by=ordered_at, direction='desc')")
+        _bind_monthly("rank(sum(orders.amount, window='1y', partition_by=customers.regions.name), "
+                      "partition_by=orders.ordered_at, direction='desc')")
 
     def test_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
-            _bind_monthly(f"rank({LAST_INNER}, partition_by=ordered_at, direction='desc')")
+            _bind_monthly(f"rank({LAST_INNER}, partition_by=orders.ordered_at, direction='desc')")
         _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 
@@ -254,7 +254,7 @@ class TestOperandGrainTimeAxis:
 
     def test_aggregate_free_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
-            _bind_monthly(f"rank({LAST_SHIFT}, partition_by=ordered_at, direction='desc')")
+            _bind_monthly(f"rank({LAST_SHIFT}, partition_by=orders.ordered_at, direction='desc')")
         _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 
@@ -262,11 +262,11 @@ class TestOperandGrainTimeAxis:
         _bind_monthly(f"rank({LAST_SHIFT}, partition_by=customers.regions.name, direction='desc')")
 
     def test_aggregate_free_leaf_beside_nested_last_keeps_the_query_grain(self):
-        _bind_monthly(f"rank(customers.regions.name + {LAST_SHIFT}, partition_by=ordered_at, direction='desc')")
+        _bind_monthly(f"rank(customers.regions.name + {LAST_SHIFT}, partition_by=orders.ordered_at, direction='desc')")
 
     def test_aggregate_free_literal_beside_nested_last_drops_its_axis(self):
         with pytest.raises(ValueError) as ei:
-            _bind_monthly(f"rank({LAST_SHIFT} + 1, partition_by=ordered_at, direction='desc')")
+            _bind_monthly(f"rank({LAST_SHIFT} + 1, partition_by=orders.ordered_at, direction='desc')")
         _assert_membership_error(msg=str(ei.value), key="ordered_at",
                                  grain="customers.regions.name")
 

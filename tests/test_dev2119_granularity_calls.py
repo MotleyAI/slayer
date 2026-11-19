@@ -20,7 +20,7 @@ def _ids(resp: SlayerResponse) -> set[int]:
 
 
 def _by_id(resp: SlayerResponse, name: str) -> dict[int, float | None]:
-    return {int(r["orders.id"]): num(r[f"orders.{name}"]) for r in resp.data}
+    return {int(r["orders.id"]): num(r[name]) for r in resp.data}
 
 
 class TestExpressionArgument:

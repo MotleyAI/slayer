@@ -74,31 +74,31 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
 
 dev1837_models = dev1824_models
 
-RANK_DIM = "rank(sum(amount, partition_by=region), direction='desc')"
-BARE_DIM = "sum(amount, partition_by=city)"
-MIXED_DIM = "rank(sum(amount, partition_by=region) - sum(amount, partition_by=city), direction='desc')"
-CP_PRED = "consecutive_periods(sum(amount) > 28)"
+RANK_DIM = "rank(sum(orders.amount, partition_by=orders.region), direction='desc')"
+BARE_DIM = "sum(orders.amount, partition_by=orders.city)"
+MIXED_DIM = "rank(sum(orders.amount, partition_by=orders.region) - sum(orders.amount, partition_by=orders.city), direction='desc')"
+CP_PRED = "consecutive_periods(sum(orders.amount) > 28)"
 
 #: Dimension-family query dimensions, in projection order.
 DIM_FAMILY_DIMS = {
-    "col": ["region"],
-    "expr": ["region", {"field": "lower(city)", "alias": "lc"}],
-    "band": ["region", {"field": BAND35, "alias": "band"}],
-    "bare": ["region", {"field": BARE_DIM, "alias": "ct"}],
-    "rank": ["region", {"field": RANK_DIM, "alias": "rr"}],
-    "mixed": ["region", "city", {"field": MIXED_DIM, "alias": "mr"}],
+    "col": ["orders.region"],
+    "expr": ["orders.region", {"field": "lower(orders.city)", "alias": "lc"}],
+    "band": ["orders.region", {"field": BAND35, "alias": "band"}],
+    "bare": ["orders.region", {"field": BARE_DIM, "alias": "ct"}],
+    "rank": ["orders.region", {"field": RANK_DIM, "alias": "rr"}],
+    "mixed": ["orders.region", "orders.city", {"field": MIXED_DIM, "alias": "mr"}],
 }
 
 #: Transform-measure formulas, keyed by op (the M-transform family).
 TRANSFORM_FORMULAS = {
-    "time_shift": "time_shift(sum(amount), -1)",
-    "lag": "lag(sum(amount))",
-    "lead": "lead(sum(amount))",
-    "change": "change(sum(amount))",
-    "change_pct": "change_pct(sum(amount))",
-    "cumsum": "cumsum(sum(amount))",
+    "time_shift": "time_shift(sum(orders.amount), -1)",
+    "lag": "lag(sum(orders.amount))",
+    "lead": "lead(sum(orders.amount))",
+    "change": "change(sum(orders.amount))",
+    "change_pct": "change_pct(sum(orders.amount))",
+    "cumsum": "cumsum(sum(orders.amount))",
     "consecutive_periods": CP_PRED,
-    "rank": "rank(sum(amount), direction='desc')",
+    "rank": "rank(sum(orders.amount), direction='desc')",
 }
 #: Transform ops that need the month time dimension (rank is timeless).
 TD_TRANSFORM_OPS = frozenset(TRANSFORM_FORMULAS) - {"rank"}

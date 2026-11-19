@@ -85,10 +85,10 @@ class TestAggregationGate:
     def test_sole_primary_key_refuses_sum(self) -> None:
         model = orders_dataset()
         with pytest.raises(AggregationNotAllowedError):
-            _plan(dataset=model, expression="sum(id)")
+            _plan(dataset=model, expression="sum(orders.id)")
 
     def test_sole_primary_key_accepts_collect(self) -> None:
-        _plan(dataset=orders_dataset(), expression="collect(id)")
+        _plan(dataset=orders_dataset(), expression="collect(orders.id)")
 
     @pytest.mark.parametrize("formula", ["max(order_lines.line_no)", "sum(order_lines.line_no)"])
     def test_composite_member_aggregates_by_type(self, formula) -> None:
@@ -146,20 +146,20 @@ class TestCatalogEligibility:
 class TestInspectSampling:
     def test_composite_member_is_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(order_lines())
-        assert "status" in dims
+        assert "order_lines.status" in dims
 
     def test_sole_primary_key_is_not_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(codes())
-        assert dims == ["label"]
+        assert dims == ["codes.label"]
 
     def test_composite_members_are_sample_measures(self) -> None:
         formulas = [m["metric"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["metrics"]]
-        assert any("(order_id)" in f for f in formulas)
-        assert any("(line_no)" in f for f in formulas)
+        assert any("(order_lines.order_id)" in f for f in formulas)
+        assert any("(order_lines.line_no)" in f for f in formulas)
 
     def test_sole_primary_key_is_not_a_sample_measure(self) -> None:
         formulas = [m["metric"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["metrics"]]
-        assert not any("(id)" in f for f in formulas)
+        assert not any("(orders.id)" in f for f in formulas)
 
     def test_composite_member_sample_cache_is_checked(self) -> None:
         model = order_lines()

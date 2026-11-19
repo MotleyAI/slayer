@@ -385,7 +385,7 @@ class TestCoexistenceAcrossFamilies:
             return [QueryMetric(metric=f, alias=n) for f, n in pairs]
 
         def _index(resp):
-            keys = [f"orders.{d}" for d in dims]
+            keys = list(dims)
             if tds:
                 keys.append("orders.ordered_at")
             return {tuple(r[k] for k in keys): r for r in resp.data}
@@ -399,7 +399,7 @@ class TestCoexistenceAcrossFamilies:
             )))
             assert set(solo) == set(combined), name
             for key, row in solo.items():
-                got, want = combined[key][f"orders.{name}"], row[f"orders.{name}"]
+                got, want = combined[key][name], row[name]
                 if want is None:
                     assert got is None, (name, key)
                 else:

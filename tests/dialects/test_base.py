@@ -271,7 +271,7 @@ async def test_chain_outer_wrap_basic_shape() -> None:
     """``SELECT <quoted public> FROM (<chain final select>) AS _outer``."""
     top = parse(await gen(cumsum_chain(), dialect="postgres"), "postgres")
     assert [e.sql(dialect="postgres") for e in top.expressions] == [
-        '"orders.created_at"', '"orders.running"',
+        '"orders.created_at"', '"running"',
     ]
     assert "orders.amount_sum" in outer_derived(top).named_selects
 

@@ -37,7 +37,7 @@ def _q(expression: str, *, date_range: bool = False):
     td = ([TimeDimension(field="monthly.ordered_at",
                          granularity=TimeGranularity.MONTH,
                          date_range=["2024-02-01", "2024-03-31"])]
-          if date_range else month_td())
+          if date_range else month_td("monthly"))
     return monthly_q(dimensions=["monthly.region"], time_dimensions=td,
                      metrics=[QueryMetric(metric=f"time_shift({expression}, -1)", alias="t")])
 

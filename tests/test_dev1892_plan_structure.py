@@ -33,7 +33,7 @@ from tests._dev1847_fixtures import (
 )
 from tests._dev1892_fixtures import weighted_sales_datasets
 
-_WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
+_WEIGHT_COUNT = "weight=count(sales.id, partition_by=[sales.city, sales.region])"
 _WAVG_REAGG = f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})"
 
 
@@ -94,8 +94,8 @@ class TestCombinedConsumerExemption:
         """A re-aggregation nested inside another, carrying a weight, plans."""
         formula = (
             f"avg(weighted_avg({INNER_CRP}, "
-            "weight=count(id, partition_by=[city, region, product]), "
-            "partition_by=[region, product]))")
+            "weight=count(sales.id, partition_by=[sales.city, sales.region, sales.product]), "
+            "partition_by=[sales.region, sales.product]))")
         planned = plan_query(
             query=sales_q(dimensions=["sales.product"],
                           metrics=[QueryMetric(metric=formula, alias="d")]),

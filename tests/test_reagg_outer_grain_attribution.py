@@ -209,8 +209,8 @@ class TestExplicitOuterKeys:
     async def test_undetermined_to_one_key_errors(self, sales_engine, mode):
         q = sales_q(
             dimensions=["sales.region"], to_many_handling=mode,
-            metrics=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
-                            partition_by="[region]")])
+            metrics=[reagg("avg", "sum(sales.amount, partition_by=sales.city)", name="acr",
+                            partition_by="[sales.region]")])
         with pytest.raises(PartitionKeyError) as ei:
             await sales_engine.execute(q)
         _assert_undetermined_key_error(ei.value, key="region", grain_member="city")
@@ -219,8 +219,8 @@ class TestExplicitOuterKeys:
     async def test_undetermined_to_one_key_associates(self, sales_engine, mode):
         resp = await sales_engine.execute(sales_q(
             dimensions=["sales.region"], to_many_handling=mode,
-            metrics=[reagg("avg", "sum(amount, partition_by=city)", name="acr",
-                            partition_by="[region]")]))
+            metrics=[reagg("avg", "sum(sales.amount, partition_by=sales.city)", name="acr",
+                            partition_by="[sales.region]")]))
         vals = {k[0]: v["acr"] for k, v in region_key(resp).items()}
         for region, expected in ASSOCIATE_AVG_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -264,7 +264,7 @@ class TestPositions:
 class TestOtherConsumerShapes:
     async def test_depth_three(self, engine):
         middle = (f"sum(sum(account_snapshots.balance, {P}), "
-                  f"partition_by=[{ACCOUNT}, id])")
+                  f"partition_by=[{ACCOUNT}, customers.id])")
         resp = await engine.execute(query(dimensions=["customers.name"], metrics=[m(f"max({middle})")]))
         approx_cells(cells(resp, keys=("customers.name",)),
                      {(k,): x for k, x in DEPTH3_MAX_ACCOUNT_TOTAL_BY_NAME.items()})

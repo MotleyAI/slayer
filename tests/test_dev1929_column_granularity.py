@@ -249,7 +249,7 @@ class TestQueryBackedCache:
             agg_col = next(c.name for c in maxed.fields if c.name != "region")
             await engine.execute(query=SlayerQuery.model_validate({
                 "population": "maxed",
-                "time_dimensions": [{"field": agg_col, "granularity": "day"}],
+                "time_dimensions": [{"field": f"maxed.{agg_col}", "granularity": "day"}],
                 "metrics": [{"metric": "count(maxed.*)"}],
             }), dry_run=True)
             # A computed dimension is cached without a granularity.
@@ -484,12 +484,12 @@ class TestUnifiedMessage:
     async def test_stage_and_model_columns_share_one_message(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             engine = await _seeded_engine("sqlite", tmp)
-            s1 = {"name": "s1", "population": "orders",
+            s1 = {"name": "monthly", "population": "orders",
                   "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
                   "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}]}
-            stage_outer = {"population": "s1",
-                           "time_dimensions": [{"field": "s1.created_at", "granularity": "day"}],
-                           "metrics": [{"metric": "sum(s1.rev)"}]}
+            stage_outer = {"population": "monthly",
+                           "time_dimensions": [{"field": "monthly.created_at", "granularity": "day"}],
+                           "metrics": [{"metric": "sum(monthly.rev)"}]}
             with pytest.raises(TimeDimensionFieldError) as stage_exc:
                 await engine.execute(query=[s1, stage_outer], dry_run=True)
             await engine.create_dataset_from_query(

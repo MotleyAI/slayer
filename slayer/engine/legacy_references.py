@@ -13,11 +13,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.deprecation import deprecated_input
+from slayer.core.enums import BUILTIN_AGGREGATION_PARAM_ORDER, BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.errors import AmbiguousReferenceError
 from slayer.core.names import match_name, spelled_name
 from slayer.core.query import QueryDimension, QueryMetric, QueryRefinement, SlayerQuery, TimeDimension, declared_aliases
-from slayer.core.syntax import Ref, StarSource, reference_spans, walk_references
-from slayer.core.time_spine import TIME_SPINE_DATASET
+from slayer.core.models import SlayerDataset
+from slayer.core.syntax import (
+    AggCall, NamedArg, Ref, ScalarCall, StarSource, keyword_spelling, reference_spans, walk_references,
+)
+from slayer.core.time_spine import TIME_SPINE_DATASET, TIME_SPINE_FIELD, is_spine_spelling
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.storage.base import StorageBackend
 
@@ -28,11 +32,43 @@ __all__ = [
 
 
 class AnchorNames(BaseModel):
-    """The names a first segment anchors at: datasets, query stages and the time spine."""
+    """The names a first segment anchors at (datasets, query stages, the time spine), and per folded population name
+    its folded field and metric names (``members``) and custom aggregation names (``aggregations``)."""
 
     model_config = ConfigDict(frozen=True)
 
     names: frozenset[str]
+    members: Dict[str, frozenset[str]] = {}
+    aggregations: Dict[str, frozenset[str]] = {}
+    #: Per folded population name, the names a pre-2.0 dotted first segment read from it: its fields and edges.
+    heads: Dict[str, frozenset[str]] = {}
+
+    def reads_head(self, *, population: str, name: str, quoted: bool) -> bool:
+        """Whether a dotted reference starting at ``name`` read from ``population`` before 2.0 (unknown: assumed)."""
+        declared = self.heads.get(population.casefold())
+        if declared is None:
+            return True
+        try:
+            return match_name(name=name, declared=declared, quoted=quoted) is not None
+        except AmbiguousReferenceError:
+            return True
+
+    def names_parameter(self, *, population: str, agg: str, name: str) -> bool:
+        """Whether ``name = …`` in ``agg(…)`` may name one of its parameters: any in a custom (or overridden)
+        aggregation, else a built-in's or a routing one."""
+        canonical = normalize_aggregation_name(agg)
+        if canonical not in BUILTIN_AGGREGATIONS or agg.casefold() in self.aggregations.get(population.casefold(), ()):
+            return True
+        builtin = BUILTIN_AGGREGATION_PARAM_ORDER.get(canonical, [])
+        return name.casefold() in {"partition_by", "window", *(p.casefold() for p in builtin)}
+
+    def reads_keyword(self, *, population: str, call: str, name: str) -> bool:
+        """Whether ``name = …`` in a ``call(…)`` read from ``population`` was no reference before 2.0: a parameter of
+        the population's custom aggregation ``call``, or (when the population is known) none of its members."""
+        pop = population.casefold()
+        if call.casefold() in self.aggregations.get(pop, ()):
+            return True
+        return pop in self.members and name.casefold() not in self.members[pop]
 
     def anchors(self, name: str, *, quoted: bool) -> bool:
         try:
@@ -59,15 +95,32 @@ class Conversions:
 
 def convert_text(
     text: str, *, population: str, aliases: Iterable[str], anchors: AnchorNames, conversions: Conversions,
+    edges: Iterable[str] = (),
 ) -> str:
     """``text`` with each root-relative reference read from ``population``; each conversion is noted."""
     parsed, spans = reference_spans(text)
     declared = list(aliases)
     prefix = spelled_name(population)
+    keyword_names = _keyword_names(parsed)
+    local_edges = list(edges)
     edits: Dict[Tuple[int, int], str] = {}
+    for call, arg in _named_args(parsed):
+        span = spans.get(id(arg))
+        if span is None or anchors.names_parameter(population=population, agg=call.agg, name=arg.name):
+            continue
+        if anchors.reads_keyword(population=population, call=call.agg, name=arg.name):
+            continue
+        if declared and _is_alias(arg.name, declared=declared, quoted=False):
+            continue
+        written = text[span[0]:span[1]]
+        conversions.note(written, f"{prefix}.{written}")
+        edits[span] = f"{prefix}.{written}"
     for node, aggregation in walk_references(parsed):
         span = spans.get(id(node))
         if span is None:
+            continue
+        call = keyword_names.get(id(node))
+        if call is not None and anchors.reads_keyword(population=population, call=call, name=node.name):
             continue
         start, end = span
         written = text[start:end]
@@ -79,7 +132,9 @@ def convert_text(
         if isinstance(node, Ref):
             if declared and _is_alias(node.name, declared=declared, quoted=node.quoted):
                 continue
-        elif anchors.anchors(node.parts[0], quoted=node.quoted_at(0)):
+        elif anchors.anchors(node.parts[0], quoted=node.quoted_at(0)) or not (anchors.reads_head(
+                population=population, name=node.parts[0], quoted=node.quoted_at(0))
+                or _is_alias(node.parts[0], declared=local_edges, quoted=node.quoted_at(0))):
             continue
         replacement = f"{prefix}.{written}"
         conversions.note(written, replacement)
@@ -87,6 +142,38 @@ def convert_text(
     out = text
     for (start, end), replacement in sorted(edits.items(), reverse=True):
         out = out[:start] + replacement + out[end:]
+    return out
+
+
+def _named_args(node: Any) -> List[Tuple[AggCall, NamedArg]]:
+    """Every ``name = value`` argument of an aggregation call in ``node``, with its call."""
+    out: List[Tuple[AggCall, NamedArg]] = []
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, AggCall):
+            out.extend((current, a) for a in (current.source, *current.args) if isinstance(a, NamedArg))
+        if isinstance(current, BaseModel):
+            stack.extend(getattr(current, f) for f in type(current).model_fields)
+        elif isinstance(current, (tuple, list)):
+            stack.extend(current)
+    return out
+
+
+def _keyword_names(node: Any) -> Dict[int, str]:
+    """The ``name`` Refs of every ``name = value`` argument of a scalar call in ``node``, by id, to the call's name."""
+    out: Dict[int, str] = {}
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, ScalarCall):
+            for arg in current.args:
+                if keyword_spelling(arg) is not None:
+                    out[id(arg.left)] = current.name
+        if isinstance(current, BaseModel):
+            stack.extend(getattr(current, f) for f in type(current).model_fields)
+        elif isinstance(current, (tuple, list)):
+            stack.extend(current)
     return out
 
 
@@ -104,13 +191,14 @@ class _Converter(BaseModel):
     aliases: List[str]
     anchors: AnchorNames
     conversions: Any
+    edges: List[str] = []
 
     def text(self, value: str, *, own_alias: Optional[str] = None) -> str:
         """``value`` converted; ``own_alias`` (the entry's own) shadows nothing in its own field."""
         aliases = [a for a in self.aliases if a != own_alias] if own_alias else self.aliases
         try:
             return convert_text(value, population=self.population, aliases=aliases, anchors=self.anchors,
-                                conversions=self.conversions)
+                                conversions=self.conversions, edges=self.edges)
         except ValueError:
             return value  # an unparseable text is reported where it binds
 
@@ -155,6 +243,13 @@ class _Converter(BaseModel):
         return m if new == m.metric else m.model_copy(update={"metric": new})
 
 
+def _extension_edges(query: SlayerQuery, *, population: str) -> List[str]:
+    """The names of the edges ``query``'s extensions declare at ``population``, on either side."""
+    folded = population.casefold()
+    return [r.name for e in query.extensions or [] for r in e.relationships or []
+            if r.name and folded in (e.dataset.casefold(), r.to.casefold())]
+
+
 def _noop_alias(d: QueryDimension) -> Optional[str]:
     """A 1.x alias naming a plain reference by its own name, which renamed nothing."""
     return d.alias if d.alias is not None and d.ref is not None and not d.is_computed else None
@@ -179,7 +274,7 @@ def convert_query(query: SlayerQuery, *, anchors: AnchorNames, conversions: Conv
     if population is None:
         return query
     converter = _Converter(population=population, aliases=_live_aliases(query), anchors=anchors,
-                           conversions=conversions)
+                           conversions=conversions, edges=_extension_edges(query, population=population))
     data: Dict[str, Any] = {name: getattr(query, name) for name in query.model_fields_set | {"version"}}
     before = dict(data)
     converter.entries(data, query)
@@ -196,7 +291,7 @@ def convert_refinement(
     if population is None:
         return refinement
     converter = _Converter(population=population, aliases=_live_aliases(saved, refinement), anchors=anchors,
-                           conversions=conversions)
+                           conversions=conversions, edges=_extension_edges(saved, population=population))
     data: Dict[str, Any] = {name: getattr(refinement, name) for name in refinement.model_fields_set}
     converter.entries(data, refinement)
     data = {k: v for k, v in data.items() if k in refinement.model_fields_set}
@@ -224,7 +319,33 @@ async def anchor_names(storage: StorageBackend, queries: Sequence[SlayerQuery], 
         chosen = {data_source}
     names = {n for ds, n in identities if ds in chosen}
     names |= stage_names | {q.population_name for q in queries if q.population_name}
-    return AnchorNames(names=frozenset({*names, TIME_SPINE_DATASET}))
+    members: Dict[str, frozenset[str]] = {}
+    aggregations: Dict[str, frozenset[str]] = {}
+    heads: Dict[str, frozenset[str]] = {}
+    for population in {q.population_name for q in queries if q.population_name} - stage_names:
+        found = await _population_dataset(storage, population, identities=identities, chosen=chosen)
+        dataset = found[1] if found is not None else None
+        if dataset is None and is_spine_spelling(population):
+            members[population.casefold()] = heads[population.casefold()] = frozenset({TIME_SPINE_FIELD})
+        elif dataset is not None:
+            members[population.casefold()] = frozenset(
+                n.casefold() for n in [*(f.name for f in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
+            aggregations[population.casefold()] = frozenset(a.name.casefold() for a in dataset.aggregations)
+            heads[population.casefold()] = frozenset(
+                [*(f.name for f in dataset.fields), *await storage.incident_edge_names(dataset.name, data_source=found[0])])
+    return AnchorNames(names=frozenset({*names, TIME_SPINE_DATASET}), members=members, aggregations=aggregations,
+                       heads=heads)
+
+
+async def _population_dataset(
+    storage: StorageBackend, population: str, *, identities: Sequence[Tuple[str, str]], chosen: Iterable[str],
+) -> Optional[Tuple[str, SlayerDataset]]:
+    """The datasource and stored dataset ``population`` names in the ``chosen`` datasources, when exactly one does."""
+    hits = [(ds, n) for ds, n in identities if ds in set(chosen) and n == population]
+    if len(hits) != 1:
+        return None
+    dataset = await storage.get_dataset(hits[0][1], data_source=hits[0][0])
+    return None if dataset is None else (hits[0][0], dataset)
 
 
 async def qualified_input(queries: List[Any], *, storage: StorageBackend, data_source: Optional[str],

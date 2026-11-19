@@ -57,7 +57,7 @@ def _b_over(dim: str, source, **kw) -> SlayerQuery:
 
 
 def _root_over_b(flat_dim: str) -> SlayerQuery:
-    return query(population="b", dimensions=[flat_dim], metrics=[m("sum(b.amt)", "total")])
+    return query(population="b", dimensions=[f"b.{flat_dim}"], metrics=[m("sum(b.amt)", "total")])
 
 
 class TestStoredDefinitionsNeverSeeStages:
@@ -96,8 +96,8 @@ class TestQueryBackedPrivateStageNames:
         resp = await engine.execute(query(
             population="qb_shadow", dimensions=["qb_shadow.customers__tier"],
             metrics=[m("sum(qb_shadow.amt)", "total")]))
-        assert resp.columns == ["qb_shadow.customers__tier", "qb_shadow.total"]
-        assert rows_by(resp.data, key="qb_shadow.customers__tier", value="qb_shadow.total") \
+        assert resp.columns == ["qb_shadow.customers__tier", "total"]
+        assert rows_by(resp.data, key="qb_shadow.customers__tier", value="total") \
             == AMOUNT_BY_TIER
 
     async def test_consumer_name_reaches_the_model_not_a_private_stage(self, engine: SlayerQueryEngine) -> None:
@@ -109,9 +109,9 @@ class TestQueryBackedPrivateStageNames:
                 {"to": "s", "from_columns": ["tier"], "to_columns": ["customers__tier"]}]}],
             dimensions=["customers.tier", "s.t"], metrics=[m("sum(customers.spend)", "sp")])
         resp = await engine.execute([s, root])
-        assert resp.columns == ["customers.tier", "customers.s.t", "sp"]
+        assert resp.columns == ["customers.tier", "s.t", "sp"]
         assert sorted_rows(resp.data) == sorted_rows([
-            {"customers.tier": t, "customers.s.t": AMOUNT_BY_TIER[t], "sp": SPEND_BY_TIER[t]}
+            {"customers.tier": t, "s.t": AMOUNT_BY_TIER[t], "sp": SPEND_BY_TIER[t]}
             for t in SPEND_BY_TIER
         ])
 
@@ -132,9 +132,9 @@ class TestUserSpelling:
 
     async def test_run_by_name_result_keys_unchanged(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute("cust_rev")
-        assert resp.columns == ["x.customer_id", "x.rev", "x.top"]
+        assert resp.columns == ["x.customer_id", "rev", "top"]
         assert sorted_rows(resp.data) == sorted_rows([
-            {"x.customer_id": c, "x.rev": CUST_REV[c], "x.top": CUST_TOP[c]} for c in CUST_REV])
+            {"x.customer_id": c, "rev": CUST_REV[c], "top": CUST_TOP[c]} for c in CUST_REV])
 
     async def test_stage_warning_names_the_user_stage(self, engine) -> None:
         b = query(name="b", population="orders", dimensions=["orders.status"],
@@ -162,9 +162,9 @@ class TestUserSpelling:
         stale, canon = "customers__regions__rname", "customers__hr__rname"
         s1 = slayer_query(name="s1", population="orders",
                           dimensions=["customers.regions.rname"], metrics=["sum(orders.amount)"])
-        s2 = slayer_query(name="s2", population="s1", dimensions=[stale],
+        s2 = slayer_query(name="s2", population="s1", dimensions=[f"s1.{stale}"],
                           metrics=["sum(s1.amount_sum)"])
-        root = slayer_query(population="s2", dimensions=[stale], metrics=["sum(s2.amount_sum_sum)"])
+        root = slayer_query(population="s2", dimensions=[f"s2.{stale}"], metrics=["sum(s2.amount_sum_sum)"])
         async for e in make_dev1954_engine(_Req()):
             resp = await e.execute([s1, s2, root])
             assert f"s2.{canon}" in resp.columns
@@ -218,9 +218,9 @@ class TestIdentifierLimit:
             resp = await engine.execute([
                 query(name=long, population="orders", dimensions=["orders.status"],
                       metrics=[m("sum(orders.amount)", "a")]),
-                query(population=long, dimensions=["status"], metrics=[m("sum(ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss.a)", "t")]),
+                query(population=long, dimensions=[f"{long}.status"], metrics=[m(f"sum({long}.a)", "t")]),
             ], dry_run=True)
-        assert resp.columns == [f"{long}.status", f"{long}.t"]
+        assert resp.columns == [f"{long}.status", "t"]
         assert resp.sql is not None
         tree = sqlglot.parse_one(resp.sql, dialect="postgres")
         names = [cte.alias for cte in tree.find_all(exp.CTE)]

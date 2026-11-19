@@ -692,7 +692,7 @@ class TestTimeShiftCteDecollision:
         # The user measure keeps its own key.
         assert "_time_shift_inner" in cols, cols
         # The hidden shift alias was bumped off the user's name, not collided.
-        assert "orders._time_shift_inner_2" in sql, sql
+        assert "_time_shift_inner_2" in sql, sql
 
     async def test_two_consecutive_periods_unique_ctes(self) -> None:
         """DEV-1692 (sibling of time_shift): two arithmetic-wrapped

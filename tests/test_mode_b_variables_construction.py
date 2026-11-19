@@ -18,14 +18,14 @@ def build(**kw: Any) -> SlayerQuery:
 
 def test_string_dimension_with_placeholder() -> None:
     q = build(dimensions=["orders.amount * {k}"])
-    assert q.dimensions == [QueryDimension(field="amount * {k}")]
+    assert q.dimensions == [QueryDimension(field="orders.amount * {k}")]
     assert [d.name for d in q.dimensions or []] == ["amount_k"]
 
 
 def test_order_expression_with_placeholder() -> None:
     q = build(order=[{"field": "sum(orders.amount) * {k}", "direction": "desc"}])
     assert q.order is not None
-    assert q.order[0].raw_expression == "sum(amount) * {k}"
+    assert q.order[0].raw_expression == "sum(orders.amount) * {k}"
     assert q.order[0].direction == "desc"
 
 

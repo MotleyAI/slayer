@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Optional, Tuple
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, InstanceOf
 
 from slayer.core.errors import (
     SlayerError,
@@ -17,7 +17,7 @@ from slayer.core.errors import (
 )
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, spelled_name
-from slayer.core.relationship_search import HopFilter, routes
+from slayer.core.relationship_search import HopFilter, blocking_pairs, routes
 from slayer.core.relationship_walker import neighbors, walk_terminal
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population.dimension_routing import resolve_route
@@ -45,10 +45,10 @@ class Anchor(BaseModel):
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    dataset: SlayerDataset
+    # Held as given: a stage's or a query-local frame's dataset is built without validation.
+    dataset: InstanceOf[SlayerDataset]
     route: Tuple[str, ...] = ()
     unrelated: bool = False
-
 
 
 def find_anchor(
@@ -98,13 +98,12 @@ def anchor_route(
     if status == "unreachable":
         return Anchor(dataset=anchor, route=(anchor.spelling,), unrelated=True)
     spellings = explicit_spellings(reader=reader, anchor=anchor, datasets_by_name=universe, rest=rest)
+    remedy = (f"spell the path: {', '.join(repr(s) for s in spellings)}." if spellings else "; ".join(
+        p.describe() for p in blocking_pairs(root=reader, target=anchor.name, datasets_by_name=universe)) + ".")
     raise UnresolvableDimensionRelationshipError(
         reference=".".join((anchor.spelling, *rest)),
         root_dataset=reader.spelling,
-        reason=(
-            f"{anchor.spelling!r} is reached by more than one path from {reader.spelling!r}; "
-            f"spell the path: {', '.join(repr(s) for s in spellings)}."
-        ),
+        reason=f"{anchor.spelling!r} is reached by more than one path from {reader.spelling!r}; {remedy}",
         suggested_path=spellings[0] if spellings else None,
     )
 

@@ -63,7 +63,7 @@ class TestFilterRenamedMeasureRemap:
         sql = await _generate(query, model)
 
         # Must surface the renamed alias in the projection.
-        assert '"orders.num_customers"' in sql, (
+        assert '"num_customers"' in sql, (
             f"renamed alias must appear in projection:\n{sql}"
         )
         # Must NOT reference the canonical alias anywhere — that column is
@@ -90,7 +90,7 @@ class TestFilterRenamedMeasureRemap:
         )
         sql = await _generate(query, model)
 
-        assert '"orders.num_customers"' in sql
+        assert '"num_customers"' in sql
         assert "HAVING" in sql
         assert "COUNT(DISTINCT" in sql
         assert "customer_id_count_distinct" not in sql
@@ -135,7 +135,7 @@ class TestFilterRenamedMeasureRemap:
         # canonical alias). The SQL must not contain ``amount_sum`` — the
         # rename consumed that slot.
         assert "HAVING" in sql, sql
-        assert '"orders.revenue"' in sql
+        assert '"revenue"' in sql
         # Canonical for `sum(amount)` must not appear (it's renamed to revenue).
         assert "orders.amount_sum" not in sql, (
             f"renamed canonical leaked:\n{sql}"
@@ -195,7 +195,7 @@ class TestOrderByRenamedMeasureRemap:
 
         assert "ORDER BY" in sql
         order_clause = sql.split("ORDER BY", 1)[1]
-        assert '"orders.num_customers"' in order_clause, (
+        assert '"num_customers"' in order_clause, (
             f"renamed alias must surface in ORDER BY:\n{sql}"
         )
         assert "customer_id_count_distinct" not in order_clause, (
@@ -215,7 +215,7 @@ class TestOrderByRenamedMeasureRemap:
         )
         sql = await _generate(query, model)
         assert "ORDER BY" in sql
-        assert '"orders.num_customers"' in sql.split("ORDER BY", 1)[1]
+        assert '"num_customers"' in sql.split("ORDER BY", 1)[1]
 
 
 class TestRemapEdgeCases:

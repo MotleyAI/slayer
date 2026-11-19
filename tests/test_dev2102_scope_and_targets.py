@@ -57,7 +57,7 @@ class TestExtendingAnyModel:
         async with shop(dialect, with_datasets(stored)) as engine:
             expected = by_key(await engine.execute(q(
                 population="orders", dimensions=["customers.tier_label"], metrics=[AMOUNT])),
-                "orders.customers.tier_label", "a")
+                "customers.tier_label", "a")
         assert got == expected == {"GOLD": 35.0, "SILVER": 45.0, "BRONZE": 40.0, None: 7.0}
 
     async def test_extending_a_joined_model_adds_a_measure(self, dialect) -> None:

@@ -293,7 +293,7 @@ class TestUnreachableAndAmbiguousFailClosed:
         query = _regions_q(
             dimensions=["regions.name"],
             metrics=[QueryMetric(
-                metric="sum(regions.pop, partition_by=region_events.value)", alias="w")])
+                metric="sum(regions.pop, partition_by=regions.region_events.value)", alias="w")])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await ambig_engine.execute(query)
         assert len(ei.value.candidates) == 2  # named, not silently picked

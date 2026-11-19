@@ -308,8 +308,8 @@ def ordered_ids(resp: SlayerResponse, *, dataset: str = "orders") -> list[int]:
     return [int(r[f"{dataset}.id"]) for r in resp.data]
 
 
-def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict:
-    out = {r[f"{dataset}.{key}"]: r[value] for r in resp.data}
+def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str | None = "orders") -> dict:
+    out = {r[key if dataset is None else f"{dataset}.{key}"]: r[value] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 
@@ -449,5 +449,5 @@ async def check_filtered_custom_aggregations(engine: SlayerQueryEngine) -> None:
         assert got == pytest.approx(by_region), (formula, resp.sql)
         assert num(single(await engine.execute(q(metrics=[measure])))) == pytest.approx(total), formula
     resp = await engine.execute(q(dimensions=["orders.region"], metrics=["orders.paid_rows"]))
-    assert {k: num(v) for k, v in by_key(resp, "region", "paid_rows").items()} == {"EU": 2, "US": 1, None: None}
-    assert num(single(await engine.execute(q(metrics=["orders.paid_rows"])), "paid_rows")) == 3
+    assert {k: num(v) for k, v in by_key(resp, "region", "orders.paid_rows").items()} == {"EU": 2, "US": 1, None: None}
+    assert num(single(await engine.execute(q(metrics=["orders.paid_rows"])), "orders.paid_rows")) == 3

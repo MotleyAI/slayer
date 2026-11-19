@@ -56,6 +56,7 @@ P = "sum(sales.amount, partition_by=sales.region)"
 R = "avg(sum(sales.amount, partition_by=[sales.city, sales.region]), partition_by=sales.region)"
 C = "sum(sales.amount, partition_by=[sales.city, sales.region])"
 TOT = QueryMetric(metric="sum(sales.amount)", alias="tot")
+CORDERS_TOT = QueryMetric(metric="sum(corders.amount)", alias="tot")
 N = QueryMetric(metric="count(sales.*)", alias="n")
 
 RD_P = {"field": P, "alias": "rd"}
@@ -480,7 +481,7 @@ class TestMeasureTypingErrors:
     def test_non_dimension_row_reference(self, make_q, source, dims, formula, blocker,
                                          position):
         if position == "order":
-            query = make_q(dimensions=dims, metrics=[TOT],
+            query = make_q(dimensions=dims, metrics=[{"sales": TOT, "corders": CORDERS_TOT}[source]],
                            order=[{"field": formula, "direction": "asc"}])
         else:
             query = make_q(dimensions=dims, metrics=[_m(formula)])

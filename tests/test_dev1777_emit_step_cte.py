@@ -69,10 +69,10 @@ def test_single_slot_emits_step_cte_and_advances_chain() -> None:
     assert ctes[-1].depends_on == ["base"]
     sql = ctes[-1].query.sql(dialect="postgres")
     assert '"orders.d0"' in sql          # carried alias, in plan order
-    assert 'AS "orders.s1"' in sql        # rendered column, source-qualified
+    assert 'AS "s1"' in sql        # rendered column
     assert "FROM base" in sql
-    assert aliases["sid1"] == ["orders.s1"]
-    assert avail["sid1"] == "orders.s1"
+    assert aliases["sid1"] == ["s1"]
+    assert avail["sid1"] == "s1"
 
 
 def test_multi_slot_one_batch_preserves_caller_order() -> None:
@@ -91,10 +91,10 @@ def test_multi_slot_one_batch_preserves_caller_order() -> None:
     )
     assert new_tail == "step1"
     sql = ctes[-1].query.sql(dialect="postgres")
-    assert '"orders.a"' in sql
-    assert '"orders.b"' in sql
+    assert '"a"' in sql
+    assert '"b"' in sql
     # Deterministic: the caller's slot order is the emitted column order.
-    assert sql.index('"orders.a"') < sql.index('"orders.b"')
+    assert sql.index('"a"') < sql.index('"b"')
 
 
 def test_step_aliases_publish_after_its_select() -> None:
@@ -152,9 +152,9 @@ def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
         render=render,
     )
     projection = [e.alias_or_name for e in ctes[-1].query.expressions]
-    assert projection == ["orders.a", "orders.b"]
-    assert aliases["sid"] == ["orders.a", "orders.b"]
-    assert avail["sid"] == "orders.a"
+    assert projection == ["a", "b"]
+    assert aliases["sid"] == ["a", "b"]
+    assert avail["sid"] == "a"
     assert len(calls) == 1
 
 

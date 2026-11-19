@@ -30,10 +30,10 @@ async def _collected(engine, expression: str, *, by_key: str = "contractors.team
 
 class TestValues:
     async def test_values_per_team(self, engine) -> None:
-        assert await _collected(engine, "collect(city)") == {"A": ["Oslo"], "B": ["Oslo", "Rome"]}
+        assert await _collected(engine, "collect(contractors.city)") == {"A": ["Oslo"], "B": ["Oslo", "Rome"]}
 
     async def test_elements_per_team(self, engine) -> None:
-        assert await _collected(engine, "collect(skills.value)") == {"A": ["go", "sql"], "B": ["go"]}
+        assert await _collected(engine, "collect(contractors.skills.value)") == {"A": ["go", "sql"], "B": ["go"]}
 
     async def test_all_inputs_null(self, engine) -> None:
         resp = await engine.execute(query(metrics=[metric("collect(contractors.city)", "c")],
@@ -45,10 +45,10 @@ class TestValues:
         assert got == {"Ann": ["go", "sql"], "Bob": ["sql"], "Cid": [], "Dee": [], "Eve": ["go"]}
 
     async def test_integers_sorted_numerically(self, engine) -> None:
-        assert await _collected(engine, "collect(rate)") == {"A": [10, 20], "B": [30, 40, 50]}
+        assert await _collected(engine, "collect(contractors.rate)") == {"A": [10, 20], "B": [30, 40, 50]}
 
     async def test_scalar_expression(self, engine) -> None:
-        assert await _collected(engine, "collect(upper(city))") == {"A": ["OSLO"], "B": ["OSLO", "ROME"]}
+        assert await _collected(engine, "collect(upper(contractors.city))") == {"A": ["OSLO"], "B": ["OSLO", "ROME"]}
 
     async def test_boolean_expression(self, engine) -> None:
         got = await _collected(engine, "collect(contractors.rate > 25)")

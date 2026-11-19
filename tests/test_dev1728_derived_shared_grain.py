@@ -89,7 +89,7 @@ class TestForwardDerivedGrainShape:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         # Expanded expression present in SELECT + GROUP BY under the dotted alias.
         assert "customers_v2.lifetime_value * 2" in cm_body, cm_body
-        assert 'AS "customers_v2.ltv_x2"' in cm_body, cm_body
+        assert 'AS "ltv_x2"' in cm_body, cm_body
         assert "GROUP BY" in cm_body, cm_body
         # Real shared grain — not the broadcast fallback.
         assert "CROSS JOIN" not in sql, sql
@@ -112,7 +112,7 @@ class TestForwardDerivedGrainShape:
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "regions.population" in cm_body, cm_body
-        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "deep_pop"' in cm_body, cm_body
         base_body = _norm(_extract_cte_body(sql, r"_base"))
         assert "customers_v2__regions" in base_body, base_body
         assert "CROSS JOIN" not in sql, sql
@@ -131,7 +131,7 @@ class TestForwardDerivedGrainShape:
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
         assert "LEFT JOIN countries AS regions__countries" in cm_body, cm_body
         assert "regions__countries.gdp" in cm_body, cm_body
-        assert 'AS "customers_v2.deep_gdp"' in cm_body, cm_body
+        assert 'AS "deep_gdp"' in cm_body, cm_body
 
     async def test_typed_derived_grain_cast_consistent_base_and_cte(self) -> None:
         """A typed non-bare derived grain (``ltv_third`` = INT arithmetic) is
@@ -164,7 +164,7 @@ class TestForwardDerivedGrainShape:
         assert_scope_closed(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "SUM(regions.population)" in cm_body, cm_body
-        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "deep_pop"' in cm_body, cm_body
         assert "LEFT JOIN regions AS regions" in cm_body, cm_body
 
     async def test_non_sum_aggregate_over_derived_grain(self) -> None:
@@ -201,7 +201,7 @@ class TestForwardDerivedGrainShape:
             body = _norm(_extract_cte_body(sql, _re.escape(name)))
             assert "customers_v2.lifetime_value * 2" in body, (name, body)
         # Both join back on the dotted derived alias.
-        assert sql.count('"orders_x.customers_v2.ltv_x2"') >= 3, sql
+        assert sql.count('"customers_v2.ltv_x2"') >= 3, sql
 
     async def test_where_filter_on_derived_grain_dim(self) -> None:
         """A WHERE filter on the projected derived grain dim renders alongside
@@ -216,7 +216,7 @@ class TestForwardDerivedGrainShape:
         assert_scope_closed(sql)
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "regions.population" in cm_body, cm_body
-        assert 'AS "customers_v2.deep_pop"' in cm_body, cm_body
+        assert 'AS "deep_pop"' in cm_body, cm_body
         # The filter predicate must actually survive into the rendered SQL —
         # without this the test passes even if the generator drops the filter.
         assert "regions.population > 50" in _norm(sql), sql
@@ -275,7 +275,7 @@ class TestFirstLastDerivedGrain:
             inner,
         ), inner
         assert _re.search(
-            r"_val_\d+ AS \"customers_v2\.ltv_x2\"", outer), outer
+            r"_val_\d+ AS \"ltv_x2\"", outer), outer
 
     async def test_crossing_grain_materialised_in_ranked_subquery(self) -> None:
         """A first/last aggregate grouped by a CROSSING derived grain
@@ -301,7 +301,7 @@ class TestFirstLastDerivedGrain:
         assert "regions.population" in inner, inner
         # The outer SELECT/GROUP BY reference the _val_ alias, never bare
         # regions.population (which is out of scope outside the subquery).
-        assert _re.search(r"_val_\d+ AS \"customers_v2\.deep_pop\"", outer), outer
+        assert _re.search(r"_val_\d+ AS \"deep_pop\"", outer), outer
         assert "regions.population" not in outer, outer
 
     async def test_crossing_time_grain_first_last_regression(self) -> None:
@@ -329,7 +329,7 @@ class TestFirstLastDerivedGrain:
         # The outer SELECT / GROUP BY reference the _val_ alias, never the bare
         # crossing ref (the confirmed live-bug leak).
         assert _re.search(
-            r"_val_\d+ AS \"customers_v2\.region_opened_eff_month\"", outer), outer
+            r"_val_\d+ AS \"region_opened_eff_month\"", outer), outer
         assert "regions.opened_at" not in outer, outer
 
     async def test_typed_crossing_grain_first_last_cast(self) -> None:
@@ -355,7 +355,7 @@ class TestFirstLastDerivedGrain:
         assert "PARTITION BY" in inner, inner
         assert "CAST(regions.population * 2 AS DOUBLE PRECISION)" in inner, inner
         assert _re.search(
-            r"_val_\d+ AS \"customers_v2\.deep_pop_x2\"", outer), outer
+            r"_val_\d+ AS \"deep_pop_x2\"", outer), outer
         # No un-cast bare arithmetic leaked past the materialisation.
         assert "regions.population * 2 AS \"customers_v2" not in outer, outer
 
@@ -450,7 +450,7 @@ class TestSiblingPathsDerivedGrain:
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
-        assert '"orders_x.customers_v2.deep_pop"' in sql, sql
+        assert '"customers_v2.deep_pop"' in sql, sql
         # Null-safe join-back on the derived grain.
         on_pred = _joinback_on_predicate(sql)
         assert "customers_v2.deep_pop" in on_pred, on_pred

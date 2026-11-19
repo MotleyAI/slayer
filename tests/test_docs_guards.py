@@ -163,8 +163,8 @@ def test_every_query_field_is_read() -> None:
         "variables": {"v": "x"},
     }
     assert mode_b_values(query) == [
-        "count(*)", "sum(amount)", "status", "upper(status)", "status", "month(order_date)", "order_date",
-        "amount > 10", "sum(amount)",
+        "count(orders.*)", "sum(orders.amount)", "orders.status", "upper(orders.status)", "orders.status",
+        "month(orders.order_date)", "orders.order_date", "orders.amount > 10", "sum(orders.amount)",
     ]
 
 
@@ -180,7 +180,8 @@ def test_stage_lists_and_refinements() -> None:
         {"population": "per_customer", "metrics": ["avg(per_customer.total)"], "filter": ["per_customer.total > 100"]},
     ]
     call = {"query": "monthly_revenue", "refine": {"dimensions": ["region"], "filter": ["region = 'EU'"]}}
-    assert mode_b_values(stages) == ["customers.name", "sum(amount)", "avg(total)", "total > 100"]
+    assert mode_b_values(stages) == [
+        "customers.name", "sum(orders.amount)", "avg(per_customer.total)", "per_customer.total > 100"]
     assert mode_b_values(call) == ["region", "region = 'EU'"]
 
 
@@ -193,14 +194,14 @@ def test_datasets_keep_only_metric_expressions() -> None:
         "aggregations": [{"name": "wavg", "expression": "SUM({value} * {weight}) / SUM({weight})"}],
         "source_queries": [{"population": "raw", "filter": ["raw.amount > 0"]}],
     }
-    assert mode_b_values(dataset) == ["sum(amount) / count(*)", "amount > 0"]
+    assert mode_b_values(dataset) == ["sum(amount) / count(*)", "raw.amount > 0"]
 
 
 def test_inline_extension_and_standalone_objects() -> None:
     query = {"population": "orders",
              "extensions": [{"dataset": "orders", "fields": [{"name": "big", "sql": "amount > 100"}]}],
              "metrics": ["count(orders.*)"]}
-    assert mode_b_values(query) == ["count(*)"]
+    assert mode_b_values(query) == ["count(orders.*)"]
     assert mode_b_values({"expression": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]
     assert mode_b_values({"field": "created_at", "granularity": "month", "date_range": "2025"}) == ["created_at"]
     assert mode_b_values({"name": "wavg", "expression": "SUM({value})", "params": [{"name": "w", "sql": "1"}]}) == []

@@ -328,7 +328,7 @@ class TestBasicQueries:
             population="orders",
             metrics=[QueryMetric(metric="count(orders.*)")],
             dimensions=[QueryDimension(field="orders.status")],
-            order=[{"status": "descending"}],
+            order=[{"orders.status": "descending"}],
         )
         sql = await _generate(generator, query, orders_dataset)
         assert "ORDER BY" in sql
@@ -758,8 +758,8 @@ class TestFields:
         assert 'PARTITION BY "orders.status"' in norm
         assert 'ORDER BY "orders.created_at"' in norm
         # Value CTE: partition adds the reset-group alias (the typed pipeline uses a dotted ``orders.positive_streak`` separator, not ``__``).
-        assert '"_cp_reset_orders.positive_streak"' in norm
-        assert '"orders.positive_streak"' in norm
+        assert '"_cp_reset_positive_streak"' in norm
+        assert '"positive_streak"' in norm
 
     async def test_consecutive_periods_no_implicit_nulls_last_sqlite(
         self, orders_dataset: SlayerDataset,
@@ -796,7 +796,7 @@ class TestFields:
         assert "cp_reset_" in norm
         assert "cp_value_" in norm
         assert '>= 2' in norm
-        assert '"orders.long_enough"' in norm
+        assert '"long_enough"' in norm
 
     async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
@@ -816,7 +816,7 @@ class TestFields:
         assert "INTERVAL '90 DAY'" in norm
         # The inner grain comparison is NULL-SAFE: a group whose dimension is NULL must receive its real windowed value, not NULL. The time-range bounds above stay plain inequalities — they are a range, not grain.
         assert (
-            '_src._w_dim_0 IS NOT DISTINCT FROM _base."orders.status"' in norm
+            '_src._w_dim_0 IS NOT DISTINCT FROM _base."status"' in norm
         ), norm
 
     async def test_windowed_sum_preserves_other_time_dim_grain(
@@ -968,7 +968,7 @@ class TestFields:
         norm = _norm(sql)
         # The colon-syntax filter resolves to the renamed user alias. CodeRabbit nitpick: target the post-filter WHERE clause specifically — the alias surfaces in the projection too, so a generic ``in norm`` check could pass even on regression.
         where_clause = norm.split(" WHERE ", 1)[1] if " WHERE " in norm else ""
-        assert '"orders.revenue_90d"' in where_clause, (
+        assert '"revenue_90d"' in where_clause, (
             f"Filter must reference the renamed windowed measure's alias in WHERE.\nsql:\n{sql}"
         )
         # The filter must NOT bind to the plain-sum alias (no window).
@@ -1044,8 +1044,8 @@ class TestFields:
         # Both CTEs join back to the base grain in the combined SELECT.
         assert "LEFT JOIN _cm_orders__revenue_sum_window_90d" in norm, sql
         assert "LEFT JOIN _cm_orders__revenue_avg_window_30d" in norm, sql
-        assert '"orders.rev_90d"' in norm, sql
-        assert '"orders.rev_30d"' in norm, sql
+        assert '"rev_90d"' in norm, sql
+        assert '"rev_30d"' in norm, sql
 
     async def test_windowed_source_column_filter_wraps_case_in_src(
         self, generator: SQLGenerator,
@@ -1154,7 +1154,7 @@ class TestFields:
         norm = _norm(sql)
         assert "_cm_" in norm, sql
         order_portion = norm.split("ORDER BY", 1)[1] if "ORDER BY" in norm else ""
-        assert '"orders.revenue_90d"' in order_portion, (
+        assert '"revenue_90d"' in order_portion, (
             f"ORDER BY must reference the windowed public alias.\nsql:\n{sql}"
         )
         # The order term is the BARE combined-SELECT output column (the _cm_ value), never a ``_base.`` qualifier — _base excludes the windowed measure, so ``_base."orders.revenue_90d"`` would dangle.
@@ -1254,8 +1254,8 @@ class TestFields:
         )
         sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
-        assert '"orders.rev_a"' in norm, sql
-        assert '"orders.rev_b"' in norm, sql
+        assert '"rev_a"' in norm, sql
+        assert '"rev_b"' in norm, sql
         # One shared _cm_ CTE (same structural key), not two.
         assert norm.count("_cm_orders__revenue_sum_window_90d AS (") == 1, sql
 
@@ -1352,7 +1352,7 @@ class TestFields:
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         # change_pct = (curr - prev) / NULLIF(prev, 0) — the divisor is guarded against a zero prior-period value (returns NULL, not a div-by-zero).
-        assert 'NULLIF("orders._time_shift_inner", 0)' in sql
+        assert 'NULLIF("_time_shift_inner", 0)' in sql
 
     async def test_rank(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
@@ -1696,7 +1696,7 @@ class TestFields:
         transform_aliases = _hoisted_shift_aliases(sql)
         assert transform_aliases, f"no hoisted shift alias found in:\n{sql}"
         result_keys = _outer_projection_names(sql)
-        assert {"growth", "orders._t0_growth"} <= result_keys, (
+        assert {"growth", "_t0_growth"} <= result_keys, (
             f"expected both user measures in the public projection, got "
             f"{sorted(result_keys)} in:\n{sql}"
         )
@@ -1760,8 +1760,8 @@ class TestFields:
                 QueryMetric(metric="sum(orders.revenue) - time_shift(sum(orders.revenue), -1, 'month')", alias="growth"),
                 QueryMetric(
                     metric=(
-                        "(sum(revenue) - time_shift(sum(revenue), -1, 'month')) "
-                        "/ time_shift(sum(revenue), -1, 'month')"
+                        "(sum(orders.revenue) - time_shift(sum(orders.revenue), -1, 'month')) "
+                        "/ time_shift(sum(orders.revenue), -1, 'month')"
                     ),
                     alias="growth_pct",
                 ),
@@ -1795,7 +1795,7 @@ class TestFields:
         sql = await _generate(generator, query, orders_dataset)
         # The post-phase filter is the final select's WHERE; it reads the selected change measure by its alias.
         assert "< 0" in post_filter_where(sql)
-        assert '"orders.rev_change" < 0' in post_filter_where(sql)
+        assert '"rev_change" < 0' in post_filter_where(sql)
 
     async def test_inline_transform_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Transform expressions in filters should be auto-extracted as hidden fields."""
@@ -1823,7 +1823,7 @@ class TestFields:
         sql = await _generate(generator, query, orders_dataset)
         assert "'completed'" in sql
         # Post-filter should be in the outer wrapper and reads the selected change measure by its alias.
-        assert '"orders.rev_change" > 0' in post_filter_where(sql)
+        assert '"rev_change" > 0' in post_filter_where(sql)
         assert "> 0" in post_filter_where(sql)
         assert "'completed'" not in post_filter_where(sql)
 
@@ -2617,8 +2617,8 @@ class TestMultiDialectGeneration:
             )
             order_cols.append(inner.name)  # the identifier body
         assert set(order_cols) == {
-            "orders.revenue_last_created_at",
-            "orders.revenue_last_updated_at",
+            "revenue_last_created_at",
+            "revenue_last_updated_at",
         }, (
             f"{dialect}: outer ORDER BY columns wrong: {order_cols!r}\n{sql}"
         )
@@ -3893,7 +3893,7 @@ class TestAggParamSanitization:
     ])
     async def test_sql_injection_rejected(self, text: str) -> None:
         with pytest.raises(ValueError, match=_re.escape(text)):
-            await orders_agg_sql(f"weighted_avg(amount, weight='{text}')")
+            await orders_agg_sql(f"weighted_avg(orders.amount, weight='{text}')")
 
     async def test_empty_param_rejected(self) -> None:
         with pytest.raises(ValueError, match="weighted_avg"):
@@ -5407,7 +5407,7 @@ class TestDev1501HiddenFirstLastRender:
             _assert_ranks_by(sql, key="orders.created_at", descending=True)
             _assert_ranks_by(sql, key="orders.updated_at", descending=True)
             # The PROJECTED one surfaces under the user's alias; the order-only one is named only by the ORDER BY.
-            assert '"orders.latest_cr"' in sql, sql
+            assert '"latest_cr"' in sql, sql
             order_terms = _outer_order_terms(sql)
             assert len(order_terms) == 1, order_terms
             assert "revenue_last_updated_at" in order_terms[0][0], order_terms
@@ -5519,8 +5519,8 @@ class TestDev1501HiddenFirstLastRender:
             _assert_ranks_by(sql, key="orders.created_at", descending=True)
             _assert_ranks_by(sql, key="orders.updated_at", descending=True)
             # …and each user alias is projected from a DIFFERENT CTE, which is the collapse this test exists to catch.
-            lc = _re.search(r'(_cm_\w+)\."orders\.lc"', norm)
-            lu = _re.search(r'(_cm_\w+)\."orders\.lu"', norm)
+            lc = _re.search(r'(_cm_\w+)\."lc"', norm)
+            lu = _re.search(r'(_cm_\w+)\."lu"', norm)
             assert lc is not None, sql
             assert lu is not None, sql
             assert lc.group(1) != lu.group(1), sql
@@ -5601,7 +5601,7 @@ class TestDev1501HiddenFirstLastRender:
                 f"operands:\n{sql}"
             )
             diff_match = _re.search(
-                r'(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+" AS "orders\.diff"',
+                r'(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+" AS "diff"',
                 _norm(sql),
             )
             assert diff_match is not None, (
@@ -5695,7 +5695,7 @@ class TestDev1501HiddenFirstLastRender:
             assert "_last_rn_f0" not in sql, sql
             assert "_match_f0" not in sql, sql
             assert _re.search(
-                rf'{_re.escape(names[0])}\."[^"]+" \+ 1 AS "orders\.plus1"',
+                rf'{_re.escape(names[0])}\."[^"]+" \+ 1 AS "plus1"',
                 _norm(sql),
             ), (
                 f"the composite operand did not read the filtered aggregate's "
@@ -5725,7 +5725,7 @@ class TestDev1501HiddenFirstLastRender:
             names = self._ranked_ctes(sql)
             assert len(names) == 2, sql
             diff_match = _re.search(
-                r'(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+" AS "orders\.diff"',
+                r'(_cm_\w+)\."[^"]+" \+ (_cm_\w+)\."[^"]+" AS "diff"',
                 _norm(sql),
             )
             assert diff_match is not None, (
@@ -5736,7 +5736,7 @@ class TestDev1501HiddenFirstLastRender:
                 f"Composite first/last operands collapsed onto one CTE "
                 f"({left!r}):\n{sql}"
             )
-            lc = _re.search(r'(_cm_\w+)\."orders\.lc"', _norm(sql))
+            lc = _re.search(r'(_cm_\w+)\."lc"', _norm(sql))
             assert lc is not None, sql
             assert lc.group(1) == left, (
                 f"the projected ``lc`` and the composite's created_at operand "
@@ -6403,11 +6403,11 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 population="policy",
-                metrics=[QueryMetric(metric="sum(policy_amount.total_policy_amount)")],
+                metrics=[QueryMetric(metric="sum(policy.policy_amount.total_policy_amount)")],
                 dimensions=[QueryDimension(field="policy.policy_number")],
                 filter=[
                     "agreement_party_role.party_role_code = 'PH'",
-                    "policy_amount.premium.has_premium = '1'",
+                    "policy.policy_amount.premium.has_premium = '1'",
                 ],
             )
             resp = await engine.execute(query, dry_run=True)
@@ -6431,7 +6431,7 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 population="policy",
-                metrics=[QueryMetric(metric="sum(policy_amount.total_policy_amount)")],
+                metrics=[QueryMetric(metric="sum(policy.policy_amount.total_policy_amount)")],
                 dimensions=[QueryDimension(field="policy.policy_number")],
             )
             sql = (await engine.execute(query, dry_run=True)).sql
@@ -6503,9 +6503,9 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 population="policy",
-                metrics=[QueryMetric(metric="sum(policy_amount.total_policy_amount)")],
+                metrics=[QueryMetric(metric="sum(policy.policy_amount.total_policy_amount)")],
                 time_dimensions=[TimeDimension(
-                    field="policy_amount.effective_date",
+                    field="policy.policy_amount.effective_date",
                     granularity=TimeGranularity.MONTH,
                 )],
             )
@@ -6532,7 +6532,7 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
             query = SlayerQuery(
                 population="policy",
                 metrics=[QueryMetric(
-                    metric="sum(policy.number_of_policies) / sum(policy_amount.total_policy_amount)",
+                    metric="sum(policy.number_of_policies) / sum(policy.policy_amount.total_policy_amount)",
                     alias="ratio",
                 )],
                 dimensions=[QueryDimension(field="policy.policy_number")],
@@ -6552,7 +6552,7 @@ DatasetField(name="score", sql="score", datatype=DataType.FLOAT)],
             # policy_amount has a join to policy, so status_code is reachable
             query = SlayerQuery(
                 population="policy",
-                metrics=[QueryMetric(metric="sum(policy_amount.total_policy_amount)")],
+                metrics=[QueryMetric(metric="sum(policy.policy_amount.total_policy_amount)")],
                 dimensions=[QueryDimension(field="policy.policy_number")],
                 filter=["policy.status_code = 'ACTIVE'"],
             )
@@ -6622,7 +6622,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         assert "ORDER BY" in sql
         order_clause = sql.split("ORDER BY", 1)[1]
         # User name surfaces as the ORDER BY column.
-        assert '"orders.num_customers"' in order_clause, (
+        assert '"num_customers"' in order_clause, (
             f"user alias not used in ORDER BY: {sql}"
         )
         # Canonical form must not leak into the ORDER BY clause.
@@ -6682,7 +6682,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT)],
         assert "ORDER BY" in sql
         order_clause = sql.split("ORDER BY", 1)[1]
         # User name is the ORDER BY column (user ``name`` overrides the canonical form).
-        assert '"orders.num_customers"' in order_clause, (
+        assert '"num_customers"' in order_clause, (
             f"user alias must surface in ORDER BY for computed query path:\n{sql}"
         )
 
@@ -8349,7 +8349,7 @@ class TestGetResultColumnTypesSql:
         engine = SlayerQueryEngine(storage=storage)
         probe = engine._build_type_probe_query(model)
         formulas = [m.metric for m in probe.metrics]
-        assert any(f and f.endswith("(revenue)") for f in formulas), (
+        assert any(f and f.endswith("(orders.revenue)") for f in formulas), (
             f"Expected 'revenue' to be probed, got {formulas}"
         )
         assert not any(f and f.startswith("opaque:") for f in formulas), (
@@ -8840,7 +8840,7 @@ class TestCastEmissionMeasure:
         )
         sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         # INT remains the inferred metadata type, but must not narrow the backend's native count result unless the measure explicitly asks.
-        assert 'COUNT(*) AS "ORDERS.CNT"' in sql.upper()
+        assert 'COUNT(*) AS "CNT"' in sql.upper()
         assert "CAST(" not in sql.upper()
 
     async def test_measure_type_double_wraps_outer_count(self, orders_dataset) -> None:
@@ -9793,7 +9793,7 @@ class TestBigQueryAliasMangling:
                 SlayerQuery(
                     population="stg",
                     dimensions=[QueryDimension(field="stg.status")],
-                    metrics=[QueryMetric(metric="sum(__slayer_qb__qb_stage__stg.revenue_sum)")],
+                    metrics=[QueryMetric(metric="sum(stg.revenue_sum)")],
                 ),
             ],
         )

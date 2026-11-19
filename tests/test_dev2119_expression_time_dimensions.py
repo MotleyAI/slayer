@@ -34,7 +34,8 @@ from tests._dev2119_fixtures import (
 from tests._time_points_fixtures import PinnedClock
 
 KEY = f"orders.{EFF_NAME}"
-CAST_DAY = "CAST(created_at AS DATE)"
+CAST_DAY = "CAST(orders.created_at AS DATE)"
+MONTHLY_CAST_DAY = "CAST(monthly.created_at AS DATE)"
 CAST_KEY = "orders.cast_created_at_as_date"
 #: Months of ``EFF`` from February: plain sum, trailing-3-month sum, change vs the previous month.
 FEB_APR_SUM = {"2025-02": 50.0, "2025-03": 100.0, "2025-04": 50.0}
@@ -74,7 +75,7 @@ class TestExpressionHomes:
 
     async def test_cross_model_expression_over_a_to_one_hop(self, engine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td("coalesce(customers.signup_ts, orders.created_at)")]))
-        got = by_bucket(resp, "orders.coalesce_customers_signup_ts_created_at", "v")
+        got = by_bucket(resp, "coalesce_customers_signup_ts_orders_created_at", "v")
         assert got == {"2024-11": 3, "2025-02": 2, "2025-03": 1}
 
     async def test_stage_scope_expression(self, engine) -> None:
@@ -83,7 +84,8 @@ class TestExpressionHomes:
             "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
-            "population": "s1", "time_dimensions": [td(EFF)], "metrics": [{"metric": "sum(s1.rev)", "alias": "v"}],
+            "population": "s1", "time_dimensions": [td("coalesce(s1.shipped_at, s1.created_at)")],
+            "metrics": [{"metric": "sum(s1.rev)", "alias": "v"}],
         })
         resp = await engine.execute([inner, outer])
         assert by_bucket(resp, f"s1.{EFF_NAME}", "v") == EFF_MONTH_SUM
@@ -101,7 +103,7 @@ class TestExpressionTyping:
 
     async def test_non_temporal_expression_rejected(self, engine) -> None:
         msg = str(await _plan_fails(engine, _count(time_dimensions=[td("upper(orders.status)")]), TimeDimensionFieldError))
-        assert "upper_status" in msg or "upper(status)" in msg
+        assert "upper_status" in msg or "upper(orders.status)" in msg
         assert "STRING" in msg.upper()
 
     async def test_undetermined_type_names_the_cast_remedy(self, engine) -> None:
@@ -205,7 +207,7 @@ class TestStageBuckets:
 
     def _outer(self, granularity: str) -> SlayerQuery:
         return SlayerQuery.model_validate({
-            "population": "s1", "time_dimensions": [td(EFF_NAME, granularity)],
+            "population": "s1", "time_dimensions": [td(f"s1.{EFF_NAME}", granularity)],
             "metrics": [{"metric": "sum(s1.rev)", "alias": "v"}],
         })
 
@@ -227,7 +229,7 @@ class TestPerLeafRebucketing:
         })
 
     async def test_cast_of_a_month_bucketed_column_at_day_rejected(self, engine) -> None:
-        msg = str(await _plan_fails(engine, self._monthly(CAST_DAY, "day"), TimeDimensionFieldError))
+        msg = str(await _plan_fails(engine, self._monthly(MONTHLY_CAST_DAY, "day"), TimeDimensionFieldError))
         assert "created_at" in msg
         assert "month" in msg
         assert "day" in msg
@@ -238,7 +240,7 @@ class TestPerLeafRebucketing:
     ])
     async def test_same_and_coarser_granularities_bind(self, engine, granularity: str, width: int,
                                                        expected: dict) -> None:
-        resp = await engine.execute(self._monthly(CAST_DAY, granularity))
+        resp = await engine.execute(self._monthly(MONTHLY_CAST_DAY, granularity))
         assert by_bucket(resp, "monthly.cast_created_at_as_date", "v", width=width) == expected
 
     async def test_bucketed_leaf_beside_an_unbucketed_one_binds_the_rule(self, engine) -> None:

@@ -21,23 +21,23 @@
   },
   "guard/missing_partition_by::bigquery": {
     "error": "ComputedDimensionError",
-    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::duckdb": {
     "error": "ComputedDimensionError",
-    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::postgres": {
     "error": "ComputedDimensionError",
-    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::sqlite": {
     "error": "ComputedDimensionError",
-    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/missing_partition_by::tsql": {
     "error": "ComputedDimensionError",
-    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
+    "message": "ComputedDimensionError: The aggregate inside the computed dimension must declare the grain it aggregates over with partition_by=, e.g. 'CASE WHEN sum(orders.amount, partition_by=orders.city) > 5000 THEN 1 ELSE 0 END'. Without partition_by the group key is a function of the query's own dimensions and adds no grouping.\n  at dimension 'band'"
   },
   "guard/transform_in_dim::bigquery": {
     "error": "ComputedDimensionError",

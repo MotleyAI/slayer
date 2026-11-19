@@ -62,9 +62,9 @@ def _series(resp, *, column: str, width: int = 10) -> dict[str, float]:
 async def _grouped(engine, *, granularity: str, column: str = "ts", dataset: str = "events",
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": dataset, "metrics": [m("sum(amount)", "s")],
-        "time_dimensions": [{"field": column, "granularity": granularity}],
-        "filter": [f"series = '{series}'"] if series else [],
+        "population": dataset, "metrics": [m(f"sum({dataset}.amount)", "s")],
+        "time_dimensions": [{"field": f"{dataset}.{column}", "granularity": granularity}],
+        "filter": [f"{dataset}.series = '{series}'"] if series else [],
     }))
     return _series(resp, column=column, width=width)
 

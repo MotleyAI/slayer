@@ -62,7 +62,7 @@ def with_fields(base: Dict[str, Any], **fields: Any) -> Dict[str, Any]:
 
 # Refinement → the merged final stage written by hand.
 PARITY = {
-    "extra_dimension": ({"dimensions": ["region"]}, with_fields(MONTHLY_REVENUE, dimensions=["region"])),
+    "extra_dimension": ({"dimensions": ["orders.region"]}, with_fields(MONTHLY_REVENUE, dimensions=["orders.region"])),
     "extra_measure": (
         {"metrics": ["count(orders.*)"]}, with_fields(MONTHLY_REVENUE, metrics=[REVENUE, "count(orders.*)"]),
     ),
@@ -79,16 +79,16 @@ PARITY = {
         with_fields(MONTHLY_REVENUE, order=[{"field": "revenue", "direction": "desc"}], limit=1),
     ),
     "second_granularity": (
-        {"time_dimensions": ["date_trunc('year', ordered_at)"]},
-        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "date_trunc('year', ordered_at)"]),
+        {"time_dimensions": ["date_trunc('year', orders.ordered_at)"]},
+        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "date_trunc('year', orders.ordered_at)"]),
     ),
     "functional_dimension": (
-        {"dimensions": ["date_trunc('year', ordered_at)"]},
-        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "date_trunc('year', ordered_at)"]),
+        {"dimensions": ["date_trunc('year', orders.ordered_at)"]},
+        with_fields(MONTHLY_REVENUE, time_dimensions=[MONTH_TD, "date_trunc('year', orders.ordered_at)"]),
     ),
     "identical_duplicates": (
         {"dimensions": ["orders.region"], "metrics": [REVENUE]},
-        with_fields(MONTHLY_REVENUE, dimensions=["region"]),
+        with_fields(MONTHLY_REVENUE, dimensions=["orders.region"]),
     ),
 }
 
@@ -137,7 +137,7 @@ class TestSingleStage:
         assert [(month(r["orders.ordered_at"]), r["revenue"]) for r in resp.data] == [("2025-02", 105.0)]
 
     async def test_second_granularity_renames_saved_key(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute("monthly_revenue", refine={"time_dimensions": ["date_trunc('year', ordered_at)"]})
+        resp = await engine.execute("monthly_revenue", refine={"time_dimensions": ["date_trunc('year', orders.ordered_at)"]})
         assert set(resp.columns) == {"orders.ordered_at.month", "orders.ordered_at.year", "revenue"}
         assert by_month(resp.data, key="orders.ordered_at.month") == MONTHLY
 
@@ -294,7 +294,7 @@ class TestOnlyWithAName:
     ], ids=["dict", "query", "list"])
     async def test_execute_rejects_non_name(self, engine: SlayerQueryEngine, query: Any) -> None:
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
-            await engine.execute(query, refine={"dimensions": ["region"]})
+            await engine.execute(query, refine={"dimensions": ["orders.region"]})
 
     @pytest.mark.parametrize("query", [
         MONTHLY_REVENUE,
@@ -307,17 +307,17 @@ class TestOnlyWithAName:
 
     async def test_evict_rejects_non_name(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
-            await engine.evict(MONTHLY_REVENUE, refine={"dimensions": ["region"]})
+            await engine.evict(MONTHLY_REVENUE, refine={"dimensions": ["orders.region"]})
 
     async def test_non_query_backed_model_error_unchanged(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError, match="not query-backed"):
-            await engine.execute("orders", refine={"dimensions": ["region"]})
+            await engine.execute("orders", refine={"dimensions": ["orders.region"]})
 
 
 class TestSyncWrappers:
     def test_execute_sync(self, tmp_path) -> None:
         engine = SlayerQueryEngine(storage=asyncio.run(build_refine_storage(str(tmp_path))))
-        resp = engine.execute_sync("monthly_revenue", refine={"dimensions": ["region"]})
+        resp = engine.execute_sync("monthly_revenue", refine={"dimensions": ["orders.region"]})
         assert region_month(resp) == BY_REGION_MONTH
         with pytest.raises(ValueError, match=ONLY_BY_NAME):
             engine.execute_sync(REVENUE_BY_STATUS, refine={"dimensions": ["per_customer.status"]})

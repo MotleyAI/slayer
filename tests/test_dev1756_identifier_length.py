@@ -50,10 +50,10 @@ class _VirtualDatasetEngine(Protocol):
     async def execute(self, query: list[SlayerQuery], *, dry_run: bool = False) -> SlayerResponse: ...
 
 DS = "sandbox"
-DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
+DEEP = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer"
 
-LONG_NAME = "SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
-LONG_EMAIL = "SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
+LONG_NAME = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.name"
+LONG_EMAIL = "SandboxInvoiceV2.SandboxSubscription.SandboxCustomer.SandboxConsumer.email"
 
 # Two over-limit names differing only in the middle: forces a digest collision.
 TWIN_A = "SandboxAlpha." * 3 + "111" + ".SandboxOmega" * 3

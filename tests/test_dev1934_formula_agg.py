@@ -218,7 +218,7 @@ class TestPlaceholderRecognition:
     async def test_whitespace_inside_braces(self) -> None:
         spaced = Aggregation(name="s1", expression="SUM({ value })")
         tight = Aggregation(name="s1", expression="SUM({value})")
-        assert await _sql("s1(price)", aggs=(spaced,)) == await _sql("s1(price)", aggs=(tight,))
+        assert await _sql("s1(orders.price)", aggs=(spaced,)) == await _sql("s1(orders.price)", aggs=(tight,))
 
     async def test_whitespace_placeholder_kwarg_registers_its_join(self) -> None:
         query = "scaled(orders.price, scale='customers.weight')"
@@ -235,7 +235,7 @@ class TestPlaceholderRecognition:
             name="plain", expression="SUM({value})",
             params=[AggregationParam(name="w", sql="customers.weight")],
         )
-        assert "customers" not in await _joined_sql(agg=unused, expression="plain(price)", validate=False)
+        assert "customers" not in await _joined_sql(agg=unused, expression="plain(orders.price)", validate=False)
 
     @pytest.mark.parametrize("declared", [Aggregation(name="corr"), _SUMSQ])
     async def test_formula_less_builtin_string_kwarg_registers_its_join(
@@ -316,7 +316,7 @@ async def _pct_sql(p: str | None = None, *, default: str | None = None) -> str:
     aggs = (Aggregation(name="percentile", params=[AggregationParam(name="p", sql=default)]),) \
         if default is not None else ()
     arg = "" if p is None else ", p='" + p.replace("'", "''") + "'"
-    return await _sql(f"percentile(price{arg})", aggs=aggs)
+    return await _sql(f"percentile(orders.price{arg})", aggs=aggs)
 
 
 def _emitted_p(sql: str) -> Expression:
@@ -484,13 +484,13 @@ class TestKwargNamesFollowTheRenderDialect:
 
 class TestOverrideFormulaRenders:
     async def test_builtin_override_formula_renders_with_its_default(self) -> None:
-        assert "SUM(orders.price) * 2" in await _sql("sum(price)", aggs=(_SUM_SCALE,))
+        assert "SUM(orders.price) * 2" in await _sql("sum(orders.price)", aggs=(_SUM_SCALE,))
 
     async def test_builtin_override_formula_takes_its_placeholder_kwarg(self) -> None:
-        assert "SUM(orders.price) * 3" in await _sql("sum(price, scale=3)", aggs=(_SUM_SCALE,))
+        assert "SUM(orders.price) * 3" in await _sql("sum(orders.price, scale=3)", aggs=(_SUM_SCALE,))
 
     async def test_weighted_avg_override_needs_no_builtin_weight(self) -> None:
-        assert "SUM(orders.price) * 7" in await _sql("weighted_avg(price)", aggs=(_WAVG_K,))
+        assert "SUM(orders.price) * 7" in await _sql("weighted_avg(orders.price)", aggs=(_WAVG_K,))
 
     async def test_builtin_param_the_override_never_reads_is_rejected(self) -> None:
         with pytest.raises(AggregationArgumentError, match="'weighted_avg' does not accept argument 'weight'; accepted: k, window"):
@@ -506,7 +506,7 @@ class TestOverrideFormulaRenders:
 
     async def test_formula_less_override_keeps_the_builder(self) -> None:
         pct = Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.25")])
-        assert "PERCENTILE_CONT(0.25)" in await _sql("percentile(price)", aggs=(pct,))
+        assert "PERCENTILE_CONT(0.25)" in await _sql("percentile(orders.price)", aggs=(pct,))
 
 
 class TestArgumentNamesCheckedFirst:
@@ -520,7 +520,7 @@ class TestArgumentNamesCheckedFirst:
 
     async def test_non_parameter_name_binds_as_a_comparison(self) -> None:
         message = await _fails_as_its_comparison_twin(
-            expression="scaled(orders.price, bogus=missing.path)", twin="scaled(orders.price, (orders.bogus=orders.missing.path))", aggs=(_SCALED,))
+            expression="scaled(orders.price, bogus=orders.missing.path)", twin="scaled(orders.price, (orders.bogus=orders.missing.path))", aggs=(_SCALED,))
         assert "does not accept argument 'bogus'" not in message
 
     async def test_accepted_name_still_resolves_its_value(self) -> None:
@@ -561,10 +561,10 @@ class TestCountStarOverride:
         assert rendered in await _star_sql(formula)
 
     async def test_having_renders_the_override(self) -> None:
-        assert "HAVING(COUNT(*)*7)>1" in _squash(await _star_sql("count(*)", filters=["count(*) > 1"]))
+        assert "HAVING(COUNT(*)*7)>1" in _squash(await _star_sql("count(orders.*)", filters=["count(orders.*) > 1"]))
 
     async def test_windowed_star_renders_the_override(self) -> None:
-        assert "COUNT(_src._w_value) * 7" in await _windowed_sql("count(*, window='1y')", _COUNT_K)
+        assert "COUNT(_src._w_value) * 7" in await _windowed_sql("count(orders.*, window='1y')", _COUNT_K)
 
     async def test_associated_cross_model_star_renders_the_override(self) -> None:
         assert "COUNT(*) * 7" in await _associated_star_sql("count(customers.*)")

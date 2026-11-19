@@ -127,7 +127,7 @@ class TestDuplicateTimeDimensions:
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
-            fx.td(field="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]
 
     def test_exact_duplicates_dedupe_within_dimensions(self) -> None:
@@ -137,7 +137,7 @@ class TestDuplicateTimeDimensions:
             metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert q.time_dimensions == [
-            fx.td(field="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]
 
     def test_exact_explicit_duplicates_dedupe(self) -> None:
@@ -150,7 +150,7 @@ class TestDuplicateTimeDimensions:
             metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert q.time_dimensions == [
-            fx.td(field="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]
 
     def test_duplicates_with_identical_metadata_dedupe(self) -> None:
@@ -209,7 +209,7 @@ class TestDuplicateTimeDimensions:
             metrics=[{"metric": "sum(orders.amount)"}],
         )
         assert q.time_dimensions == [
-            fx.td(field="created_at", granularity="month")
+            fx.td(field="orders.created_at", granularity="month")
         ]
 
     def test_diff_spelling_conflicting_metadata_rejected(self) -> None:

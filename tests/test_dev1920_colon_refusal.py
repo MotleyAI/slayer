@@ -31,7 +31,7 @@ AGG_NAMES = sorted(BUILTIN_AGGREGATIONS | set(AGGREGATION_ALIASES))
 #: (colon text, its twin) — one colon span each.
 SPANS = [
     pytest.param("amount:sum", "sum(amount)", id="measure"),
-    pytest.param("*:count", "count(orders.*)", id="star"),
+    pytest.param("*:count", "count(*)", id="star"),
     pytest.param("customers.*:count", "count(customers.*)", id="cross-model-star"),
     pytest.param("customers.regions.population:sum", "sum(customers.regions.population)", id="join-path"),
     pytest.param('"order total":sum', 'sum("order total")', id="quoted-source"),
@@ -66,7 +66,7 @@ class TestParser:
     @pytest.mark.parametrize(("text", "span", "twin"), [
         pytest.param("amount:sum > 100", "amount:sum", "sum(amount)", id="comparison"),
         pytest.param("rank(amount:sum, direction='desc')", "amount:sum", "sum(amount)", id="transform-input"),
-        pytest.param("sum(amount) / *:count", "*:count", "count(orders.*)", id="arithmetic"),
+        pytest.param("sum(amount) / *:count", "*:count", "count(*)", id="arithmetic"),
         pytest.param("amount:sum FILTER (WHERE status = 'paid')", "amount:sum", "sum(amount)", id="filter-clause"),
     ])
     def test_span_inside_larger_text(self, text: str, span: str, twin: str) -> None:
@@ -107,7 +107,7 @@ QUERY_POSITIONS = [
     pytest.param({"metrics": ["amount:sum"]}, "amount:sum", "sum(amount)", id="measure"),
     pytest.param({"metrics": [{"alias": "t", "metric": "amount:sum"}]}, "amount:sum", "sum(amount)",
                  id="named-measure"),
-    pytest.param({"metrics": ["*:count"]}, "*:count", "count(orders.*)", id="star"),
+    pytest.param({"metrics": ["*:count"]}, "*:count", "count(*)", id="star"),
     pytest.param({"metrics": ["customers.*:count"]}, "customers.*:count", "count(customers.*)",
                  id="cross-model-star"),
     pytest.param({"metrics": ["price:percentile(p=0.9)"]}, "price:percentile(p=0.9)", "percentile(price, p=0.9)",
@@ -203,7 +203,7 @@ class TestSaves:
         doc = {"name": "order_count", "data_source": DS,
                "source_queries": [{"population": "orders", "metrics": [{"alias": "n", "metric": "*:count"}]}]}
         exc = await _save_failure(storage, doc)
-        assert_colon_refused(exc, span="*:count", twin="count(orders.*)")
+        assert_colon_refused(exc, span="*:count", twin="count(*)")
         assert await storage.get_dataset("order_count", data_source=DS) is None
 
 

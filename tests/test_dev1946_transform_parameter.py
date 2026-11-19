@@ -199,7 +199,7 @@ class TestCollapsingLast:
 
     async def test_broadcast_mode_broadcasts_over_months(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
-            "broadcast", time_dimensions=ordered_month_td(), metrics=[_m(LAST_PARAM)]))
+            "broadcast", time_dimensions=ordered_month_td("orders"), metrics=[_m(LAST_PARAM)]))
         vals = ordered_month_vals(resp)
         assert set(vals) == {"2024-01", "2024-02", "2024-03", "2024-04"}
         for value in vals.values():
@@ -208,7 +208,7 @@ class TestCollapsingLast:
 
     async def test_by_tier_and_month(self, orders_engine):
         resp = await orders_engine.execute(mode_q(
-            "broadcast", dimensions=["customers.tier"], time_dimensions=ordered_month_td(),
+            "broadcast", dimensions=["customers.tier"], time_dimensions=ordered_month_td("orders"),
             metrics=[_m(LAST_PARAM)]))
         assert_cells(tier_month_vals(resp), last_by_tier_month())
         assert broadcast_warnings(resp)
@@ -219,7 +219,7 @@ class TestNoAxisCumsum:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_measure_position(self, orders_engine, mode):
-        q = mode_q(mode, time_dimensions=ordered_month_td(), metrics=[_m(NOAXIS_CUMSUM)])
+        q = mode_q(mode, time_dimensions=ordered_month_td("orders"), metrics=[_m(NOAXIS_CUMSUM)])
         with pytest.raises(TimeAxisError) as ei:
             await orders_engine.execute(q)
         _assert_time_axis_error(ei.value)
@@ -227,7 +227,7 @@ class TestNoAxisCumsum:
     @pytest.mark.parametrize("mode", MODES)
     async def test_filter_position(self, orders_engine, mode):
         q = mode_q(mode, dimensions=["customers.tier"],
-                   time_dimensions=ordered_month_td(), metrics=[AMOUNT],
+                   time_dimensions=ordered_month_td("orders"), metrics=[AMOUNT],
                    filter=[f"{NOAXIS_CUMSUM} > 50"])
         with pytest.raises(TimeAxisError) as ei:
             await orders_engine.execute(q)
@@ -287,7 +287,7 @@ class TestWindowedInner:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_fails_closed_every_mode(self, orders_engine, mode):
-        q = mode_q(mode, time_dimensions=ordered_month_td(), metrics=[_m(WINDOWED_INNER)])
+        q = mode_q(mode, time_dimensions=ordered_month_td("orders"), metrics=[_m(WINDOWED_INNER)])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -405,7 +405,7 @@ class TestPlanShape:
     error, the association / trailing-window kernels each carry ``weight``."""
 
     @pytest.mark.parametrize("mode, dims", [
-        ("broadcast", ["status"]), (None, ["customers.tier"]),
+        ("broadcast", ["orders.status"]), (None, ["customers.tier"]),
         ("error", ["customers.tier"]),
     ])
     def test_plain_kernel_outside_association(self, mode, dims):
@@ -431,7 +431,7 @@ class TestPlanShape:
 
     @pytest.mark.parametrize("formula, tds, mode", [
         (RANKED, None, None), (RANKED, None, "associate"),
-        (LAST_PARAM, ordered_month_td(), None),
+        (LAST_PARAM, ordered_month_td("orders"), None),
         (DET_CUMSUM, signup_month_td(), None),
         (WINDOWED_OUTER, signup_month_td(), None),
     ])
@@ -514,7 +514,7 @@ class TestBindLevel:
 
     def test_positional_equals_keyword_identity(self):
         scope, bundle = _sales_scope_bundle()
-        positional = "weighted_avg(amount, rank(sum(amount, partition_by=region), direction='desc'))"
+        positional = "weighted_avg(sales.amount, rank(sum(sales.amount, partition_by=sales.region), direction='desc'))"
         kw = bind_expr(parse_expr(LOCAL_SALES), scope=scope, bundle=bundle)
         pos = bind_expr(parse_expr(positional), scope=scope, bundle=bundle)
         assert pos.value_key == kw.value_key

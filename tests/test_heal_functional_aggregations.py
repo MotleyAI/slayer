@@ -27,7 +27,7 @@ from tests._query_heal_fixtures import (
     table,
 )
 
-DISTINCT_ONLY = "count(distinct orders.x)"
+DISTINCT_ONLY = "count(distinct x)"
 SLAYER_3 = "3.0"
 
 
@@ -42,7 +42,7 @@ def by_region(*measures: str) -> dict[str, Any]:
 
 
 class TestUnknownFunction:
-    @pytest.mark.parametrize("formula", ["bogus(orders.amount)", "bogus(orders.*)", "bogus(orders.amount * 2)"])
+    @pytest.mark.parametrize("formula", ["bogus(amount)", "bogus(*)", "bogus(amount * 2)"])
     async def test_names_function_and_categories(self, engine: SlayerQueryEngine, formula: str) -> None:
         query = by_region(formula)
         with pytest.raises(UnknownFunctionError) as info:
@@ -54,27 +54,27 @@ class TestUnknownFunction:
             assert category in message.lower()
 
     async def test_close_match_suggested(self, engine: SlayerQueryEngine) -> None:
-        query = by_region("summ(orders.amount)")
+        query = by_region("summ(amount)")
         with pytest.raises(UnknownFunctionError, match="Did you mean 'sum'"):
             await engine.execute(query)
 
     def test_construction_time_custom_filter_deferred(self) -> None:
         query = SlayerQuery.model_validate(
-            {"population": "orders", "metrics": ["count(orders.*)"], "filter": ["my_agg(orders.amount) > 0"]})
+            {"population": "orders", "metrics": ["count(*)"], "filter": ["my_agg(amount) > 0"]})
         assert query.filter == ["my_agg(amount) > 0"]
 
 
 class TestCountDistinctParse:
     @pytest.mark.parametrize("spelling", [
-        "count(distinct orders.customer_id)", "COUNT(DISTINCT orders.customer_id)", "Count(Distinct customer_id)",
+        "count(distinct customer_id)", "COUNT(DISTINCT customer_id)", "Count(Distinct customer_id)",
         "count( distinct  customer_id )", "count(\n  distinct\n  customer_id\n)",
     ])
     def test_equals_count_distinct(self, spelling: str) -> None:
         assert parse_expr(spelling) == parse_expr("count_distinct(customer_id)")
 
     @pytest.mark.parametrize(("healed", "canonical_text"), [
-        ("count(distinct coalesce(orders.customer_id, 0), partition_by=orders.region)",
-         "count_distinct(coalesce(orders.customer_id, 0), partition_by=orders.region)"),
+        ("count(distinct coalesce(customer_id, 0), partition_by=region)",
+         "count_distinct(coalesce(customer_id, 0), partition_by=region)"),
         ("count(distinct customer_id) / count(*)", "count_distinct(customer_id) / count(*)"),
         ("count(distinct customers.name)", "count_distinct(customers.name)"),
         ("count(distinct distinct_id)", "count_distinct(distinct_id)"),
@@ -109,24 +109,24 @@ class TestCountDistinctParse:
 
 
 class TestCountDistinctExecuted:
-    @pytest.mark.parametrize("spelling", ["count(distinct orders.customer_id)", "COUNT(DISTINCT orders.customer_id)"])
+    @pytest.mark.parametrize("spelling", ["count(distinct customer_id)", "COUNT(DISTINCT customer_id)"])
     async def test_equals_count_distinct(self, engine: SlayerQueryEngine, spelling: str) -> None:
-        await assert_equivalent(engine, by_region(spelling), by_region("count_distinct(orders.customer_id)"))
+        await assert_equivalent(engine, by_region(spelling), by_region("count_distinct(customer_id)"))
 
     async def test_expression_with_partition(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
-            return {"population": "orders", "dimensions": ["orders.region", "orders.status"], "metrics": [formula]}
+            return {"population": "orders", "dimensions": ["region", "status"], "metrics": [formula]}
 
         await assert_equivalent(
-            engine, query("count(distinct coalesce(orders.customer_id, 0), partition_by=orders.region)"),
-            query("count_distinct(coalesce(orders.customer_id, 0), partition_by=orders.region)"),
+            engine, query("count(distinct coalesce(customer_id, 0), partition_by=region)"),
+            query("count_distinct(coalesce(customer_id, 0), partition_by=region)"),
         )
 
     async def test_mode_a_distinct_unchanged(self) -> None:
         orders = orders_dataset()
         orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INTEGER))
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(orders.n_customers)"]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
             dataset=orders, extra_datasets=[customers_dataset(), order_items_dataset(), products_dataset()],
         )
         assert "COUNT(DISTINCT" in sql.upper()

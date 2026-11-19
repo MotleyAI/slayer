@@ -149,7 +149,7 @@ class TestBindDispatch:
         assert isinstance(key, AggregateKey), key
         assert key.agg == "last"
         assert key == _metric_key(
-            "last(revenue)" if ranking is None else f"last(revenue, {ranking})",
+            "last(sales.revenue)" if ranking is None else f"last(sales.revenue, {ranking})",
         )
 
     @pytest.mark.parametrize("formula, kw", [

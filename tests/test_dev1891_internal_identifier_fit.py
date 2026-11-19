@@ -444,7 +444,7 @@ class TestUserSurfacesExempt:
         ])
         query = SlayerQuery(
             population="orders",
-            dimensions=[QueryDimension(field=LONG_COL_NAME)],
+            dimensions=[QueryDimension(field=f"orders.{LONG_COL_NAME}")],
             metrics=[QueryMetric(metric="sum(orders.amount)", alias="s")],
         )
         sql = await _dry_sql([model], query)

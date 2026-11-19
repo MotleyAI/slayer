@@ -197,14 +197,14 @@ class TestResultKeyFromAlias:
 
         assert result_key_from_alias(
             source_relation="orders", alias="revenue_sum",
-        ) == "orders.revenue_sum"
+        ) == "revenue_sum"
 
     def test_hop_embedded_alias(self) -> None:
         from slayer.sql.naming import result_key_from_alias
 
         assert result_key_from_alias(
             source_relation="orders", alias="customers.revenue_sum",
-        ) == "orders.customers.revenue_sum"
+        ) == "customers.revenue_sum"
 
     def test_parametric_kwarg_suffix_preserved(self) -> None:
         from slayer.sql.naming import result_key_from_alias
@@ -212,7 +212,7 @@ class TestResultKeyFromAlias:
         assert result_key_from_alias(
             source_relation="orders",
             alias="customers.regions.population_percentile_p_0_5",
-        ) == "orders.customers.regions.population_percentile_p_0_5"
+        ) == "customers.regions.population_percentile_p_0_5"
 
 
 class TestFlatName:

@@ -72,8 +72,8 @@ class TestParity:
         outer = query(population="cust_rev", metrics=[m("sum(cust_rev.rev)", "total"), m("max(cust_rev.top)", "mx")])
         await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(cust_rev_dataset()), outer],
-            columns=["cust_rev.total", "cust_rev.mx"],
-            rows=[{"cust_rev.total": 145.0, "cust_rev.mx": 40.0}])
+            columns=["total", "mx"],
+            rows=[{"total": 145.0, "mx": 40.0}])
 
     async def test_as_a_stage_source(self, engine) -> None:
         s = query(name="s", population="cust_rev", dimensions=["cust_rev.customer_id"],
@@ -81,7 +81,7 @@ class TestParity:
         root = query(population="s", metrics=[m("sum(s.tot)", "t"), m("count(s.*)", "n")])
         await _assert_parity(
             engine, inline=[s, root], splice=[*explicit_splice(cust_rev_dataset()), s, root],
-            columns=["s.t", "s.n"], rows=[{"s.t": 145.0, "s.n": 5}])
+            columns=["t", "n"], rows=[{"t": 145.0, "n": 5}])
 
     async def test_as_a_join_target_read_through_the_hop(self, engine) -> None:
         await _assert_parity(
@@ -90,8 +90,8 @@ class TestParity:
             splice=[*explicit_splice(cust_rev_dataset()),
                     query(**_join("clients", "cust_rev", [["id", "customer_id"]]),
                           dimensions=["clients.id", "cust_rev.top"])],
-            columns=["clients.id", "clients.cust_rev.top"],
-            rows=[{"clients.id": c, "clients.cust_rev.top": v} for c, v in CUST_TOP.items()])
+            columns=["clients.id", "cust_rev.top"],
+            rows=[{"clients.id": c, "cust_rev.top": v} for c, v in CUST_TOP.items()])
 
     async def test_as_a_cross_model_aggregate_target(self, engine) -> None:
         await _assert_parity(
@@ -101,8 +101,8 @@ class TestParity:
             splice=[*explicit_splice(cust_rev_dataset()),
                     query(**_join("clients", "cust_rev", [["id", "customer_id"]]),
                           dimensions=["clients.tier"], metrics=[m("sum(cust_rev.rev)", "r")])],
-            columns=["clients.tier", "clients.r"],
-            rows=[{"clients.tier": t, "clients.r": v} for t, v in AMOUNT_BY_TIER.items()])
+            columns=["clients.tier", "r"],
+            rows=[{"clients.tier": t, "r": v} for t, v in AMOUNT_BY_TIER.items()])
 
     async def test_a_model_consumed_twice(self, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> None:
         planned: List[Any] = []
@@ -118,7 +118,7 @@ class TestParity:
         s2 = query(name="s2", population="cust_rev", dimensions=["cust_rev.customer_id"],
                    metrics=[m("max(cust_rev.top)", "b")])
         root = query(**_join("s1", "s2", [["customer_id", "customer_id"]]),
-                     dimensions=["customer_id", "s1.a", "s2.b"])
+                     dimensions=["s1.customer_id", "s1.a", "s2.b"])
         resp = await engine.execute([s1, s2, root])
         assert resp.columns == ["s1.customer_id", "s1.a", "s2.b"]
         assert sorted_rows(resp.data) == sorted_rows([
@@ -139,15 +139,15 @@ class TestParity:
             engine, inline=[user_x, root],
             splice=[user_x, *explicit_splice(cust_rev_dataset(), rename={"x": "x_cr"}),
                     *explicit_splice(ok_rev_dataset(), rename={"x": "x_ok"}), root],
-            columns=["x.id", "x.tier", "x.cust_rev.rev", "x.ok_rev.ok_rev", "x.spend"],
-            rows=[{"x.id": c, "x.tier": tier[c], "x.cust_rev.rev": CUST_REV[c],
-                   "x.ok_rev.ok_rev": OK_REV.get(c), "x.spend": spend[c]} for c in CUST_REV])
+            columns=["x.id", "x.tier", "cust_rev.rev", "ok_rev.ok_rev", "spend"],
+            rows=[{"x.id": c, "x.tier": tier[c], "cust_rev.rev": CUST_REV[c],
+                   "ok_rev.ok_rev": OK_REV.get(c), "spend": spend[c]} for c in CUST_REV])
 
     async def test_dependency_through_a_join_target_only(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(query(
             population="jt_qb", dimensions=["jt_qb.tier"], metrics=[m("sum(jt_qb.v)", "total")]))
-        assert resp.columns == ["jt_qb.tier", "jt_qb.total"]
-        assert rows_by(resp.data, key="jt_qb.tier", value="jt_qb.total") == AMOUNT_BY_TIER
+        assert resp.columns == ["jt_qb.tier", "total"]
+        assert rows_by(resp.data, key="jt_qb.tier", value="total") == AMOUNT_BY_TIER
 
 
 # --------------------------------------------------------------------------- #
@@ -188,12 +188,12 @@ class TestOneFlatWith:
 
     @pytest.mark.parametrize("variant", list(EMBEDDED_WITH))
     async def test_embedded_with_is_renamed_scope_correctly(self, engine, variant) -> None:
-        s1 = query(name="s1", population=variant, dimensions=["customer_id"],
-                   metrics=[m("sum(orders_v.amount)", "a")])
+        s1 = query(name="s1", population=variant, dimensions=[f"{variant}.customer_id"],
+                   metrics=[m(f"sum({variant}.amount)", "a")])
         s2 = query(name="s2", population="with_t", dimensions=["with_t.customer_id"],
-                   metrics=[m("sum(orders_v.amount)", "b")])
+                   metrics=[m("sum(with_t.amount)", "b")])
         root = query(**_join("s1", "s2", [["customer_id", "customer_id"]]),
-                     dimensions=["customer_id", "s1.a", "s2.b"])
+                     dimensions=["s1.customer_id", "s1.a", "s2.b"])
         resp = await engine.execute([s1, s2, root])
         expected = EMBEDDED_WITH[variant][1]
         assert sorted_rows(resp.data) == sorted_rows([
@@ -208,7 +208,7 @@ class TestMetadata:
         outer = query(population="monthly", dimensions=["monthly.status"], metrics=[m("sum(monthly.rev)", "t")])
         got, ref = await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(monthly_dataset()), outer],
-            columns=["monthly.status", "monthly.t"],
+            columns=["monthly.status", "t"],
             rows=[{"monthly.status": s, "t": v} for s, v in AMOUNT_BY_STATUS.items()])
         assert got.attributes == ref.attributes
         status_meta = got.attributes.dimensions["monthly.status"]
@@ -224,15 +224,15 @@ class TestMetadata:
         assert rows_by(resp.data, key="monthly.status", value="lr") == LAST_MONTHLY_BY_STATUS
 
     async def test_join_cardinality_matches_the_explicit_splice(self, engine) -> None:
-        measures = [m("sum(spend)", "sp"), m("sum(cust_rev.rev)", "r")]
+        measures = [m("sum(clients.spend)", "sp"), m("sum(cust_rev.rev)", "r")]
         got, ref = await _assert_parity(
             engine,
             inline=query(population="clients", dimensions=["clients.tier"], metrics=measures),
             splice=[*explicit_splice(cust_rev_dataset()),
                     query(**_join("clients", "cust_rev", [["id", "customer_id"]]),
                           dimensions=["clients.tier"], metrics=measures)],
-            columns=["clients.tier", "clients.sp", "clients.r"],
-            rows=[{"clients.tier": t, "clients.sp": SPEND_BY_TIER[t], "clients.r": AMOUNT_BY_TIER[t]}
+            columns=["clients.tier", "sp", "r"],
+            rows=[{"clients.tier": t, "sp": SPEND_BY_TIER[t], "r": AMOUNT_BY_TIER[t]}
                   for t in SPEND_BY_TIER])
         assert got.warnings == ref.warnings == []
 
@@ -256,12 +256,13 @@ def _v_datasets(*, source: Optional[str], inner: Optional[str], outer: Optional[
     v_inner = SlayerDataset(
         name="v_inner", data_source="test",
         source_queries=[query(
-            population="orders_v", dimensions=dims, filter=["orders_v.amount >= {th}"],
+            population="orders_v", dimensions=[f"orders_v.{d}" for d in dims], filter=["orders_v.amount >= {th}"],
             metrics=[m("sum(orders_v.amount)", "rev")], variables={"th": stage} if stage else {})],
         query_variables={"th": inner} if inner else {})
     v_outer = SlayerDataset(
         name="v_outer", data_source="test",
-        source_queries=[query(population="v_inner", dimensions=dims, metrics=[m("sum(v_inner.rev)", "tot")])],
+        source_queries=[query(population="v_inner", dimensions=[f"v_inner.{d}" for d in dims],
+                              metrics=[m("sum(v_inner.rev)", "tot")])],
         query_variables={"th": outer} if outer else {})
     return [orders_dataset(), customers_dataset(), orders_v_dataset(default=source), v_inner, v_outer]
 
@@ -284,7 +285,7 @@ class TestVariableLayering:
         s1 = query(name="s1", population="v_inner", dimensions=["v_inner.status"], metrics=[m("sum(v_inner.rev)", "a")])
         s2 = query(name="s2", population="v_outer", dimensions=["v_outer.status"], metrics=[m("sum(v_outer.tot)", "b")])
         root = query(**_join("s1", "s2", [["status", "status"]]),
-                     dimensions=["status", "s1.a", "s2.b"])
+                     dimensions=["s1.status", "s1.a", "s2.b"])
         async with dev1966_engine("sqlite", datasets=models) as e:
             with pytest.raises(ValueError, match="v_inner"):
                 await e.execute([s1, s2, root])
@@ -306,8 +307,8 @@ class TestExtensions:
                       metrics=["cust_rev.r2", m("sum(cust_rev.rev)", "r")])
         await _assert_parity(
             engine, inline=outer, splice=[*explicit_splice(cust_rev_dataset()), outer],
-            columns=["cust_rev.customers.tier", "cust_rev.r2", "cust_rev.r"],
-            rows=[{"cust_rev.customers.tier": t, "cust_rev.r2": 2 * v, "cust_rev.r": v}
+            columns=["customers.tier", "cust_rev.r2", "r"],
+            rows=[{"customers.tier": t, "cust_rev.r2": 2 * v, "r": v}
                   for t, v in AMOUNT_BY_TIER.items()])
         dry = await engine.execute(outer, dry_run=True)
         assert dry.sql is not None
@@ -323,7 +324,7 @@ class TestExtensions:
         outer = query(population="s", metrics=[m("sum(s.mm)", "t")])
         await _assert_parity(
             engine, inline=[s, outer], splice=[*explicit_splice(cust_rev_dataset()), s, outer],
-            columns=["s.t"], rows=[{"s.t": sum(CUST_REV.values())}])
+            columns=["t"], rows=[{"t": sum(CUST_REV.values())}])
 
 
 # --------------------------------------------------------------------------- #
@@ -334,7 +335,7 @@ class TestSplicedWarnings:
         q = query(population="bcast_qb", dimensions=["bcast_qb.status"], metrics=[m("sum(bcast_qb.amt2)", "t")])
         with pytest.warns(UserWarning):
             resp = await engine.execute(q)
-        assert rows_by(resp.data, key="bcast_qb.status", value="bcast_qb.t") == AMOUNT_BY_STATUS
+        assert rows_by(resp.data, key="bcast_qb.status", value="t") == AMOUNT_BY_STATUS
         (w,) = [w for w in resp.warnings if w.kind == "broadcast"]
         assert w.metric == "cs"
         assert "bstage" in w.location, w.location
@@ -344,8 +345,8 @@ class TestSplicedWarnings:
     async def test_consumer_warnings_equal_the_explicit_splice(self, engine: SlayerQueryEngine) -> None:
         consumer = query(
             name="r", **_join("orders", "cust_rev", [["customer_id", "customer_id"]]),
-            dimensions=["status"],
-            metrics=[m("sum(orders_v.amount)", "m"), m("sum(customers.spend)", "cm"), m("max(cust_rev.rev)", "rm")],
+            dimensions=["orders.status"],
+            metrics=[m("sum(orders.amount)", "m"), m("sum(customers.spend)", "cm"), m("max(orders.cust_rev.rev)", "rm")],
             to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             got = await engine.execute(consumer)

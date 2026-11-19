@@ -35,7 +35,7 @@ class TestParallelEdgesFailClosed:
         self, unnamed_engine,
     ) -> None:
         query = SlayerQuery(
-            population="orders", dimensions=["customers.name"])
+            population="orders", dimensions=["orders.customers.name"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await unnamed_engine.execute(query)
         _assert_names_both_candidates(str(ei.value))
@@ -44,14 +44,14 @@ class TestParallelEdgesFailClosed:
         self, unnamed_engine,
     ) -> None:
         query = SlayerQuery(
-            population="customers", dimensions=["orders.status"])
+            population="customers", dimensions=["customers.orders.status"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await unnamed_engine.execute(query)
         _assert_names_both_candidates(str(ei.value))
 
     async def test_error_carries_the_candidate_edges(self, unnamed_engine) -> None:
         query = SlayerQuery(
-            population="orders", dimensions=["customers.name"])
+            population="orders", dimensions=["orders.customers.name"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await unnamed_engine.execute(query)
         assert len(ei.value.candidates) == 2
@@ -59,14 +59,14 @@ class TestParallelEdgesFailClosed:
     async def test_filter_path_fails_closed(self, unnamed_engine) -> None:
         query = SlayerQuery(
             population="orders", dimensions=["orders.status"],
-            filter=["customers.tier = 'gold'"])
+            filter=["orders.customers.tier = 'gold'"])
         with pytest.raises(AmbiguousRelationshipPathError):
             await unnamed_engine.execute(query)
 
     async def test_measure_path_fails_closed(self, unnamed_engine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"metric": "sum(customers.spend)", "alias": "s"}],
+            "metrics": [{"metric": "sum(orders.customers.spend)", "alias": "s"}],
         })
         with pytest.raises(AmbiguousRelationshipPathError):
             await unnamed_engine.execute(query)

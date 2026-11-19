@@ -134,4 +134,4 @@ async def test_dev1446_aggregate_interned_to_one_slot(engine: Tuple[SlayerQueryE
     assert "AMOUNT_SUM" not in base, base
     # The change desugaring subtracts the shifted value from the renamed
     # slot's alias — proof the inner ref bound to the declared slot.
-    assert '"orders.revenue" - "orders._time_shift_inner"' in sql
+    assert '"revenue" - "_time_shift_inner"' in sql

@@ -95,7 +95,8 @@ class TestQueryRefinementModel:
 
 class TestDimensions:
     def test_union_appends_new_entries(self) -> None:
-        assert dim_names(merge(saved(dimensions=["orders.status"]), dimensions=["region"])) == ["status", "region"]
+        assert dim_names(merge(saved(dimensions=["orders.status"]), dimensions=["orders.region"])) == [
+            "orders.status", "orders.region"]
 
     def test_added_to_query_without_dimensions(self) -> None:
         assert dim_names(merge(saved(metrics=[REVENUE]), dimensions=["region"])) == ["region"]
@@ -117,11 +118,11 @@ class TestDimensions:
 
     def test_identical_computed_dimension_collapses(self) -> None:
         base = saved(dimensions=[{"field": "orders.amount * 2", "alias": "dbl"}])
-        assert merge(base, dimensions=[{"field": "amount * 2", "alias": "dbl"}]).dimensions == base.dimensions
+        assert merge(base, dimensions=[{"field": "orders.amount * 2", "alias": "dbl"}]).dimensions == base.dimensions
 
     def test_unnamed_computed_dimension_collapses_on_expression(self) -> None:
         base = saved(dimensions=["orders.amount * 2"])
-        assert merge(base, dimensions=["amount * 2"]).dimensions == base.dimensions
+        assert merge(base, dimensions=["orders.amount * 2"]).dimensions == base.dimensions
 
     def test_computed_dimension_name_clash_conflicts(self) -> None:
         message = conflict(
@@ -136,8 +137,8 @@ class TestDimensions:
 
 class TestMeasures:
     def test_union_appends_new_entries(self) -> None:
-        merged = merge(saved(metrics=[REVENUE]), metrics=["count(*)"])
-        assert [m.metric for m in merged.metrics or []] == ["sum(amount)", "count(*)"]
+        merged = merge(saved(metrics=[REVENUE]), metrics=["count(orders.*)"])
+        assert [m.metric for m in merged.metrics or []] == ["sum(orders.amount)", "count(orders.*)"]
 
     def test_identical_named_measure_collapses(self) -> None:
         base = saved(metrics=[REVENUE])
@@ -152,8 +153,8 @@ class TestMeasures:
         assert [m.alias for m in merged.metrics or []] == ["revenue", "rev2"]
 
     def test_same_name_different_formula_conflicts(self) -> None:
-        message = conflict(saved(metrics=[REVENUE]), metrics=[{"metric": "count(*)", "alias": "revenue"}])
-        for part in ("metrics", "revenue", "sum(amount)", "count(*)"):
+        message = conflict(saved(metrics=[REVENUE]), metrics=[{"metric": "count(orders.*)", "alias": "revenue"}])
+        for part in ("metrics", "revenue", "sum(orders.amount)", "count(orders.*)"):
             assert part in message
 
     @pytest.mark.parametrize("field, value", [
@@ -176,12 +177,14 @@ class TestMeasures:
 
 class TestTimeDimensions:
     def test_new_granularity_appended(self) -> None:
-        merged = merge(saved(time_dimensions=[MONTH_TD], metrics=[REVENUE]), time_dimensions=["date_trunc('year', ordered_at)"])
-        assert td_keys(merged) == [("ordered_at", "month"), ("ordered_at", "year")]
+        merged = merge(saved(time_dimensions=[MONTH_TD], metrics=[REVENUE]),
+                       time_dimensions=["date_trunc('year', orders.ordered_at)"])
+        assert td_keys(merged) == [("orders.ordered_at", "month"), ("orders.ordered_at", "year")]
 
     def test_functional_dimension_merges_as_time_dimension(self) -> None:
-        merged = merge(saved(time_dimensions=[MONTH_TD], metrics=[REVENUE]), dimensions=["date_trunc('year', ordered_at)"])
-        assert td_keys(merged) == [("ordered_at", "month"), ("ordered_at", "year")]
+        merged = merge(saved(time_dimensions=[MONTH_TD], metrics=[REVENUE]),
+                       dimensions=["date_trunc('year', orders.ordered_at)"])
+        assert td_keys(merged) == [("orders.ordered_at", "month"), ("orders.ordered_at", "year")]
         assert not merged.dimensions
 
     def test_functional_dimension_on_saved_key_collapses(self) -> None:
@@ -244,13 +247,13 @@ class TestTimeDimensions:
 
 class TestFilters:
     def test_filters_and_together_in_order(self) -> None:
-        merged = merge(saved(metrics=[REVENUE], filter=["orders.status = 'paid'"]), filter=["amount >= 50"])
-        assert merged.filter == ["status = 'paid'", "amount >= 50"]
+        merged = merge(saved(metrics=[REVENUE], filter=["orders.status = 'paid'"]), filter=["orders.amount >= 50"])
+        assert merged.filter == ["orders.status = 'paid'", "orders.amount >= 50"]
 
     def test_exact_duplicate_dropped(self) -> None:
         merged = merge(saved(metrics=[REVENUE], filter=["orders.status = 'paid'"]),
-                       filter=["status = 'paid'", "amount >= 50"])
-        assert merged.filter == ["status = 'paid'", "amount >= 50"]
+                       filter=["orders.status = 'paid'", "orders.amount >= 50"])
+        assert merged.filter == ["orders.status = 'paid'", "orders.amount >= 50"]
 
     def test_added_to_query_without_filters(self) -> None:
         assert merge(saved(metrics=[REVENUE]), filter=["amount >= 50"]).filter == ["amount >= 50"]

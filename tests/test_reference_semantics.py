@@ -327,21 +327,21 @@ class TestDslModeAcceptance:
             population="orders",
             filter=["sum(orders.revenue) > 100"],
         )
-        assert q.filter == ["sum(revenue) > 100"]
+        assert q.filter == ["sum(orders.revenue) > 100"]
 
     def test_query_filter_accepts_transform_predicate(self) -> None:
         q = SlayerQuery(
             population="orders",
             filter=["change(sum(orders.revenue)) > 0"],
         )
-        assert q.filter == ["change(sum(revenue)) > 0"]
+        assert q.filter == ["change(sum(orders.revenue)) > 0"]
 
     def test_query_filter_accepts_nested_transform(self) -> None:
         q = SlayerQuery(
             population="orders",
             filter=["last(change(sum(orders.revenue))) < 0"],
         )
-        assert q.filter == ["last(change(sum(revenue))) < 0"]
+        assert q.filter == ["last(change(sum(orders.revenue))) < 0"]
 
     def test_query_filter_accepts_dotted_join_path(self) -> None:
         q = SlayerQuery(
@@ -356,7 +356,7 @@ class TestDslModeAcceptance:
             filter=["orders.status = '{status_val}'"],
             variables={"status_val": "active"},
         )
-        assert q.filter == ["status = '{status_val}'"]
+        assert q.filter == ["orders.status = '{status_val}'"]
 
     def test_model_measure_accepts_cross_model_dotted_ref(self) -> None:
         """Cross-model dotted refs in ModelMeasure formulas remain supported (per spec)."""

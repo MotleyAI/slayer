@@ -46,6 +46,11 @@ class InnerRestriction(BaseModel):
     # How messages name the declaration.
     label: str
 
+    @property
+    def parts(self) -> Tuple[str, str, str]:
+        """The filter's reference, anchored at the declaring dataset."""
+        return (self.dataset, self.token, self.key)
+
 
 class ResolvedSourceBundle(BaseModel):
     """Eagerly resolved inputs to one query execution (P11)."""

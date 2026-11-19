@@ -111,10 +111,10 @@ async def test_consecutive_periods_over_date_column(
 @pytest.mark.parametrize("dim", ["ev.d", "ev.d_expr", "ev.ts"])  # DATE, DATETIME and TIMESTAMP buckets
 @pytest.mark.parametrize("formula,comparison", [
     ("consecutive_periods(sum(ev.v) > 0)",
-     "CAST(`_cp_prev_ev___x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
+     "CAST(`_cp_prev_x` AS DATETIME) = DATETIME_ADD(CAST(`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH)"),
     ("time_shift(sum(ev.v), -1, 'month')",
      "DATETIME_ADD(CAST(base.`ev___{dim}` AS DATETIME), INTERVAL -1 MONTH) "
-     "IS NOT DISTINCT FROM CAST(shifted_x.`ev___{dim}` AS DATETIME)"),
+     "IS NOT DISTINCT FROM CAST(shifted_x.`{dim}` AS DATETIME)"),
 ])
 async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
     # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
@@ -125,4 +125,4 @@ async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str,
         "time_dimensions": [{"field": dim, "granularity": "month"}],
         "metrics": [{"metric": formula, "alias": "x"}],
     }), dataset=model, dialect="bigquery", validate=False)
-    assert comparison.format(dim=dim) in sql
+    assert comparison.format(dim=dim.split(".")[-1]) in sql

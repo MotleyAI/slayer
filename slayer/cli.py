@@ -2482,7 +2482,11 @@ async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversion
         for dataset in ready or list(pending.values()):
             del pending[dataset.name]
             try:
-                await engine.save_dataset(dataset)
+                stages = await engine.storage.qualified_stored_queries(
+                    list(dataset.source_queries or []), versions=result.stage_versions.get(dataset.name, []),
+                    data_source=dataset.data_source, document=dataset.name,
+                )
+                await engine.save_dataset(dataset.model_copy(update={"source_queries": stages}))
             except Exception as exc:  # noqa: BLE001 — per-dataset isolation; reported
                 result.warnings.append(ConversionWarning(
                     dataset_name=dataset.name, category="extension", severity="info",

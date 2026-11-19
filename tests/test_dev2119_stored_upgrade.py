@@ -160,10 +160,10 @@ class TestStoredDocumentsUpgrade:
                                   memories=[memory_v2(memory_id="m_td", query=query)])
         mem = await storage.get_memory("m_td")
         assert mem.query is not None
-        assert _dumped_tds(mem.query) == [{"field": "ordered_at", "granularity": "year"}]
+        assert _dumped_tds(mem.query) == [{"field": "orders.ordered_at", "granularity": "year"}]
         assert _cells(await run(storage, mem.query), dim_suffix="ordered_at", width=4) == REV_BY_ORDER_YEAR
         await storage.save_memory(learning=mem.learning, entities=mem.entities, query=mem.query, id=mem.id)
-        assert _stored_memory_td(backend=backend, storage=storage, base=base, memory_id="m_td") == "ordered_at"
+        assert _stored_memory_td(backend=backend, storage=storage, base=base, memory_id="m_td") == "orders.ordered_at"
 
 
 def _stored_memory_td(*, backend: str, storage: Any, base: str, memory_id: str) -> Any:
@@ -196,7 +196,7 @@ class TestReleasedCorpus:
                 if mem.query is not None and mem.query.time_dimensions:
                     texts += [td["field"] for td in _dumped_tds(mem.query)]
                     keys.append(f"{MEMORY_PREFIX}{mid}")
-            assert texts == ["ordered_at"] * 7
+            assert texts == ["orders.ordered_at"] * 7
             for key in keys:
                 assert await run_recorded(CORPUS, storage, key) == CORPUS.expected[key]["rows"], key
         finally:

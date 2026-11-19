@@ -189,8 +189,8 @@ class TestOrderPosition:
         # The author's functional spelling survives coercion and round-trip.
         assert q1.order is not None
         assert q2.order is not None
-        assert q1.order[0].raw_expression == "sum(revenue)"
-        assert q2.order[0].raw_expression == "sum(revenue)"
+        assert q1.order[0].raw_expression == "sum(orders.revenue)"
+        assert q2.order[0].raw_expression == "sum(orders.revenue)"
         r1 = await _dry(q1)
         r2 = await _dry(q2)
         assert r1.sql == r2.sql

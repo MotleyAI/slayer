@@ -36,8 +36,8 @@ def _td_schema() -> dict:
 class TestTextCoercion:
     def test_column_alias_validates_and_dumps_as_dimension_text(self) -> None:
         query = _q(time_dimensions=[{"field": "orders.created_at", "granularity": "month"}])
-        assert _tds(query)[0].field == "created_at"
-        assert _dumped_tds(query) == [{"field": "created_at", "granularity": "month"}]
+        assert _tds(query)[0].field == "orders.created_at"
+        assert _dumped_tds(query) == [{"field": "orders.created_at", "granularity": "month"}]
 
     def test_dimension_keyword_takes_text(self) -> None:
         td = TimeDimension(field="created_at", granularity="month")
@@ -91,14 +91,14 @@ class TestFunctionalForms:
         query = _q(time_dimensions=[{"field": "orders.created_at", "granularity": "year"}],
                    dimensions=["orders.region", f"date_trunc('month', {EFF})", f"date_trunc('week', {CAST_TXT})"])
         assert [(t.field, t.granularity) for t in _tds(query)] == [
-            ("created_at", "year"), (EFF, "month"), (CAST_TXT, "week"),
+            ("orders.created_at", "year"), (EFF, "month"), (CAST_TXT, "week"),
         ]
         assert query.dimensions is not None
-        assert [d.field for d in query.dimensions] == ["region"]
+        assert [d.field for d in query.dimensions] == ["orders.region"]
 
     def test_non_temporal_argument_is_not_a_shape_error(self) -> None:
         query = _q(dimensions=["date_trunc('month', upper(orders.status))"])
-        assert [(t.field, t.granularity) for t in _tds(query)] == [("upper(status)", "month")]
+        assert [(t.field, t.granularity) for t in _tds(query)] == [("upper(orders.status)", "month")]
 
     @pytest.mark.parametrize("entry", ["date_trunc('month')", "date_trunc('month', a, b)", "date_trunc('month', *)",
                                        "date_trunc('month', created_at, granularity=2)"])

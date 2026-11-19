@@ -105,8 +105,8 @@ class TestHomePaths:
         assert _home_path("wsum_cust_plan_fee(customers.regions.pop)") == ("customers",)
 
     def test_owner_at_root_self_name_homes_at_root_pin(self):
-        assert _home_path("wself(amount)") == ()
-        assert _home_path("wself_expr(amount)") == ()
+        assert _home_path("wself(orders.amount)") == ()
+        assert _home_path("wself_expr(orders.amount)") == ()
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

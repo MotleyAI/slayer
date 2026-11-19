@@ -232,14 +232,14 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
     # (The typed pipeline names the shifted intermediate
     # ``orders._time_shift_inner``; the legacy stack spelled it
     # ``orders._ts_pct``. Same slot, same assertion.)
-    assert "`orders._time_shift_inner`" in sql, (
+    assert "`_time_shift_inner`" in sql, (
         f"Inner computed expression should reference the time-shift "
         f"intermediate via backticks:\n{sql}"
     )
     # The self-join CTE's ON clause must use backticks on both sides.
     assert (
         "DATE_ADD(base.`orders.created_at`, INTERVAL -1 MONTH) <=> "
-        "shifted__time_shift_inner.`orders.created_at`"
+        "shifted__time_shift_inner.`created_at`"
     ) in sql, (
         f"Self-join ON clause must use backticked identifiers:\n{sql}"
     )

@@ -67,10 +67,10 @@ FINE_DIM = {"field": f"CASE WHEN {FINE} > 30 THEN 'hi' ELSE 'lo' END", "alias": 
 FINE_TOT = {("North", "lo"): 30.0, ("North", "hi"): 60.0, ("South", "hi"): 140.0,
             ("East", "hi"): 180.0, ("Gap", "lo"): 20.0, ("Void", "lo"): None}
 
-CITY_BAND = {"field": "CASE WHEN sum(amount, partition_by=[city, region]) > 45 "
+CITY_BAND = {"field": "CASE WHEN sum(sales.amount, partition_by=[sales.city, sales.region]) > 45 "
                            "THEN 'hi' ELSE 'lo' END", "alias": "band"}
 
-CHAIN_R = "avg(sum(amount, partition_by=customer_id), partition_by=customers.regions.name)"
+CHAIN_R = "avg(sum(corders.amount, partition_by=corders.customer_id), partition_by=customers.regions.name)"
 CL = {"field": f"CASE WHEN {CHAIN_R} > 40 THEN 'hi' ELSE 'lo' END", "alias": "cl"}
 
 
@@ -203,7 +203,7 @@ class TestFilterOnAggregateOwnedByDimensionTransform:
         assert _col(resp, "tot") == _approx({"South": 140.0, "East": 180.0})
 
     def test_finer_partition_key_is_a_typed_error(self):
-        band = {"field": "CASE WHEN rank(sum(amount, partition_by=[city, region]), direction='desc') > 1 "
+        band = {"field": "CASE WHEN rank(sum(sales.amount, partition_by=[sales.city, sales.region]), direction='desc') > 1 "
                               "THEN 'top' ELSE 'rest' END", "alias": "cband"}
         query = sales_q(dimensions=["sales.region", band], metrics=[TOT],
                         filter=["sum(sales.amount, partition_by=[sales.city, sales.region]) > 50"])
@@ -267,9 +267,9 @@ def _fine_cases():
          r"metric 'f'"),
         ("transform", {"metrics": [QueryMetric(metric=f"rank({FINE}, direction='desc')", alias="f")]},
          r"metric 'f'"),
-        ("filter", {"metrics": [TOT], "filter": [f"{FINE} < sum(amount)"]}, r"filter\b"),
+        ("filter", {"metrics": [TOT], "filter": [f"{FINE} < sum(sales.amount)"]}, r"filter\b"),
         ("split-filter",
-         {"metrics": [TOT], "filter": [f"{FINE} < sum(amount) and region <> 'Gap'"]},
+         {"metrics": [TOT], "filter": [f"{FINE} < sum(sales.amount) and sales.region <> 'Gap'"]},
          r"filter\b"),
     ]
 
@@ -293,7 +293,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
             plan_query(query=query, bundle=bundle)
         _assert_consumer_error(ei.value, key="city", location=location)
 
-    @pytest.mark.parametrize(("dim", "agg"), [(CITY_BAND, "sum(amount, partition_by=[city, region])"),
+    @pytest.mark.parametrize(("dim", "agg"), [(CITY_BAND, "sum(sales.amount, partition_by=[sales.city, sales.region])"),
                                               (FINE_DIM, FINE)], ids=["plain", "reagg"])
     @pytest.mark.parametrize("template", ["rank({}, direction='desc')", "{} + 1"], ids=["transform", "arithmetic"])
     def test_order_expression_over_dimension_aggregate(self, dim, agg, template):
@@ -322,7 +322,7 @@ def _is_r(key: ValueKey) -> bool:
 
 
 _R_CONSUMERS = [
-    pytest.param({"filter": [f"{R} < sum(amount)"]}, id="filter"),
+    pytest.param({"filter": [f"{R} < sum(sales.amount)"]}, id="filter"),
     pytest.param({"order": [{"field": R, "direction": "desc"}]}, id="order"),
     pytest.param({"metrics": [TOT, QueryMetric(metric=R, alias="r")]}, id="measure"),
 ]
@@ -450,12 +450,12 @@ class TestSynthesizedGrainNames:
             ]),
         ]
         months = [TimeDimension(field=n, granularity=TimeGranularity.MONTH)
-                  for n in ("created_at", "customers.created_at")]
+                  for n in ("orders.created_at", "customers.created_at")]
         q = SlayerQuery(
             population="orders", dimensions=[QueryDimension(field="orders.region")], time_dimensions=months,
             metrics=[QueryMetric(
-                metric="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
-                        " partition_by=[created_at, customers.created_at])", alias="m")],
+                metric="avg(sum(orders.amount, partition_by=[orders.region, orders.created_at, customers.created_at]),"
+                        " partition_by=[orders.created_at, customers.created_at])", alias="m")],
         )
         async with seeded_exec_engine(dialect="sqlite", seed=seed, datasets=models) as (eng, _):
             resp = await eng.execute(q)

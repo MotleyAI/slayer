@@ -84,7 +84,7 @@ async def _raise_of(case: Case) -> QueryTypeError:
 
 
 def _time_axis() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return f1832.monthly_q(metrics=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()
+    return f1832.monthly_q(metrics=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td("monthly")), f1832.dev1832_datasets()
 
 
 def _no_time_dimension() -> Tuple[SlayerQuery, List[SlayerDataset]]:
@@ -119,7 +119,7 @@ FAMILY_CASES = [
      lambda: (f1945.orders_q(metrics=[f1945.metric("last(orders.amount)")]), f1945.dev1945_datasets(orders_default="bad_ts")),
      UnanalyzableDependencyError, "metric 'amount_last'", True),
     ("transform-input",
-     lambda: (f1832.orders_q(metrics=[_m("sum(cumsum(orders.weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()),
+     lambda: (f1832.orders_q(metrics=[_m("sum(cumsum(orders.weight) - 1)", "m")], time_dimensions=f1832.month_td("orders")), f1832.dev1832_datasets()),
      TransformInputError, "transform 'cumsum'", True),
     ("computed-dimension",
      lambda: (SlayerQuery.model_validate({
@@ -133,7 +133,7 @@ FAMILY_CASES = [
               f1841.dev1840_datasets()),
      AssociationError, "metric 'cm'", True),
     ("parameter-grain",
-     lambda: (f1847.sales_q(dimensions=["region"], metrics=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_datasets()),
+     lambda: (f1847.sales_q(dimensions=["sales.region"], metrics=[_m(f"wavg({f1847.INNER_CR}, weight=sales.id)", "w")]), f1847.dev1847_datasets()),
      ParameterGrainError, "metric 'w'", True),
     ("reaggregation",
      lambda: (orders_q(
@@ -172,13 +172,13 @@ FAMILY_CASES = [
          population="orders", dimensions=[QueryDimension(field="orders.status")],
          filter=["sum(orders.amount) > 100"], distinct_dimension_values=False,
      ), [_orders()]),
-     DistinctDimensionValuesError, "filter 'sum(amount) > 100'", True),
+     DistinctDimensionValuesError, "filter 'sum(orders.amount) > 100'", True),
     ("time-dimension-column",
      lambda: (SlayerQuery(
          population="orders", metrics=[_m("sum(orders.amount)", "t")],
          time_dimensions=[TimeDimension(field="orders.status", granularity=TimeGranularity.MONTH)],
      ), [_orders()]),
-     TimeDimensionFieldError, "time dimension 'status'", False),
+     TimeDimensionFieldError, "time dimension 'orders.status'", False),
 ]
 
 

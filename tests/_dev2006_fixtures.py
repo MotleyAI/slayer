@@ -101,10 +101,10 @@ def dev2006_bundle(*, root: str = "account_snapshots") -> ResolvedSourceBundle:
 # --------------------------------------------------------------------------- #
 # Query shorthands
 # --------------------------------------------------------------------------- #
-PB = "partition_by=[account_id, customer_id]"
-PB_MONTH = "partition_by=[account_id, customer_id, snapshot_date]"
-LAST = f"last(balance, {PB})"
-FIRST = f"first(balance, {PB})"
+PB = "partition_by=[account_snapshots.account_id, account_snapshots.customer_id]"
+PB_MONTH = "partition_by=[account_snapshots.account_id, account_snapshots.customer_id, account_snapshots.snapshot_date]"
+LAST = f"last(account_snapshots.balance, {PB})"
+FIRST = f"first(account_snapshots.balance, {PB})"
 
 
 def snap_q(**kw) -> SlayerQuery:
@@ -116,7 +116,7 @@ def m(expression: str, name: str = "v") -> QueryMetric:
     return QueryMetric(metric=expression, alias=name)
 
 
-def month_td(column: str = "snapshot_date") -> List[TimeDimension]:
+def month_td(column: str = "account_snapshots.snapshot_date") -> List[TimeDimension]:
     return [TimeDimension(field=column, granularity=TimeGranularity.MONTH)]
 
 

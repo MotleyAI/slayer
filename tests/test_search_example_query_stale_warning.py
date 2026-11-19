@@ -58,7 +58,7 @@ class TestExampleQueryStaleWarning:
         eq = next(e for e in example_queries if e.id == str(seed.id))
         assert eq.query.population == "orders"
         assert eq.query.metrics is not None
-        assert eq.query.metrics[0].metric == "sum(amount)"
+        assert eq.query.metrics[0].metric == "sum(orders.amount)"
         # And a warning naming the memory must be present.
         memory_warnings = [
             w for w in resp.warnings if "memory:" in w and "stale" in w.lower()

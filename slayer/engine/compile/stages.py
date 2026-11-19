@@ -4746,7 +4746,7 @@ def _emit_stage_schema(
         flat = flat_name(rk, strip_relation=source_relation)
         # Two public fields flattening to one downstream name make the column ambiguous to a stage reading it by name.
         if flat in key_by_flat:
-            check_stage_flatten_collision(flat_name=flat, collides=stage_name is not None,
+            check_stage_flatten_collision(flat_name=flat, collides=stage_name is not None or key_by_flat[flat] == rk,
                                           entries=(key_by_flat[flat], rk))
             collision = collision or (flat, key_by_flat[flat], rk)
             continue

@@ -12,6 +12,7 @@ from typing import (
     FrozenSet,
     Iterable,
     List,
+    Mapping,
     Literal,
     Optional,
     Set,
@@ -3697,8 +3698,10 @@ class SQLGenerator:
                 continue
             _agg_col = _attached.field_name
             if ph_slot.hidden and planned_query.transform_layers:
-                _emit(ph_slot.id, _attached.value().as_(_agg_col, quoted=True))
-                combined_aliases_by_slot_id[ph_slot.id] = [_agg_col]
+                carried = self._hidden_carry_name(ph_slot=ph_slot, column=_agg_col, cte=_attached.cte_name,
+                                                  source_relation=source_relation, taken=aliases_by_slot_id)
+                _emit(ph_slot.id, _attached.value().as_(carried, quoted=True))
+                combined_aliases_by_slot_id[ph_slot.id] = [carried]
                 continue
             public_aliases = (
                 []
@@ -3913,6 +3916,19 @@ class SQLGenerator:
         )
         assert alias is not None  # the cross_dataset_cte profile never declines
         return alias
+
+    @staticmethod
+    def _hidden_carry_name(
+        *, ph_slot: ValueSlot, column: str, cte: str, source_relation: str, taken: Mapping[str, List[str]],
+    ) -> str:
+        """A hidden regroup value's carried column: a dotted name, which never equals a (bare) query alias, and no
+        other slot's — its producer column, else its placeholder's key, else the column under the population."""
+        seed = re.sub(rf"^{re.escape(REGROUP_LEAF_PREFIX)}\d+__", "", ph_slot.declared_name)
+        used = {a for sid, aliases in taken.items() if sid != ph_slot.id for a in aliases}
+        for name in (column, seed, internal_result_key(source_relation=source_relation, name=column)):
+            if "." in name and name not in used:
+                return name
+        return f"{cte}.{column}"
 
     def _public_aliases_for_cross_dataset_agg(
         self,

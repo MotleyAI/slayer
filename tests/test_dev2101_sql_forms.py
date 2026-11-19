@@ -162,7 +162,7 @@ class TestExpressionGrammarScenarios:
     async def test_concatenation_dimension(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=[{"field": "orders.status || '-' || orders.region", "alias": "tag"}],
                                       metrics=[m("count(orders.*)")]))
-        assert by_key(resp, "tag") == {"paid-EU": 2, "Pending-US": 1, "paid-US": 1, None: 1}
+        assert by_key(resp, "tag", dataset=None) == {"paid-EU": 2, "Pending-US": 1, "paid-US": 1, None: 1}
 
     async def test_modulo_sign(self, engine: SlayerQueryEngine) -> None:
         assert num(single(await engine.execute(q(metrics=[m("min(-7 % 3)")])))) == -1
@@ -210,7 +210,7 @@ class TestExpressionGrammarScenarios:
 
     async def test_quoted_segment_in_dotted_path(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=['customers."Region"'], metrics=[m("count(orders.*)")]))
-        assert by_key(resp, "customers.Region") == {"North": 2, "South": 2, None: 1}
+        assert by_key(resp, "customers.Region", dataset=None) == {"North": 2, "South": 2, None: 1}
 
     async def test_double_quoted_string_hint(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=["orders.id"], filter=['orders.status = orders."paid"'])

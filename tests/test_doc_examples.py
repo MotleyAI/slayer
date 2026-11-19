@@ -54,7 +54,7 @@ class TestExtraction:
             "```json",
             "[",
             '  {"name": "s", "population": "orders", "metrics": ["count(orders.*)"], "dimensions": ["orders.store_id"]},',
-            '  {"population": "s", "metrics": ["max(_count)"]}',
+            '  {"population": "s", "metrics": ["max(s._count)"]}',
             "]",
             "```",
         )
@@ -102,7 +102,7 @@ class TestExtraction:
             "}",
             "client.query_sync([",
             '    {"name": "s", "population": "orders", "metrics": ["count(orders.*)"]},',
-            '    {"population": "s", "metrics": ["max(_count)"]},',
+            '    {"population": "s", "metrics": ["max(s._count)"]},',
             "])",
             "```",
         )

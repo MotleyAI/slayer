@@ -165,7 +165,7 @@ class TestNamedMeasureSQL:
         })
 
         with pytest.raises(
-            ValueError, match=r"Cannot resolve reference 'nonexistent'"
+            ValueError, match=r"Cannot resolve reference 'orders\.nonexistent'"
         ):
             await _generate(query, model)
 

@@ -388,7 +388,7 @@ class TestHttpBodyShape:
         client.query_sync(payload)
         body = cap.last_body
         assert body is not None
-        assert body["metrics"] == ["sum(amount)"]
+        assert body["metrics"] == ["sum(orders.amount)"]
 
     # --- SlayerQuery --------------------------------------------------- #
 
@@ -743,7 +743,7 @@ class TestRefine:
         assert cap.last_body is not None
         assert set(cap.last_body) == {"name", "refine"}
         assert cap.last_body["name"] == "monthly_revenue"
-        assert cap.last_body["refine"]["dimensions"] in (["region"], [{"name": "region"}])
+        assert cap.last_body["refine"]["dimensions"] in (["orders.region"], [{"name": "orders.region"}])
 
     def test_http_body_keeps_explicit_null(
         self,

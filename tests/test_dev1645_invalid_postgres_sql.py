@@ -150,7 +150,7 @@ class TestFlavorAOrderByUnprojected:
             "order": [OrderItem(field="rev", direction="desc")],
         })
         sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
-        assert 'ORDER BY "orders.rev" DESC' in sql
+        assert 'ORDER BY "rev" DESC' in sql
 
     async def test_orderby_nonprojected_mixed_case_column_split_and_quoted(
         self, orders_dataset: SlayerDataset
@@ -228,10 +228,10 @@ class TestFlavorAOrderByUnprojected:
         # not exist. The producer is target-rooted, so its inner alias is the
         # CANONICAL ``clusters.score_sum`` (not host-prefixed).
         assert (
-            'ORDER BY _cm_accts__clusters__score_sum."clusters.score_sum" DESC'
+            'ORDER BY _cm_accts__clusters__score_sum."score_sum" DESC'
         ) in sql, sql
         assert "ORDER BY accts." not in sql, sql
-        assert '"clusters.score_sum"' in sql, sql
+        assert '"score_sum"' in sql, sql
 
     async def test_orderby_unprojected_joined_column_resolves_host_rooted(
         self,
@@ -292,7 +292,7 @@ class TestFlavorAOrderByUnprojected:
             query=query, dataset=orders, extra_datasets=joined,
         ))
         assert "IS NOT DISTINCT FROM" in sql, sql
-        assert 'ORDER BY "orders.customers.regions.name_max_host" DESC' in sql, sql
+        assert 'ORDER BY "customers.regions.name_max_host" DESC' in sql, sql
 
     async def test_orderby_joined_column_resolves_in_first_last_ranked_scope(
         self,
@@ -312,7 +312,7 @@ class TestFlavorAOrderByUnprojected:
         ))
         assert "_cm_" in sql, sql
         assert "MAX(customers__regions.name)" in sql, sql
-        assert '"orders.customers.regions.name_max_host" DESC' in sql, sql
+        assert '"customers.regions.name_max_host" DESC' in sql, sql
         assert "GROUP BY customers__regions.name" not in sql, sql
 
 
@@ -371,7 +371,7 @@ class TestFlavorAJoinedOrderByResolves:
         sql = _norm(await _engine_generate(
             query=query, dataset=orders, extra_datasets=joined,
         ))
-        assert 'ORDER BY "orders.customers.regions.name_max_host" DESC' in sql, sql
+        assert 'ORDER BY "customers.regions.name_max_host" DESC' in sql, sql
 
 
 # ============================================================================

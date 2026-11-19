@@ -27,7 +27,7 @@ _REGION_PAIRS = [["region_id", "id"]]
 def _joined(root: str, ref: str, *, stage: dict | None = None, pairs: list[list[str]] | None = None,
             leading: str = "id") -> list[SlayerQuery | dict]:
     """Stage ``s``, then a query rooted at ``root`` that joins ``s`` and selects ``ref``."""
-    return [q(**(stage or _S)), q(population=root, dimensions=[leading, ref],
+    return [q(**(stage or _S)), q(population=root, dimensions=[f"{root}.{leading}", ref],
                                   extensions=[ext(root, relationships=[join("s", pairs or _ISSUE_PAIRS)])])]
 
 
@@ -63,7 +63,7 @@ _CUSTOMER_PAIRS = [["id", "customer_id"]]
                  ("customers.id", "s.customers__name"),
                  [(1, "Ann"), (2, "Bob"), (3, "Cid"), (4, "Dee"), (5, "Eve")], id="stored-customers"),
     pytest.param([q(name="s", population="orders", dimensions=["orders.customer_id"]),
-                  q(population="addresses", dimensions=["addresses.id", "customers.name"], extensions=[
+                  q(population="addresses", dimensions=["addresses.id", "s.customers.name"], extensions=[
                       ext("addresses", relationships=[join("s", [["customer_id", "customer_id"]])]),
                       ext("s", relationships=[join("customers", [["customer_id", "id"]])])])],
                  ("addresses.id", "s.customers.name"), _BY_CUSTOMER, id="genuine-join-through-a-stage"),
@@ -79,7 +79,7 @@ async def test_a_joined_stage_column_executes(dialect: str, payload: list[Slayer
 # The dotted spelling is refused with the flat name.
 # --------------------------------------------------------------------------- #
 async def test_a_stored_roots_dotted_spelling_suggests_the_flat_column() -> None:
-    err = await _refused(_joined("addresses", "customers.name"))
+    err = await _refused(_joined("addresses", "s.customers.name"))
     assert "'s'" in err.scope_summary
     assert "customers__name" in err.scope_summary
     assert "s.customers__name" in err.suggestion
@@ -88,13 +88,13 @@ async def test_a_stored_roots_dotted_spelling_suggests_the_flat_column() -> None
 
 async def test_a_routable_target_does_not_override_the_flat_column() -> None:
     models = with_datasets(customers(DatasetRelationship(to="regions", from_columns=[p[0] for p in _REGION_PAIRS], to_columns=[p[1] for p in _REGION_PAIRS])))
-    err = await _refused(_joined("regions", "customers.name"), datasets=models)
+    err = await _refused(_joined("regions", "s.customers.name"), datasets=models)
     assert "s.customers__name" in err.suggestion
     assert "'customers.name'" not in str(err)
 
 
 async def test_a_hop_back_to_the_root_is_not_a_circular_join() -> None:
-    err = await _refused(_joined("customers", "customers.name", stage=_KEYED, pairs=_CUSTOMER_PAIRS))
+    err = await _refused(_joined("customers", "s.customers.name", stage=_KEYED, pairs=_CUSTOMER_PAIRS))
     assert "s.customers__name" in err.suggestion
 
 
@@ -184,7 +184,7 @@ async def test_a_routing_short_form_is_not_pre_empted_by_a_flat_column() -> None
 
 
 async def test_a_downstream_stages_dotted_spelling_names_the_flat_column() -> None:
-    err = await _refused([q(**_S), q(population="s", dimensions=["customers.name"])],
+    err = await _refused([q(**_S), q(population="s", dimensions=["s.customers.name"])],
                          exc=IllegalScopeReferenceError)
     assert "customers__name" in err.reason
 

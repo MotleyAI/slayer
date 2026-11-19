@@ -103,7 +103,7 @@ class TestRewrite:
         (BARE, FILLED),
         ("dense_rank(sum(amount), partition_by=region)",
          "dense_rank(sum(amount), partition_by=region, direction='desc')"),
-        ("rank(amount:sum)", "rank(sum(sales.amount), direction='desc')"),
+        ("rank(amount:sum)", "rank(sum(amount), direction='desc')"),
         ("rank(amount:sum(partition_by=region)) <= 3",
          "rank(sum(amount, partition_by=region), direction='desc') <= 3"),
         ("rank(rank(amount:sum)) + 1",
@@ -407,7 +407,7 @@ class TestStorageLoad:
         resp = await _execute(storage, SlayerQuery.model_validate(
             {"version": 4, "source_model": "sales", "dimensions": ["sales.region"],
              "measures": [{"formula": BARE, "name": "r"}]}))
-        assert {k[0]: v["sales.r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
+        assert {k[0]: v["r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
 
 
 # --------------------------------------------------------------------------- #

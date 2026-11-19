@@ -290,8 +290,8 @@ def bucketed_dataset(*, name: str, source: str, column: str, granularity: str) -
         "name": name, "data_source": "test",
         "source_queries": [{
             "population": source,
-            "time_dimensions": [{"field": column, "granularity": granularity}],
-            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+            "time_dimensions": [{"field": f"{source}.{column}", "granularity": granularity}],
+            "metrics": [{"metric": f"sum({source}.amount)", "alias": "rev"}],
         }],
     })
 

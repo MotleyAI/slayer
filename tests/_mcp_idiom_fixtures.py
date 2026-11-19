@@ -55,9 +55,9 @@ from tests._engine_helpers import seeded_exec_engine
 # --------------------------------------------------------------------------- #
 SHARE_OF_GROUP = "sum(orders.amount) / sum(orders.amount, partition_by=customers.regions.name)"
 SHARE_OF_TOTAL = "sum(orders.amount) / sum(orders.amount, partition_by=[])"
-TRAILING_WINDOW = "count_distinct(customer_id, window='90d')"
+TRAILING_WINDOW = "count_distinct(orders.customer_id, window='90d')"
 NESTED = (
-    "avg(sum(amount, partition_by=[customers.regions.name, customers.id]), "
+    "avg(sum(orders.amount, partition_by=[customers.regions.name, customers.id]), "
     "partition_by=[customers.regions.name])"
 )
 SPEND_BAND = "iif(sum(orders.amount, partition_by=customers.id) > 150, 'high', 'low')"
@@ -68,19 +68,19 @@ CUMSUM = "cumsum(sum(orders.amount))"
 CROSS_DATASET = "sum(customers.credit)"
 RANK_FILTER = "rank(sum(orders.amount), partition_by=customers.regions.name, direction='desc') <= 1"
 ANTI_JOIN = "orders.id is null"
-ORDER_UNDISPLAYED = '{"field": "sum(amount)", "direction": "desc"}'
+ORDER_UNDISPLAYED = '{"field": "sum(orders.amount)", "direction": "desc"}'
 POPULATION_COUNT = "count(customers.orders.id)"
 CONDITIONAL = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
 STAGE_COLUMN = "customers__regions__name"
 SPINE_TIME_DIMENSION = '{"field": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
 SPINE_MEASURE = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
-AGG_FILTER = "count(*) FILTER (WHERE status = 'paid')"
-IN_LIST_VARIABLE = "orders.status in ({statuses})"
-CROSS_DATASET_RATIO = "sum(orders.amount) / count(*)"
+AGG_FILTER = "count(orders.*) FILTER (WHERE orders.status = 'paid')"
+IN_LIST_VARIABLE = "items.status in ({statuses})"
+CROSS_DATASET_RATIO = "sum(orders.amount) / count(customers.*)"
 #: Guidance marker for an aggregate over a dataset no relationship path reaches; owned by ``metrics``.
 UNRELATED_DATASET = "no relationship path reaches"
-UNRELATED_RATIO = "count(events.id) / count(*)"
+UNRELATED_RATIO = "count(events.id) / count(customers.*)"
 
 # Guidance markers
 STAGE_NOT_NEEDED = "A STAGE IS NOT NEEDED"
@@ -339,8 +339,8 @@ async def make_items_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 def rows_by(resp: SlayerResponse, *, key: str) -> dict[Any, dict[str, Any]]:
-    """Result rows keyed by the column whose name ends with ``key``."""
-    col = next(c for c in resp.columns if c.endswith(key))
+    """Result rows keyed by the column whose name ends with ``key`` (a bare alias key matches ``.alias``)."""
+    col = next(c for c in resp.columns if c.endswith(key) or c == key.lstrip("."))
     out = {str(r[col])[:7] if "date" in col else r[col]: r for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for {key}"
     return out

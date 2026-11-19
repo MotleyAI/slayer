@@ -6,6 +6,7 @@ physical table ``acct``) → ``cust_rev`` (query-backed). No orphan order, so ev
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 from typing import Any, Dict, List, Optional, Union
@@ -331,12 +332,23 @@ def explicit_splice(
         return spec.model_copy(update={"dataset": rename.get(spec.dataset, spec.dataset),
                                        "relationships": joins})
 
+    def anchor(text: str) -> str:
+        for old, new in rename.items():
+            text = re.sub(rf"(?<![\w.\"]){re.escape(old)}\.", f"{new}.", text)
+        return text
+
     out = []
     for i, stage in enumerate(stages):
         name = dataset.name if i == len(stages) - 1 else respell(stage.name)
         extensions = [respell(e) for e in stage.extensions] if stage.extensions else stage.extensions
-        out.append(stage.model_copy(update={"name": name, "population": respell(stage.population),
-                                            "extensions": extensions}))
+        update: Dict[str, Any] = {"name": name, "population": respell(stage.population), "extensions": extensions}
+        if rename and stage.dimensions:
+            update["dimensions"] = [d.model_copy(update={"field": anchor(d.field)}) for d in stage.dimensions]
+        if rename and stage.metrics:
+            update["metrics"] = [mt.model_copy(update={"metric": anchor(mt.metric)}) for mt in stage.metrics]
+        if rename and isinstance(stage.filter, list):
+            update["filter"] = [anchor(f) for f in stage.filter]
+        out.append(stage.model_copy(update=update))
     return out
 
 

@@ -146,7 +146,7 @@ async def test_length_fitted_result_names_come_back_canonical(policy: Optional[s
     assert response.sql is not None
     emitted = parsed_query(response.sql, dialect="postgres").named_selects
     assert all(len(name.encode()) <= 63 for name in emitted)
-    assert response.columns == ["orders.status", f"orders.{LONG}"]
+    assert response.columns == ["orders.status", LONG]
 
 
 async def test_executed_rows_carry_the_canonical_keys_in_projection_order() -> None:

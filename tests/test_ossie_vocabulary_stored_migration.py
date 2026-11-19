@@ -80,17 +80,18 @@ def assert_new_dataset_keys(dumped: dict[str, Any]) -> None:
         assert_new_query_keys(query)
 
 
-def assert_migrated_query(query: SlayerQuery | None) -> None:
+def assert_migrated_query(query: SlayerQuery | None, *, q: str = "") -> None:
+    """``q`` is the qualifier a load through a store adds (``"orders."``)."""
     assert query is not None
     assert query.population == "orders"
-    assert [(m.metric, m.alias) for m in query.metrics or []] == [("sum(amount)", "rev")]
+    assert [(m.metric, m.alias) for m in query.metrics or []] == [(f"sum({q}amount)", "rev")]
     region, computed = query.dimensions or []
     assert isinstance(region, QueryDimension)
     assert isinstance(computed, QueryDimension)
     assert (region.field, region.alias) == ("customers.region", None)
-    assert (computed.field, computed.alias) == ("upper(status)", "s")
-    assert [td.field for td in query.time_dimensions or []] == ["ordered_at"]
-    assert query.filter == ["amount > 1"]
+    assert (computed.field, computed.alias) == (f"upper({q}status)", "s")
+    assert [td.field for td in query.time_dimensions or []] == [f"{q}ordered_at"]
+    assert query.filter == [f"{q}amount > 1"]
     assert [o.field for o in query.order or []] == ["rev"]
     assert_new_query_keys(query.model_dump(mode="json"))
 
@@ -207,7 +208,7 @@ class TestStores:
         assert future(caught) == []
         assert dataset is not None
         [query] = dataset.source_queries or []
-        assert_migrated_query(query)
+        assert_migrated_query(query, q="orders.")
 
     @pytest.mark.parametrize("query_version", [None, PRE["SlayerQuery"]])
     async def test_a_memory_query_loads_silently(self, backend: str, tmp_path: Path, query_version: int | None) -> None:
@@ -224,8 +225,8 @@ class TestStores:
         assert future(caught) == []
         assert memory is not None
         assert memory.query is not None
-        assert memory.query.filter == ["amount > 1"]
-        assert [(m.metric, m.alias) for m in memory.query.metrics or []] == [("sum(amount)", "rev")]
+        assert memory.query.filter == ["orders.amount > 1"]
+        assert [(m.metric, m.alias) for m in memory.query.metrics or []] == [("sum(orders.amount)", "rev")]
         assert_new_query_keys(memory.query.model_dump(mode="json"))
 
 

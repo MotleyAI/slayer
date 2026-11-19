@@ -446,7 +446,7 @@ class TestLocalAggregateHiddenOrder:
             limit=5,
         )
         sql = await _sql(engine, query)
-        assert '"orders.rev"' in sql
+        assert '"rev"' in sql
         assert _outer_select_columns(sql) == ["orders.status", "rev"]
 
     async def test_declared_transform_plus_hidden_agg_order(self, engine) -> None:

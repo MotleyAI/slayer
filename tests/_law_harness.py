@@ -78,7 +78,7 @@ MEASURE_POOL = {
 #: cross-model partition key.
 LAW_DIM_FAMILY_DIMS = {
     **DIM_FAMILY_DIMS,
-    "cmgrain": ["region", "customers.regions.name"],
+    "cmgrain": ["orders.region", "customers.regions.name"],
 }
 
 #: Row-level filter pool (tag → predicate; ``f0`` = unfiltered).

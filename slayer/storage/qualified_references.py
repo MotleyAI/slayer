@@ -10,10 +10,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional, Tuple
 
-from slayer.core.errors import UnqualifiableReferenceError
+from slayer.core.errors import AmbiguousReferenceError, UnqualifiableReferenceError
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, spelled_name
-from slayer.core.query import SlayerQuery, computed_dimension_name, declared_aliases
+from slayer.core.query import SlayerQuery, computed_dimension_name, declared_aliases, extension_dataset_names
 from slayer.core.relationship_walker import canonical_path
 from slayer.core.syntax import (
     DottedRef,
@@ -24,8 +24,14 @@ from slayer.core.syntax import (
     root_relative,
     walk_references,
 )
-from slayer.core.time_spine import TIME_SPINE_DATASET
-from slayer.engine.extensions import resolve_anchored_path, resolve_path
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset
+from slayer.engine.extensions import (
+    extend_datasets,
+    query_reference_parts,
+    resolve_anchored_path,
+    resolve_path,
+    respelled,
+)
 from slayer.sql.naming import expression_text_alias
 
 __all__ = ["qualified_stages"]
@@ -172,22 +178,70 @@ def qualified_stages(
         if not todo or population is None:
             out.append(query)
             continue
-        datasets = _datasets_holding(population, datasets_by_ds=datasets_by_ds, data_source=data_source,
-                                     priority=priority)
-        host = None if population in stages else datasets.get(population)
-        if host is None and population not in stages:
+        datasets = _stage_universe(query, stages=stages, datasets_by_ds=datasets_by_ds, data_source=data_source,
+                                   priority=priority)
+        stage = match_name(name=population, declared=stages, quoted=False)
+        dataset = None if stage is not None else _population_dataset(population, datasets=datasets)
+        if stage is None and dataset is None:
             raise UnqualifiableReferenceError(reference=population, reason="names no stored dataset or stage")
+        host = datasets[dataset] if dataset is not None else None
         out.append(_qualified_stage(_Stage(query=query, host=host, stages=stages, datasets_by_name=datasets), query))
     return out
 
 
-def _datasets_holding(
-    name: str, *, datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]], data_source: Optional[str],
+def _population_dataset(population: str, *, datasets: Mapping[str, SlayerDataset]) -> Optional[str]:
+    """The dataset a population names as the engine reads it: an exact name, else the spine in any case, else by case."""
+    if population in datasets:
+        return population
+    if is_spine_spelling(population) and TIME_SPINE_DATASET in datasets:
+        return TIME_SPINE_DATASET
+    return match_name(name=population, declared=datasets, quoted=False)
+
+
+def _stage_universe(
+    query: SlayerQuery, *, stages: frozenset[str], datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]],
+    data_source: Optional[str], priority: Sequence[str],
+) -> Dict[str, SlayerDataset]:
+    """The datasets a stage reads, as the engine sees them: its datasource's, the spine, and its extensions."""
+    ds, stored = _datasource_of(query, datasets_by_ds=datasets_by_ds, data_source=data_source, priority=priority)
+    universe = dict(stored)
+    if ds is not None and TIME_SPINE_DATASET not in universe:
+        universe[TIME_SPINE_DATASET] = spine_dataset(data_source=ds)
+    if not query.extensions:
+        return universe
+    try:
+        spelled = respelled(query, tiers=[stages, universe])
+    except AmbiguousReferenceError:
+        spelled = query
+    extended, _ = extend_datasets(spelled, universe, lookup=lambda name, held: held.get(name),
+                                  on_conflict=lambda _exc: None)
+    return extended
+
+
+def _datasource_of(
+    query: SlayerQuery, *, datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]], data_source: Optional[str],
     priority: Sequence[str],
-) -> Mapping[str, SlayerDataset]:
-    """The datasets of the datasource a stage reading ``name`` runs in."""
+) -> Tuple[Optional[str], Mapping[str, SlayerDataset]]:
+    """The datasource a stage runs in, and its datasets: the pinned one, else the first holding its population, else
+    (on the spine, which every datasource holds) the first holding a dataset it names, else the first."""
     if data_source is not None:
-        return datasets_by_ds.get(data_source, {})
-    holding = [ds for ds, datasets in datasets_by_ds.items() if name in datasets]
+        return data_source, datasets_by_ds.get(data_source, {})
+    population = query.population_name or ""
+    holding = _holding([population], datasets_by_ds=datasets_by_ds)
+    if not holding and is_spine_spelling(population):
+        named = [*extension_dataset_names(query), *(p[0] for p in query_reference_parts(query) if len(p) > 1)]
+        holding = _holding([n for n in named if not is_spine_spelling(n)], datasets_by_ds=datasets_by_ds) or list(
+            datasets_by_ds)
     ordered = [ds for ds in priority if ds in holding] + sorted(ds for ds in holding if ds not in priority)
-    return datasets_by_ds[ordered[0]] if ordered else {}
+    return (ordered[0], datasets_by_ds[ordered[0]]) if ordered else (None, {})
+
+
+def _holding(names: Sequence[str], *, datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]]) -> List[str]:
+    return [ds for ds, datasets in datasets_by_ds.items() if any(_holds(datasets, name=n) for n in names)]
+
+
+def _holds(datasets: Mapping[str, SlayerDataset], *, name: str) -> bool:
+    try:
+        return match_name(name=name, declared=datasets, quoted=False) is not None
+    except AmbiguousReferenceError:
+        return True

@@ -11,8 +11,8 @@ from slayer.core.errors import PartitionKeyError
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._query_heal_fixtures import BACKENDS, assert_equivalent, heal_engine
 
-MONTH = {"field": "orders.created_at", "granularity": "month"}
-YEAR = {"field": "orders.created_at", "granularity": "year"}
+MONTH = {"field": "created_at", "granularity": "month"}
+YEAR = {"field": "created_at", "granularity": "year"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -33,10 +33,10 @@ class TestProjectedTimeDimension:
     async def test_aggregation_and_rank(self, engine: SlayerQueryEngine) -> None:
         def query(key: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
+                "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
                 "metrics": [
-                    {"metric": f"sum(orders.amount, partition_by=[{key}])", "alias": "month_total"},
-                    {"metric": f"rank(sum(orders.amount), partition_by=[{key}], direction='desc')", "alias": "r"},
+                    {"metric": f"sum(amount, partition_by=[{key}])", "alias": "month_total"},
+                    {"metric": f"rank(sum(amount), partition_by=[{key}], direction='desc')", "alias": "r"},
                 ],
             }
 
@@ -45,8 +45,8 @@ class TestProjectedTimeDimension:
     async def test_singular_element(self, engine: SlayerQueryEngine) -> None:
         def query(key: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
-                "metrics": [{"metric": f"sum(orders.amount, partition_by={key})", "alias": "month_total"}],
+                "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
+                "metrics": [{"metric": f"sum(amount, partition_by={key})", "alias": "month_total"}],
             }
 
         await assert_equivalent(engine, query("date_trunc('month', created_at)"), query("created_at"))
@@ -54,8 +54,8 @@ class TestProjectedTimeDimension:
     async def test_filter_position(self, engine: SlayerQueryEngine) -> None:
         def query(key: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
-                "metrics": ["sum(orders.amount)"], "filter": [f"sum(orders.amount, partition_by=[{key}]) > 50"],
+                "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
+                "metrics": ["sum(amount)"], "filter": [f"sum(amount, partition_by=[{key}]) > 50"],
             }
 
         await assert_equivalent(engine, query("date_trunc('month', created_at)"), query("created_at"))
@@ -87,8 +87,8 @@ class TestOtherTimeColumns:
 
     async def test_stage_time_column(self, engine: SlayerQueryEngine) -> None:
         inner = {
-            "name": "s", "population": "orders", "dimensions": ["orders.region"], "time_dimensions": [MONTH],
-            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
+            "name": "s", "population": "orders", "dimensions": ["region"], "time_dimensions": [MONTH],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         }
 
         def query(key: str) -> list[dict[str, Any]]:

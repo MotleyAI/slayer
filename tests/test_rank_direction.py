@@ -170,8 +170,8 @@ class TestDirectionValues:
         resp = await engine.execute(sales_q(
             dimensions=["sales.region"],
             metrics=["rank(sum(sales.amount), direction='asc')", "rank(sum(sales.amount), direction='desc')"]))
-        assert _by_region(resp, "rank_amount_sum_asc") == RANK_ASC
-        assert _by_region(resp, "rank_amount_sum_desc") == RANK_DESC
+        assert _by_region(resp, "sales.rank_amount_sum_asc") == RANK_ASC
+        assert _by_region(resp, "sales.rank_amount_sum_desc") == RANK_DESC
 
     async def test_ntile_and_percent_rank_ascending(self, engine):
         resp = await engine.execute(sales_q(
@@ -204,14 +204,14 @@ class TestDirectionInEveryPosition:
     @pytest.mark.parametrize(("direction", "want"), [("asc", 1340 / 32), ("desc", 810 / 33)])
     async def test_aggregation_parameter(self, engine, direction, want):
         resp = await engine.execute(sales_q(metrics=[_m(
-            f"weighted_avg(amount, weight=rank(sum(amount, partition_by=region), "
+            f"weighted_avg(sales.amount, weight=rank(sum(sales.amount, partition_by=sales.region), "
             f"direction='{direction}'))", "w")]))
         [row] = resp.data
         assert float(row["w"]) == pytest.approx(want)
 
     async def test_saved_model_measure(self, saved_asc_engine):
         resp = await saved_asc_engine.execute(sales_q(dimensions=["sales.region"], metrics=["sales.saved_rank"]))
-        assert _by_region(resp, "saved_rank") == RANK_ASC
+        assert _by_region(resp, "sales.saved_rank") == RANK_ASC
 
 
 # --------------------------------------------------------------------------- #
@@ -263,8 +263,8 @@ _MISSING = [
                                             "alias": "rk"}],
                   "metrics": [_m("sum(sales.amount)", "a")]}, "rank", id="computed-dimension"),
     pytest.param({"dimensions": ["sales.region"],
-                  "metrics": [_m("weighted_avg(amount, weight=rank(sum(amount, "
-                                  "partition_by=region)))", "w")]},
+                  "metrics": [_m("weighted_avg(sales.amount, weight=rank(sum(sales.amount, "
+                                  "partition_by=sales.region)))", "w")]},
                  "rank", id="aggregation-parameter"),
 ]
 

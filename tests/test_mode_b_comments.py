@@ -80,7 +80,7 @@ class TestParse:
 
 class TestPlaceholders:
     @pytest.mark.parametrize("text", [
-        "orders.status = 'paid' -- region = {region}",
+        "status = 'paid' -- region = {region}",
         "status = 'paid' /* region = {region} */",
         "status = 'paid' /* {{ and }} and { */",
     ])

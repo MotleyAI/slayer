@@ -167,6 +167,7 @@ def ids(resp: SlayerResponse, source: str) -> set[int]:
 
 
 def by_id(resp: SlayerResponse, source: str, column: str) -> dict[int, Any]:
-    got = {int(row[f"{source}.id"]): row[f"{source}.{column}"] for row in resp.data}
+    key = column if "." in column else f"{source}.{column}"
+    got = {int(row[f"{source}.id"]): row[key] for row in resp.data}
     assert len(got) == len(resp.data), f"duplicate {source}.id rows: {resp.data}"
     return got

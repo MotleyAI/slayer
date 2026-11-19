@@ -225,7 +225,7 @@ class TestStalePlannerRefsRepointed:
         # lifted; the residual check is attributability — `region` is a host
         # column, unreachable from the customers root.
         cband = (
-            "CASE WHEN sum(customers.spend, partition_by=region) > 100 "
+            "CASE WHEN sum(customers.spend, partition_by=orders.region) > 100 "
             "THEN 1 ELSE 0 END"
         )
         query = q(

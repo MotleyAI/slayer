@@ -41,7 +41,7 @@ def _cities(*extra: dict, name: str = "cities_src") -> SlayerDataset:
         {"name": "id", "datatype": "Integer", "primary_key": True}, {"name": "city", "datatype": "String"}, *extra]})
 
 _CORPUS: list[Any] = [
-    pytest.param(q(population="orders", dimensions=["regions.name"], metrics=[_AMOUNT],
+    pytest.param(q(population="orders", dimensions=["orders.ship_region.name"], metrics=[_AMOUNT],
                    extensions=[ext("orders", relationships=[join("regions", [["ship_region_id", "id"]], name="ship_region")])]),
                  id="root-extension-join"),
     pytest.param(q(population="orders", dimensions=[{"field": "upper(customers.tier)", "alias": "tier_label"}],

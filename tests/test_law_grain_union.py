@@ -90,7 +90,7 @@ async def test_population_and_operand_broadcast_constancy(law_case):
         cells: dict[tuple, set] = {}
         for key, row in full_rows.items():
             cell = _grain_projection(key, shape=shape, grain=grain)
-            cells.setdefault(cell, set()).add(canon(row[f"orders.m_{meas}"]))
+            cells.setdefault(cell, set()).add(canon(row[f"m_{meas}"]))
         for cell, values in cells.items():
             law_assert(
                 len(values) == 1,

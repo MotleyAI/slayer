@@ -37,10 +37,10 @@ NON_SHIFT_OPS = sorted(slayer.core.enums.ALL_TRANSFORMS - SHIFT_OPS - {"first", 
 
 #: input-shape id -> the formula body around the unprojected row leaf.
 SHAPES = {
-    "bare": "weight",
-    "composite": "weight * qty",
-    "predicate": "weight > 0",
-    "mixed": "weight * sum(revenue, partition_by=store)",
+    "bare": "sales.weight",
+    "composite": "sales.weight * sales.qty",
+    "predicate": "sales.weight > 0",
+    "mixed": "sales.weight * sum(sales.revenue, partition_by=sales.store)",
 }
 
 
@@ -99,7 +99,7 @@ class TestGrainRefiningLeafRejected:
               "metrics": [QueryMetric(metric=_call(op, SHAPES[shape]),
                                         alias="t")]}
         if shape == "mixed":  # the constituent's partition key is projected
-            kw["dimensions"] = ["store"]
+            kw["dimensions"] = ["sales.store"]
         query, bundle = _q(**kw), _bundle()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)

@@ -23,10 +23,10 @@ def _q(**kw) -> SlayerQuery:
 
 
 def _has_output_alias(body: str, leaf: str) -> bool:
-    """Whether ``body`` projects ``orders.<leaf>`` as a column alias, robust to
-    per-dialect quoting (``"orders.x"`` / ``[orders___x]`` / `` `orders___x` ``)."""
+    """Whether ``body`` projects ``<leaf>`` as a column alias, robust to
+    per-dialect quoting (``"x"`` / ``[x]`` / `` `x` ``)."""
     return re.search(
-        rf'AS\s+["\[`]orders[._]{{1,3}}{re.escape(leaf)}["\]`]', body,
+        rf'AS\s+["\[`]{re.escape(leaf)}["\]`]', body,
     ) is not None
 
 

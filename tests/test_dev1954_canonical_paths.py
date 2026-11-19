@@ -426,8 +426,8 @@ class TestAutoRoutedShortForm:
     async def test_result_key_is_canonical(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["regions.rname"], metrics=["sum(orders.amount)"]))
-        assert resp.columns == [RNAME, "orders.amount_sum"]
-        assert by_key(resp, RNAME, "orders.amount_sum") == AMOUNT_BY_RNAME
+        assert resp.columns == ["regions.rname", "orders.amount_sum"]
+        assert by_key(resp, "regions.rname", "orders.amount_sum") == AMOUNT_BY_RNAME
 
 
 class TestSavedMeasures:
@@ -437,7 +437,9 @@ class TestSavedMeasures:
     async def test_surfaces_under_the_canonical_path(self, engine: SlayerQueryEngine, formula) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["customers.hr.rname"], metrics=[formula]))
-        key = "orders.customers.hr.maxpop"
+        key = {"customers.regions.maxpop": "customers.hr.maxpop",
+               "orders.customers.regions.maxpop": "orders.customers.hr.maxpop",
+               "regions.maxpop": "regions.maxpop"}[formula]
         assert resp.columns == [RNAME, key]
         assert by_key(resp, RNAME, key) == POP_MAX_BY_RNAME
         assert key in resp.attributes.metrics
@@ -485,7 +487,7 @@ class TestCanonicalSpellingsUnchanged:
     async def test_self_prefixed_and_unnamed_paths(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["orders.customers.hr.rname", "customers.tier"]))
-        assert resp.columns == [RNAME, "customers.tier"]
+        assert resp.columns == ["orders.customers.hr.rname", "customers.tier"]
 
     async def test_error_quotes_the_typed_spelling(self, engine) -> None:
         query = orders_q(dimensions=["customers.regions.nope"])

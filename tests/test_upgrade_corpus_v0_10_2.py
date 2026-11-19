@@ -61,5 +61,5 @@ class TestOffline(OfflineChecks):
         dumped = [m.model_dump(mode="json") for m in models] + [
             m.query.model_dump(mode="json") for m in memories if m.query is not None]
         texts = [t for d in dumped for t in _mode_b_texts(d)]
-        assert any("sum(amount)" in t for t in texts)
+        assert any("sum(orders.amount)" in t for t in texts)
         assert [t for t in texts if _colon_spans(t)] == []

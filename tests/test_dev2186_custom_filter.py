@@ -239,7 +239,8 @@ class TestProducerIsolation:
         orders, *rest = dev2101_datasets()
         bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
         planned = plan.plan_query(query=q(dimensions=["orders.region"], metrics=[
-            m(ROWS_PAID, "paid"), m("rows(orders.amount) FILTER (WHERE orders.status = 'Pending')", "pending"),
+            m(f"rows(orders.amount) FILTER (WHERE {PAID})", "paid"),
+            m("rows(orders.amount) FILTER (WHERE orders.status = 'Pending')", "pending"),
         ]), bundle=bundle)
         producers = [a for a in _attaches(planned) if _aggregates(a.producer_plan, "rows")]
         assert len(producers) >= 2, planned.regroup_attach_plans

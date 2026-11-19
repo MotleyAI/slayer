@@ -191,7 +191,7 @@ class TestReferenceBinding:
                                  pairs: list[list[str]], key: str, dims: list[str]) -> Any:
         declared = q(population=root, dimensions=dims,
                      extensions=[ext(m, relationships=[join(target, pairs, join_type="inner")])])
-        written = q(population=root, dimensions=dims, filter=[f"{m}.{target}.{key} IS NOT NULL"],
+        written = q(population=root, dimensions=dims, filter=[f"{root}.{m}.{target}.{key} IS NOT NULL"],
                     extensions=[ext(m, relationships=[join(target, pairs, join_type="left")])])
         got, expected = await _outcome(engine, declared), await _outcome(engine, written)
         assert got == expected
@@ -202,13 +202,13 @@ class TestReferenceBinding:
         async with shop(dialect, models) as engine:
             got = await self._assert_as_written(
                 engine, root="orders", m="customers", target="vip_list", pairs=VIP_PAIRS, key="customer_id",
-                dims=["id"])
+                dims=["orders.id"])
         assert {r[0] for r in got} == ORDERS_OF_VIP_CUSTOMERS
 
     async def test_adjacent_named_parallel_edges_are_ambiguous_naming_the_declaration(self, dialect) -> None:
         async with shop(dialect) as engine:
             got = await self._assert_as_written(
-                engine, root="orders", m="addresses", target="regions", pairs=REGION_PAIRS, key="id", dims=["id"])
+                engine, root="orders", m="addresses", target="regions", pairs=REGION_PAIRS, key="id", dims=["orders.id"])
             assert got is AmbiguousRelationshipPathError
             declared = q(population="orders", dimensions=["orders.id"], extensions=[
                 ext("addresses", relationships=[join("regions", REGION_PAIRS, join_type="inner")])])
@@ -229,7 +229,7 @@ class TestReferenceBinding:
         async with shop(dialect, models) as engine:
             got = await self._assert_as_written(
                 engine, root="customers", m="addresses", target="regions", pairs=REGION_PAIRS, key="id",
-                dims=["name"])
+                dims=["customers.name"])
             assert got is AmbiguousRelationshipPathError
             declared = q(population="customers", dimensions=["customers.name"], extensions=[
                 ext("addresses", relationships=[join("regions", REGION_PAIRS, join_type="inner")])])

@@ -61,7 +61,7 @@ def _monthly_plan(expression: str) -> PlannedQuery:
     models = dev1832_datasets()
     root = next(m for m in models if m.name == "monthly")
     return plan_query(
-        query=monthly_q(dimensions=["monthly.region"], time_dimensions=month_td(),
+        query=monthly_q(dimensions=["monthly.region"], time_dimensions=month_td("monthly"),
                         metrics=[QueryMetric(metric=expression, alias="t")]),
         bundle=ResolvedSourceBundle(
             dialect="postgres",
@@ -399,7 +399,7 @@ class TestOffGrainConstituentNests:
             alias="w")])
         resp = await exec_engine.execute(query)
         names = [d if isinstance(d, str) else d["alias"] for d in dimensions]
-        got = {tuple(r[f"sales.{n}"] for n in names): r["w"] for r in resp.data}
+        got = {tuple(r[n] for n in names): r["w"] for r in resp.data}
         assert got == {k: None if v is None else pytest.approx(v) for k, v in expected.items()}
 
 

@@ -45,11 +45,11 @@ class TestNaiveValues:
         assert "AS TIMESTAMP)" not in sql, sql
 
     async def test_author_cast_is_the_databases_own(self) -> None:
-        assert "CAST(LIB.CODE AS TIMESTAMP)" in await _sql("CAST(code AS TIMESTAMP)")
+        assert "CAST(LIB.CODE AS TIMESTAMP)" in await _sql("CAST(lib.code AS TIMESTAMP)")
 
     @pytest.mark.parametrize("unit", ["hour", "day", "week", "month"])
     async def test_date_add_stays_datetime(self, unit: str) -> None:
-        sql = await _sql(f"date_add(ts, 1, '{unit}')")
+        sql = await _sql(f"date_add(lib.ts, 1, '{unit}')")
         assert "DATETIME_ADD(CAST(LIB.TS AS DATETIME)" in sql, sql
         assert "TIMESTAMP" not in sql, sql
 
@@ -60,7 +60,7 @@ class TestNaiveValues:
         assert "TIMESTAMP_" not in sql, sql
 
     async def test_naive_column_compares_with_now_directly(self) -> None:
-        assert "WHERE LIB.TS < CURRENT_DATETIME()" in await _sql("ts < now()", filtered=True)
+        assert "WHERE LIB.TS < CURRENT_DATETIME()" in await _sql("lib.ts < now()", filtered=True)
 
 
 class TestZonedColumn:
@@ -77,7 +77,7 @@ class TestZonedColumn:
         assert "WHERE LIB.TS > '2024-01-01 10:00:00'" in sql, sql
 
     async def test_column_against_itself_is_untouched(self) -> None:
-        assert "WHERE LIB.TS = LIB.TS" in await _sql("ts = ts", filtered=True, zoned=True)
+        assert "WHERE LIB.TS = LIB.TS" in await _sql("lib.ts = lib.ts", filtered=True, zoned=True)
 
     async def test_a_stage_reads_the_zoned_column_naive(self) -> None:
         s1 = SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["lib.id", "lib.ts"]})
@@ -88,12 +88,12 @@ class TestZonedColumn:
 
     async def test_other_dialects_ignore_the_db_type(self) -> None:
         zoned = await _sql("lib.ts < now()", dialect="postgres", filtered=True, zoned=True)
-        assert zoned == await _sql("ts < now()", dialect="postgres", filtered=True)
+        assert zoned == await _sql("lib.ts < now()", dialect="postgres", filtered=True)
 
 
 class TestZonedColumnReadsNaive:
     @pytest.mark.parametrize(("expr", "fragment"), [
-        ("ts", "CAST(LIB.TS AS DATETIME) AS `LIB___V`"),
+        ("lib.ts", "CAST(LIB.TS AS DATETIME) AS `V`"),
         ("coalesce(lib.ts, now())", "COALESCE(CAST(LIB.TS AS DATETIME), CURRENT_DATETIME())"),
         ("date_trunc('month', lib.ts)", "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)"),
     ])

@@ -336,8 +336,8 @@ class TestCrossModelConstituent:
             population="customers",
             dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[QueryMetric(
-                metric="sum(region_id * sum(corders.amount, "
-                        "partition_by=region_id))",
+                metric="sum(customers.region_id * sum(corders.amount, "
+                        "partition_by=customers.region_id))",
                 alias="xm")]))
         by = rows_by(resp, "customers.region_id")
         for rid, expected in CROSS_MODEL_MIXED_BY_REGION_ID.items():
@@ -385,8 +385,8 @@ class TestOuterModifiers:
         resp = await exec_engine.execute(sales_q(
             dimensions=["sales.region", "sales.product"],
             metrics=[QueryMetric(
-                metric=f"sum(quantity * {INNER_UP_PRODUCT}, "
-                        f"partition_by=region)",
+                metric=f"sum(sales.quantity * {INNER_UP_PRODUCT}, "
+                        f"partition_by=sales.region)",
                 alias="m")]))
         by = rows_by(resp, "sales.region", "sales.product")
         assert len(resp.data) == 8  # the (region, product) pairs in the rows
@@ -434,7 +434,7 @@ class TestOuterModifiers:
         resp = await exec_engine_1846.execute(SlayerQuery(
             population="sales", time_dimensions=month_td(),
             metrics=[QueryMetric(
-                metric="sum(qty * sum(revenue, partition_by=store), "
+                metric="sum(sales.qty * sum(sales.revenue, partition_by=sales.store), "
                         "window='90d')",
                 alias="w")]))
         got = {month_key(r["sales.ordered_at"]): r["w"] for r in resp.data}
@@ -480,8 +480,8 @@ class TestWindowedConstituent:
 class TestSqlHygiene:
     @pytest.mark.parametrize("formula", [
         MIXED_SUM,
-        f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=region)",
-        f"count(quantity * {INNER_UP_CITY})",
+        f"sum(sales.quantity * {INNER_UP_PRODUCT}, partition_by=sales.region)",
+        f"count(sales.quantity * {INNER_UP_CITY})",
     ])
     async def test_no_placeholder_leak_and_closed_scopes(self, formula):
         sql = await gen(sales_q(

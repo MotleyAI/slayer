@@ -107,11 +107,11 @@ def _apply_misplaced_metric(
             kept.append(m)
             continue
         if bare in field_names:
-            moved_dims.append(QueryDimension(field=bare))
+            moved_dims.append(QueryDimension(field=m.metric))
             emitted.append(NormalizationWarning(
                 rule_id="MISPLACED_METRIC",
                 original=bare,
-                normalized=f"dimensions += {bare!r}",
+                normalized=f"dimensions += {m.metric!r}",
                 location=f"metrics[{i}].metric",
                 rule_doc_url="docs/agent_input_slack.md#misplaced-metric",
             ))

@@ -53,14 +53,14 @@ class TestMainTimeDimensionAmbiguity:
         with pytest.raises(AmbiguousReferenceError) as ei:
             await engine.execute(q, dry_run=True)
         msg = str(ei.value)
-        assert "date_trunc('month', created_at)" in msg
-        assert "date_trunc('year', created_at)" in msg
+        assert "date_trunc('month', orders.created_at)" in msg
+        assert "date_trunc('year', orders.created_at)" in msg
 
     async def test_unit_resolve_raises_on_same_column_buckets(self, engine) -> None:
         model = await _orders_dataset(engine)
-        q = _mtd(("month", "created_at"), ("year", "created_at"))
+        q = _mtd(("month", "orders.created_at"), ("year", "orders.created_at"))
         with pytest.raises(AmbiguousReferenceError):
-            _resolve_main_time_dimension(query=q, dataset=model)
+            _resolve_main_time_dimension(query=q, dataset=model, root="orders")
 
     async def test_single_bucket_still_resolves(self, engine) -> None:
         model = await _orders_dataset(engine)
@@ -71,10 +71,10 @@ class TestMainTimeDimensionAmbiguity:
 
     async def test_distinct_columns_still_resolve(self, engine) -> None:
         model = await _orders_dataset(engine)
-        q = _mtd(("month", "created_at"), ("year", "customers.created_at"))
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        q = _mtd(("month", "orders.created_at"), ("year", "customers.created_at"))
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is not None
-        assert resolved.field == "created_at"
+        assert resolved.field == "orders.created_at"
 
     async def test_ambiguous_default_resolves_to_none(self, engine) -> None:
         # A passive model default can't pick a bucket: resolve to None (lenient) so
@@ -88,7 +88,7 @@ class TestMainTimeDimensionAmbiguity:
             ],
             metrics=[{"metric": "sum(orders.amount)"}],
         )
-        assert _resolve_main_time_dimension(query=q, dataset=model) is None
+        assert _resolve_main_time_dimension(query=q, dataset=model, root="orders") is None
 
     async def test_default_time_dimension_single_host_match_resolves(self, engine) -> None:
         model = await _orders_dataset(engine, default_time_dimension="created_at")
@@ -100,9 +100,9 @@ class TestMainTimeDimensionAmbiguity:
             ],
             metrics=[{"metric": "sum(orders.amount)"}],
         )
-        resolved = _resolve_main_time_dimension(query=q, dataset=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model, root="orders")
         assert resolved is not None
-        assert resolved.field == "created_at"
+        assert resolved.field == "orders.created_at"
 
     async def _orders_with_default_axis(self, tmp_path):
         engine = await fx.build_engine(tmp_path)

@@ -23,7 +23,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.names import match_name
 from slayer.core.query import DatasetExtension, SlayerQuery, extension_dataset_names
 from slayer.core.scope import DatasetScope, StageSchema
-from slayer.core.syntax import drop_root_hop, drop_root_qualifier, text_paths
+from slayer.core.syntax import drop_root_hop, text_paths
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population import dimension_routing
 from slayer.engine.population.anchors import anchor_route, find_anchor
@@ -38,7 +38,6 @@ __all__ = [
     "FieldKind",
     "QueryScope",
     "apply_query_extensions",
-    "declaring_dataset_path",
     "extension_of",
     "query_field_texts",
     "query_reference_parts",
@@ -187,24 +186,6 @@ def _restriction(*, declaring: str, relationship: DatasetRelationship, merge: Ed
         dataset=source.spelling, token=merged.token, key=merged.edge.column_pairs[0][1],
         label=f"INNER join from {source.spelling!r} to {target.spelling!r}" + (f" in {where}" if where else ""),
     )
-
-
-def declaring_dataset_path(
-    restriction: InnerRestriction, *, host: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
-) -> Tuple[str, ...]:
-    """The population's path to ``restriction.dataset``: as spelled when root or adjacent, else short-form routed."""
-    spelled = (restriction.dataset,)
-    if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling, quoted=())[:-1]:
-        return spelled
-    datasets_by_name = {**datasets_by_name, host.name: datasets_by_name.get(host.name, host)}
-    try:
-        if resolve_hop(current=host, token=restriction.dataset, datasets_by_name=datasets_by_name) is not None:
-            return spelled
-    except AmbiguousRelationshipPathError:
-        return spelled
-    return tuple(dimension_routing.route_dotted_target(
-        root=host, target_dataset=restriction.dataset, leaf=restriction.token, datasets_by_name=datasets_by_name,
-    ))
 
 
 def resolve_path(
@@ -385,7 +366,7 @@ def _scope(
     return QueryScope.model_construct(
         data_source=data_source, host=host, bases=bases, datasets=datasets, shadowed=frozenset(siblings),
         query=query,
-        inner_refs=tuple(r for r in (_inner_ref(x, host=host, datasets=datasets) for x in restrictions) if r is not None),
+        inner_refs=tuple(r.parts for r in restrictions),
     )
 
 
@@ -398,17 +379,6 @@ def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerD
     ]
     return SlayerDataset.model_construct(
         name=name, data_source=data_source, fields=[DatasetField(name=k) for k in dict.fromkeys(keys)])
-
-
-def _inner_ref(
-    restriction: InnerRestriction, *, host: Optional[SlayerDataset], datasets: Dict[str, SlayerDataset],
-) -> Optional[Tuple[str, ...]]:
-    try:
-        path = declaring_dataset_path(restriction, host=host, datasets_by_name=datasets)
-    except ValueError:  # an unreachable or ambiguous declaring dataset fails the engine, not the static reader
-        return None
-    return (*drop_root_hop(path, host.spelling if host is not None else None, head_quoted=False), restriction.token,
-            restriction.key)
 
 
 def _extended(

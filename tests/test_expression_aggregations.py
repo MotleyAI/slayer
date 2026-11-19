@@ -125,7 +125,7 @@ def _q(**kw) -> SlayerQuery:
 
 class TestExpressionParse:
     def test_arithmetic_source(self) -> None:
-        node = parse_expr("sum(orders.amount - orders.cost)")
+        node = parse_expr("sum(amount - cost)")
         assert isinstance(node, AggCall)
         assert node.agg == "sum"
         assert node.source == parse_expr("amount - cost")
@@ -133,13 +133,13 @@ class TestExpressionParse:
     def test_expression_source_canonical_text_functional(self) -> None:
         # An expression source renders functionally, so its canonical text
         # can't collide with the distinct parse tree ``amount - sum(cost)``.
-        expr_agg = canonical_metric_text(parse_expr("sum(orders.amount - orders.cost)"))
+        expr_agg = canonical_metric_text(parse_expr("sum(amount - cost)"))
         assert expr_agg == "sum(amount - cost)"
         assert expr_agg != canonical_metric_text(parse_expr("amount - sum(cost)"))
         assert canonical_metric_text(parse_expr("sum(amount)")) == "sum(amount)"
 
     def test_scalar_call_source(self) -> None:
-        node = parse_expr("count_distinct(upper(orders.email))")
+        node = parse_expr("count_distinct(upper(email))")
         assert isinstance(node, AggCall)
         assert node.agg == "count_distinct"
         assert node.source == parse_expr("upper(email)")
@@ -267,7 +267,7 @@ class TestExpressionSql:
                     "orders.region",
                     {
                         "field": (
-                            "CASE WHEN sum(amount - cost, partition_by=region) > 0 "
+                            "CASE WHEN sum(orders.amount - orders.cost, partition_by=orders.region) > 0 "
                             "THEN 1 ELSE 0 END"
                         ),
                         "alias": "profitable",

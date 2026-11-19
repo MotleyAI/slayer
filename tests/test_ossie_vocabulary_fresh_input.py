@@ -107,7 +107,7 @@ QUERY_FORMS: dict[str, tuple[dict[str, Any], str, str, Check]] = {
     "source_model": (renamed(QUERY, old="source_model", new="population"), "source_model", "population",
                      lambda q: q.population == "orders"),
     "measures": (renamed(QUERY, old="measures", new="metrics"), "measures", "metrics",
-                 lambda q: [m.metric for m in q.metrics] == ["count(*)"]),
+                 lambda q: [m.metric for m in q.metrics] == ["count(orders.*)"]),
     "filters": ({**QUERY, "filters": ["amount > 1"]}, "filters", "filter",
                 lambda q: q.filter == ["amount > 1"]),
     "metric_entry_formula": ({**QUERY, "metrics": [{"formula": "sum(amount)", "name": "rev"}]}, "formula",
@@ -228,7 +228,7 @@ class TestExecution:
     async def test_an_old_query_key_converts(self, backend: str) -> None:
         async with vocab_engine(backend) as engine:
             with recorded() as caught:
-                old = await engine.execute({"source_model": "orders", "measures": ["sum(amount)"]})
+                old = await engine.execute({"source_model": "orders", "measures": ["sum(orders.amount)"]})
             new = await engine.execute({"population": "orders", "metrics": ["sum(orders.amount)"]})
         assert normal(old) == normal(new)
         reported = olds(old.warnings)

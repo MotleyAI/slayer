@@ -40,7 +40,7 @@ async def _run(engine: SlayerQueryEngine, **body: Any) -> SlayerResponse:
 
 
 async def _ids(engine: SlayerQueryEngine, *, source: str, filters: list[str] | None = None) -> set[int]:
-    return ids(await _run(engine, population=source, dimensions=["id"], filter=filters or []), source)
+    return ids(await _run(engine, population=source, dimensions=[f"{source}.id"], filter=filters or []), source)
 
 
 def _month(value: Any) -> str:
@@ -61,7 +61,7 @@ class TestJoinTargetReadsFilteredRows:
         assert await _ids(engine, source="orders", filters=["late_returns.id is null"]) == {2, 3, 4}
 
     async def test_null_extended_pushdown(self, engine):
-        assert await _ids(engine, source="orders", filters=["late_returns.id is null or amount > 350"]) == {2, 3, 4}
+        assert await _ids(engine, source="orders", filters=["late_returns.id is null or orders.amount > 350"]) == {2, 3, 4}
 
     async def test_pushdown_under_aggregation(self, engine):
         resp = await _run(engine, population="orders", dimensions=["orders.status"],
@@ -93,7 +93,7 @@ class TestJoinTargetReadsFilteredRows:
     @pytest.mark.parametrize("target", ["done_orders_sql", "done_orders_qb"])
     async def test_sql_and_query_backed_targets(self, engine, target):
         source = {"done_orders_sql": "returns_sql", "done_orders_qb": "returns_qb"}[target]
-        resp = await _run(engine, population=source, dimensions=["id", f"{target}.status"])
+        resp = await _run(engine, population=source, dimensions=[f"{source}.id", f"{target}.status"])
         assert by_id(resp, source, f"{target}.status") == {10: "done", 11: "done", 12: "done", 13: None}
 
     async def test_filter_reads_joined_models_filtered_rows(self, engine):

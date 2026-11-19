@@ -74,7 +74,7 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders: Slaye
 
 @pytest.mark.parametrize(
     "measure",
-    [{"metric": "sum(orders.amount)", "datatype": "Integer"}, "as_int"],
+    [{"metric": "sum(orders.amount)", "datatype": "Integer"}, "orders.as_int"],
 )
 def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset, measure):
     sql, _ = _sql(dataset=integer_orders, metrics=[measure])

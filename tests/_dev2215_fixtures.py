@@ -235,7 +235,9 @@ def day(value: Any) -> Optional[str]:
 
 
 def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict[Any, Any]:
-    out = {r[f"{dataset}.{key}"]: r[value] for r in resp.data}
+    """A result key or alias as written, else a field of ``dataset``."""
+    col = key if "." in key or key in resp.columns else f"{dataset}.{key}"
+    out = {r[col]: r[value] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 

@@ -117,12 +117,12 @@ async def _value(engine: SlayerQueryEngine, expression: str) -> float:
 class TestStringArgumentIsModeB:
     async def test_a_string_column_argument_equals_its_unquoted_spelling(self, engine: SlayerQueryEngine) -> None:
         quoted = await _value(engine, "wsum(orders.amount, w='customers.region_id')")
-        assert quoted == await _value(engine, "wsum(amount, w=customers.region_id)")
+        assert quoted == await _value(engine, "wsum(orders.amount, w=customers.region_id)")
         assert quoted == pytest.approx(10 * 10 + 20 * 10 + 30 * 20 + 40 * 10)
 
     async def test_a_string_expression_argument_equals_its_unquoted_expression(self, engine: SlayerQueryEngine) -> None:
-        quoted = await _value(engine, "weighted_avg(orders.amount, weight='id * 2')")
-        assert quoted == await _value(engine, "weighted_avg(amount, weight=id * 2)")
+        quoted = await _value(engine, "weighted_avg(orders.amount, weight='orders.id * 2')")
+        assert quoted == await _value(engine, "weighted_avg(orders.amount, weight=orders.id * 2)")
         assert quoted == pytest.approx(30.0)
 
     @pytest.mark.parametrize(("text", "marker"), [
@@ -156,7 +156,7 @@ class TestStringArgumentIsModeB:
 class TestDefaultStaysModeA:
     async def test_a_dialect_default_binds(self) -> None:
         async with seeded_exec_engine(dialect="sqlite", seed=_seed, datasets=_datasets(_USUM)) as (engine, _db):
-            assert await _value(engine, "usum(amount)") == pytest.approx(10 * 1 + 20 * 2 + 30 * 3 + 40 * 4)
+            assert await _value(engine, "usum(orders.amount)") == pytest.approx(10 * 1 + 20 * 2 + 30 * 3 + 40 * 4)
 
     async def test_the_same_text_as_an_argument_is_refused(self) -> None:
         async with seeded_exec_engine(dialect="sqlite", seed=_seed, datasets=_datasets(_USUM)) as (engine, _db):

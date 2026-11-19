@@ -53,8 +53,8 @@ class TestConditionalMeasureOverAggregate:
         ))
         by = rows_by(resp, "orders.region")
         assert float(by[("EU",)]["rev"]) == pytest.approx(REGION_SUM["EU"])
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert int(by[("US",)]["orders.big"]) == 0
+        assert int(by[("EU",)]["big"]) == 1
+        assert int(by[("US",)]["big"]) == 0
 
     async def test_nested_conditional_is_an_ordinal(self, exec_engine) -> None:
         # EU 14000 -> 2 ; US 8000 -> 1.
@@ -63,8 +63,8 @@ class TestConditionalMeasureOverAggregate:
             metrics=[
                 QueryMetric(
                     metric=(
-                        "CASE WHEN sum(amount) >= 14000 THEN 2 "
-                        "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END"
+                        "CASE WHEN sum(orders.amount) >= 14000 THEN 2 "
+                        "WHEN sum(orders.amount) >= 8000 THEN 1 ELSE 0 END"
                     ),
                     alias="tier",
                 ),
@@ -82,8 +82,8 @@ class TestConditionalMeasureOverAggregate:
             ],
         ))
         by = rows_by(resp, "orders.region")
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert int(by[("US",)]["orders.big"]) == 0
+        assert int(by[("EU",)]["big"]) == 1
+        assert int(by[("US",)]["big"]) == 0
 
 
 class TestConditionalInFilter:
@@ -111,8 +111,8 @@ class TestNullBranchKeepsValue:
         ))
         by = rows_by(resp, "orders.region")
         assert set(by) == {("EU",), ("US",)}
-        assert int(by[("EU",)]["orders.big"]) == 1
-        assert by[("US",)]["orders.big"] is None
+        assert int(by[("EU",)]["big"]) == 1
+        assert by[("US",)]["big"] is None
 
 
 class TestBranchTypingThroughPlanning:

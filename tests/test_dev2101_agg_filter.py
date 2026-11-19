@@ -146,7 +146,7 @@ class TestFilterPositions:
             ]}],
             metrics=["orders.paid_total"],
         ))
-        assert num(single(resp, "paid_total")) == 70.0
+        assert num(single(resp, "orders.paid_total")) == 70.0
 
 
 class TestFilterConditionIsRowLevel:

@@ -74,7 +74,7 @@ class TestLiteralSlots:
     async def test_doubled_braces_render_literal_braces(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=[{"field": "'{{' || orders.status || '}}'", "alias": "b"}],
                                       metrics=[m("count(orders.*)")], variables={"k": 1}))
-        assert set(by_key(resp, "b")) == {"{paid}", "{Pending}", "{void}"}
+        assert set(by_key(resp, "b", dataset=None)) == {"{paid}", "{Pending}", "{void}"}
 
     async def test_placeholder_in_a_case_branch_and_scalar_argument(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(

@@ -36,7 +36,7 @@ async def exec_engine(request):
         yield engine
 
 
-def _grain_producer_count(sql: str, *, dialect: str, grain=("sales.city", "sales.region")) -> int:
+def _grain_producer_count(sql: str, *, dialect: str, grain=("city", "region")) -> int:
     """Number of CTEs ANY of whose SELECTs (producers wrap their GROUP BY in a
     ``_stage_inner`` subquery) groups by PLAIN columns exactly matching ``grain``
     (name suffix match survives alias mangling like ``sales___city``); expression

@@ -252,8 +252,8 @@ class TestMixedOrPushes:
             resp = await engine.execute(query)
         pushed = {w.filter_text for w in resp.warnings if w.kind == "semi_join_pushed"}
         assert pushed == {
-            "customers.tier == 'gold' or status == 'A'",
-            "customers.tier == 'silver' or status == 'B'",
+            "customers.tier == 'gold' or orders.status == 'A'",
+            "customers.tier == 'silver' or orders.status == 'B'",
         }
 
 

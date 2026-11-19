@@ -104,8 +104,8 @@ class TestTypingEnvironment:
                 "orders.status",
                 QueryDimension(
                     field=(
-                        "sum(amount, partition_by=status)"
-                        " + sum(amount, partition_by=tier)"
+                        "sum(orders.amount, partition_by=orders.status)"
+                        " + sum(orders.amount, partition_by=orders.tier)"
                     ),
                     alias="mix",
                 ),

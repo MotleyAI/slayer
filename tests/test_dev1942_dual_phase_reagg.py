@@ -93,8 +93,8 @@ def _region_month(resp: SlayerResponse, name: str) -> dict:
 
 
 def _by_tier(resp, name: str) -> dict:
-    return {r["customers.tier"]: r["customers." + name] for r in resp.data
-            if r["customers." + name] is not None}
+    return {r["customers.tier"]: r[name] for r in resp.data
+            if r[name] is not None}
 
 
 def _cm_ctes(sql: str) -> list[str]:
@@ -115,7 +115,7 @@ def _dual_phase_query():
         dimensions=["monthly.region"],
         metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                   QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
-        time_dimensions=month_td())
+        time_dimensions=month_td("monthly"))
 
 
 # --------------------------------------------------------------------------- #
@@ -135,7 +135,7 @@ class TestDualPhaseExecution:
             dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             filter=[f"{REAGG_STANDALONE} > 5"],
-            time_dimensions=month_td()))
+            time_dimensions=month_td("monthly")))
         assert {r["monthly.region"] for r in resp.data} == {"North"}
         assert _region_month(resp, "b") == pytest.approx(
             {k: v for k, v in B_BY_REGION_MONTH.items() if k[0] == "North"})
@@ -147,7 +147,7 @@ class TestDualPhaseExecution:
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             order=[{"field": REAGG_STANDALONE, "direction": "desc"}],
-            time_dimensions=month_td()))
+            time_dimensions=month_td("monthly")))
         regions = [r["monthly.region"] for r in resp.data]
         north = [i for i, r in enumerate(regions) if r == "North"]
         south = [i for i, r in enumerate(regions) if r == "South"]
@@ -160,13 +160,13 @@ class TestDualPhaseExecution:
         alone = await engine.execute(monthly_q(
             dimensions=["monthly.region"],
             metrics=[QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
-            time_dimensions=month_td()))
+            time_dimensions=month_td("monthly")))
         resp = await engine.execute(monthly_q(
             dimensions=["monthly.region"],
             metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
                       QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
                       QueryMetric(metric="cumsum(sum(monthly.amount))", alias="c")],
-            time_dimensions=month_td()))
+            time_dimensions=month_td("monthly")))
         assert _region_month(resp, "a") == pytest.approx(A_BY_REGION_MONTH)
         assert _region_month(resp, "b") == pytest.approx(B_BY_REGION_MONTH)
         assert _region_month(resp, "c") == pytest.approx(_region_month(alone, "c"))

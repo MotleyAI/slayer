@@ -163,6 +163,16 @@ async def test_an_edge_first_path_converts(backend: str, legacy: dict, qualified
         await assert_converts(eng, _orders(**legacy), _orders(**qualified), {(name, f"orders.{name}")})
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_an_edge_declared_on_the_other_side_converts(backend: str) -> None:
+    async with orders_engine(backend, edge_name="buyer") as eng:
+        await assert_converts(
+            eng, {"population": "customers", "metrics": [m("count(buyer.id)", "n")]},
+            {"population": "customers", "metrics": [m("count(customers.buyer.id)", "n")]},
+            {("buyer.id", "customers.buyer.id")},
+        )
+
+
 async def test_a_list_column_first_path_converts() -> None:
     async with list_engine() as eng:
         await assert_converts(
@@ -235,6 +245,17 @@ async def test_an_entry_aliased_as_its_own_field_converts(engine: SlayerQueryEng
                 filter=["status <> 'x'"]),
         _orders(dimensions=["orders.status"], metrics=[m("sum(orders.amount)", "total")],
                 filter=["orders.status <> 'x'"]),
+        {STATUS, AMOUNT},
+    )
+
+
+async def test_a_comparison_argument_of_an_aggregation_converts(engine: SlayerQueryEngine) -> None:
+    await assert_converts(
+        engine,
+        _orders(metrics=[m("sum(status = 'paid')", "paid"), m("sum(amount, window='30d')", "w")],
+                time_dimensions=[{"field": "orders.created_at", "granularity": "day"}]),
+        _orders(metrics=[m("sum(orders.status = 'paid')", "paid"), m("sum(orders.amount, window='30d')", "w")],
+                time_dimensions=[{"field": "orders.created_at", "granularity": "day"}]),
         {STATUS, AMOUNT},
     )
 

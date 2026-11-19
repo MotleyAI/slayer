@@ -88,7 +88,7 @@ class TestRestSurface:
         client = TestClient(create_app(storage=storage))
         body = {"population": "orders", "dimensions": ["orders.status"],
                 "metrics": [{"metric": "weighted_avg(customers.spend, "
-                              "weight=sum(amount, partition_by=status))"}],
+                              "weight=sum(orders.amount, partition_by=orders.status))"}],
                 "to_many_handling": "associate"}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text

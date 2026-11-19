@@ -95,7 +95,7 @@ class TestReachIsNotReading:
                 warnings.simplefilter("error")
                 resp = await e.execute(query(population="customers",
                                              metrics=[m("sum(customers.spend)", "t")]))
-        assert resp.data == [{"customers.t": 430.0}]
+        assert resp.data == [{"t": 430.0}]
         assert resp.warnings == []
 
 

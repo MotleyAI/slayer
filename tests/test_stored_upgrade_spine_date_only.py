@@ -151,7 +151,7 @@ class TestSpineOperands:
                                              source: str) -> None:
         body = spine_stage(TS_LE, SPINE_LE, ORDERS_LE, source=source)
         storage = await store(tmp_path, shop_ds, backend=backend, models=(saved("rooted", body),))
-        assert await loaded_filters(storage, "rooted") == [TS_LT, SPINE_LT, ORDERS_LT]
+        assert await loaded_filters(storage, "rooted") == [SPINE_LT, SPINE_LT, ORDERS_LT]
 
     async def test_saved_measure_and_column_filter(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                    backend: str) -> None:
@@ -184,7 +184,7 @@ class TestSpineOperands:
                               memories=(memory("m_spine", spine_stage(TS_LE, SPINE_LE)),))
         mem = await storage.get_memory("m_spine")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LT, SPINE_LT]
+        assert mem.query.filter == [SPINE_LT, SPINE_LT]
 
     async def test_memory_on_the_spine_in_a_store_with_one_datasource(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
@@ -204,7 +204,7 @@ class TestSpineOperands:
         await add_other_datasource(storage, tmp_path, backend=backend, models=({**variant, "data_source": OTHER},))
         mem = await storage.get_memory("m_variants")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LT]
+        assert mem.query.filter == [SPINE_LT]
 
     async def test_extension_column_filter(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         # Stored before extension columns were removed: the load-time conversion inlines it after this upgrade.
@@ -260,7 +260,7 @@ class TestSpineOperands:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_legacy", body, version=3),))
         mem = await storage.get_memory("m_legacy")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LT]
+        assert mem.query.filter == [SPINE_LT]
 
     async def test_legacy_time_literal_on_a_case_variant_source(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                                 backend: str) -> None:
@@ -268,7 +268,7 @@ class TestSpineOperands:
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_legacy_case", body, version=3),))
         mem = await storage.get_memory("m_legacy_case")
         assert mem.query is not None
-        assert mem.query.filter == ["ordered_at < '2024-02-01'"]
+        assert mem.query.filter == [ORDERS_LT]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -310,7 +310,7 @@ class TestSpineLeftAlone:
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_held_twice")
         assert mem.query is not None
-        assert mem.query.filter == [TS_LE]
+        assert mem.query.filter == [SPINE_LE]
         assert any("m_held_twice" in t and TS_LE in t for t in texts), texts
 
     async def test_path_continuing_past_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,

@@ -1174,6 +1174,11 @@ class StorageBackend(ABC):
                 await self._apply_refinement_or_raise(
                     name=name, data=data, data_source=data_source,
                 )
+        elif any(pending):
+            # A current document can hold an older nested stage: its own version decides.
+            data = await self._qualified_source_queries(name=name, data=data, data_source=data_source,
+                                                        pending=pending)
+            write_back = True
         return SlayerDataset.model_validate(data), write_back
 
     async def _dataset_names(self, data_source: str) -> set[str]:
@@ -1299,6 +1304,22 @@ class StorageBackend(ABC):
         finally:
             _INLINING.reset(token)
         return {**data, "source_queries": qualified}
+
+    async def incident_edge_names(self, name: str, *, data_source: str) -> frozenset[str]:
+        """The names of the stored edges incident to dataset ``name`` of ``data_source``, declared on either side."""
+        return (await self._stored_datasets(data_source)).incident_names(name)
+
+    async def qualified_stored_queries(
+        self, queries: list[SlayerQuery], *, versions: list[int | None], data_source: str | None, document: str,
+    ) -> list[SlayerQuery]:
+        """``queries`` (stages read from a stored document, each written at ``versions``) with the pre-2.0 ones'
+        references qualified, keeping their meaning; an unversioned stage counts as current."""
+        pending = [v is not None and int(v) < _QUALIFIED_AT["SlayerQuery"] for v in versions]
+        if len(pending) != len(queries) or not any(pending):
+            return queries
+        qualified = await self._qualified_queries(queries=queries, pending=pending, data_source=data_source,
+                                                  document=document)
+        return [SlayerQuery.model_validate(q) for q in qualified]
 
     async def _qualified_queries(
         self, *, queries: list[Any], pending: list[bool], data_source: str | None, document: str,

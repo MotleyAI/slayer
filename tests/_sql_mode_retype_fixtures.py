@@ -25,7 +25,7 @@ def sql_shapes(*, table: str, column: str, untypeable: str | None) -> list[Any]:
     call sqlglot cannot type, so only the database's result type tells it is a list."""
     shapes = [
         pytest.param(f"SELECT id, {column} FROM {table}", column, DataType.INTEGER, id="bare"),
-        pytest.param(f"SELECT t.id, t.{column} AS pts FROM {table} AS t", "stale_sql.pts", DataType.INTEGER, id="aliased"),
+        pytest.param(f"SELECT t.id, t.{column} AS pts FROM {table} AS t", "pts", DataType.INTEGER, id="aliased"),
         pytest.param(f"SELECT * FROM {table}", column, DataType.INTEGER, id="star"),
         pytest.param(f"SELECT id, {column} FROM (SELECT * FROM {table}) AS s", column, DataType.INTEGER, id="subquery"),
         pytest.param(f"SELECT id, NULL AS {column} FROM {table} WHERE 1 = 0 UNION ALL SELECT id, {column} FROM {table}",
@@ -56,7 +56,7 @@ async def check_validation_finding(engine: SlayerQueryEngine, *, data_source: st
 
 async def check_query_carries_finding(engine: SlayerQueryEngine, *, column: str) -> None:
     with pytest.raises(SchemaDriftError) as info:
-        await engine.execute({"population": MODEL, "metrics": [{"metric": f"sum({column})", "alias": "s"}]})
+        await engine.execute({"population": MODEL, "metrics": [{"metric": f"sum({MODEL}.{column})", "alias": "s"}]})
     assert column in str(info.value), str(info.value)
     assert "ingest" in str(info.value).lower(), str(info.value)
 

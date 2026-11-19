@@ -64,7 +64,7 @@ class TestEntryClasses:
         query = SlayerQuery.model_validate({"population": "orders",
                                             "metrics": ["count(orders.*)", {"metric": "sum(orders.amount)", "alias": "total"}]})
         assert all(isinstance(m, QueryMetric) for m in query.metrics or [])
-        assert [(m.metric, m.alias) for m in query.metrics or []] == [("count(*)", None), ("sum(amount)", "total")]
+        assert [(m.metric, m.alias) for m in query.metrics or []] == [("count(orders.*)", None), ("sum(orders.amount)", "total")]
 
     def test_a_metric_entry_takes_its_optional_keys(self) -> None:
         entry = {"metric": "sum(amount)", "alias": "total", "label": "Total", "description": "All of it",
@@ -79,7 +79,7 @@ class TestEntryClasses:
         })
         assert all(isinstance(d, QueryDimension) for d in query.dimensions or [])
         assert [(d.field, d.alias, d.label) for d in query.dimensions or []] == [
-            ("status", None, None), ("customers.name", None, None), ("upper(status)", "s", "S")]
+            ("orders.status", None, None), ("customers.name", None, None), ("upper(orders.status)", "s", "S")]
 
     def test_a_dimension_reference_reads_its_path(self) -> None:
         [dim] = SlayerQuery.model_validate({"population": "orders",
@@ -94,14 +94,14 @@ class TestEntryClasses:
     def test_a_dimension_name_is_derived_and_not_serialized(self) -> None:
         dims = SlayerQuery.model_validate({"population": "orders", "dimensions": [
             {"field": "orders.status", "alias": "s"}, "customers.region", "upper(orders.status)"]}).dimensions or []
-        assert [d.name for d in dims] == ["s", "region", computed_dimension_name("upper(status)")]
+        assert [d.name for d in dims] == ["s", "region", computed_dimension_name("upper(orders.status)")]
         assert all("name" not in d.model_dump() for d in dims)
 
     def test_a_bare_reference_dumps_as_text(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [
             {"field": "customers.region"}, {"field": "orders.status", "alias": "s"}, "upper(orders.status)"]})
         assert query.model_dump(mode="json")["dimensions"] == [
-            "customers.region", {"field": "status", "alias": "s"}, "upper(status)"]
+            "customers.region", {"field": "orders.status", "alias": "s"}, "upper(orders.status)"]
 
     def test_a_query_metric_dumps_metric_and_alias(self) -> None:
         dumped = QueryMetric.model_validate({"metric": "sum(amount)", "alias": "total"}).model_dump(exclude_none=True)
@@ -177,7 +177,7 @@ class TestOneXEntries:
                 {"population": "orders", "metrics": [DatasetMetric(expression="sum(orders.amount)", name="total")]})
         [metric] = query.metrics or []
         assert isinstance(metric, QueryMetric)
-        assert (metric.metric, metric.alias) == ("sum(amount)", "total")
+        assert (metric.metric, metric.alias) == ("sum(orders.amount)", "total")
         assert deprecations(caught)
 
     def test_a_converted_query_dumps_in_ossie_form(self) -> None:
@@ -213,9 +213,9 @@ class TestDump:
         for stage in (first, second):
             assert not NON_OSSIE_QUERY_KEYS & stage_keys(stage), stage
             assert {"population", "metrics", "filter"} <= stage.keys()
-        assert first["metrics"] == [{"metric": "sum(amount)", "alias": "total"}, "aov"]
-        assert first["dimensions"] == ["customer_id", {"field": "buyer.name", "alias": "buyer_name"}]
-        assert first["time_dimensions"][0]["field"] == "ordered_at"
+        assert first["metrics"] == [{"metric": "sum(orders.amount)", "alias": "total"}, "aov"]
+        assert first["dimensions"] == ["orders.customer_id", {"field": "buyer.name", "alias": "buyer_name"}]
+        assert first["time_dimensions"][0]["field"] == "orders.ordered_at"
         assert first["time_dimensions"][0]["alias"] == "m"
         assert first["order"] == [{"field": "total", "direction": "desc"}]
         [ext] = first["extensions"]

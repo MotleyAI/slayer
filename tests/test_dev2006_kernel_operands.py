@@ -71,10 +71,10 @@ from tests._dev2006_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-SEMI = f"sum(last(balance, snapshot_date, {PB}))"
-TWO_RANKINGS = f"sum(last(balance, snapshot_date, {PB}) + last(balance, recorded_at, {PB}))"
-TWO_WINDOWS = f"sum(sum(balance, window='30d', {PB}) + sum(balance, window='60d', {PB}))"
-CM_LAST = "last(account_snapshots.balance, partition_by=[account_snapshots.account_id, id])"
+SEMI = f"sum(last(account_snapshots.balance, account_snapshots.snapshot_date, {PB}))"
+TWO_RANKINGS = f"sum(last(account_snapshots.balance, account_snapshots.snapshot_date, {PB}) + last(account_snapshots.balance, account_snapshots.recorded_at, {PB}))"
+TWO_WINDOWS = f"sum(sum(account_snapshots.balance, window='30d', {PB}) + sum(account_snapshots.balance, window='60d', {PB}))"
+CM_LAST = "last(account_snapshots.balance, partition_by=[account_snapshots.account_id, customers.id])"
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -173,7 +173,7 @@ class TestSemiAdditive:
         _approx(by_customer(resp), LAST_BY_CUSTOMER)
 
     async def test_explicit_recorded_at_ranking_column(self, exec_engine):
-        resp = await exec_engine.execute(_by_customer_q(f"sum(last(balance, recorded_at, {PB}))"))
+        resp = await exec_engine.execute(_by_customer_q(f"sum(last(account_snapshots.balance, account_snapshots.recorded_at, {PB}))"))
         _approx(by_customer(resp), LAST_RECORDED_BY_CUSTOMER)
 
 
@@ -200,16 +200,16 @@ class TestSeveralConstituents:
         _approx(by_customer(resp), LAST_PLUS_LAST_RECORDED_BY_CUSTOMER)
 
     async def test_ranked_and_plain_constituents_mixed(self, exec_engine):
-        resp = await exec_engine.execute(_by_customer_q(f"sum({LAST} + max(balance, {PB}))"))
+        resp = await exec_engine.execute(_by_customer_q(f"sum({LAST} + max(account_snapshots.balance, {PB}))"))
         _approx(by_customer(resp), LAST_PLUS_MAX_BY_CUSTOMER)
 
 
 class TestBucketedOperand:
-    @pytest.mark.parametrize("ranking", ["", "snapshot_date, "])
+    @pytest.mark.parametrize("ranking", ["", "account_snapshots.snapshot_date, "])
     async def test_month_bucketed_operand(self, exec_engine, ranking):
         resp = await exec_engine.execute(snap_q(
             dimensions=["account_snapshots.customer_id"], time_dimensions=month_td(),
-            metrics=[m(f"sum(last(balance, {ranking}{PB_MONTH}))")],
+            metrics=[m(f"sum(last(account_snapshots.balance, {ranking}{PB_MONTH}))")],
         ))
         _approx(by_customer_month(resp), LAST_BY_CUSTOMER_MONTH)
 
@@ -224,7 +224,7 @@ class TestWindowedOperands:
 
     @pytest.mark.parametrize("formula", [
         "sum(sum(account_snapshots.balance, window='30d'))",
-        f"sum(sum(balance, window='30d', {PB}))",
+        f"sum(sum(account_snapshots.balance, window='30d', {PB}))",
     ])
     async def test_equals_the_single_stage_windowed_measure(self, exec_engine, formula):
         resp = await exec_engine.execute(snap_q(
@@ -241,7 +241,7 @@ class TestWindowedOperands:
         _approx(by_customer_month(resp), WINDOW_30D_PLUS_60D_BY_CUSTOMER_MONTH)
 
     async def test_without_a_time_dimension_is_a_typed_error(self, exec_engine):
-        query = _by_customer_q(f"sum(sum(balance, window='30d', {PB}))")
+        query = _by_customer_q(f"sum(sum(account_snapshots.balance, window='30d', {PB}))")
         with pytest.raises(TimeAxisError):
             await exec_engine.execute(query)
 
@@ -263,7 +263,7 @@ class TestConsumerPositions:
         assert [r["account_snapshots.customer_id"] for r in resp.data] == expected
 
     async def test_inside_arithmetic(self, exec_engine):
-        resp = await exec_engine.execute(_by_customer_q(f"sum({LAST}) / count(*)"))
+        resp = await exec_engine.execute(_by_customer_q(f"sum({LAST}) / count(account_snapshots.*)"))
         _approx(by_customer(resp), LAST_PER_ROW_BY_CUSTOMER)
 
     async def test_transform_input(self, exec_engine):
@@ -275,7 +275,7 @@ class TestConsumerPositions:
 
     async def test_computed_dimension(self, exec_engine):
         band = {
-            "field": f"CASE WHEN sum({LAST}, partition_by=[customer_id]) > 100 THEN 'big' ELSE 'small' END",
+            "field": f"CASE WHEN sum({LAST}, partition_by=[account_snapshots.customer_id]) > 100 THEN 'big' ELSE 'small' END",
             "alias": "band",
         }
         resp = await exec_engine.execute(snap_q(dimensions=[band], metrics=[m("sum(account_snapshots.balance)")]))
@@ -400,7 +400,7 @@ class TestPlanStructure:
     @pytest.mark.parametrize("query", [
         _by_customer_q(SEMI),
         _by_customer_q(TWO_RANKINGS),
-        _by_customer_q(f"sum({LAST} + max(balance, {PB}))"),
+        _by_customer_q(f"sum({LAST} + max(account_snapshots.balance, {PB}))"),
         snap_q(dimensions=["account_snapshots.customer_id"], time_dimensions=month_td(), metrics=[m(TWO_WINDOWS)]),
         snap_q(dimensions=["account_snapshots.customer_id"], time_dimensions=month_td(),
                metrics=[m(f"cumsum(sum(last(account_snapshots.balance, {PB_MONTH})))")]),

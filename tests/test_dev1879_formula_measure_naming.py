@@ -142,8 +142,8 @@ class TestCollisions:
         with pytest.raises(ValueError, match="Rename") as ei:
             await _dry(q)
         msg = str(ei.value)
-        assert "sum(logo_churn) / sum(logo_bop)" in msg
-        assert "sum(logo_churn) * sum(logo_bop)" in msg
+        assert "sum(mart.logo_churn) / sum(mart.logo_bop)" in msg
+        assert "sum(mart.logo_churn) * sum(mart.logo_bop)" in msg
         assert "set 'name'" in msg
 
     async def test_identical_formulas_merge(self) -> None:

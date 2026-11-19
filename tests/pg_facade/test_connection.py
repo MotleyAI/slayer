@@ -493,7 +493,7 @@ async def test_extended_query_with_bound_param_substitutes() -> None:
 
 
 async def test_extended_binary_result_format_encodes_binary() -> None:
-    engine = _FakeEngine([{"orders.revenue_sum": 100.0}])
+    engine = _FakeEngine([{"revenue_sum": 100.0}])
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT revenue_sum FROM orders")
@@ -518,7 +518,7 @@ async def test_extended_binary_result_format_encodes_binary() -> None:
 
 
 async def test_extended_text_result_format_encodes_text() -> None:
-    engine = _FakeEngine([{"orders.revenue_sum": 100.0}])
+    engine = _FakeEngine([{"revenue_sum": 100.0}])
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT revenue_sum FROM orders")
@@ -810,7 +810,7 @@ async def _binary_value_bytes(sql: str, engine_data) -> bytes:
 
 
 async def test_binary_int8_wire() -> None:
-    raw = await _binary_value_bytes("SELECT row_count FROM orders", [{"orders.row_count": 42}])
+    raw = await _binary_value_bytes("SELECT row_count FROM orders", [{"row_count": 42}])
     assert raw == struct.pack(">q", 42)
 
 
@@ -862,7 +862,7 @@ async def test_text_param_substituted_into_filter() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filter == ["status = 'completed'"]
+    assert engine.last_query.filter == ["orders.status = 'completed'"]
 
 
 async def test_binary_int_param_substituted_into_filter() -> None:
@@ -882,7 +882,7 @@ async def test_binary_int_param_substituted_into_filter() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filter == ["id = 5"]
+    assert engine.last_query.filter == ["orders.id = 5"]
 
 
 async def test_string_param_is_quote_escaped() -> None:
@@ -897,7 +897,7 @@ async def test_string_param_is_quote_escaped() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filter == ["status = 'O''Brien'"]
+    assert engine.last_query.filter == ["orders.status = 'O''Brien'"]
 
 
 # --- portal close / flush / max_rows -----------------------------------------
@@ -929,7 +929,7 @@ async def test_flush_does_not_break_session() -> None:
 
 
 async def test_execute_with_max_rows_returns_all_rows_no_suspend() -> None:
-    engine = _FakeEngine([{"orders.revenue_sum": 1.0}, {"orders.revenue_sum": 2.0}])
+    engine = _FakeEngine([{"revenue_sum": 1.0}, {"revenue_sum": 2.0}])
     inp = (
         _startup(user="u", database="jaffle")
         + _parse("", "SELECT revenue_sum FROM orders")

@@ -24,7 +24,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 def monthly(name: str, **kw: Any) -> dict[str, Any]:
     return {
         "population": "orders", "time_dimensions": [MONTH],
-        "metrics": [{"metric": "change(sum(orders.amount))", "alias": name}], **kw,
+        "metrics": [{"metric": "change(sum(amount))", "alias": name}], **kw,
     }
 
 
@@ -45,14 +45,14 @@ class TestQueryMeasureNamedAfterTransform:
 
     async def test_filter_reference(self, engine: SlayerQueryEngine) -> None:
         await assert_renamed_twin(
-            engine, monthly("change", filter=["orders.change > 0"]), monthly("chg", filter=["orders.chg > 0"]),
+            engine, monthly("change", filter=["change > 0"]), monthly("chg", filter=["chg > 0"]),
         )
 
     async def test_order_reference(self, engine: SlayerQueryEngine) -> None:
         await assert_renamed_twin(
             engine,
-            monthly("change", order=[{"field": "orders.change", "direction": "desc"}, {"field": "orders.created_at"}]),
-            monthly("chg", order=[{"field": "orders.chg", "direction": "desc"}, {"field": "orders.created_at"}]),
+            monthly("change", order=[{"field": "change", "direction": "desc"}, {"field": "created_at"}]),
+            monthly("chg", order=[{"field": "chg", "direction": "desc"}, {"field": "created_at"}]),
             ordered=True,
         )
 
@@ -68,7 +68,7 @@ class TestQueryMeasureNamedAfterTransform:
     @pytest.mark.parametrize("name", ["cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead",
                                       "consecutive_periods", "rank", "percent_rank", "dense_rank", "ntile"])
     def test_every_transform_name_accepted(self, name: str) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(orders.*)", "alias": name}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)", "alias": name}]})
         assert [m.alias for m in query.metrics or []] == [name]
 
     def test_refinement_measure_accepted(self) -> None:
@@ -82,7 +82,7 @@ class TestModelExtensionMeasure:
             return {
                 "population": "orders",
                 "extensions": [{"dataset": "orders", "metrics": [{"name": name, "expression": "sum(amount)"}]}],
-                "dimensions": ["orders.region"], "metrics": [name],
+                "dimensions": ["region"], "metrics": [name],
             }
 
         expected = await engine.execute(query("total"))
@@ -103,10 +103,10 @@ class TestSavedMeasureNamedRank:
 
         def query(saved: str) -> dict[str, Any]:
             return {
-                "population": "orders", "dimensions": ["orders.region"],
+                "population": "orders", "dimensions": ["region"],
                 "metrics": [
                     {"metric": f"{saved} * 2", "alias": "doubled"},
-                    {"metric": "rank(sum(orders.amount), direction='desc')", "alias": "r"},
+                    {"metric": "rank(sum(amount), direction='desc')", "alias": "r"},
                 ],
             }
 

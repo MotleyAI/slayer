@@ -53,8 +53,8 @@ the tool's `variables` argument, a stage's own `variables`, the outer query's
 `variables` (when a saved query-backed dataset is its `population`), or the saved
 dataset's defaults, in that order of precedence. A placeholder binds a literal value only:
 its text inside quotes (`'{s}'`), a number, numeric string or boolean in a bare slot, a
-list as the whole right-hand side of `IN` (`status in ({statuses})`) or as a list-function
-argument (`contains_all(tags, {wanted})`, the only place an empty list binds). A
+list as the whole right-hand side of `IN` (`items.status in ({statuses})`) or as a list-function
+argument (`contains_all(items.tags, {wanted})`, the only place an empty list binds). A
 placeholder where a name belongs is an error. A `date_range` bound takes the value's text
 unquoted (`"date_range": ["{start}", "{end}"]`).
 

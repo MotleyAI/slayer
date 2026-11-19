@@ -73,7 +73,6 @@ from slayer.core.scope import (
 )
 from slayer.engine.population import dimension_routing
 from slayer.engine.population.anchors import AnchoredSpelling, anchor_route, anchored_spelling, find_anchor
-from slayer.engine.extensions import declaring_dataset_path
 from slayer.engine.binding import bind_expr, bind_filter, bind_time_dimension, spelled_aggregate_key
 from slayer.engine.elaborate_env import (
     check_computed_dim_name_collision,
@@ -141,6 +140,7 @@ from slayer.core.syntax import (
     map_refs,
     parse_bound_expr,
     parse_expr,
+    parse_template,
     root_relative,
     text_paths,
     legacy_result_name_seed,
@@ -351,9 +351,8 @@ def _bind_inner_restriction(
         host = host.with_unrelated(frozenset())
         scope, bundle = DatasetScope(population=host), bundle.model_copy(update={"population": host})
     try:
-        path = declaring_dataset_path(restriction, host=host, datasets_by_name=bundle.datasets_by_name)
         node = Cmp(
-            op="is not", left=DottedRef(parts=(*path, restriction.token, restriction.key), quoted=False),
+            op="is not", left=DottedRef(parts=restriction.parts, quoted=False),
             right=Literal(value=None), single_eq=False,
         )
         return bind_filter(parsed=node, scope=scope, bundle=bundle)
@@ -362,7 +361,12 @@ def _bind_inner_restriction(
             source_dataset=exc.source_dataset, target_dataset=exc.target_dataset, candidates=exc.candidates,
             token=exc.token, context=f"The {restriction.label}",
         ) from exc
-    except (UnknownReferenceError, UnresolvableDimensionRelationshipError) as exc:
+    except UnresolvableDimensionRelationshipError as exc:
+        raise UnresolvableDimensionRelationshipError(
+            reference=exc.reference, root_dataset=exc.root_dataset, reason=f"the {restriction.label}: {exc.reason}",
+            suggested_path=exc.suggested_path,
+        ) from exc
+    except UnknownReferenceError as exc:
         raise QueryExtensionError(
             f"The {restriction.label} restricts the population, but no relationship path reaches "
             f"{restriction.dataset!r} from it."
@@ -1173,8 +1177,8 @@ def _declared_computed_dimension(
     check_list_dimension(name=name, key=bound.value_key, typing=_list_typing(scope=scope, bundle=bundle),
                          will_group_by=_will_group_by(query))
     dim_type = _type_for_metric_expression(scope=scope, bound=bound, bundle=bundle)
-    key = d.alias or _expression_key(
-        parse_expr(d.template), scope=scope, bundle=bundle,
+    key = d.alias or _template_key(
+        d.template, scope=scope, bundle=bundle,
         named=lambda rel: auto_name_from_expression(legacy_result_name_seed(rel)),
     )
     return DeclaredMetric(
@@ -1457,8 +1461,7 @@ def _reference_key(parsed: ParsedExpr, *, value_key: ValueKey, scope: DatasetSco
     if not found:
         return None
     key = value_key.source if isinstance(value_key, TimeTruncKey) else value_key
-    leaf = field_leaf(key) if isinstance(key, (FieldKey, FieldSqlKey)) and not isinstance(scope, StageSchema) \
-        else parsed.parts[-1]
+    leaf = field_leaf(key) if isinstance(key, (FieldKey, FieldSqlKey)) else parsed.parts[-1]
     return ".".join((*found[0][1].parts, leaf))
 
 
@@ -1486,15 +1489,31 @@ def _expression_key(
     return ".".join((*prefix, name)) if prefix else name
 
 
+def _template_key(
+    template: str, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    named: Callable[[ParsedExpr], str],
+) -> Optional[str]:
+    """``_expression_key`` of a ``{variable}`` template; one unparseable before binding is named from its text."""
+    try:
+        return _expression_key(parse_expr(template), scope=scope, bundle=bundle, named=named)
+    except ValueError:
+        pass
+    found = _spellings(parse_template(template), scope=scope, bundle=bundle)
+    if found is None:
+        return None
+    prefix = _common_prefix(found)
+    head = ".".join(prefix) + "." if prefix else ""
+    name = auto_name_from_expression(template.replace(head, "") if head else template)
+    return head + name
+
+
 def _time_dimension_key(
     td: TimeDimension, *, bound: BoundExpr, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
     if td.field_ref is not None:
         return _reference_key(parse_expr(td.field), value_key=bound.value_key, scope=scope, bundle=bundle)
-    return _expression_key(
-        parse_expr(td.template), scope=scope, bundle=bundle,
-        named=lambda rel: auto_name_from_expression(legacy_result_name_seed(rel)),
-    )
+    return _template_key(td.template, scope=scope, bundle=bundle,
+                         named=lambda rel: auto_name_from_expression(legacy_result_name_seed(rel)))
 
 
 def _metric_key(
@@ -1505,7 +1524,7 @@ def _metric_key(
     if isinstance(parsed, DottedRef):
         return _reference_key(parsed, value_key=bound.value_key, scope=scope, bundle=bundle)
     if m.template != m.metric:
-        return _expression_key(parse_expr(m.template), scope=scope, bundle=bundle, named=expression_text_alias)
+        return _template_key(m.template, scope=scope, bundle=bundle, named=expression_text_alias)
     return _expression_key(parsed, scope=scope, bundle=bundle, named=expression_text_alias, value_key=bound.value_key)
 
 

@@ -258,7 +258,7 @@ class TestNullElements:
         row = resp.data[0]
         assert num(row["n"]) == 1
         assert row["has_go"] in (False, 0)
-        elements = await engine.execute(query(dimensions=["contractors.dev_skills.skills.value"], metrics=[metric("count(contractors.skills.*)", "n")],
+        elements = await engine.execute(query(dimensions=["contractors.skills.value"], metrics=[metric("count(contractors.skills.*)", "n")],
                                               filter=bob))
         assert {r["contractors.skills.value"]: num(r["n"]) for r in elements.data} == {"sql": 1}
 

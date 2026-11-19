@@ -63,7 +63,7 @@ class TestAmbiguousCorrelationFailsClosed:
         return SlayerQuery.model_validate({
             "population": "customers",
             "metrics": [{"metric": "sum(regions.pop)", "alias": "rp"}],
-            "filter": ["orders.status = 'ok'"],
+            "filter": ["customers.orders.status = 'ok'"],
             "to_many_handling": to_many_handling,
         })
 

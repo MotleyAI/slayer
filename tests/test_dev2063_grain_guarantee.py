@@ -46,7 +46,7 @@ async def exec_engine(request):
 
 def _band(key: str, threshold: int) -> dict:
     return {
-        "field": f"case when sum(amount, partition_by={key}) > {threshold} "
+        "field": f"case when sum(orders.amount, partition_by={key}) > {threshold} "
                       "then 'high' else 'other' end",
         "alias": "band",
     }
@@ -221,9 +221,9 @@ class TestPlannedGrain:
             time_dimensions=month_td(), metrics=[REVENUE],
         )
         assert pq.grain == [
-            _slot_id_by_alias(pq, "region"),
+            _slot_id_by_alias(pq, "orders.region"),
             _slot_id_by_alias(pq, "band"),
-            _slot_id_by_alias(pq, "ordered_at"),
+            _slot_id_by_alias(pq, "orders.ordered_at"),
         ]
 
     @pytest.mark.parametrize("formula", ["sum(orders.amount)", "last(orders.amount, orders.ordered_at)"])

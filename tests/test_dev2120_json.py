@@ -229,7 +229,7 @@ class TestInputForms:
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_returning_types_emit(self, dialect: str) -> None:
         for target in ("INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "TEXT"):
-            await emit_lib(lib_query(f"json_value(payload, '$.a' RETURNING {target})"), dialect=dialect)
+            await emit_lib(lib_query(f"json_value(lib.payload, '$.a' RETURNING {target})"), dialect=dialect)
 
 
 class TestSnowflakeTemporalTryCast:
@@ -295,7 +295,7 @@ class TestIngestionKeepsJsonDbType:
         inspector = MagicMock()
         inspector.get_columns.return_value = [{"name": "id", "type": sa.Integer()},
                                               {"name": "payload", "type": sa.types.NullType()}]
-        with patch.object(clickhouse_dialect, "fetch", return_value=[("id", "Int32"), ("lib.payload", "JSON")]):
+        with patch.object(clickhouse_dialect, "fetch", return_value=[("id", "Int32"), ("payload", "JSON")]):
             cols = get_dialect("clickhouse").reflect_columns(
                 connection=None, inspector=inspector, table="docs", schema="db", catalog=None)
         assert [(c.name, c.db_type) for c in cols] == [("id", None), ("payload", "JSON")]

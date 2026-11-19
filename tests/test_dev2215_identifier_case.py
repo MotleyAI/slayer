@@ -82,14 +82,14 @@ class TestFolding:
         assert "customers.region" in resp.columns
 
     async def test_quoted_segment_with_wrong_case_fails(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=['orders."Customers".region'], metrics=[m("count(orders.*)", "n")])
+        query = q(dimensions=['"Customers".region'], metrics=[m("count(orders.*)", "n")])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
 
     @pytest.mark.parametrize("query", [
-        q(dimensions=['orders."ORDERS".status'], metrics=[m("count(orders.*)", "n")]),
-        q(metrics=[m('count(orders."ORDERS".*)', "n")]),
-        q(time_dimensions=[{"field": 'orders."ORDERS".created_at', "granularity": "month"}], metrics=[m("count(orders.*)", "n")]),
+        q(dimensions=['"ORDERS".status'], metrics=[m("count(orders.*)", "n")]),
+        q(metrics=[m('count("ORDERS".*)', "n")]),
+        q(time_dimensions=[{"field": '"ORDERS".created_at', "granularity": "month"}], metrics=[m("count(orders.*)", "n")]),
     ], ids=["dimension", "star", "time-dimension"])
     async def test_a_quoted_root_qualifier_is_exact(self, engine: SlayerQueryEngine, query: Any) -> None:
         with pytest.raises(UnknownReferenceError):
@@ -110,7 +110,7 @@ class TestFolding:
         assert quoted.columns == plain.columns
         assert sorted_rows(quoted) == sorted_rows(plain)
 
-    @pytest.mark.parametrize(("column", "error"), [('"status"', None), ('"STATUS"', UnknownReferenceError)])
+    @pytest.mark.parametrize(("column", "error"), [('orders."status"', None), ('orders."STATUS"', UnknownReferenceError)])
     async def test_a_quoted_order_column_is_exact(self, engine: SlayerQueryEngine, column: str,
                                                   error: type[SlayerError] | None) -> None:
         query = q(metrics=[m("count(orders.*)", "n")], dimensions=["orders.region"], order=[{"field": column, "direction": "desc"}])
@@ -131,7 +131,7 @@ class TestFolding:
     async def test_a_list_element_reference_follows_quoting(self, ref: str, error: type[SlayerError] | None) -> None:
         stages: list[Any] = [
             {"name": "s", "population": "orders", "dimensions": ["orders.status"], "metrics": [m("collect(orders.note)", "items")]},
-            {"population": "s", "metrics": [m(f"count({ref})", "c")]},
+            {"population": "s", "metrics": [m(f"count(s.{ref})", "c")]},
         ]
         async with dev2215_engine("duckdb") as eng:
             if error is None:
@@ -164,7 +164,7 @@ class TestFolding:
         ("CumSum(sum(orders.amount))", "cumsum(sum(orders.amount))"),
     ])
     async def test_transform_names_fold(self, engine: SlayerQueryEngine, folded: str, plain: str) -> None:
-        td = [{"field": "created_at", "granularity": "month"}]
+        td = [{"field": "orders.created_at", "granularity": "month"}]
         a = await engine.execute(q(time_dimensions=td, metrics=[m(folded)]))
         b = await engine.execute(q(time_dimensions=td, metrics=[m(plain)]))
         assert a.sql == b.sql
