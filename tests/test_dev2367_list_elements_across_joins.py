@@ -5,7 +5,6 @@ aggregation is computed)."""
 from __future__ import annotations
 
 import re
-import sqlite3
 from collections.abc import AsyncGenerator
 from typing import Any, Optional, Union
 
@@ -28,6 +27,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
+from slayer.engine.compile.stages import _rebuilt_aggregates
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.population.home import resolve_aggregate_homes
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -35,6 +35,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import AggregateHome, AggregateHomes
 from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.postgres import PostgresDialect
+from slayer.storage.sqlite_conn import transaction
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_engine, contractors_statements, emit_contractors
 from tests._dev2137_fixtures import (
     EXTRA,
@@ -320,8 +321,19 @@ class TestHomeBelowTheRoot:
         assert redundant == plain
 
 
+def test_rebuilt_aggregates_pair_partition_keys_by_identity_not_position() -> None:
+    # Partition keys are a set: only the replaced member maps to its replacement; an unchanged sibling never moves.
+    for i in range(12):
+        a, b, p = (AggregateKey(source=FieldKey(leaf=f"{name}{i}"), agg="max") for name in ("a", "b", "p"))
+        before = AggregateKey(source=FieldKey(leaf="rate"), agg="sum", partition_keys=Grain.of([a, b]))
+        after = before.model_copy(update={"partition_keys": Grain.of([b, p])})
+        out: dict[Any, Any] = {}
+        _rebuilt_aggregates(before, after, out)
+        assert out == {before: after, a: p}
+
+
 def _seed_one_to_one(db_path: str) -> None:
-    with sqlite3.connect(db_path) as con:
+    with transaction(db_path) as con:
         con.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, price REAL)")
         con.executemany("INSERT INTO orders VALUES (?, ?)", [(1, 10.0), (2, 20.0), (3, 30.0)])
         con.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, weight REAL)")
@@ -347,15 +359,16 @@ async def test_a_to_one_input_keeps_the_aggregation_on_its_anchor() -> None:
     assert [num(r[col(resp, "v")]) for r in resp.data] == [15.0]
 
 
-def _band(q: str) -> dict[str, str]:
+def _band(q: str, alias: str = "band", threshold: int = 50) -> dict[str, str]:
     """A computed dimension carrying a re-aggregation; ``q`` prefixes the ``contractors`` fields."""
     agg = f"max(sum({q}rate, partition_by=[{q}team, {q}name]), partition_by={q}team)"
-    return {"field": f"CASE WHEN {agg} > 50 THEN 1 ELSE 0 END", "alias": "band"}
+    return {"field": f"CASE WHEN {agg} > {threshold} THEN 1 ELSE 0 END", "alias": alias}
 
 
-def _band_query(population: str, expression: str) -> SlayerQuery:
+def _band_query(population: str, expression: str, *, two: bool = False) -> SlayerQuery:
     q = "" if population == "contractors" else "contractors."
-    return SlayerQuery.model_validate(body(population, m(expression), dimensions=[f"{q}team", _band(q)]))  # pyright: ignore[reportArgumentType]
+    dims = [f"{q}team", _band(q), *([_band(q, "band2", 90)] if two else [])]
+    return SlayerQuery.model_validate(body(population, m(expression), dimensions=dims))  # pyright: ignore[reportArgumentType]
 
 
 async def test_home_survives_a_reaggregation_partition_key() -> None:
@@ -388,6 +401,19 @@ async def test_a_reaggregation_dimension_is_independent_of_the_root(engine: Slay
     other = _band_cells(await engine.execute(_band_query("assignments", other_expr)))
     assert other
     assert {k: home[k] for k in other} == other
+
+
+@pytest.mark.xfail(strict=True, raises=ProgrammingError,
+                   reason="DEV-2375: a computed-dimension re-aggregation's placeholder is read on a table lacking it")
+@pytest.mark.parametrize(("population", "expression"), [
+    ("contractors", "sum(rate * length(skills.value), partition_by=[band, band2])"),
+    ("assignments", "sum(contractors.rate * length(contractors.skills.value), partition_by=[band, band2])"),
+])
+async def test_two_reaggregation_dimensions_in_one_partition(
+    engine: SlayerQueryEngine, population: str, expression: str,
+) -> None:
+    # Both rebuilt partition members keep the aggregate's home: it plans, never "no resolved home".
+    assert (await engine.execute(_band_query(population, expression, two=True))).data
 
 
 #: kind → (expression and dimensions written from ``contractors``, the outcome from both populations: cells

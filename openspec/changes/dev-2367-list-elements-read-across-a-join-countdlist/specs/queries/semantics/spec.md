@@ -191,9 +191,10 @@ applies exactly as for a single-column source rooted at the home.
 #### Scenario: A reverse hop to a dataset not on the path stays refused
 - **WHEN** a query rooted at `regions` selects `wsum_cust_spend(pop)`, whose
   `regions`-declared default is `customers.spend`
-- **THEN** nothing cancels — `customers` is not on the path — and the query fails with
-  the same input-safety error naming `customers` that the explicit
-  `weight=customers.spend` twin raises
+- **THEN** nothing cancels — `customers` is not on the path — and, `customers → regions`
+  being to-one, the default homes on `customers`: the value equals the explicit
+  `weight=customers.spend` twin and `sum(regions.pop * spend)` rooted at `customers`,
+  by executed values
 
 #### Scenario: A query-typed revisit is refused
 - **WHEN** a query selects `sum(customers.regions.customers.spend)` from `orders`
