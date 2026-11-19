@@ -24,4 +24,4 @@
 
 - [x] 4.1 Add the approved sentence to `docs/concepts/queries.md` (design D14)
 - [x] 4.2 Run the local test scope (`la-affected-tests --base main` plus list / association / home / cross-model suites), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`; all green
-- [ ] 4.3 After the PR is opened, comment on DEV-2277: its strict xfails `test_list_element_saved_metric` and `test_custom_aggregation_default_reads_like_from_its_home[list-element]` (tests/test_dev2277_stored_definitions.py) XPASS once this lands — whichever of the two branches merges second removes them
+- [x] 4.3 After the PR is opened, comment on DEV-2277: its strict xfails `test_list_element_saved_metric` and `test_custom_aggregation_default_reads_like_from_its_home[list-element]` (tests/test_dev2277_stored_definitions.py) XPASS once this lands — whichever of the two branches merges second removes them
