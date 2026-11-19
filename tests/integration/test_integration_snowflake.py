@@ -1219,7 +1219,7 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         tags = model.get_field("tags")
         assert tags is not None
         assert tags.element_type is DataType.INTEGER
-        assert tags.sql == '"tags"'
+        assert tags.expression == '"tags"'
         engine = SlayerQueryEngine(storage=storage)
         try:
             rows = run_sync(engine.execute({"population": "lower_items", "dimensions": ["qty"]})).data
