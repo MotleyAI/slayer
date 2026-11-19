@@ -19,7 +19,7 @@ from tests._deprecated_input_helpers import deprecations, recorded
 from tests._ossie_vocabulary_fixtures import shop_store, stored_document
 from tests._stored_upgrade_fixtures import DS
 
-PRE_DATASET = CURRENT_VERSIONS["SlayerModel"] - 1
+PRE_DATASET = CURRENT_VERSIONS["SlayerModel"] - 2  # before the Ossie-shapes step; the field-expression step follows
 PRE_QUERY = CURRENT_VERSIONS["SlayerQuery"] - 1
 
 

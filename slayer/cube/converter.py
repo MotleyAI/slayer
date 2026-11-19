@@ -14,6 +14,7 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
+from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, JoinType, NUMERIC_DATATYPES, RelationshipCardinality, invert_cardinality
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -1526,7 +1527,7 @@ class CubeToSlayerConverter:
                 tree = sqlglot.parse_one(render_probe_text(text), read=self._dialect) if text else None
             except SqlglotError:
                 continue
-            if tree is None:
+            if not isinstance(tree, Expression):
                 continue
             root = root_scope_field_ids(parsed=tree)
             out += [c.name for c in tree.find_all(exp.Column)

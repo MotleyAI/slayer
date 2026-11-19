@@ -148,7 +148,7 @@ async def test_portable_function_executes_on_target(
 ) -> None:
     db = seed_db(directory=tmp_path, dialect=dialect)
     result = convert(db=db, docs=documents(_orders(field)), db_dialect=dialect)
-    assert not mentions(result, field["name"])
+    assert not [e for e in mentions(result, field["name"]) if e.severity != "info"]
     assert await scalar(result=result, db=db, dataset="orders", expression=formula, dialect=dialect) == expected
 
 

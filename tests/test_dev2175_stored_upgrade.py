@@ -186,7 +186,8 @@ class TestStoredSourcePaths:
             assert stored_bytes(backend=backend, base=base, name="orders") == before
         assert [d.name for d in loaded] == ["leads"]
         (failure,) = unloaded
-        assert "orders" in str(failure) and "lead_name" in str(failure)
+        assert "orders" in str(failure)
+        assert "lead_name" in str(failure)
 
     @STORES
     async def test_a_current_document_is_not_rewritten(self, backend: str) -> None:
@@ -207,7 +208,9 @@ def test_field_sql_is_a_marked_deprecated_input() -> None:
     (warning,) = deprecations(caught)
     payload = payload_of(warning)
     assert isinstance(warning.message, DeprecatedInputFutureWarning)
-    assert "sql" in payload.old and "expression" in payload.new and payload.removal == "3.0"
+    assert "sql" in payload.old
+    assert "expression" in payload.new
+    assert payload.removal == "3.0"
     assert warning.filename == __file__
 
 

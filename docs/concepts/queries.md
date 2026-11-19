@@ -388,7 +388,7 @@ automatically.
 ```
 
 Names are matched case-insensitively — `LOWER(...)` and `lower(...)` both bind — and raw SQL
-functions outside the library (`initcap`, `to_date`, …) belong in `DatasetField.sql` /
+functions outside the library (`initcap`, `to_date`, …) belong in a field's dialect entry /
 `DatasetField.filter` / `SlayerDataset.filters` (Mode A SQL).
 
 ### Filtering on Computed Metrics
@@ -968,7 +968,7 @@ Dimensions from joined datasets can be referenced with dotted paths. SLayer auto
 
 This walks `orders → customers → regions` via the relationship graph and resolves `name` from the `regions` dataset. Works with both ingested rollup datasets and explicit relationships.
 
-A dotted reference may target a *derived* field on the joined dataset — i.e., a field whose own `sql` is an expression rather than a base table column. The engine recursively inlines the derivation at query time, and the same chaining works whether the reference appears in a query's `dimensions` / `metrics` / `filter` or inside another dataset's `DatasetField.sql`. The planner also walks the chain to discover the joins each derived field's SQL implies, so a filter that names only a bare local derived field (no dimension entry) still triggers the right LEFT JOINs. See [Datasets → Derived Fields Referencing Other Derived Fields](models.md#derived-fields-referencing-other-derived-fields) and [Filters and Auto-Joins](#filters-and-auto-joins).
+A dotted reference may target a *derived* field on the joined dataset — i.e., a field whose own `expression` is an expression rather than a source column. The engine recursively inlines the derivation at query time, and the same chaining works whether the reference appears in a query's `dimensions` / `metrics` / `filter` or inside another dataset's field expression. The planner also walks the chain to discover the joins each derived field's SQL implies, so a filter that names only a bare local derived field (no dimension entry) still triggers the right LEFT JOINs. See [Datasets → Derived fields referencing other fields](models.md#derived-fields-referencing-other-fields) and [Filters and Auto-Joins](#filters-and-auto-joins).
 
 SQL dimensions can be mixed with regular dimensions. The expression goes directly into SELECT and GROUP BY.
 

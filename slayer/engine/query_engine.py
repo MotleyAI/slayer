@@ -871,6 +871,18 @@ class SlayerQueryEngine:
         live = await self._live_column_types(datasource=datasource, dataset=dataset)
         return resolved_dataset(dataset, ds_type=datasource.type, datasets=datasets, live=live)
 
+    async def resolved_datasets(
+        self, datasets: Sequence[SlayerDataset], *, datasource: DatasourceConfig,
+    ) -> dict[str, SlayerDataset | Exception]:
+        """Each of ``datasets`` as it runs on ``datasource``, or why it does not resolve, by name."""
+        out: dict[str, SlayerDataset | Exception] = {}
+        for dataset in datasets:
+            try:
+                out[dataset.name] = await self._resolved(dataset, datasource=datasource, datasets=datasets)
+            except Exception as exc:  # noqa: BLE001 — reported by the caller per dataset
+                out[dataset.name] = exc
+        return out
+
     async def _resolved_bundle(
         self, bundle: ResolvedSourceBundle, *, datasource: DatasourceConfig,
     ) -> ResolvedSourceBundle:

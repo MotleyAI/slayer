@@ -24,7 +24,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, RelationshipCardinality, finer_datatype
-from slayer.core.field_expression import OSSIE_SQL, DialectEntry, ExpressionObject, unquoted_identifier
+from slayer.core.field_expression import OSSIE_SQL, DialectEntry, ExpressionObject, portable_text, unquoted_identifier
 from slayer.core.field_expression import Expression as FieldExpression
 from slayer.core.errors import AmbiguousRelationshipPathError, UnsupportedServerFunctionError
 from slayer.core.syntax import parse_expr
@@ -52,6 +52,7 @@ from slayer.importers.physical import (
     root_physical_columns,
     unreadable_fields,
 )
+from slayer.sql.definitions import with_converted_sql
 from slayer.sql.root_scope import qualified_siblings
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.database.client import ResultColumnType, SqlClient
@@ -449,6 +450,8 @@ class OsiToSlayerConverter:
         self._restore_metrics()
         self._restore_fields()
         self._restore_sources()
+        for name, dataset in self._datasets.items():
+            self._datasets[name] = with_converted_sql(dataset, ds_type=self._target)
 
         return OsiConversionResult(
             datasets=list(self._datasets.values()),
@@ -1568,6 +1571,8 @@ class OsiToSlayerConverter:
             if payload.default_time_dimension is None or dataset.get_field(payload.default_time_dimension):
                 dataset.default_time_dimension = payload.default_time_dimension
             for field in payload.fields:
+                if field.name in payload.legacy_sql:
+                    field.sql = payload.legacy_sql[field.name]
                 self._restore_field(dataset, field)
 
     def _restore_field(self, dataset: SlayerDataset, field: DatasetField) -> None:
@@ -1640,16 +1645,20 @@ class OsiToSlayerConverter:
                 self._warn(f"Field {field!r} of {name!r}: {_EDITED}", dataset_name=name, category=_EXTENSION,
                            severity="info", suggestion=_EDITED)
                 continue
-            parts = [p for p in (content.sql, content.filter) if p]
+            restored = DatasetField(name=slayer_field.name, expression=content.expression, filter=content.filter)
+            restored.sql = content.sql
+            parts = [p for p in (*restored.native_texts, portable_text(content.expression), content.filter) if p]
             if any(self._unresolvable_cross_dataset_refs(dataset=dataset, sql=p) for p in parts):
                 self._warn(f"Field {field!r} of {name!r}: its SLayer definition does not resolve; kept its "
                            f"expression.", dataset_name=name, category=_EXTENSION, severity="info",
                            suggestion=_IMPORT_INPUTS)
                 continue
-            slayer_field.sql, slayer_field.filter = content.sql, content.filter
-            slayer_field.datatype = content.datatype or slayer_field.datatype
-            # Type-dependent, so restored only with the type.
-            slayer_field.granularity, slayer_field.allowed_aggregations = content.granularity, content.allowed_aggregations
+            dataset.fields[dataset.fields.index(slayer_field)] = slayer_field.model_copy(update={
+                "expression": restored.expression, "sql": restored.sql, "filter": restored.filter,
+                "datatype": content.datatype or slayer_field.datatype,
+                # Type-dependent, so restored only with the type.
+                "granularity": content.granularity, "allowed_aggregations": content.allowed_aggregations,
+            }).unresolved()
 
     def _restore_sources(self) -> None:
         """Table/SQL with row filters in place; saved queries handed back for the engine to validate."""

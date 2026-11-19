@@ -11,6 +11,7 @@ inputs without touching the live class schema.
 """
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS
+from slayer.core.field_expression import unquoted_identifier
 from slayer.storage.migrations import is_legacy_root_extension, register_migration
 
 
@@ -75,6 +76,9 @@ def _migrate_metric_dict(col: dict, *, fields_key: str) -> dict:
             col["datatype"] = "Float"
         else:
             col["type"] = "number"
+    sql = col.get("sql")
+    if fields_key == "fields" and isinstance(sql, str) and unquoted_identifier(sql) is not None and "expression" not in col:
+        col["expression"] = col.pop("sql").strip()
     col["primary_key"] = False
     return col
 

@@ -132,12 +132,12 @@ class TestTranslated:
         assert await scalar(result=result, db=db, dataset="orders", expression="sum(pick)") == 66
 
     async def test_portable_sql_slayer_cannot_read(self, db: Path) -> None:
-        result = _import(db, f("status"), f("padded", "LPAD(status, 12, 'x')"))
-        expression = _expression(result, "padded")
-        assert expression["sql"] == "LPAD(status, 12, 'x')"
-        assert "LPAD" in _duckdb_entry(expression).upper()
-        assert mentions(result, "padded")
-        assert await scalar(result=result, db=db, dataset="orders", expression="max(padded)") == "xxxxxxxxopen"
+        result = _import(db, f("zeroed", "ZEROIFNULL(amount)"))
+        expression = _expression(result, "zeroed")
+        assert expression["sql"] == "ZEROIFNULL(amount)"
+        assert "amount IS NULL" in _duckdb_entry(expression)
+        assert mentions(result, "zeroed")
+        assert await scalar(result=result, db=db, dataset="orders", expression="sum(zeroed)") == 22
 
 
 # ── import: a metric's entry for the target's dialect ────────────────────

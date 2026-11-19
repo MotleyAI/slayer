@@ -85,10 +85,10 @@ class TestFieldFilter:
             assert await by_id(engine, field="der2") == [None, 20, None]
 
     async def test_a_filter_naming_its_own_field_by_path_is_a_cycle(self) -> None:
-        doc = orders_doc(fld("amount"), fld("loop", "amount", filter="orders.loop > 0"))
+        ds = dataset(orders_doc(fld("amount"), fld("loop", "amount", filter="orders.loop > 0")))
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(doc))
+                await engine.save_dataset(ds)
         assert_refused(caught.value, "loop", kind=DatasetFieldCycleError)
 
     async def test_variables_substitute_into_the_dialect_entry_and_the_filter(self) -> None:
@@ -101,10 +101,10 @@ class TestFieldFilter:
             assert re.search(r"amount\s*\*\s*2", dry.sql or ""), dry.sql
 
     async def test_a_broken_filter_path_fails_at_save(self) -> None:
-        doc = orders_doc(fld("amount"), fld("bad", "amount", filter="ghost.col = 1"))
+        ds = dataset(orders_doc(fld("amount"), fld("bad", "amount", filter="ghost.col = 1")))
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(doc))
+                await engine.save_dataset(ds)
         assert_refused(caught.value, "ghost")
 
 
@@ -177,7 +177,8 @@ class TestRenamedReaderKeys:
                                       "filter": ["orders.status = 'new'"]})
         (row,) = resp.data
         assert float(next(v for k, v in row.items() if k.endswith("cr"))) == pytest.approx(CREDIT_WITH_NEW_ORDER)
-        assert "cust_fk" in (resp.sql or "") and "customer_pk" in (resp.sql or "")
+        assert "cust_fk" in (resp.sql or "")
+        assert "customer_pk" in (resp.sql or "")
 
     async def test_cardinality_detection_profiles_renamed_keys(self, renamed: SlayerQueryEngine) -> None:
         report = await renamed.detect_relationship_cardinality(data_source="test", dataset="orders")
@@ -205,8 +206,9 @@ async def test_an_unresolvable_target_key_fails_closed_at_emission() -> None:
     customers["fields"][0] = fld("id", "id + 0", primary_key=True, datatype="Integer")
     orders = orders_doc(fld("customer_id", datatype="Integer"), relationships=[to_customers()])
     async with engine_with(dialect="duckdb", docs=[customers, orders], validate=False) as (engine, _, _):
+        query = _amount_by("customers.name") | {"metrics": [{"metric": "count(*)"}]}
         with pytest.raises(RelationshipKeyError):
-            await engine.execute(_amount_by("customers.name") | {"metrics": [{"metric": "count(*)"}]}, dry_run=True)
+            await engine.execute(query, dry_run=True)
 
 
 # ── drift and refinement ──────────────────────────────────────────────────

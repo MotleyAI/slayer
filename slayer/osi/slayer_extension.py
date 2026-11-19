@@ -17,6 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
+from slayer.core.field_expression import Expression as FieldExpression
+from slayer.core.field_expression import unquoted_identifier
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import GranularitySpec
 from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric
@@ -26,19 +28,25 @@ from slayer.osi.dialects import PORTABLE_READER, reader_for
 from slayer.osi.models import OSIExpression, OSINonportableExtension
 
 VENDOR = "SLAYER"
-PAYLOAD_VERSION = 2
+PAYLOAD_VERSION = 3
 _FINGERPRINT_VERSION = 1
 
 
 class _Payload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[2] = PAYLOAD_VERSION
+    version: Literal[3] = PAYLOAD_VERSION
     #: The name of the Ossie entity the payload was written for.
     entity: str
     fingerprint: str = ""
-    #: A version-1 payload's content as written, which its fingerprint covers.
+    #: An older payload's content as written, which its fingerprint covers.
     _written: dict[str, Any] | None = PrivateAttr(default=None)
+    #: An older dataset payload's SLayer-only field ``sql`` by field name, converted with the import's dialect.
+    _legacy_sql: dict[str, str] = PrivateAttr(default_factory=dict)
+
+    @property
+    def legacy_sql(self) -> dict[str, str]:
+        return self._legacy_sql
 
 
 class RelationshipDeclaration(BaseModel):
@@ -62,10 +70,12 @@ class MetricPayload(_Payload):
 
 
 class FieldContent(BaseModel):
-    """A field's SLayer field attributes; ``sql`` / ``filter`` are its value/filter split, ``datatype`` its typing."""
+    """A field's SLayer field attributes; ``expression`` / ``filter`` are its value/filter split, ``datatype`` its
+    typing; ``sql`` is a version-1 or -2 payload's value, converted with the import's datasource dialect."""
 
     model_config = ConfigDict(extra="forbid")
 
+    expression: FieldExpression | None = None
     sql: str | None = None
     filter: str | None = None
     datatype: DataType | None = None
@@ -189,13 +199,31 @@ def _version_2(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def decode(data: dict[str, Any]) -> Payload:
-    """The payload in ``data`` (a version-1 payload read silently as version 2, its fingerprint over its content as
-    written); raises ``ValueError`` when malformed or of an unknown version or kind."""
-    if data.get("version") != 1:
+    """The payload in ``data`` (a version-1 or -2 payload read silently as version 3, its fingerprint over its content
+    as written); raises ``ValueError`` when malformed or of an unknown version or kind."""
+    version = data.get("version")
+    if version not in (1, 2):
         return _ADAPTER.validate_python(data)
-    payload = _ADAPTER.validate_python(_version_2(data))
+    upgraded = {**(_version_2(data) if version == 1 else data), "version": PAYLOAD_VERSION}
+    legacy: dict[str, str] = {}
+    if upgraded.get("kind") == "dataset" and isinstance(upgraded.get("fields"), list):
+        upgraded["fields"] = [_without_sql(f, legacy) if isinstance(f, dict) else f for f in upgraded["fields"]]
+    payload = _ADAPTER.validate_python(upgraded)
     payload._written = {k: v for k, v in data.items() if k != "fingerprint"}
+    payload._legacy_sql = legacy
     return payload
+
+
+def _without_sql(field: dict[str, Any], legacy: dict[str, str]) -> dict[str, Any]:
+    """``field`` with its ``sql`` as the shorthand when it names one column, else set aside in ``legacy``."""
+    sql = field.get("sql")
+    if not isinstance(sql, str) or field.get("expression") is not None:
+        return field
+    out = {k: v for k, v in field.items() if k != "sql"}
+    if unquoted_identifier(sql) is not None:
+        return {**out, "expression": sql.strip()}
+    legacy[str(field.get("name"))] = sql
+    return out
 
 
 def matches(payload: _Payload, *, ossie: Any) -> bool:

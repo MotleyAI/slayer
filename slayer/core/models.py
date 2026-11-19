@@ -396,6 +396,12 @@ class DatasetField(DatasetPart):
         out._native, out._resolved = native, True
         return out
 
+    def unresolved(self) -> "DatasetField":
+        """A copy whose running SQL is resolved again from its forms."""
+        out = self.model_copy()
+        out._native, out._resolved = None, False
+        return out
+
     @property
     def definition_sql(self) -> str | None:
         """The SQL this field's value reads: its resolved native SQL, else best effort from its forms; ``None`` reads
@@ -692,7 +698,7 @@ class DatasetMetric(MetricBase, DatasetPart):
 
     @formula.setter
     @deprecated("formula is deprecated; use expression", category=None)
-    def formula(self, value: str) -> None:
+    def formula(self, value: Expression) -> None:
         attribute_used(self, old="formula", new="expression")
         self.expression = value
 

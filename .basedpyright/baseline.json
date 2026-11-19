@@ -5670,16 +5670,6 @@
                 }
             }
         ],
-        "./tests/test_cube_extends.py": [
-            {
-                "code": "reportOptionalMemberAccess",
-                "range": {
-                    "startColumn": 46,
-                    "endColumn": 49,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./tests/test_cube_js_parser.py": [
             {
                 "code": "reportOperatorIssue",

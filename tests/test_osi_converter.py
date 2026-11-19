@@ -429,7 +429,8 @@ def test_derived_overlay_preserves_primary_key(shop_engine):
     result = _convert(shop_engine, doc)
     order_id = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}["order_id"]
     assert order_id.primary_key is True
-    assert stored_expression(order_id) in ("order_id + 0", {"sql": "order_id + 0"})
+    assert stored_expression(order_id) == {"dialects": [{"dialect": "ANSI_SQL", "expression": "order_id + 0"},
+                                                        {"dialect": "SQLITE", "expression": "order_id + 0"}]}
 
 
 def test_osi_primary_key_overrides_introspected(shop_engine):
@@ -637,8 +638,8 @@ def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
     assert status.datatype == DataType.STRING
 
 
-def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
-    # A self-named legacy overlay is dropped with a report; the physical column stays (DEV-2175 imports it).
+def test_derived_field_shadowing_physical_column_imports(shop_engine):
+    # A self-named legacy overlay reads the physical column of its own name.
     doc = _mini_doc(
         datasets=[OSIDataset(
             name="orders", source="orders",
@@ -649,9 +650,8 @@ def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
     orders = {m.name: m for m in result.datasets}["orders"]
     status_cols = [c for c in orders.fields if c.name == "status"]
     assert len(status_cols) == 1
-    assert status_cols[0].is_base
-    assert (status_cols[0].physical_name, status_cols[0].datatype) == ("status", DataType.STRING)
-    assert _reported(result)
+    assert not status_cols[0].is_base
+    assert status_cols[0].definition_sql == "LOWER(status)"
 
 
 def test_derived_field_expression_unknown_column_clean_fails(shop_engine):
@@ -851,7 +851,7 @@ def test_physical_multipart_ref_whose_first_hop_is_not_a_join_is_kept(shop_engin
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
     assert "phys" in {c.name for c in orders.fields}
-    assert not _reported(result)  # opaque physical ref: kept AND not flagged
+    assert not [e for e in (*result.warnings, *result.unconverted_metrics) if e.severity != "info"]  # kept, not flagged
 
 
 def test_cross_model_derived_field_unknown_column_dropped(shop_engine):

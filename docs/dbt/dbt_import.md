@@ -29,10 +29,10 @@ Each dbt semantic model becomes one SLayer dataset:
 
 - `categorical` → `datatype: string`
 - `time` → `datatype: time`
-- `expr` → `sql` (omitted if same as name)
+- `expr` → `expression`, the entry for the datasource's dialect (the shorthand for one column; omitted if same as name)
 - `label` and `description` preserved directly
-- an `expr` reading a physical column whose name another dimension holds, or transforming the one of its own name (`status: UPPER(status)`),
-  is dropped with a report
+- an `expr` reads the physical columns whatever dimensions the model declares (`status: UPPER(status)` upper-cases the
+  physical `status`)
 - unquoted names in model SQL and member `expr`s are read as the datasource's database folds them (on Postgres,
   Redshift, Snowflake and Oracle `OrderAmount` is stored as `orderamount`), relation names follow dbt's quoting policy
   (the adapter default, overridden by `dbt_project.yml` `quoting:` for models and by a source's own `quoting:` for its
@@ -64,7 +64,7 @@ relationships:
     cardinality: many_to_one
 ```
 
-An entity's `expr` names a physical column, so each join key names the field that reads it: a dimension whose `expr` is that column, otherwise a new (hidden, for a foreign entity) field; if the name is taken by a field reading something else, the relationship is skipped with a warning.
+An entity's `expr` names a physical column, so each join key names the field that reads it: a dimension whose `expr` is that column, otherwise a new (hidden, for a foreign entity) field; when a field reading something else holds the column's name, a hidden field `<column>_raw` reads it (and carries the primary key).
 
 Each generated relationship carries a [`cardinality`](../concepts/models.md#relationship-cardinality) read source→target: a foreign→primary entity reference is `many_to_one`, while a **peer** relationship (two datasets sharing the same primary/unique entity) is `one_to_one` and is declared once per pair — every edge traverses [in both directions](../concepts/models.md#bidirectional-traversal) automatically.
 
@@ -167,7 +167,7 @@ Every legal dbt construct that reaches the importer is either represented exactl
 | Measure `agg: sum/avg/min/max/count/count_distinct/median` | `DatasetMetric` `<agg>(col)` |
 | Measure `agg: percentile` (continuous) | `percentile(col, p=<value>)` |
 | Measure `agg: count_distinct_approx` | `count_distinct_approx(col)` (dialect-aware) |
-| Measure `agg: sum_boolean` | `DatasetField.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, datatype `Integer`, `sum(col)` |
+| Measure `agg: sum_boolean` | a field whose dialect entry is `CASE WHEN (<expr>) THEN 1 ELSE 0 END`, datatype `Integer`, `sum(col)` |
 | Metric-level / per-input `filter` | pushed down into a leaf `DatasetField.filter` (CASE-inside-aggregate) |
 | Filter as string **or** list (`WhereFilterIntersection`) | AND-joined into one filter |
 | Ratio metric | `num / nullif(den, 0)` |

@@ -13,10 +13,11 @@ from typing import Any, Literal, cast
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
-from sqlglot.errors import ErrorLevel, SqlglotError
+from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.errors import SlayerError
+from slayer.core.field_expression import OSSIE_SQL, ExpressionObject, dialect_entries, portable_text, token
 from slayer.core.enums import RANKED_AGGREGATIONS, RelationshipCardinality
 from slayer.core.relationship_walker import aggregation_owner, dataset_field_type, terminal_dataset, walk
 from slayer.core.time_points import parse_temporal_value
@@ -36,6 +37,7 @@ from slayer.core.keys import (
     walk_value_keys,
 )
 from slayer.core.models import (
+    SOURCE_READER_PREFIX,
     WINDOW_PARAM,
     DatasetField,
     DatasourceConfig,
@@ -53,6 +55,7 @@ from slayer.osi import slayer_extension as ext
 from slayer.osi.dialects import PORTABLE_READER, ossie_token
 from slayer.osi.models import OSSIE_DATATYPES, TEMPORAL_DATATYPES, OSIExpression, explicit_description
 from slayer.sql.field_expansion import expand_field_definition_parts_sync, expand_derived_refs_sync
+from slayer.sql.root_scope import root_scope_field_ids
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.render.aggregates import AggregateSpec, render_aggregate
@@ -232,7 +235,8 @@ def _row_leaves(value: Any) -> Iterator[FieldKey | FieldSqlKey | StarKey]:
 
 class _Exporter:
     def __init__(self, *, config: DatasourceConfig, datasets: dict[str, SlayerDataset], selected: list[str],
-                 virtual: dict[str, SlayerDataset | Exception], extensions: bool) -> None:
+                 virtual: dict[str, SlayerDataset | Exception], extensions: bool,
+                 resolved: dict[str, SlayerDataset | Exception] | None = None) -> None:
         self.config = config
         self.datasets = datasets
         self.selected = selected
@@ -242,7 +246,8 @@ class _Exporter:
         self.token = ossie_token(config.type)
         self.neutral = SqlDialect()
         self.virtual = virtual
-        self.graph: dict[str, SlayerDataset] = dict(datasets)
+        self.graph: dict[str, SlayerDataset] = {
+            name: r if isinstance(r := (resolved or {}).get(name), SlayerDataset) else d for name, d in datasets.items()}
         for name, rendered in virtual.items():
             if isinstance(rendered, SlayerDataset):
                 stored = datasets[name]
@@ -365,6 +370,8 @@ class _Exporter:
         ds = self.osi_datasets[name]
         stored = {c.name: c for c in ds.dataset.fields}
         for field in ds.graph.fields:
+            if field.name.startswith(SOURCE_READER_PREFIX):
+                continue
             ds.fields[field.name] = stored.get(field.name, field)
             try:
                 tree, crossed = self._expand(ds.graph, field)
@@ -402,33 +409,64 @@ class _Exporter:
             tree = exp.Case(ifs=[exp.If(this=mask, true=tree)])
         return tree, crossed
 
-    def _expression(self, tree: exp.Expr, *, verbatim: str | None) -> dict[str, Any]:
-        """Portable ``sql`` when it reads back exactly in the datasource dialect, else one native entry."""
+    def _expression(self, ds: _Dataset, field: DatasetField, tree: exp.Expr) -> dict[str, Any]:
+        """Each stored form as itself: portable ``sql`` with field paths inlined while every part is portable, each
+        dialect entry verbatim; the datasource's own entry is ``tree`` (the native expansion) unless verbatim matches,
+        and the only form of a filtered field."""
+        stored = ds.fields[field.name]
         native = tree.sql(dialect=self.target)
+        if stored.filter is not None:
+            return {"dialects": [{"dialect": self.token, "expression": native}]}
+        own = dialect_entries(stored.expression, self.token)
+        verbatim = own[0].expression if own else stored.sql
         if verbatim is not None:
             try:
-                if sqlglot.parse_one(verbatim, read=self.target) == tree:
+                if _strip_self(sqlglot.parse_one(verbatim, read=self.target)) == tree:
                     native = verbatim
             except SqlglotError:
                 pass
+        portable = self._portable(ds.dataset, stored, seen=frozenset())
+        others = [{"dialect": e.dialect, "expression": e.expression} for e in (
+            stored.expression.dialects or [] if isinstance(stored.expression, ExpressionObject) else [])
+            if token(e.dialect) not in (self.token, OSSIE_SQL)]
+        out: dict[str, Any] = {"sql": portable} if portable is not None else {}
+        if portable is None or own or stored.sql is not None:
+            others.append({"dialect": self.token, "expression": native})
+        if others:
+            out["dialects"] = others
+        return out
+
+    def _portable(self, dataset: SlayerDataset, field: DatasetField, *, seen: frozenset[str]) -> str | None:
+        """``field``'s portable form with each path to a field of ``dataset`` replaced by that field's portable form;
+        ``None`` when a part is not portable (a filter, a dialect-only or unconverted field, another dataset)."""
+        if field.filter is not None or field.sql is not None or field.name in seen:
+            return None
+        text = portable_text(field.expression) if field.expression is not None else None
+        if text is None:
+            return None if field.expression is not None else exp.to_identifier(field.name).sql(PORTABLE_READER)
         try:
-            portable = tree.sql(dialect=PORTABLE_READER, unsupported_level=ErrorLevel.RAISE)
-            back = sqlglot.parse_one(portable, read=PORTABLE_READER).sql(
-                dialect=self.target, unsupported_level=ErrorLevel.RAISE)
-            exact = back == sqlglot.parse_one(native, read=self.target).sql(
-                dialect=self.target, unsupported_level=ErrorLevel.RAISE)
+            tree = sqlglot.parse_one(text, read=PORTABLE_READER)
         except SqlglotError:
-            exact = False
-        if exact:
-            return {"sql": portable}
-        return {"dialects": [{"dialect": self.token, "expression": native}]}
+            return None
+        if not isinstance(tree, Expression):
+            return None
+        root = root_scope_field_ids(parsed=tree)
+        for col in list(tree.find_all(exp.Column)):
+            if id(col) not in root or not col.table:
+                continue
+            ref = dataset.get_field(col.name) if col.table == dataset.name and not col.args.get("db") else None
+            inner = self._portable(dataset, ref, seen=seen | {field.name}) if ref is not None else None
+            if inner is None:
+                return None
+            col.replace(exp.Paren(this=sqlglot.parse_one(inner, read=PORTABLE_READER)))
+        return tree.sql(dialect=PORTABLE_READER)
 
     def _field(self, ds: _Dataset, field: DatasetField, tree: exp.Expr) -> dict[str, Any]:
         stored = ds.fields[field.name]
         meta = stored.meta or {}
         osi_field: dict[str, Any] = {
             "name": field.name,
-            "expression": self._expression(tree, verbatim=field.sql if not field.filter else None),
+            "expression": self._expression(ds, field, tree),
         }
         datatype = _datatype(field)
         if _time_role(stored) != (datatype in TEMPORAL_DATATYPES):
@@ -443,7 +481,7 @@ class _Exporter:
         if meta.get("osi_ai_context"):
             osi_field["ai_context"] = meta["osi_ai_context"]
         payload = ext.FieldPayload(entity=field.name, field=ext.FieldContent(
-            sql=stored.sql, filter=stored.filter, datatype=stored.datatype, hidden=stored.hidden,
+            expression=field.expression, filter=field.filter, datatype=stored.datatype, hidden=stored.hidden,
             format=stored.format, granularity=stored.granularity,
             allowed_aggregations=stored.allowed_aggregations, meta=_slayer_meta(stored.meta),
         ))
@@ -889,5 +927,6 @@ async def export_osi(*, engine: SlayerQueryEngine, datasource: str, datasets: li
                 virtual[name] = await engine.expand_query_backed_dataset(stored[name])
             except Exception as exc:  # noqa: BLE001 — reported on the dataset
                 virtual[name] = exc
-    return _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual,
-                     extensions=extensions).run()
+    resolved = await engine.resolved_datasets(list(stored.values()), datasource=config)
+    return _Exporter(config=config, datasets=stored, selected=selected, virtual=virtual, extensions=extensions,
+                     resolved=resolved).run()

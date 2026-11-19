@@ -69,8 +69,9 @@ class TestOneExpression:
             assert await by_id(engine, field="amount") == [10, 20, 5]
 
     def test_an_object_with_neither_form_is_refused(self) -> None:
+        doc = orders_doc(fld("hollow", {}))
         with pytest.raises(ValueError) as caught:
-            dataset(orders_doc(fld("hollow", {})))
+            dataset(doc)
         assert_refused(caught.value, "hollow")
 
 
@@ -96,17 +97,17 @@ class TestDialectSelection:
             assert await by_id(engine, field="n") == [11, 21, 6]
 
     async def test_two_entries_for_one_dialect_are_refused(self) -> None:
-        n = {"dialects": [entry("DUCKDB", "amount + 1"), entry("duckdb", "amount + 2")]}
+        n = dataset(orders_doc(fld("n", {"dialects": [entry("DUCKDB", "amount + 1"), entry("duckdb", "amount + 2")]})))
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(orders_doc(fld("n", n))))
+                await engine.save_dataset(n)
         assert_refused(caught.value, "n", "DUCKDB")
 
     async def test_no_runnable_form_is_refused(self) -> None:
-        n = {"dialects": [entry("SNOWFLAKE", "amount::NUMBER")]}
+        n = dataset(orders_doc(fld("n", {"dialects": [entry("SNOWFLAKE", "amount::NUMBER")]})))
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(orders_doc(fld("n", n))))
+                await engine.save_dataset(n)
         assert_refused(caught.value, "n", "SNOWFLAKE")
 
 
@@ -131,9 +132,9 @@ class TestFormMeaning:
             assert await by_id(engine, field="q") == [2, 5, 1]
 
     def test_a_statement_is_refused(self) -> None:
+        leak = {"name": "leak", "expression": {"dialects": [entry("DUCKDB", "SELECT pw FROM secrets")]}}
         with pytest.raises(ValueError) as caught:
-            DatasetField.model_validate({"name": "leak", "expression": {
-                "dialects": [entry("DUCKDB", "SELECT pw FROM secrets")]}})
+            DatasetField.model_validate(leak)
         assert_refused(caught.value, "leak", kind=FieldSqlStatementError)
 
 
@@ -181,16 +182,17 @@ class TestRowDefinitionNames:
             assert await by_id(engine, field="cust_name") == ["Ann", "Ann", "Bo"]
 
     async def test_a_field_named_source_takes_the_qualifier(self) -> None:
-        doc = orders_doc(fld("source", "state"), fld("raw", "source.status"))
+        ds = dataset(orders_doc(fld("source", "state"), fld("raw", "source.status")))
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(doc))
+                await engine.save_dataset(ds)
         assert_refused(caught.value, "source")
 
     async def test_a_field_reading_itself_by_path_is_a_cycle(self) -> None:
+        ds = dataset(orders_doc(fld("status", "orders.status || ''")))
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(orders_doc(fld("status", "orders.status || ''"))))
+                await engine.save_dataset(ds)
         assert_refused(caught.value, "status", kind=DatasetFieldCycleError)
 
     async def test_a_subquery_in_a_dialect_entry_is_left_as_written(self) -> None:
@@ -222,17 +224,19 @@ class TestPathArity:
         customers = customers_doc(fld("spend", "orders.amount"))
         customers["relationships"] = [{"to": "orders", "from_columns": ["id"], "to_columns": ["customer_id"],
                                        "cardinality": "one_to_many"}]
+        ds = dataset(customers)
         async with engine_with(dialect="duckdb", docs=[orders]) as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(customers))
+                await engine.save_dataset(ds)
         assert_refused(caught.value, "spend", "orders.amount", kind=DerivedFieldFanningError)
 
     async def test_a_cycle_through_both_forms(self) -> None:
         doc = orders_doc(fld("amount"), fld("a", "orders.b + 1"),
                          fld("b", {"dialects": [entry("DUCKDB", "orders.a * 2")]}))
+        ds = dataset(doc)
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(doc))
+                await engine.save_dataset(ds)
         assert_refused(caught.value, "a", kind=DatasetFieldCycleError)
         async with engine_with(dialect="duckdb", docs=[doc], validate=False) as (engine, _, _):
             with pytest.raises(SlayerError) as at_query:
@@ -259,9 +263,8 @@ class TestPhysicalReader:
     async def test_a_filtered_reader_is_not_a_base_field(self) -> None:
         orders = orders_doc(fld("paid_ref", "customer_id", datatype="Integer", filter="status = 'paid'"),
                             relationships=[to_customers(from_columns=["paid_ref"])])
-        async with engine_with(dialect="duckdb", docs=[customers_doc()]) as (engine, _, _):
-            with pytest.raises(ValueError) as caught:
-                await engine.save_dataset(dataset(orders))
+        with pytest.raises(ValueError) as caught:
+            dataset(orders)
         assert_refused(caught.value, "paid_ref", kind=RelationshipKeyError)
 
 
@@ -271,7 +274,8 @@ class TestPhysicalReader:
 async def test_a_source_column_is_typed_from_the_live_column(dialect: str) -> None:
     async with engine_with(dialect=dialect, docs=[orders_doc(fld("q", "amount / 4"))]) as (engine, storage, _):
         stored = await storage.get_dataset("orders")
-        assert stored is not None and stored.get_field("q") is not None
+        assert stored is not None
+        assert stored.get_field("q") is not None
         values = await by_id(engine, field="q")
     assert values == [2.5, 5, 1.25]
     assert all(isinstance(v, float) for v in values)
@@ -291,10 +295,10 @@ class TestMetricExpression:
 
     async def test_a_metrics_own_dialect_entry_is_refused(self) -> None:
         p = {"sql": "sum(amount)", "dialects": [entry("DUCKDB", "sum(amount)")]}
-        doc = orders_doc(fld("amount"), metrics=[{"name": "p", "expression": p}])
+        ds = dataset(orders_doc(fld("amount"), metrics=[{"name": "p", "expression": p}]))
         async with engine_with(dialect="duckdb") as (engine, _, _):
             with pytest.raises(SlayerError) as caught:
-                await engine.save_dataset(dataset(doc))
+                await engine.save_dataset(ds)
         assert_refused(caught.value, "p", "sql")
 
     async def test_another_dialects_entry_is_kept(self) -> None:
@@ -336,7 +340,9 @@ class TestFieldSqlConverts:
         assert dumped_field(stored, "total")["expression"] == "amount"
         assert "sql" not in dumped_field(stored, "total")
         (warning,) = deprecated_in(out)
-        assert "sql" in warning.old and "expression" in warning.new and warning.removal == "3.0"
+        assert "sql" in warning.old
+        assert "expression" in warning.new
+        assert warning.removal == "3.0"
         assert len(deprecations(caught)) == 1
 
     @BACKEND
@@ -360,8 +366,9 @@ class TestFieldSqlConverts:
             assert await by_id(engine, field="alias") == [20, 40, 10]
 
     def test_both_keys_are_refused(self) -> None:
+        doc = orders_doc({"name": "total", "sql": "amount", "expression": "amount"})
         with pytest.raises(ValueError) as caught:
-            dataset(orders_doc({"name": "total", "sql": "amount", "expression": "amount"}))
+            dataset(doc)
         assert_refused(caught.value, "sql", "expression", kind=SpellingConflictError)
 
 
