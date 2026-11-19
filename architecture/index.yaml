@@ -18,6 +18,7 @@ cross_cutting_specs:
   cli: {touches: [python.surfaces, python.protocols]}
   results: {touches: [python.core, python.surfaces, python.protocols]}
   compatibility: {touches: [python.core, python.database, python.engine, python.importers, python.ir, python.live_schema, python.memories, python.protocols, python.search, python.sql, python.storage, python.surfaces, python.usage_reporting]}
+  otel: {touches: [python.otel, python.core.probes, python.engine, python.database, python.live_schema, python.surfaces, python.protocols]}
 
 # arc42 files not owned by one node; arch_check flags unlisted orphans.
 cross_cutting_arc42: [architecture/semantics.arc42.md]

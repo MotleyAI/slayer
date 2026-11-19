@@ -34,6 +34,7 @@ from slayer.core.errors import (
 from slayer.core.relationship_search import unreachable_target
 from slayer.core.relationship_walker import OrientedRelationship, provably_to_one, walk, walk_miss, walk_terminal
 from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.deprecation import outside_stacklevel
 from slayer.core.syntax import drop_root_hop
 from slayer.engine.elaborate_env import validate_dataset_filter
 from slayer.engine.cardinality.relationship_safety import provably_fans
@@ -455,7 +456,7 @@ def warn_broken_dependents(
         for label, reference, broken in _broken_references(host=others[name], before=before, after=after):
             warnings.warn(
                 f"Saving dataset {dataset.name!r}: {label} on dataset {name!r} references {reference!r}, which {broken}.",
-                UserWarning, stacklevel=3,
+                UserWarning, stacklevel=outside_stacklevel(),
             )
 
 

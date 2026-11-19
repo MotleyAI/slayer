@@ -24,6 +24,7 @@ UsageKey = Literal[
     "cli:datasources.delete", "cli:datasources.test",
     "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
     "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
+    "cli:otel.status", "cli:otel.test",
     "cli:other",
     # MCP tools
     "mcp:create_datasource", "mcp:create_dataset", "mcp:delete_datasource", "mcp:delete_dataset",
@@ -96,7 +97,7 @@ OsToken = Literal["linux", "darwin", "windows", "other"]
 ArchToken = Literal["x86_64", "arm64", "other"]
 ExtraToken = Literal[
     "client", "postgres", "mysql", "clickhouse", "sqlserver", "snowflake", "bigquery", "dbt",
-    "flight", "advanced-search", "trino",
+    "flight", "advanced-search", "trino", "otel",
 ]
 
 USAGE_KEYS: frozenset[str] = frozenset(get_args(UsageKey))

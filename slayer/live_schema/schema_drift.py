@@ -23,6 +23,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 from typing_extensions import deprecated
 
+from slayer.core import probes
 from slayer.core.enums import (
     DataType, NUMERIC_DATATYPES, PRE_2_0_DATATYPES, TEMPORAL_DATATYPES, pre_2_0_datatype, stored_datatype,
 )
@@ -284,6 +285,17 @@ class DatasetAddition(BaseModel):
     dataset_described: bool = False
     # Self-heal that added a missing schema qualifier ("reports → openfda_rest.reports").
     sql_table_change: str | None = None
+    # A metadata-only fill (field unique, relationship cardinality) that was saved.
+    metadata_changed: bool = False
+
+    @property
+    def has_changes(self) -> bool:
+        """Whether this pass saved any change to an existing dataset."""
+        return bool(
+            self.new_fields or self.new_relationships or self.named_relationships or self.widened_fields
+            or self.kind_change or self.described_fields or self.dataset_described or self.sql_table_change
+            or self.metadata_changed
+        )
 
 
 class IngestionError(BaseModel):
@@ -2372,6 +2384,11 @@ async def _collect_sql_diffs(
     return out
 
 
+@probes.probe(
+    name="ingest.drift",
+    extract=lambda bound: {"datasource.name": bound.arguments["datasource"].name},
+    result=lambda entries: {"ingest.drift.entries": len(entries)},
+)
 async def validate_datasource(
     *,
     datasource: DatasourceConfig,
