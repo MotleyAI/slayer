@@ -322,9 +322,13 @@ All code, old and new, MUST obey these.
    stage by its name in its own query list, which precedes a same-named model;
    the rest is an explicit route. Each dataset reading the reference — the
    population; an aggregate's home, for its grain and filters
-   [target: DEV-2212] — reaches the anchor by its only to-one path, else its
-   only route, else the reference is refused as ambiguous; with no route the
-   anchor is unrelated (Axiom 3.1). A bare name is a metric. A resolved path is
+   [target: DEV-2212] — reaches the anchor over declared relationships, an
+   inherited one counting only beside a declared one between the same two
+   datasets: by its only to-one path, else its only route, else the reference is
+   refused as ambiguous. Only when declared relationships give no route are
+   inherited ones added, a single inherited relationship joining the reader to
+   the anchor taken first; with no route at all the anchor is unrelated
+   (Axiom 3.1). A bare name is a metric. A resolved path is
    **canonical**: each hop spelled by its edge name, else its target model
    (`customers.regions ≡ customers.hr` for an edge named `hr`); keys carry the
    anchor and its canonical route, never the population (an alias keys as
@@ -332,6 +336,7 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
    [enforced: test:tests/test_dev2277_qualified_references.py]
+   [enforced: test:tests/test_dev2277_routing.py]
 2. **Two expression layers**: Mode A free SQL (`DatasetField.sql`, model `filters`)
    vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
    canonical function library, extended never forked. [review]

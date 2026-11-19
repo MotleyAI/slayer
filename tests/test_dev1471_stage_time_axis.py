@@ -204,7 +204,7 @@ async def test_two_stage_time_dimensions_without_main_default_to_the_surviving_a
         engine = await _two_td_engine(backend, tmp)
         resp = await engine.execute(query=[_TWO_TD_INNER, outer])
     # orders' default created_at survives in s1, so it breaks the tie (time-spine spec).
-    chg = {date_str(r["s1.created_at"]): r["s1.chg"] for r in resp.data}
+    chg = {date_str(r["s1.created_at"]): r["chg"] for r in resp.data}
     assert chg == {"2025-01-01": None, "2025-02-01": 150.0, "2025-03-01": 150.0}
 
 

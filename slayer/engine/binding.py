@@ -1227,7 +1227,7 @@ def _resolve_terminal_leaf(
             metric_ctx=metric_ctx, ref_text=".".join(original_parts),
             host_path=tuple(hop_path),
         )
-    raise _unresolved_dotted_error(parts=original_parts, terminal_dataset=current)
+    raise _unresolved_dotted_error(parts=original_parts, terminal_dataset=current, bundle=bundle)
 
 
 _METRIC_LEGAL_POSITIONS = (
@@ -1253,7 +1253,7 @@ def _ineligible_saved_metric_error(
 
 
 def _unresolved_dotted_error(
-    *, parts: Tuple[str, ...], terminal_dataset: SlayerDataset,
+    *, parts: Tuple[str, ...], terminal_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> UnknownReferenceError:
     """Error: a dotted leaf matching neither field nor saved metric; names
     both namespaces and offers close matches."""
@@ -1272,7 +1272,8 @@ def _unresolved_dotted_error(
     return UnknownReferenceError(
         name=dotted,
         scope_kind="DatasetScope",
-        scope_summary=f"dataset {label!r}",
+        scope_summary=(f"dataset {label!r}" if terminal_dataset.list_of is not None
+                       else _dataset_label(terminal_dataset, bundle=bundle)),
         suggestion=detail,
     )
 

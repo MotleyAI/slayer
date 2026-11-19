@@ -14,8 +14,9 @@ import pytest
 
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import PopulationInferenceError, SlayerError, UnresolvableDimensionRelationshipError
-from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, SlayerDataset
+from slayer.core.models import DatasetField, DatasetMetric, DatasetRelationship, RelationshipOrigin, SlayerDataset
 from slayer.core.query import SlayerQuery
+from slayer.engine.population.anchors import anchor_route
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -397,3 +398,90 @@ class TestUnrelatedDatasetKeys:
             resp = await eng.execute(stages)
         assert resp.columns == ["c.nc", "ne"]
         assert table(resp, "c.nc", "ne") == {(3.0, 5.0)}
+
+
+# --------------------------------------------------------------------------- #
+# Inherited relationships: declared ones decide; inherited ones reach only where declared ones give no route
+# --------------------------------------------------------------------------- #
+def _dataset(name: str, *relationships: DatasetRelationship) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", sql_table=name, relationships=list(relationships),
+                         fields=_fields(("id", DataType.INTEGER), ("customer_id", DataType.INTEGER)))
+
+
+def _inherited(relationship: DatasetRelationship, *, origin: str) -> DatasetRelationship:
+    return relationship.as_inherited(RelationshipOrigin(
+        dataset=origin, dataset_spelling=origin, relationship=relationship.to, to=relationship.to,
+        pairs=frozenset(zip(relationship.from_columns, relationship.to_columns)), forward=True,
+    ))
+
+
+def _by_name(*datasets: SlayerDataset) -> dict[str, SlayerDataset]:
+    return {d.name: d for d in datasets}
+
+
+def _route(datasets: dict[str, SlayerDataset], *, reader: str, anchor: str) -> tuple[str, ...]:
+    return anchor_route(reader=datasets[reader], anchor=datasets[anchor], datasets_by_name=datasets).route
+
+
+def _key_to(target: str, *, name: str | None = None) -> DatasetRelationship:
+    return DatasetRelationship(to=target, from_columns=["customer_id"], to_columns=["id"], cardinality=_M2O, name=name)
+
+
+class TestInheritedRelationships:
+    def _detour(self, *, inherited: bool) -> dict[str, SlayerDataset]:
+        """``orders → customers`` declared; ``orders → clients → qb → customers`` with ``qb → customers`` inherited
+        or declared."""
+        qb_edge = _key_to("customers")
+        return _by_name(
+            _dataset("orders", _key_to("customers"), _key_to("clients")),
+            _dataset("customers"),
+            _dataset("clients", DatasetRelationship(to="qb", from_columns=["id"], to_columns=["customer_id"],
+                                                    cardinality=_M2O)),
+            _dataset("qb", _inherited(qb_edge, origin="orders") if inherited else qb_edge),
+        )
+
+    def test_an_inherited_detour_never_makes_a_declared_path_ambiguous(self) -> None:
+        assert _route(self._detour(inherited=True), reader="orders", anchor="customers") == ("customers",)
+
+    def test_the_same_detour_declared_is_ambiguous(self) -> None:
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="more than one path"):
+            _route(self._detour(inherited=False), reader="orders", anchor="customers")
+
+    def test_an_inherited_relationship_beside_a_declared_one_stays_parallel(self) -> None:
+        datasets = _by_name(
+            _dataset("s", _key_to("customers", name="payer"),
+                     _inherited(_key_to("customers", name="buyer"), origin="orders")),
+            _dataset("customers"),
+        )
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="more than one path"):
+            _route(datasets, reader="s", anchor="customers")
+
+    def test_inherited_relationships_reach_where_declared_ones_give_no_route(self) -> None:
+        datasets = _by_name(
+            _dataset("s", _inherited(_key_to("customers"), origin="orders")),
+            _dataset("customers", DatasetRelationship(to="regions", from_columns=["customer_id"], to_columns=["id"],
+                                                      cardinality=_M2O)),
+            _dataset("regions"),
+        )
+        assert _route(datasets, reader="s", anchor="regions") == ("customers", "regions")
+
+    def test_a_single_direct_inherited_relationship_is_taken_first(self) -> None:
+        """``s.orders`` beside the detour ``s.events.customers.orders`` back through the rows ``s`` was grouped from."""
+        from_s = DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"])
+        datasets = _by_name(
+            _dataset("s", _inherited(from_s, origin="orders"),
+                     _inherited(from_s.model_copy(update={"to": "events"}), origin="events")),
+            _dataset("events", _key_to("customers")),
+            _dataset("orders", _key_to("customers")),
+            _dataset("customers"),
+        )
+        assert _route(datasets, reader="s", anchor="orders") == ("orders",)
+
+    def test_two_direct_inherited_relationships_are_ambiguous(self) -> None:
+        datasets = _by_name(
+            _dataset("s", _inherited(_key_to("customers", name="billing"), origin="invoices"),
+                     _inherited(_key_to("customers", name="shipping"), origin="invoices")),
+            _dataset("customers"),
+        )
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="more than one path"):
+            _route(datasets, reader="s", anchor="customers")

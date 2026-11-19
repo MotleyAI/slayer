@@ -33,7 +33,6 @@ from slayer.engine.normalization import normalize_query
 from slayer.engine.cardinality.unrelated import stamp_unrelated
 from slayer.engine.stage_ordering import (
     localize_stages,
-    population_edges,
     stage_sibling_reads,
     topologically_order_stages,
 )
@@ -134,8 +133,7 @@ def _stage_scope_and_bundle_unframed(
 ) -> "Tuple[DatasetScope, ResolvedSourceBundle]":
     src = query.population
     # Only the siblings the stage names join its graph; a spliced stored dataset is a dataset, not a sibling.
-    reads = stage_sibling_reads(query=query, siblings=set(stage_schemas), displays=bundle.stage_displays,
-                                population_edges=population_edges(query, bundle.datasets_by_name))
+    reads = stage_sibling_reads(query=query, siblings=set(stage_schemas), displays=bundle.stage_displays)
     reads |= _inherited_targets(start={*reads, src} if isinstance(src, str) else reads, stage_schemas=stage_schemas)
     named = {n: s for n, s in stage_schemas.items() if (n in reads or n in bundle.query_backed) and n != src}
     if isinstance(src, str) and src in stage_schemas:
@@ -326,8 +324,7 @@ class _StagePlanner:
             p.stage_schema.relation_name: i
             for i, p in enumerate(self.state.planned) if p.stage_schema is not None
         }
-        reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas), displays=self.state.displays,
-                                    population_edges=population_edges(query, self.bundle.datasets_by_name))
+        reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas), displays=self.state.displays)
         reads |= {
             n for n, strict in seen.items()
             if strict and (n in self.state.spliced or n in self.state.schemas)
@@ -416,7 +413,7 @@ class _StagePlanner:
         self, name: str, *, dataset: SlayerDataset, chain: Tuple[str, ...], context: Dict[str, Any],
     ) -> None:
         stages, displays = localize_stages(
-            topologically_order_stages(list(dataset.source_queries or []), datasets_by_name=self.bundle.datasets_by_name),
+            topologically_order_stages(list(dataset.source_queries or [])),
             dataset=name,
         )
         self.state.displays.update(displays)
@@ -478,8 +475,7 @@ class _StagePlanner:
     def _base_time_dimension(self, name: str) -> Optional[str]:
         dataset = self.bundle.query_backed[name]
         private = {q.name: q for q in dataset.source_queries or [] if q.name}
-        stages: list[SlayerQuery] = topologically_order_stages(
-            list(dataset.source_queries or []), datasets_by_name=self.bundle.datasets_by_name)
+        stages: list[SlayerQuery] = topologically_order_stages(list(dataset.source_queries or []))
         if not stages:
             return None
         spec = follow_sibling_chain(spec=stages[-1].population, named_queries=private)
@@ -525,7 +521,7 @@ def plan_stages(
     source + already-planned siblings' synthetic datasets, splicing every stored
     query-backed dataset a stage reads before it; each plan records its sibling reads
     and is stamped with its per-stage bundle."""
-    ordered = topologically_order_stages(queries, displays=bundle.stage_displays, datasets_by_name=bundle.datasets_by_name)
+    ordered = topologically_order_stages(queries, displays=bundle.stage_displays)
     planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))
     for q in ordered:
         planner.plan_stage(

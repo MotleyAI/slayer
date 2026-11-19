@@ -44,7 +44,7 @@ In every position of a query (dimensions, time dimensions, metrics and their agg
 
 ### Requirement: The anchor is reached by its only to-one path
 
-A query SHALL reach a reference's anchor from its population as follows. When the anchor is the population, the path SHALL be empty. When exactly one path from the population to the anchor has every hop provably to-one on its traversal orientation, that path SHALL be taken, whatever other routes exist. When no such path exists and exactly one simple route exists, that route SHALL be taken. When two or more to-one paths exist, or none exists and two or more routes exist, the reference SHALL fail with a typed ambiguity error naming each executable explicit spelling; a direct relationship SHALL have no precedence over a longer path. When no route exists, the anchor SHALL be an unrelated dataset (`queries/unrelated-datasets`). Routes never cross the time spine. Binding, population inference, population recommendation, schema-drift attribution and the stored-query migration SHALL use this one rule, so they never disagree about which path a reference takes.
+A query SHALL reach a reference's anchor from its population as follows. When the anchor is the population, the path SHALL be empty. When exactly one path from the population to the anchor has every hop provably to-one on its traversal orientation, that path SHALL be taken, whatever other routes exist. When no such path exists and exactly one simple route exists, that route SHALL be taken. When two or more to-one paths exist, or none exists and two or more routes exist, the reference SHALL fail with a typed ambiguity error naming each executable explicit spelling; a direct relationship SHALL have no precedence over a longer path. This rule SHALL run over the **declared** relationships: the datasets' own, the query's extension relationships, and any relationship a stage inherits that lies beside a declared one between the same two datasets. Only when they give no route SHALL inherited relationships be added: a single inherited relationship joining the population directly to the anchor SHALL then be taken, else the rule SHALL run over all relationships. When no route exists, the anchor SHALL be an unrelated dataset (`queries/unrelated-datasets`). Routes never cross the time spine. Binding, population inference, population recommendation, schema-drift attribution and the stored-query migration SHALL use this one rule, so they never disagree about which path a reference takes.
 
 #### Scenario: One to-one path wins over fanning routes
 - **WHEN** `orders → customers` and `orders → managers` are many-to-one, `managers → customers` is one-to-many, and a query with `population: "orders"` selects `customers.region`
@@ -65,6 +65,18 @@ A query SHALL reach a reference's anchor from its population as follows. When th
 #### Scenario: Several fanning routes are refused
 - **WHEN** `customers` reaches `orders` both by the reversed `orders → customers` relationship and through `managers` with no to-one path, and a query with `population: "customers"` measures `sum(orders.amount)`
 - **THEN** it fails with the ambiguity error naming each explicit spelling
+
+#### Scenario: An inherited detour never makes a declared path ambiguous
+- **WHEN** `orders` declares a relationship to `customers` and to `clients`, `clients` declares a to-one relationship to the query-backed dataset `cust_rev`, whose grain `customer_id` inherits a to-one relationship to `customers`, and a query with `population: "orders"` reads `customers.tier`
+- **THEN** it reads `customers` over `orders → customers`; with `cust_rev → customers` declared instead, the reference is refused as ambiguous
+
+#### Scenario: An inherited relationship beside a declared one stays parallel
+- **WHEN** a stage over `per_customer` inherits the relationship `buyer` to `customers`, the reading query declares an extension relationship `payer` from `per_customer` to `customers` on the same keys, and it reads `customers.name`
+- **THEN** it fails with the typed ambiguity error naming `per_customer.buyer.name` and `per_customer.payer.name`
+
+#### Scenario: A single direct inherited relationship is taken first
+- **WHEN** stage `s` is grouped by `customers.id`, inheriting relationships to `orders` and to `events`, and a query with `population: "s"` measures `sum(orders.amount)`
+- **THEN** it reads `orders` over `s → orders`, not the detour `s → events → customers → orders`
 
 #### Scenario: A directed cycle takes its to-one path
 - **WHEN** `x → y`, `y → z` and `z → x` are many-to-one and a query with `population: "x"` measures `sum(z.amount)`

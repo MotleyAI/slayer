@@ -18,7 +18,7 @@ from slayer.core.errors import (
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name, spelled_name
 from slayer.core.relationship_search import HopFilter, blocking_pairs, routes
-from slayer.core.relationship_walker import neighbors, walk_terminal
+from slayer.core.relationship_walker import canonical_token, neighbors, walk_terminal
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
 from slayer.engine.population.dimension_routing import resolve_route
 
@@ -83,7 +83,8 @@ def anchor_route(
     *, reader: SlayerDataset, anchor: SlayerDataset, datasets_by_name: Mapping[str, SlayerDataset],
     rest: Sequence[str] = (),
 ) -> Anchor:
-    """How ``reader`` reaches ``anchor``: its only to-one path, else its only route; with no route it is unrelated.
+    """How ``reader`` reaches ``anchor``: over declared relationships, its only to-one path, else its only route; with
+    none, over inherited ones too, a single relationship joining it to ``anchor`` first; with no route it is unrelated.
     Two or more to-one paths, or none and several routes, raise the ambiguity naming each explicit spelling (``rest``
     is the reference after its anchor)."""
     if anchor.name == reader.name:
@@ -91,15 +92,43 @@ def anchor_route(
     if is_spine(anchor) or anchor.name == TIME_SPINE_DATASET:
         return Anchor(dataset=anchor, route=(anchor.name,))
     universe = {**datasets_by_name, reader.name: reader}
-    route, status = resolve_route(root=reader, target_dataset=anchor.name, datasets_by_name=universe)
+    declared = _declared_graph(universe)
+    reached = _reach(reader=declared[reader.name], anchor=anchor, universe=declared, rest=rest)
+    if reached is not None:
+        return reached
+    direct = [e for e in neighbors(dataset=reader, datasets_by_name=universe) if e.to == anchor.name]
+    if len(direct) == 1:
+        return Anchor(dataset=anchor, route=(canonical_token(direct[0]),))
+    reached = _reach(reader=reader, anchor=anchor, universe=universe, rest=rest)
+    return reached or Anchor(dataset=anchor, route=(anchor.spelling,), unrelated=True)
+
+
+def _declared_graph(universe: Mapping[str, SlayerDataset]) -> dict[str, SlayerDataset]:
+    """``universe`` keeping declared relationships and the inherited ones beside a declared one between the same two
+    datasets."""
+    pairs = {frozenset((name, j.to)) for name, d in universe.items() for j in d.relationships
+             if j.inherited_from is None}
+    out: dict[str, SlayerDataset] = {}
+    for name, dataset in universe.items():
+        kept = [j for j in dataset.relationships if j.inherited_from is None or frozenset((name, j.to)) in pairs]
+        out[name] = dataset if len(kept) == len(dataset.relationships) else dataset.model_copy(
+            update={"relationships": kept})
+    return out
+
+
+def _reach(
+    *, reader: SlayerDataset, anchor: SlayerDataset, universe: Mapping[str, SlayerDataset], rest: Sequence[str],
+) -> Optional[Anchor]:
+    """``reader``'s only to-one path to ``anchor`` over ``universe``, else its only route; ``None`` when unreachable."""
+    route, status = resolve_route(root=reader, target_dataset=anchor.name, datasets_by_name=dict(universe))
     if status == "ok":
         assert route is not None
         return Anchor(dataset=anchor, route=tuple(route))
     if status == "unreachable":
-        return Anchor(dataset=anchor, route=(anchor.spelling,), unrelated=True)
+        return None
     spellings = explicit_spellings(reader=reader, anchor=anchor, datasets_by_name=universe, rest=rest)
     remedy = (f"spell the path: {', '.join(repr(s) for s in spellings)}." if spellings else "; ".join(
-        p.describe() for p in blocking_pairs(root=reader, target=anchor.name, datasets_by_name=universe)) + ".")
+        p.describe() for p in blocking_pairs(root=reader, target=anchor.name, datasets_by_name=dict(universe))) + ".")
     raise UnresolvableDimensionRelationshipError(
         reference=".".join((anchor.spelling, *rest)),
         root_dataset=reader.spelling,

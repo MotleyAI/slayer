@@ -125,9 +125,10 @@ precedence over other routes in inference either.
 
 ### Requirement: Datasource-scoped and deferred past stage boundaries
 Route candidates and anchors SHALL be drawn only from the population's datasource; a dataset in another
-datasource is never an anchor or a route candidate. Routing SHALL apply on a base model scope. In a later stage
-whose population is a stage, the stage's name SHALL anchor its flat columns (`s1.tot`); a further dotted path
-past a stage column SHALL keep failing as an illegal cross-stage reference rather than routing.
+datasource is never an anchor or a route candidate. Routing SHALL apply on every dataset scope, a later stage
+reading a stage included: the stage's name SHALL anchor its flat columns (`s1.tot`), its candidates are the
+stage's edges (`queries/multi-stage` › Stages inherit edges on pass-through keys) and the edges onward from their
+targets, and never a sibling stage the routing stage does not name.
 
 #### Scenario: Cross-datasource target is not a candidate
 - WHEN a same-named model exists in another datasource
@@ -138,8 +139,12 @@ past a stage column SHALL keep failing as an illegal cross-stage reference rathe
 - THEN it reads `s1`'s column `tot`
 
 #### Scenario: Downstream stage dotted reference stays illegal
-- WHEN a downstream stage references a dotted path past a stage column
-- THEN it fails as an illegal-scope reference, not as a routed dimension
+- WHEN a downstream stage references a dotted path across a stage boundary that no edge of the upstream stage reaches
+- THEN it fails as the same reference fails from a stored root, not as a routed dimension
+
+#### Scenario: Routing through an inherited edge
+- WHEN a stage reads a stage grouped by `orders.customer_id`, and `customers` relates to `regions`, and it selects `regions.name`
+- THEN it reads `regions` through the inherited edge to `customers`, and the result key is `regions.name`
 
 ### Requirement: Saved-measure short forms surface under their routed name and type
 A dataset-metric reference whose anchor is reached by routing SHALL resolve, surface (when unaliased) under the

@@ -8,11 +8,10 @@ and any dataset a reference in its expressions names.
 """
 from __future__ import annotations
 
-from typing import AbstractSet, Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import AbstractSet, Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from slayer.core.names import match_name
-from slayer.core.models import DatasetRelationship, SlayerDataset
-from slayer.core.relationship_walker import OrientedRelationship, matching_edges, neighbors, unobserved
+from slayer.core.models import DatasetRelationship
 from slayer.core.query import DatasetExtension, SlayerQuery, SourceSpec, extension_dataset_names
 from slayer.core.scope import StageDisplay
 from slayer.engine.extensions import query_reference_parts
@@ -24,52 +23,20 @@ SPLICED_STAGE_PREFIX = "__slayer_qb__"
 
 def stage_sibling_reads(
     *, query: SlayerQuery, siblings: AbstractSet[str], displays: Optional[Mapping[str, StageDisplay]] = None,
-    population_edges: Sequence[OrientedRelationship] = (), expressions: bool = True,
+    expressions: bool = True,
 ) -> Set[str]:
-    """The siblings ``query`` names: its population, its extensions' datasets, and a dataset any reference in its
-    expressions names (by identity, or by the display name of a sibling in its own list), except a first segment
-    spelling a relationship of its population (``population_edges``) or of its extensions; never raises.
-    ``expressions=False`` reads only the population and extensions."""
+    """The siblings ``query`` names: its population, its extensions' datasets, and a dataset the first segment of any
+    reference in its expressions names (by identity, or by the display name of a sibling in its own list); never
+    raises. ``expressions=False`` reads only the population and extensions."""
     spec = query.population
     names = [spec] if spec is not None else []
     found = {match_name(name=n, declared=siblings, quoted=False) for n in (*names, *extension_dataset_names(query))}
     written = _written_names(query=query, siblings=siblings, displays=displays or {})
-    own = _extension_relationship_spellings(query)
     for parts in query_reference_parts(query) if expressions else ():
-        # Only a reference's head (after a root qualifier) names a dataset; later segments are relationship hops.
-        head = parts[1:] if _root_qualifier(parts, query=query, displays=displays or {}) else parts
-        if len(head) < 2 or _spells_relationship(head[0], edges=population_edges, own=own):
-            continue
-        hit = match_name(name=head[0], declared=written, quoted=False)
+        hit = match_name(name=parts[0], declared=written, quoted=False) if len(parts) >= 2 else None
         if hit is not None:
             found.add(written[hit])
     return {f for f in found if f is not None}
-
-
-def _root_qualifier(parts: Sequence[str], *, query: SlayerQuery, displays: Mapping[str, StageDisplay]) -> bool:
-    spec = query.population
-    if len(parts) < 3 or not isinstance(spec, str):
-        return False
-    spellings = [spec, *([displays[spec].name] if spec in displays else [])]
-    return match_name(name=parts[0], declared=spellings, quoted=False) is not None
-
-
-def _extension_relationship_spellings(query: SlayerQuery) -> List[str]:
-    return [n for e in query.extensions or [] for j in e.relationships or [] for n in (j.name, j.to) if n]
-
-
-def _spells_relationship(head: str, *, edges: Sequence[OrientedRelationship], own: List[str]) -> bool:
-    return bool(matching_edges(list(edges), head)) or match_name(name=head, declared=own, quoted=False) is not None
-
-
-def population_edges(query: SlayerQuery, datasets_by_name: Mapping[str, SlayerDataset]) -> List[OrientedRelationship]:
-    """The one-hop relationships of ``query``'s stored population (none for a sibling or an inferred population)."""
-    spec = query.population
-    dataset = datasets_by_name.get(spec) if isinstance(spec, str) else None
-    if dataset is None:
-        return []
-    with unobserved():
-        return neighbors(dataset=dataset, datasets_by_name=dict(datasets_by_name))
 
 
 def _written_names(
@@ -169,7 +136,6 @@ def _validate_query_list_invariants(
     root: Any,
     sibling_names: Set[str],
     displays: Mapping[str, StageDisplay],
-    datasets_by_name: Mapping[str, SlayerDataset],
     expressions: bool,
 ) -> None:
     """Reject self-references and any sibling that depends on the root.
@@ -179,7 +145,7 @@ def _validate_query_list_invariants(
     """
     for q in queries:
         if q.name and q.name in stage_sibling_reads(query=q, siblings={q.name} | sibling_names, displays=displays,
-                                                    population_edges=population_edges(q, datasets_by_name), expressions=expressions):
+                                                    expressions=expressions):
             raise ValueError(
                 f"Stage '{_spelled(q.name, displays)}' references itself — self-references "
                 f"are not allowed."
@@ -187,7 +153,7 @@ def _validate_query_list_invariants(
     if root.name:
         referrers = sorted(
             _spelled(q.name, displays) for q in rest if root.name in stage_sibling_reads(
-                query=q, siblings={root.name}, displays=displays, population_edges=population_edges(q, datasets_by_name), expressions=expressions)
+                query=q, siblings={root.name}, displays=displays, expressions=expressions)
         )
         if referrers:
             raise ValueError(
@@ -201,7 +167,6 @@ def _build_dependency_graph(
     rest_by_name: Dict[str, Any],
     sibling_names: Set[str],
     displays: Mapping[str, StageDisplay],
-    datasets_by_name: Mapping[str, SlayerDataset],
     expressions: bool,
 ) -> "tuple[Dict[str, int], Dict[str, List[str]]]":
     """Build the (in_degree, dependents) adjacency for Kahn's algorithm."""
@@ -209,7 +174,7 @@ def _build_dependency_graph(
     dependents: Dict[str, List[str]] = {name: [] for name in rest_by_name}
     for name, q in rest_by_name.items():
         for prereq in stage_sibling_reads(query=q, siblings=sibling_names, displays=displays,
-                                          population_edges=population_edges(q, datasets_by_name), expressions=expressions):
+                                          expressions=expressions):
             dependents[prereq].append(name)
             in_degree[name] += 1
     return in_degree, dependents
@@ -251,11 +216,10 @@ def _kahn_sort(
 
 def topologically_order_stages(
     queries: List[Any], *, displays: Optional[Mapping[str, StageDisplay]] = None,
-    datasets_by_name: Optional[Mapping[str, SlayerDataset]] = None, expressions: bool = True,
+    expressions: bool = True,
 ) -> List[Any]:
     """Re-order a query list so every stage appears after the siblings it
-    reads (``stage_sibling_reads``; ``displays`` maps localized identities to their spellings; ``datasets_by_name``
-    supplies the stored populations whose relationships a reference's first segment may spell; ``expressions=False``
+    reads (``stage_sibling_reads``; ``displays`` maps localized identities to their spellings; ``expressions=False``
     orders by populations and extensions only, for a pre-check without datasets).
 
     The final entry is the entry point / DAG root: it stays last. Only
@@ -273,9 +237,8 @@ def topologically_order_stages(
     root = queries[-1]
     rest_by_name = _index_query_list_by_name(rest, root)
     sibling_names: Set[str] = set(rest_by_name)
-    datasets = datasets_by_name or {}
-    _validate_query_list_invariants(queries, rest, root, sibling_names, displays or {}, datasets, expressions)
-    in_degree, dependents = _build_dependency_graph(rest_by_name, sibling_names, displays or {}, datasets, expressions)
+    _validate_query_list_invariants(queries, rest, root, sibling_names, displays or {}, expressions)
+    in_degree, dependents = _build_dependency_graph(rest_by_name, sibling_names, displays or {}, expressions)
     sorted_names = _kahn_sort(in_degree, dependents, displays or {})
     return [rest_by_name[n] for n in sorted_names] + [root]
 
@@ -285,7 +248,6 @@ __all__ = [
     "USER_STAGE_PREFIX",
     "localize_stages",
     "stage_identity",
-    "population_edges",
     "stage_sibling_reads",
     "topologically_order_stages",
 ]
