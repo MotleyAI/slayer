@@ -77,7 +77,7 @@ from slayer.sql.naming import (
 )
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
-from slayer.core.scope import DatasetScope, StageField, StageSchema, host_dataset_name
+from slayer.core.scope import DatasetScope, PassThrough, StageField, StageSchema, host_dataset_name
 from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
     ConsumerPosition,
@@ -149,6 +149,7 @@ from slayer.engine.compile.spine import (
 from slayer.engine.compile.shift import carried_placeholders
 from slayer.engine.cardinality.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
+from slayer.engine.stage_edges import inherited_edges, pass_through
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
     key_element_type,
@@ -4753,12 +4754,16 @@ def _emit_stage_schema(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,
                 datasets_by_name=datasets_by_name, upstream=upstream,
             ),
+            passes=pass_through(key=slot.key, root=root, datasets_by_name=datasets_by_name)
+            if slot.phase == Phase.ROW else None,
         ))
         flat_by_sid.setdefault(sid, flat)
+    grain_names = None if grain is None else [flat_by_sid[sid] for sid in grain]
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", fields=fields,
-        grain=None if grain is None else [flat_by_sid[sid] for sid in grain],
+        grain=grain_names,
         default_time_dimension=_surviving_default(projection=projection, fields=fields, root=root),
+        inherited_edges=inherited_edges(fields=fields, grain=grain_names, root=root, datasets_by_name=datasets_by_name),
     )
 
 
@@ -4803,6 +4808,7 @@ def _source_field(
 
 def _stage_field(
     *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...], source=None,
+    passes: Optional[PassThrough] = None,
 ) -> StageField:
     # A bucketed field (bucketed here, or passed through from upstream) carries its granularity
     # so a re-binding TimeDimension can type-check the re-bucket.
@@ -4823,6 +4829,7 @@ def _stage_field(
         format=slot.format or (row.format if row is not None else None),
         description=slot.description or (row.description if row is not None else None),
         respellings=respellings,
+        pass_through=passes,
     )
 
 

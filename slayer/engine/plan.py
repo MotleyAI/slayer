@@ -131,29 +131,22 @@ def _stage_scope_and_bundle_unframed(
     stage_dataset: Optional[SlayerDataset],
 ) -> "Tuple[DatasetScope | StageSchema, ResolvedSourceBundle]":
     src = query.population
-
-    # 1. Sibling source (chain): bind against the upstream flat StageSchema.
+    # Only the siblings the stage names join its graph; a spliced stored dataset is a dataset, not a sibling.
+    reads = stage_sibling_reads(query=query, siblings=set(stage_schemas), displays=bundle.stage_displays)
+    named = {n: s for n, s in stage_schemas.items() if (n in reads or n in bundle.query_backed) and n != src}
     if isinstance(src, str) and src in stage_schemas:
-        synth = dataset_from_stage_schema(
+        # A sibling population is read as the dataset its schema defines.
+        source = dataset_from_stage_schema(
             name=src, schema=stage_schemas[src], data_source=data_source,
             saved=bundle.query_backed.get(src),
         )
-        others = {n: s for n, s in stage_schemas.items() if n != src}
-        sb = stage_bundle_with_siblings(
-            bundle=bundle, source_dataset=synth,
-            sibling_schemas=others, data_source=data_source,
-        )
-        if src in bundle.query_backed:
-            return DatasetScope(population=synth), sb
-        return stage_schemas[src], sb
-
-    # 2. Dataset-scoped: the stage's own resolved source dataset.
-    assert stage_dataset is not None
+    else:
+        assert stage_dataset is not None
+        source = stage_dataset
     sb = stage_bundle_with_siblings(
-        bundle=bundle, source_dataset=stage_dataset,
-        sibling_schemas=stage_schemas, data_source=data_source,
+        bundle=bundle, source_dataset=source, sibling_schemas=named, data_source=data_source,
     )
-    return DatasetScope(population=stage_dataset), sb
+    return DatasetScope(population=source), sb
 
 
 class _Splice(BaseModel):
@@ -317,7 +310,7 @@ class _StagePlanner:
             p.stage_schema.relation_name: i
             for i, p in enumerate(self.state.planned) if p.stage_schema is not None
         }
-        reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas))
+        reads = stage_sibling_reads(query=query, siblings=set(self.state.schemas), displays=self.state.displays)
         reads |= {
             n for n, strict in seen.items()
             if strict and (n in self.state.spliced or n in self.state.schemas)
@@ -514,7 +507,7 @@ def plan_stages(
     source + already-planned siblings' synthetic datasets, splicing every stored
     query-backed dataset a stage reads before it; each plan records its sibling reads
     and is stamped with its per-stage bundle."""
-    ordered = topologically_order_stages(queries)
+    ordered = topologically_order_stages(queries, displays=bundle.stage_displays)
     planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))
     for q in ordered:
         planner.plan_stage(

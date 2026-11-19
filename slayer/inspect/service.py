@@ -24,6 +24,7 @@ from slayer.inspect.collection_render import (
     render_datasource_list,
     render_dataset_oneliner_index,
     render_datasets_summary,
+    with_relationships_as_read,
 )
 from slayer.inspect.dataset_render import (
     _TRUNCATION_MARKER,
@@ -360,7 +361,7 @@ class InspectService:
             except Exception:  # noqa: BLE001 — invalid config: mark + continue
                 groups.append((ds, None))
                 continue
-            groups.append((ds, await self._load_visible_datasets(ds)))
+            groups.append((ds, await with_relationships_as_read(await self._load_visible_datasets(ds), self._engine)))
 
         if compact:
             return render_dataset_oneliner_index(

@@ -59,15 +59,17 @@ class TestPassThrough:
     @pytest.mark.parametrize("expr", ["CAST(customer_id AS TEXT)", "customer_id + 0"])
     async def test_cast_or_computed_key_is_not_inherited(self, engine, expr: str) -> None:
         stage = per_customer(dimensions=[{"field": expr, "alias": "cid"}])
+        stages = [stage, over("per_customer", dimensions=["customers.region"])]
         with pytest.raises(UnrelatedDatasetError):
-            await engine.execute([stage, over("per_customer", dimensions=["customers.region"])])
+            await engine.execute(stages)
 
     async def test_time_bucketed_key_is_not_inherited(self, engine) -> None:
         stage = q(name="monthly", population="orders",
                   time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
                   metrics=[m("sum(amount)", "revenue")])
+        stages = [stage, over("monthly", dimensions=["calendar.is_holiday"])]
         with pytest.raises(UnrelatedDatasetError):
-            await engine.execute([stage, over("monthly", dimensions=["calendar.is_holiday"])])
+            await engine.execute(stages)
 
     async def test_unbucketed_time_key_is_inherited(self, engine) -> None:
         stage = q(name="daily", population="orders", dimensions=["ordered_at"], metrics=[m("sum(amount)", "revenue")])
@@ -76,14 +78,16 @@ class TestPassThrough:
 
     async def test_metric_column_is_not_a_pass_through(self, engine) -> None:
         stage = q(name="s", population="orders", dimensions=["status"], metrics=[m("max(customer_id)", "cid")])
+        stages = [stage, over("s", dimensions=["customers.region"], metric="count(*)")]
         with pytest.raises(UnrelatedDatasetError):
-            await engine.execute([stage, over("s", dimensions=["customers.region"], metric="count(*)")])
+            await engine.execute(stages)
 
     async def test_a_filter_only_key_is_not_a_pass_through(self, engine) -> None:
         stage = q(name="s", population="orders", dimensions=["status"], filter=["customer_id > 0"],
                   metrics=[m("sum(amount)", "revenue")])
+        stages = [stage, over("s", dimensions=["customers.region"])]
         with pytest.raises(UnrelatedDatasetError):
-            await engine.execute([stage, over("s", dimensions=["customers.region"])])
+            await engine.execute(stages)
 
     async def test_targets_own_key_is_inherited(self, engine) -> None:
         stage = q(name="s", population="orders", dimensions=["customers.id"], metrics=[m("sum(amount)", "revenue")])
@@ -113,8 +117,9 @@ class TestPassThrough:
     async def test_extension_relationship_needs_its_key_passed_through(self, engine) -> None:
         stage = q(name="s", population="orders", extensions=[ext("orders", join("regions", [("region_id", "id")]))],
                   dimensions=["status"], metrics=[m("sum(amount)", "revenue")])
+        stages = [stage, over("s", dimensions=["regions.name"])]
         with pytest.raises(UnrelatedDatasetError):
-            await engine.execute([stage, over("s", dimensions=["regions.name"])])
+            await engine.execute(stages)
 
     async def test_inheritance_is_transitive(self, engine) -> None:
         s1 = per_customer("s1")
@@ -251,9 +256,9 @@ class TestDeclaredEdgesWin:
     async def test_differently_named_edges_on_the_same_keys_stay_parallel(self, dialect: str) -> None:
         extension = [ext("per_customer", join("customers", [("customer_id", "id")], name="payer"))]
         async with shop(dialect, with_datasets(orders(customer_edge_name="buyer"))) as engine:
+            stages = [self._stage(), over("per_customer", dimensions=["customers.name"], extensions=extension)]
             with pytest.raises(AmbiguousRelationshipPathError):
-                await engine.execute([self._stage(), over("per_customer", dimensions=["customers.name"],
-                                                          extensions=extension)])
+                await engine.execute(stages)
             for edge in ("buyer", "payer"):
                 resp = await engine.execute([self._stage(), over("per_customer", dimensions=[f"{edge}.name"],
                                                                  extensions=extension)])
@@ -262,7 +267,8 @@ class TestDeclaredEdgesWin:
     async def test_parallel_distinct_edges_need_their_names(self, engine) -> None:
         stage = q(name="inv", population="invoices", dimensions=["billing_customer_id", "shipping_customer_id"],
                   metrics=[m("sum(total)", "amt")])
+        stages = [stage, over("inv", dimensions=["customers.name"], metric="sum(amt)")]
         with pytest.raises(AmbiguousRelationshipPathError):
-            await engine.execute([stage, over("inv", dimensions=["customers.name"], metric="sum(amt)")])
+            await engine.execute(stages)
         resp = await engine.execute([stage, over("inv", dimensions=["billing.name"], metric="sum(amt)")])
         assert by(resp, key="billing.name", value="total") == INVOICE_TOTAL_BY_BILLING

@@ -84,8 +84,9 @@ class TestExecution:
     async def test_ordinary_stage_hides_a_source_edge_whose_key_it_drops(self, dialect: str) -> None:
         stage = per_customer(dimensions=["status"])
         async with shop(dialect) as engine:
+            stages: list[Any] = [stage, over("per_customer", dimensions=["customers.region"])]
             with pytest.raises(UnrelatedDatasetError):
-                await engine.execute([stage, over("per_customer", dimensions=["customers.region"])])
+                await engine.execute(stages)
 
 
 # --------------------------------------------------------------------------- #
@@ -134,7 +135,8 @@ def _inherited(payload: dict) -> list[dict]:
 def _check_listed(payload: dict) -> None:
     (edge,) = _inherited(payload)
     assert edge["to"] == "customers"
-    assert edge["from_columns"] == ["customer_id"] and edge["to_columns"] == ["id"]
+    assert edge["from_columns"] == ["customer_id"]
+    assert edge["to_columns"] == ["id"]
     assert edge["inherited_from"] == {"dataset": "orders", "relationship": "customers"}
     assert payload["inherited_relationships_error"] is None
 
@@ -151,7 +153,8 @@ _FAILURE_TOKENS = {_CYCLE[0]: _CYCLE[0], "bad_key": "nope_column", "needs_var": 
 def _check_failure(payload: dict, name: str) -> None:
     assert _inherited(payload) == []
     message = payload["inherited_relationships_error"]
-    assert isinstance(message, str) and _FAILURE_TOKENS[name] in message
+    assert isinstance(message, str)
+    assert _FAILURE_TOKENS[name] in message
 
 
 @pytest.fixture
@@ -206,7 +209,8 @@ class TestInspectMcp:
     async def test_markdown_marks_the_edge_inherited(self, mcp_server) -> None:
         out = await _mcp(mcp_server, "customer_revenue", format="markdown")
         (row,) = [line for line in out.splitlines() if line.startswith("|") and "customers" in line]
-        assert "inherited" in row and "orders" in row
+        assert "inherited" in row
+        assert "orders" in row
 
     async def test_a_declared_relationship_absorbs_the_inherited_one(self, mcp_server) -> None:
         _check_absorbed(json.loads(await _mcp(mcp_server, "customer_revenue_declared")))

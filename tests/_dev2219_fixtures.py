@@ -244,4 +244,4 @@ async def outcome(engine: SlayerQueryEngine, query: Any) -> tuple:
         resp = await engine.execute(query)
     except Exception as exc:  # noqa: BLE001 — compared, never swallowed
         return ("error", type(exc).__name__, str(exc))
-    return ("ok", sorted((tuple(sorted(r.items(), key=repr)) for r in resp.data), key=repr))
+    return ("ok", tuple(sorted((tuple(sorted(r.items(), key=repr)) for r in resp.data), key=repr)))

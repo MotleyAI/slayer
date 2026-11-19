@@ -3011,6 +3011,20 @@ class SlayerQueryEngine:
         """The sql-mode dataset a query-backed ``dataset`` renders as, under its default variables, in its datasource."""
         return await self._expand_query_backed_dataset(dataset=dataset, prefer_data_source=dataset.data_source or None)
 
+    async def relationships_as_read(self, dataset: SlayerDataset) -> Tuple[List[DatasetRelationship], Optional[str]]:
+        """``dataset``'s relationships as a query reads them — a query-backed one's inherited edges merged in under its
+        default variables — and why inherited edges could not be derived (``None`` when they were)."""
+        if not dataset.source_queries:
+            return list(dataset.relationships), None
+        try:
+            expansion = await self._query_backed_expansion(dataset=dataset, prefer_data_source=dataset.data_source or None)
+        except SlayerError as exc:
+            return list(dataset.relationships), str(exc)
+        view = dataset_from_stage_schema(
+            name=dataset.name, schema=expansion.stage_schema, data_source=dataset.data_source or "_stage", saved=dataset,
+        )
+        return list(view.relationships), None
+
     async def create_dataset_from_query(
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",

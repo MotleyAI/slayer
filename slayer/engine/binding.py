@@ -829,12 +829,15 @@ def _resolve_ref(
     raise UnknownReferenceError(
         name=name,
         scope_kind="DatasetScope",
-        scope_summary=(
-            f"dataset {dataset.spelling!r} fields: "
-            f"{[c.name for c in dataset.fields]}"
-        ),
+        scope_summary=f"{_dataset_label(dataset, bundle=bundle)} fields: {[c.name for c in dataset.fields]}",
         suggestion=_name_suggestion(name=name, dataset=dataset),
     )
+
+
+def _dataset_label(dataset: SlayerDataset, *, bundle: ResolvedSourceBundle) -> str:
+    """How messages name ``dataset``: a stage by its user spelling, else the dataset."""
+    display = bundle.stage_displays.get(dataset.name)
+    return display.label if display is not None else f"dataset {dataset.spelling!r}"
 
 
 def _walk_relationship_chain(
@@ -902,10 +905,16 @@ def _walk_relationship_chain(
             host=host, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, datasets_by_name=datasets_by_name,
             quoted=hop_quoted,
         )
-    return _route_edgeless_hop(
-        host=host, hop=miss.token, leaf=leaf, parts=parts,
-        datasets_by_name=datasets_by_name, quoted=bool(hop_quoted) and hop_quoted[0],
-    )
+    try:
+        return _route_edgeless_hop(
+            host=host, hop=miss.token, leaf=leaf, parts=parts,
+            datasets_by_name=datasets_by_name, quoted=bool(hop_quoted) and hop_quoted[0],
+        )
+    except UnresolvableDimensionRelationshipError:
+        flat = refusal()
+        if flat is not None:
+            raise flat from None
+        raise
 
 
 def _dataset_spelling(name: str, *, datasets_by_name: Dict[str, SlayerDataset]) -> str:

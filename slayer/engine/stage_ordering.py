@@ -2,30 +2,52 @@
 
 The last stage stays root / sink. Cycles, self-references, duplicate names, and
 a root referenced by another stage raise ``ValueError`` naming the offending
-stage; forward references are reordered, not rejected. Sibling refs are walked
-through ``population``, extensions' ``relationships[].to`` and extensions'
-``source_name``.
+stage; forward references are reordered, not rejected. A stage reads the siblings
+it names: its ``population``, its extensions' datasets and relationship targets,
+and any dataset a reference in its expressions names.
 """
 from __future__ import annotations
 
-from typing import AbstractSet, Any, Dict, List, Optional, Set, Tuple
+from typing import AbstractSet, Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from slayer.core.names import match_name
 from slayer.core.models import DatasetRelationship
 from slayer.core.query import DatasetExtension, SlayerQuery, SourceSpec, extension_dataset_names
 from slayer.core.scope import StageDisplay
+from slayer.engine.extensions import query_reference_parts
 
 #: Minted identity prefixes; dataset names never carry them (``__slayer_`` is reserved).
 USER_STAGE_PREFIX = "__slayer_stage_"
 SPLICED_STAGE_PREFIX = "__slayer_qb__"
 
 
-def stage_sibling_reads(*, query: SlayerQuery, siblings: AbstractSet[str]) -> Set[str]:
-    """Sibling names in ``siblings`` that ``query`` references; purely structural, never raises."""
+def stage_sibling_reads(
+    *, query: SlayerQuery, siblings: AbstractSet[str], displays: Optional[Mapping[str, StageDisplay]] = None,
+) -> Set[str]:
+    """The siblings ``query`` names: its population, its extensions' datasets, and a dataset any reference in its
+    expressions names (by identity, or by the display name of a sibling in its own list); never raises."""
     spec = query.population
     names = [spec] if spec is not None else []
-    found = (match_name(name=n, declared=siblings, quoted=False) for n in (*names, *extension_dataset_names(query)))
+    found = {match_name(name=n, declared=siblings, quoted=False) for n in (*names, *extension_dataset_names(query))}
+    written = _written_names(query=query, siblings=siblings, displays=displays or {})
+    for parts in query_reference_parts(query):
+        for head in parts[:-1]:
+            hit = match_name(name=head, declared=written, quoted=False)
+            if hit is not None and written[hit] != query.name:
+                found.add(written[hit])
     return {f for f in found if f is not None}
+
+
+def _written_names(
+    *, query: SlayerQuery, siblings: AbstractSet[str], displays: Mapping[str, StageDisplay],
+) -> Dict[str, str]:
+    """How ``query``'s expressions may write each sibling → its identity."""
+    own = displays.get(query.name) if query.name else None
+    group = own.dataset if own is not None else None
+    # A stage's spelling shadows a same-named dataset identity.
+    out = {s: s for s in siblings}
+    out.update({d.name: ident for ident, d in displays.items() if ident in siblings and d.dataset == group})
+    return out
 
 
 def stage_identity(*, name: str, dataset: Optional[str] = None) -> str:
@@ -112,6 +134,7 @@ def _validate_query_list_invariants(
     rest: List[Any],
     root: Any,
     sibling_names: Set[str],
+    displays: Mapping[str, StageDisplay],
 ) -> None:
     """Reject self-references and any sibling that depends on the root.
 
@@ -119,14 +142,14 @@ def _validate_query_list_invariants(
     Root-as-sink: no non-final stage may reference the root by name.
     """
     for q in queries:
-        if q.name and q.name in stage_sibling_reads(query=q, siblings={q.name} | sibling_names):
+        if q.name and q.name in stage_sibling_reads(query=q, siblings={q.name} | sibling_names, displays=displays):
             raise ValueError(
                 f"Stage '{q.name}' references itself — self-references "
                 f"are not allowed."
             )
     if root.name:
         referrers = sorted(
-            q.name for q in rest if root.name in stage_sibling_reads(query=q, siblings={root.name})
+            q.name for q in rest if root.name in stage_sibling_reads(query=q, siblings={root.name}, displays=displays)
         )
         if referrers:
             raise ValueError(
@@ -139,12 +162,13 @@ def _validate_query_list_invariants(
 def _build_dependency_graph(
     rest_by_name: Dict[str, Any],
     sibling_names: Set[str],
+    displays: Mapping[str, StageDisplay],
 ) -> "tuple[Dict[str, int], Dict[str, List[str]]]":
     """Build the (in_degree, dependents) adjacency for Kahn's algorithm."""
     in_degree: Dict[str, int] = dict.fromkeys(rest_by_name, 0)
     dependents: Dict[str, List[str]] = {name: [] for name in rest_by_name}
     for name, q in rest_by_name.items():
-        for prereq in stage_sibling_reads(query=q, siblings=sibling_names):
+        for prereq in stage_sibling_reads(query=q, siblings=sibling_names, displays=displays):
             dependents[prereq].append(name)
             in_degree[name] += 1
     return in_degree, dependents
@@ -178,9 +202,9 @@ def _kahn_sort(
     return sorted_names
 
 
-def topologically_order_stages(queries: List[Any]) -> List[Any]:
+def topologically_order_stages(queries: List[Any], *, displays: Optional[Mapping[str, StageDisplay]] = None) -> List[Any]:
     """Re-order a query list so every stage appears after the siblings it
-    references via ``population`` or ``relationships[].to``.
+    reads (``stage_sibling_reads``; ``displays`` maps localized identities to their spellings).
 
     The final entry is the entry point / DAG root: it stays last. Only
     the non-final entries are reordered. Stages that aren't reachable
@@ -197,8 +221,8 @@ def topologically_order_stages(queries: List[Any]) -> List[Any]:
     root = queries[-1]
     rest_by_name = _index_query_list_by_name(rest, root)
     sibling_names: Set[str] = set(rest_by_name)
-    _validate_query_list_invariants(queries, rest, root, sibling_names)
-    in_degree, dependents = _build_dependency_graph(rest_by_name, sibling_names)
+    _validate_query_list_invariants(queries, rest, root, sibling_names, displays or {})
+    in_degree, dependents = _build_dependency_graph(rest_by_name, sibling_names, displays or {})
     sorted_names = _kahn_sort(in_degree, dependents)
     return [rest_by_name[n] for n in sorted_names] + [root]
 

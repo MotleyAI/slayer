@@ -27,14 +27,44 @@ from typing import Any, Dict, Generator, List, Optional, Sequence, Tuple, TypeVa
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, RelationshipOrigin, SlayerDataset
 from slayer.core.names import match_name
+from slayer.core.relationship_walker import OrientedRelationship
 
 _T = TypeVar("_T")
+
+
+class PassThrough(BaseModel):
+    """What an untransformed row-level stage output reads: ``field`` at the end of ``path`` (its hops, from the stage's population)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: Tuple[OrientedRelationship, ...] = ()
+    field: str
+
+
+class InheritedEdge(BaseModel):
+    """An edge a stage inherits on pass-through keys, oriented from the stage; ``to`` is the target's identity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    to: str
+    from_columns: Tuple[str, ...]
+    to_columns: Tuple[str, ...]
+    name: Optional[str] = None
+    join_type: JoinType = JoinType.LEFT
+    cardinality: Optional[RelationshipCardinality] = None
+    origin: RelationshipOrigin
+
+    def as_relationship(self) -> DatasetRelationship:
+        return DatasetRelationship(
+            to=self.to, from_columns=list(self.from_columns), to_columns=list(self.to_columns), name=self.name,
+            join_type=self.join_type, cardinality=self.cardinality,
+        ).as_inherited(self.origin)
 
 
 class StageField(BaseModel):
@@ -73,6 +103,8 @@ class StageField(BaseModel):
     provenance: Optional[str] = None
     #: ``name`` under each non-canonical spelling of its path (stale-spelling slack).
     respellings: Tuple[str, ...] = ()
+    #: Set only for an untransformed public row-level output.
+    pass_through: Optional[PassThrough] = None
 
 
 class StageDisplay(BaseModel):
@@ -117,6 +149,9 @@ class StageSchema(BaseModel):
     grain: Optional[List[str]] = None
     # A spliced query-backed dataset's final stage keeps its source's default time dimension.
     default_time_dimension: Optional[str] = None
+    inherited_edges: Tuple[InheritedEdge, ...] = ()
+    # Why inherited edges could not be derived (inspect only); ``None`` when they were.
+    inherited_edges_error: Optional[str] = None
 
     @property
     def display_name(self) -> str:

@@ -28,8 +28,10 @@ from slayer.engine.population import dimension_routing
 from slayer.ir.source_bundle import (
     InnerRestriction,
     ResolvedSourceBundle,
+    absorb_inherited,
     follow_sibling_chain,
     overlay_metrics,
+    without_inherited,
 )
 
 __all__ = [
@@ -418,7 +420,9 @@ def apply_query_extensions(
         return scope, bundle
     display = bundle.stage_displays.get(query.name) if query.name else None
     where = display.label if display is not None else None
-    universe = _universe(bundle)
+    # Inherited edges sit out the merge, then yield to what the extensions declared.
+    stripped = {n: without_inherited(m) for n, m in _universe(bundle).items()}
+    universe = {n: m for n, (m, _) in stripped.items()}
 
     def conflict(exc: ValueError) -> None:
         if isinstance(exc, QueryExtensionError):
@@ -434,6 +438,11 @@ def apply_query_extensions(
             *(j.name for m in universe.values() for j in m.relationships if j.name and not j.query_local),
         ],
     )
+    datasets = absorb_inherited({
+        n: m.model_copy(update={"relationships": [*m.relationships, *stripped[n][1]]}) if n in stripped and stripped[n][1]
+        else m
+        for n, m in datasets.items()
+    })
     source = datasets[bundle.population.name] if bundle.population is not None else None
     bundle = bundle.model_copy(update={
         "population": source,

@@ -65,8 +65,9 @@ class TestEdgeLessStage:
 
     async def test_population_inference_over_a_stage_root(self, engine) -> None:
         rootless = q(dimensions=["per_customer.customer_id"], metrics=[m("sum(per_customer.revenue)", "total")])
+        stages = [per_customer(), rootless]
         with pytest.raises(PopulationInferenceError, match="per_customer"):
-            await engine.execute([per_customer(), rootless])
+            await engine.execute(stages)
 
     async def test_list_elements(self) -> None:
         pytest.importorskip("duckdb")
@@ -82,13 +83,15 @@ class TestEdgeLessStage:
 # --------------------------------------------------------------------------- #
 class TestDottedReferences:
     async def test_dotted_spelling_of_a_flattened_column_names_the_flat_column(self, engine) -> None:
+        stages = [_flattened(), over("s", dimensions=["s.customers.region"])]
         with pytest.raises(UnknownReferenceError) as ei:
-            await engine.execute([_flattened(), over("s", dimensions=["s.customers.region"])])
+            await engine.execute(stages)
         assert "customers__region" in _hint(ei.value)
 
     async def test_unrelated_short_form_suggests_the_flat_column_first(self, engine) -> None:
+        stages = [_flattened(), over("s", dimensions=["customers.region"])]
         with pytest.raises(UnrelatedDatasetError) as ei:
-            await engine.execute([_flattened(), over("s", dimensions=["customers.region"])])
+            await engine.execute(stages)
         hint = _hint(ei.value)
         assert "customers__region" in hint
         assert hint.index("customers__region") < hint.index("max(")

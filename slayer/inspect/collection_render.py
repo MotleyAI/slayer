@@ -61,6 +61,19 @@ def _relationship_targets(
     return sorted(tokens) + [f"{t} (ambiguous: name the edges)" for t in sorted(ambiguous)]
 
 
+async def with_relationships_as_read(datasets: list[SlayerDataset], engine: Any) -> list[SlayerDataset]:
+    """``datasets`` with each query-backed one's inherited edges merged in (none without an ``engine``)."""
+    if engine is None:
+        return datasets
+    out: list[SlayerDataset] = []
+    for m in datasets:
+        if m.source_queries:
+            relationships, _ = await engine.relationships_as_read(m)
+            m = m.model_copy(update={"relationships": relationships})
+        out.append(m)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # datasets_summary — extracted verbatim from the MCP tool (byte-identical)
 # ---------------------------------------------------------------------------
