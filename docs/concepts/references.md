@@ -25,13 +25,15 @@ SLayer has two distinct expression layers and the rules for what each one accept
 
 ### DSL mode (queries + `DatasetMetric.expression`)
 
-* A bare name must resolve to a `DatasetField`, a `DatasetMetric`, or a custom `Aggregation` defined on the dataset. Filters additionally accept query-level metric / transform / expression aliases, and synthesised canonical agg names like `revenue_sum`.
+* **A query reference is anchored at its first segment**, which names a dataset of the population's datasource, a stage of the same query list (a stage precedes a same-named dataset) or `time_spine`; the rest is an explicit route from it. `orders.amount`, `orders.revenue` (a saved metric), `count(orders.*)` and `customers.regions.name` all start at a dataset. A relationship name never starts a reference: a role is a route from its dataset (`orders.buyer.name`).
+* The population reaches the anchor by its **only to-one path**, else its **only route**; two or more to-one paths, or none and several routes, fail with `UnresolvableDimensionRelationshipError` naming each explicit spelling, even when one of them is a direct relationship. With no route the anchor is an [unrelated dataset](queries.md#cross-dataset-metrics).
+* Each hop of the explicit route resolves as an incident **edge name first, then a neighbour dataset name**, in **either direction** ([bidirectional traversal](models.md#bidirectional-traversal)); an ambiguous hop (parallel edges, no edge-name segment) fails closed naming the candidates, and a broken route is never silently repaired.
+* **A bare name in a query is a metric**: an alias declared by an entry of the same query, referenceable in filters, order and later stages. Any other bare name fails with `UnknownMetricError` suggesting each qualified field and metric of that name; `count(*)` without a population fails with `UnqualifiedRowCountError`. A pre-2.0 root-relative spelling in a query that names its population still converts, with a deprecation (see [Upgrading](../upgrading/2.0.md#root-relative-references)).
+* **A stored definition reads its own dataset**: a `DatasetMetric.expression`, a custom aggregation's defaults and Mode-A SQL resolve bare names against their dataset and dotted paths from it, exactly as before 2.0.
 * `{variable}` placeholders bind literal values in every Mode-B expression — metrics, filters, computed and time dimensions, `date_range` bounds, order and saved metric expressions.
-* A single-dot dotted path walks the relationship graph: `customers.regions.name` traverses `dataset → customers → regions` and resolves `name` on the regions dataset. Multi-hop is supported. Each segment resolves as an incident **edge name first, then a neighbour dataset name**, in **either direction** ([bidirectional traversal](models.md#bidirectional-traversal)); an ambiguous hop (parallel edges, no edge-name segment) fails closed naming the candidates.
-* A reference may start with the query root's own name — a dataset, or a stage by its name in the query list (`sum(orders.amount)` from `orders` is `sum(amount)`); the root wins over a relationship spelled the same.
-* A **short form** naming only the target dataset and field (`regions.name`) auto-routes to its full path when the target is reached by exactly one route — or, among several, exactly one fan-out-free route — surfacing under that full routed path; an ambiguous or unreachable target is rejected (`UnresolvableDimensionRelationshipError`) with a suggested path, and a broken explicit chain is never silently repaired.
-* Aggregations: `<agg>(<col>)` (e.g. `sum(revenue)`), `count(*)`, `<agg>(<col>, <args>)` (e.g. `weighted_avg(price, weight=quantity)`), and `<agg>(<dotted.path>)` for cross-dataset aggregations — see [Aggregation syntax](#aggregation-syntax).
-* Transform calls wrap aggregated refs: `cumsum(sum(revenue))`, `rank(sum(revenue), partition_by=region, direction='desc')`, `change(sum(customers.revenue))`, etc.
+* Aggregations: `<agg>(<dataset>.<col>)` (e.g. `sum(orders.revenue)`), `count(<dataset>.*)`, `<agg>(<col>, <args>)` (e.g. `weighted_avg(orders.price, weight=orders.quantity)`) — see [Aggregation syntax](#aggregation-syntax).
+* Transform calls wrap aggregated refs: `cumsum(sum(orders.revenue))`, `rank(sum(orders.revenue), partition_by=customers.region, direction='desc')`, `change(sum(customers.revenue))`, etc.
+* **Result keys** are the reference as written, its route spelled canonically, never the population: `sum(orders.amount)` keys `orders.amount_sum` under every population; an alias keys as itself; an unaliased expression keys by its references' common dataset (`orders.amount_sum_count`), or by its sanitized text when they share none. Two entries starting at different datasets are two columns even when they read one field.
 * A `__` token in a name is matched by **exact name**, not split into a relationship walk — write a single-dot DSL path (`customers.region`) for a relationship. Only the reserved `__slayer_` prefix is rejected.
 * Strings are single-quoted with `''` for an embedded quote and a backslash is an ordinary character (`'O''Brien'`, `'C:\temp'`), while a double-quoted name is an identifier (`sum("order total")`, `customers."Region"`) with `""` for an embedded double quote; an unresolved double-quoted name gets a hint to single-quote a string.
 * A bare name matches in any case and a double-quoted one exactly; when two declared names differ only in case, the exact spelling wins and any other spelling is an error naming both (`"Revenue"` / `"revenue"` pick one). Keywords and function, aggregation and transform names match in any case (`SUM(amount)` is `sum(amount)`), and `agg` is reserved: it is never a function or an aggregation name, though a field or metric may be named `agg`.
@@ -65,8 +67,8 @@ their ranking key, a row-level expression (`last(balance, updated_at)`,
 `last(balance, CAST(updated_at AS DATE))`), never a literal or a nested aggregate.
 
 Naming and matching read the parse tree, not the text: a metric declared
-`{"metric": "sum(revenue)", "alias": "rev"}` is matched by a filter written
-`sum(revenue) > 100`, and the result key is `revenue_sum` either way.
+`{"metric": "sum(orders.revenue)", "alias": "rev"}` is matched by a filter written
+`sum(orders.revenue) > 100`; its result key is `rev`, and `orders.revenue_sum` without the alias.
 
 Disambiguation rules:
 
@@ -131,10 +133,10 @@ Rejected at `DatasetField` construction:
 Accepted at `SlayerQuery` construction:
 
 ```json
-{"population": "orders", "filter": ["sum(revenue) > 100"]}
-{"population": "orders", "filter": ["change(sum(revenue)) > 0"]}
+{"population": "orders", "filter": ["sum(orders.revenue) > 100"]}
+{"population": "orders", "filter": ["change(sum(orders.revenue)) > 0"]}
 {"population": "orders", "filter": ["customers.region = 'EU'"]}
-{"population": "orders", "filter": ["status = '{val}'"], "variables": {"val": "active"}}
+{"population": "orders", "filter": ["orders.status = '{val}'"], "variables": {"val": "active"}}
 ```
 
 Rejected at `SlayerQuery` construction:
@@ -147,14 +149,14 @@ Rejected at `SlayerQuery` construction:
 Rejected at enrichment:
 
 ```json
-{"population": "orders", "dimensions": ["id"], "filter": ["initcap(name) = 'Ada'"]}
+{"population": "orders", "dimensions": ["orders.id"], "filter": ["initcap(orders.name) = 'Ada'"]}
 // ↑ UnknownFunctionError: raw SQL function calls outside the library in DSL mode
 
-{"population": "orders", "dimensions": ["id"], "filter": ["unknown_col > 0"]}
-// ↑ ReferenceError: 'unknown_col' is not a DatasetField / DatasetMetric on 'orders'
+{"population": "orders", "dimensions": ["orders.id"], "filter": ["orders.unknown_col > 0"]}
+// ↑ ReferenceError: 'unknown_col' is neither a field nor a saved metric on 'orders'
 
-{"population": "orders", "dimensions": ["id"], "filter": ["customers__region = 'EU'"]}
-// ↑ ReferenceError: no DatasetField / DatasetMetric named 'customers__region' on 'orders'
+{"population": "orders", "dimensions": ["orders.id"], "filter": ["orders.customers__region = 'EU'"]}
+// ↑ ReferenceError: no field named 'customers__region' on 'orders'
 //   (`__` is matched by exact name, not split — for the relationship write dotted: 'customers.region')
 ```
 

@@ -16,7 +16,7 @@ Row-level SQL expressions; the role (group-by key or aggregation source) is deci
 per query. A list field (`datatype: ARRAY`) groups and compares as the set of its distinct elements and
 takes only `count` / `count_distinct`; aggregate its elements through `<field>.value` (e.g. `tags.value`).
 A field's `sql` is Mode-A SQL: any dialect expression, dotted relationship paths allowed, but no aggregations or {{product}} transforms. A field `filter` becomes
-CASE WHEN inside aggregates — `sum(active_revenue)` counts only matching rows,
+CASE WHEN inside aggregates — `sum(orders.active_revenue)` counts only matching rows,
 without affecting sibling metrics. `allowed_aggregations` whitelists what may
 aggregate the field; a sole `primary_key: true` field is restricted to count / count_distinct / count_distinct_approx / min / max / collect.
 
@@ -28,10 +28,11 @@ the need.
 ## Saved metrics and custom aggregations
 
 A dataset's `metrics` list is a library of named expressions (same grammar as query
-metrics); queries reference them by bare name, and saved expressions may reference
+metrics, read from the dataset itself: a definition names its own fields bare); queries
+reference them as `<dataset>.<metric>` (`orders.aov`), and saved expressions may reference
 each other (cycles raise). `aggregations` defines custom aggregation functions
 (`{value}` placeholder plus params) callable like built-ins:
-`trimmed_mean(score, lo=10, hi=90)`.
+`trimmed_mean(orders.score, lo=10, hi=90)`.
 
 ## Relationships
 
@@ -55,12 +56,12 @@ queryable by name.
 
 ## Result keys and query-backed datasets
 
-Result columns are `dataset.field`: `sum(revenue)` → `orders.revenue_sum`,
-`count(*)` → `orders._count`; joined dimensions keep the full path
-(`orders.customers.regions.name`); expression keys are sanitized
-(`sum(amount - cost)` → `amount_cost_sum`); `name=` overrides. Saving a query as a
+Result columns key by the reference as written, never by the population:
+`sum(orders.revenue)` → `orders.revenue_sum`, `count(orders.*)` → `orders._count`,
+`customers.regions.name` keeps its path; expression keys are sanitized
+(`sum(orders.amount - orders.cost)` → `orders.amount_cost_sum`); an alias keys as itself. Saving a query as a
 dataset (`create_dataset` with `query=`) makes it query-backed: its stages are stored
 SlayerQuery dicts, dotted paths flatten into `__` field names (`stores.name` →
 `stores__name`), and the cached fields refresh only when the dataset is saved again.
-Run one by name with `query(query="monthly_revenue", refine={"dimensions": ["region"]})` to
+Run one by name with `query(query="monthly_revenue", refine={"dimensions": ["orders.status"]})` to
 merge extra dimensions, metrics, filters, order or limit into its final stage.

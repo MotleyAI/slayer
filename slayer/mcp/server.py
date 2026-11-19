@@ -768,7 +768,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved metrics, {"name": "aov", "expression": "sum(revenue) / count(*)"} plus optional '
-                'label, description, meta; queries reference them by bare name ("aov").'
+                'label, description, meta; queries reference them by dataset ("orders.aov").'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
@@ -983,7 +983,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved metrics to upsert by name, {"name": "aov", "expression": "sum(revenue) / '
-                'count(*)"} plus optional label, description, meta; queries use them by bare name.'
+                'count(*)"} plus optional label, description, meta; queries use them by dataset (orders.aov).'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(

@@ -68,7 +68,8 @@ async def stored_stage(tmp_path: Path, *, datasets: list[SlayerDataset], stage: 
         datasource=DatasourceConfig(name=STORE_DS, type="sqlite", database=":memory:"),
     )
     model = await storage.get_dataset("sq", data_source=STORE_DS)
-    assert model is not None and model.source_queries
+    assert model is not None
+    assert model.source_queries
     return model.source_queries[0]
 
 

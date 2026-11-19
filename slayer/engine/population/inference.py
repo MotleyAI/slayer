@@ -434,7 +434,8 @@ def _anchor_names(
     refs.extend(_restriction_refs(query))
     root = query.population_name
     # A bare name in a root-less query is an alias (or refused): it anchors nothing.
-    return {ref.split(".")[0] if "." in ref else root for ref in refs if ref and ("." in ref or root is not None)}
+    heads = {ref.split(".")[0] for ref in refs if "." in ref}
+    return heads | ({root} if root is not None and any(r and "." not in r for r in refs) else set())
 
 
 async def _classification_scopes(

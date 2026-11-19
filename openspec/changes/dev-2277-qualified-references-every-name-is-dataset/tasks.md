@@ -22,16 +22,16 @@
 
 ## 3. Implementation
 
-- [ ] 3.1 One anchor resolver over the bundle: classify a first segment (stage, dataset of the reading datasource, time spine; identifier-case rule; hidden datasets unknown), route by `queries/references` › The anchor is reached by its only to-one path, walk the explicit route. Remove the root-qualifier drop and the literal-first precedence. Verify: tests 2.1–2.2 pass.
-- [ ] 3.2 Use the resolver in population inference, `recommend_population`, schema-drift attribution and the stored migration. Verify: test 2.3 passes.
-- [ ] 3.3 Bare names: alias, then the unknown-metric error with qualified suggestions; root-less `count(*)` typed error. Verify: the bare-name and row-count scenarios pass.
-- [ ] 3.4 Keys: carry the reference identity (anchor, canonical route, leaf) through projection; build keys from it; aliases bare; expressions by common anchored prefix; stage column names from keys minus the population. Verify: test 2.4 passes.
-- [ ] 3.5 Legacy conversion at pipeline entry over `core.syntax` parse trees, through `deprecated_input(…, removal="3.0")`; saved queries store the twin; refinement and cache compare converted forms. Verify: test 2.5 passes.
-- [ ] 3.6 Meaning-change notice as an informational structured response warning built through `scheduled_notice(…, removal="3.0")`, never a `FutureWarning`. Verify: test 2.6 passes.
-- [ ] 3.7 Dataset-local binding mode for stored definitions. Verify: test 2.7 passes.
-- [ ] 3.8 Stored migration in the model-aware load pipeline with the version steps; round-trip check; unloadable boundary. Verify: test 2.8 passes.
-- [ ] 3.9 `recommend_population` items (DEV-2045). Verify: test 2.9 passes.
-- [ ] 3.10 Typed errors (ambiguity, unknown metric, edge-first, unqualified count, unknown dataset) per `python.core` P5. Verify: the error scenarios pass.
+- [x] 3.1 One anchor resolver over the bundle: classify a first segment (stage, dataset of the reading datasource, time spine; identifier-case rule; hidden datasets unknown), route by `queries/references` › The anchor is reached by its only to-one path, walk the explicit route. Remove the root-qualifier drop and the literal-first precedence. Verify: tests 2.1–2.2 pass.
+- [x] 3.2 Use the resolver in population inference, `recommend_population`, schema-drift attribution and the stored migration. Verify: test 2.3 passes.
+- [x] 3.3 Bare names: alias, then the unknown-metric error with qualified suggestions; root-less `count(*)` typed error. Verify: the bare-name and row-count scenarios pass.
+- [x] 3.4 Keys: carry the reference identity (anchor, canonical route, leaf) through projection; build keys from it; aliases bare; expressions by common anchored prefix; stage column names from keys minus the population. Verify: test 2.4 passes.
+- [x] 3.5 Legacy conversion at pipeline entry over `core.syntax` parse trees, through `deprecated_input(…, removal="3.0")`; saved queries store the twin; refinement and cache compare converted forms. Verify: test 2.5 passes.
+- [x] 3.6 Meaning-change notice as an informational structured response warning built through `scheduled_notice(…, removal="3.0")`, never a `FutureWarning`. Verify: test 2.6 passes.
+- [x] 3.7 Dataset-local binding mode for stored definitions. Verify: test 2.7 passes.
+- [x] 3.8 Stored migration in the model-aware load pipeline with the version steps; round-trip check; unloadable boundary. Verify: test 2.8 passes.
+- [x] 3.9 `recommend_population` items (DEV-2045). Verify: test 2.9 passes.
+- [x] 3.10 Typed errors (ambiguity, unknown metric, edge-first, unqualified count, unknown dataset) per `python.core` P5. Verify: the error scenarios pass.
 
 ## 4. Respell the tests
 
@@ -40,8 +40,8 @@
 
 ## 5. Specs, architecture and docs
 
-- [ ] 5.1 `architecture/semantics.arc42.md`: replace §4 Principle 1 and reword Axioms 2.4, 2.6 and 3.1 exactly as design decisions 7 and 8 quote them. Verify: `poetry run la-arch-check` passes.
-- [ ] 5.2 MCP tool descriptions, input schemas, server instructions and `slayer/memories/help_content/` in the qualified syntax. Verify: test 2.10 passes.
+- [x] 5.1 `architecture/semantics.arc42.md`: replace §4 Principle 1 and reword Axioms 2.4, 2.6 and 3.1 exactly as design decisions 7 and 8 quote them. Verify: `poetry run la-arch-check` passes.
+- [x] 5.2 MCP tool descriptions, input schemas, server instructions and `slayer/memories/help_content/` in the qualified syntax. Verify: test 2.10 passes.
 - [ ] 5.3 `docs/concepts/references.md` and `queries.md`, every query example under `docs/`, the reference pages; re-execute every notebook under `docs/examples/` and save its outputs (delete a stale local jaffle DuckDB first; run twice).
 - [ ] 5.4 `docs/upgrading/2.0.md`: a section with a before and after for every converted spelling, the key changes, the cycle meaning change and its notice, the ambiguity refusals, and root-less `count(*)`.
 

@@ -2,7 +2,7 @@
 
 A transform wraps an aggregated value and computes across result rows. Transforms
 work in metrics, filters and order, and nest in either order
-(`cumsum(change(sum(amount)))`, `change(cumsum(sum(amount)))`).
+(`cumsum(change(sum(orders.amount)))`, `change(cumsum(sum(orders.amount)))`).
 
 ## Catalogue
 
@@ -14,7 +14,7 @@ work in metrics, filters and order, and nest in either order
 | `time_shift(x, n[, 'year'])` | the value `n` buckets (or another granularity's periods) away |
 | `lag(x, n)` / `lead(x, n)` | the value `n` result rows back / ahead |
 | `first(x)` / `last(x)` | the earliest / latest bucket's value, repeated on every row |
-| `consecutive_periods(predicate)` | length of the current trailing run where the predicate holds |
+| `consecutive_periods(p)` | length of the current trailing run where the predicate `p` holds |
 | `rank(x, direction=...)` | rank, ties share a rank, gaps after ties |
 | `dense_rank(x, direction=...)` | rank without gaps |
 | `percent_rank(x)` | relative rank in [0, 1], lowest value 0 |
@@ -35,7 +35,7 @@ and blind to gaps. Prefer `change_pct` for growth and `time_shift` for custom
 arithmetic or a different grain (`time_shift(x, -1, 'year')` on months is
 year-over-year).
 
-`consecutive_periods` takes a predicate (`sum(amount) > 0`) or a value (true when
+`consecutive_periods` takes a predicate (`sum(orders.amount) > 0`) or a value (true when
 non-NULL and non-zero); a false or missing bucket resets the run to 0.
 
 ## Ranking
@@ -43,7 +43,7 @@ non-NULL and non-zero); a false or missing bucket resets the run to 0.
 `rank` and `dense_rank` require `direction='desc'` (highest is 1) or `'asc'`.
 `partition_by=` ranks within groups; its keys must be query dimensions. A NULL value
 ranks NULL, so a rank filter drops it. Top N per group is a filter:
-`rank(sum(amount), partition_by=region, direction='desc') <= 3`. Never write raw
+`rank(sum(orders.amount), partition_by=stores.region, direction='desc') <= 3`. Never write raw
 `OVER (...)` SQL.
 
 ## Limits

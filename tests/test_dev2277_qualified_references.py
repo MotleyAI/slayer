@@ -268,7 +268,8 @@ async def test_expression_keys_carry_their_common_anchor(engine: SlayerQueryEngi
     common, mixed = resp.columns
     assert common == "orders.amount_sum_count"
     assert "." not in mixed
-    assert "orders" in mixed and "customers" in mixed
+    assert "orders" in mixed
+    assert "customers" in mixed
 
 
 async def test_different_anchors_are_different_columns(engine: SlayerQueryEngine) -> None:

@@ -9,7 +9,7 @@ The `query` tool takes one of:
 - a list of query objects (stages), the last one returned;
 - the name of a saved query-backed dataset, with `refine` merging extra dimensions,
   metrics, filters, order or limit into its final stage:
-  `query(query="monthly_revenue", refine={"dimensions": ["region"]})`.
+  `query(query="monthly_revenue", refine={"dimensions": ["orders.status"]})`.
 
 ## Stages
 
@@ -18,10 +18,12 @@ Every stage but the last carries a `name`; later stages name it as `population`
 same name inside its list. Define before you reference: a stage sees only what its
 source defines or an earlier stage returned.
 
-An outer stage sees the inner result's columns. Dotted paths flatten to `__`
-(`customers.regions.name` becomes `customers__regions__name`); metrics keep their names
-(`orders.total` is `total`). Select the columns the outer stage needs, display names
-included, in the inner stage.
+An outer stage reads the inner result's columns through the stage's name:
+`running.<column>`. A column is the inner key without the inner population, dotted
+paths flattened to `__` (in a stage over `orders`, `customers.regions.name` is
+`running.customers__regions__name` and `orders.status` is `running.status`); an alias is
+its own name. Select the columns the outer stage needs, display names included, in the
+inner stage.
 
 ## Rows
 
