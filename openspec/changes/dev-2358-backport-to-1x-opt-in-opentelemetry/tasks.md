@@ -74,4 +74,4 @@
 - [x] 4.1 Run the local test scope from `la-affected-tests --base 1.x`, plus every 2.x test. Run `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors against the baseline), `poetry run la-arch-check`, `npx -y likec4@1.47.0 validate architecture` and `openspec validate dev-2358-backport-to-1x-opt-in-opentelemetry --strict`. All must pass.
 - [x] 4.2 Open the PR against `1.x` after the user's go-ahead.
 - [ ] 4.3 After `openspec archive`, verify that `openspec/specs/otel/{collection,controls,delivery}/spec.md` carry our `## Purpose`, with no `TBD` placeholder, and that `openspec validate --specs --strict` passes.
-- [ ] 4.4 Check that the DEV-2358 comment "Forward-merge notes (1.x → main)" matches what shipped, and update it if any deviation changed.
+- [x] 4.4 Check that the DEV-2358 comment "Forward-merge notes (1.x → main)" matches what shipped, and update it if any deviation changed.
