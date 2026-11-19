@@ -48,7 +48,7 @@
 
   Verify that 2.4, 2.5, 2.7 and 2.10–2.12 pass.
 - [x] 3.6 `pyproject.toml`: the `otel` extra (`opentelemetry-api`, `opentelemetry-sdk` and `opentelemetry-exporter-otlp-proto-http`, each `>=1.45`, plus `requests>=2.25`, all optional), also added to `all`. Run `poetry lock` on 1.x. Verify that the lock diff only adds what the extra needs, and that `poetry install -E all` succeeds.
-- [ ] 3.7 Architecture, applying design.md decision 5 verbatim:
+- [x] 3.7 Architecture, applying design.md decision 5 verbatim:
   - the `model.c4` `core.probes` element, the `otel` node and its three arrows;
   - the `index.yaml` `otel` entry;
   - `architecture/python.otel.arc42.md`;

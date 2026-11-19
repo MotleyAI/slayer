@@ -18,6 +18,7 @@ flowchart TD
   subgraph core["Core domain models"]
     core__query["Query"]
     core__models["Models"]
+    core__probes["Probes"]
   end
   subgraph sql["SQL generation"]
     sql__render["Render"]
@@ -70,7 +71,7 @@ flowchart TD
   storage --> engine
   storage --> sql
   classDef leaf fill:none;
-  class core__query,core__models,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan,ir,storage__migrations leaf;
+  class core__query,core__models,core__probes,sql__render,sql__dialects,sql__sql_predicate,sql__window_detect,engine__syntax,engine__binding,engine__bind_inputs,engine__elaborate_env,engine__elaborate,engine__compile,engine__plan,ir,storage__migrations leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:query_pipeline -->
