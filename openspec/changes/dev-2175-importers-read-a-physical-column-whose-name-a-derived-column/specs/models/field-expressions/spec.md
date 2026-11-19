@@ -136,7 +136,7 @@ A field SHALL be a physical reader of a source column when the form it runs is t
 
 ### Requirement: Source columns in portable sql are typed
 
-In a field's portable `sql`, a source column SHALL take the field's declared `datatype` when the field reads it bare, else the source column's live type when known, else UNKNOWN. A derived field with a declared `datatype` other than TEXT or UNKNOWN SHALL be cast to it as today.
+In a field's portable `sql`, a source column SHALL take the field's declared `datatype` when the field reads it bare, else the source column's live type when known, else `Opaque`. A derived field's declared `datatype` SHALL be cast to exactly as today.
 
 #### Scenario: Typed from the live column
 - **WHEN** field `q` is `expression: "amount / 4"` with no `datatype` over the live integer column `amount`

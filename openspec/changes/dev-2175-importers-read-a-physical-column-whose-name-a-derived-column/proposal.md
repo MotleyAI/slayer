@@ -10,7 +10,7 @@ In a field's `sql`, a bare `x` reads the field `x` whenever one exists, so once 
 - **BREAKING** In a metric's `expression`, `source.x` reads a source column unless the dataset declares a field named `source`. Stored definitions that used `source` as a path are migrated, or become unloadable.
 - A metric's `expression` takes the same object; only its portable `sql` is evaluated, and an entry for the datasource's dialect is refused at save.
 - The Cube, dbt and Ossie importers read a physical column whose name a field has taken with the source's meaning: DEV-2171's collision drops and self-named drops are lifted. Ossie expression objects are stored verbatim.
-- Ingestion writes `expression`; the Ossie exporter writes stored expressions as they are and inlines field references.
+- Ingestion writes `expression`; the Ossie exporter writes stored expressions as they are and inlines field references. The Ossie `SLAYER` payload moves to version 3, which carries a field's definition under `expression`; versions 1 and 2 still import.
 - `architecture/semantics.arc42.md` §4 P1–P3 state the row-definition name rule.
 
 ## Capabilities
@@ -29,6 +29,7 @@ In a field's `sql`, a bare `x` reads the field `x` whenever one exists, so once 
 - `importers/osi-import`: expression objects stored verbatim; metric dialect entries and `source.x`.
 - `importers/osi-export`: stored expressions exported as they are, field references inlined.
 - `compatibility/removal-tripwire`: field `sql` joins the covered deprecated forms.
+- `compatibility/ossie-vocabulary`: a field's definition is `expression` (its `sql` no longer a kept key); the `SLAYER` payload moves to version 3.
 
 ## Impact
 
@@ -36,5 +37,5 @@ In a field's `sql`, a bare `x` reads the field `x` whenever one exists, so once 
 - **Stored data:** one `SlayerModel` version step after DEV-1607's; documents whose datasource config is absent keep the deprecated `sql` until it is known.
 - **Tests:** about 2,840 test field definitions respelled; 33 strict xfails start passing; six existing tests aligned with the owner's approval.
 - **Docs:** concepts (models, formulas, references), the Cube, dbt and Ossie pages, `docs/upgrading/2.0.md`, help memories.
-- **Depends on:** DEV-1607 (vocabulary rename), stacked on its branch; DEV-2295 and DEV-2292 (living-architecture `dr-refactor`) for the keyword respelling of the suite.
+- **Depends on:** DEV-2318 (vocabulary names, on `main`) and DEV-1607 (Ossie shapes, merged into this branch, not yet on `main`); DEV-2295 and DEV-2292 (living-architecture `dr-refactor`) for the keyword respelling of the suite.
 - **Hands off:** delimited Ossie names to DEV-2244 item 7.

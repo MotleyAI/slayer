@@ -57,3 +57,27 @@ Schema drift and type refinement SHALL treat exactly the physical readers (`mode
 
 - **WHEN** a stored `DOUBLE` field whose expression is a double-quoted bare identifier names a live integer column
 - **THEN** type refinement on load narrows it exactly as it would an unquoted base field
+
+### Requirement: Importers emit logical key names
+
+Every importer SHALL emit `from_columns` / `to_columns` in field-`name` spelling naming declared physical readers on both sides (`models/field-expressions` › A physical reader is a bare source column without a filter). An importer SHALL key a join on a physical column through a physical reader of that column, added as a hidden field when none exists (`importers/meaning-preservation` › One hidden reader per physical column), on the dataset and on any view facade carrying the join, whichever members or dimensions hold the column's name. The Cube importer SHALL keep join keys as member names where the member is a physical reader, and SHALL drop a join, with a conversion-report warning, when an ON operand is a member reference whose definition is not a physical reader. The dbt importer SHALL skip, with a warning, a join whose entity `expr` is not a single identifier. The OSI importer SHALL check both sides of a relationship against the contract before adding it and SHALL skip a violating relationship with its existing warning. Auto-ingestion SHALL apply its field renaming to join keys so a generated join always names the generated field.
+
+#### Scenario: Cube join keys are member names
+
+- **WHEN** a Cube join's ON is `{CUBE}.customer_id = {customers.id}` and the `id` member's `sql` is `{CUBE}.cust_pk`
+- **THEN** the imported relationship carries `from_columns: ["customer_id"]` and `to_columns: ["id"]`, and the imported `id` field carries `expression: cust_pk`
+
+#### Scenario: A Cube ON operand naming no member synthesises a hidden key column
+
+- **WHEN** a Cube join's ON references a target column that is not a declared member of the target cube
+- **THEN** the joined dataset carries a hidden physical reader of that column and the relationship keys name it
+
+#### Scenario: dbt synthesises a hidden foreign-key column
+
+- **WHEN** a dbt semantic model declares a foreign entity whose `expr` no physical reader covers
+- **THEN** the converted dataset carries a hidden physical reader of that column and the relationship keys name it
+
+#### Scenario: Ingestion's column rename applies to join keys
+
+- **WHEN** an ingested table has a foreign-key column named `_count`
+- **THEN** the generated field and the generated relationship key are both spelled `count_col`

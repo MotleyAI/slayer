@@ -7,8 +7,8 @@ See proposal.md for why. State on `main` (`e6978e9a`):
 - Mode B binds names only to model columns (`slayer/engine/binding.py`), never to physical columns.
 - DEV-2171's `slayer/importers/physical.py` (`PhysicalIndex`, `unreadable_columns`) drops every imported construct reading a physical name another column holds, and every self-named member; 33 strict xfails wait on this change.
 - The Ossie importer selects one dialect entry and renders it for the target (`slayer/osi/dialects.py::select_expression`); the exporter writes `{sql}` when it round-trips exactly, else a dialect entry.
-- Stored versions: SlayerModel 25, SlayerQuery 15, Memory 11. Migrations are pure dict steps that also run inside `model_validate`; model-aware repairs run in `_migrate_and_refine_on_load` (`slayer/storage/base.py`), and migrated documents are written back.
-- DEV-1607 (stacked below this change) renames `Column` → `DatasetField`, `columns` → `fields`, `type` → `datatype`, and metric `formula` → a string `expression`; it keeps field `sql`.
+- Stored versions (with DEV-1607 merged in): SlayerModel 26, SlayerQuery 16, Memory 12. Migrations are pure dict steps that also run inside `model_validate`; model-aware repairs run in `_migrate_and_refine_on_load` (`slayer/storage/base.py`), and migrated documents are written back.
+- DEV-2318 (on `main`) renamed every name to Ossie's vocabulary (`Column` → `DatasetField`, `columns` → `fields`, `type` → `datatype`, metric `formula` → a string `expression`, `measure` → `metric`). DEV-1607 (merged into this branch, not yet on `main`) added the Ossie shapes: query entries, `from_columns` / `to_columns`, filter strings, unknown-key refusal, Ossie datatype names, `SLAYER` payload version 2. Both keep field `sql` and a string metric `expression`. The `SLAYER` payload carries field `sql` on the wire (`FieldContent.sql`, embedded `DatasetField`s).
 
 **Principles that apply:**
 - `system` P4 (AST-built SQL), P7 (fail closed), P8 (one reader of Mode B), P10 (one typing), P11 (fail at save time);
@@ -52,7 +52,7 @@ See proposal.md for why. State on `main` (`e6978e9a`):
 10. **Native text keeps its lexical scoping**: CTE and subquery aliases first, then the self-qualifier, then a relationship or target-dataset hop; any other dotted name (`schema.table.col`) is opaque and kept verbatim. (codex)
 11. **One dependency graph**: references extracted from portable text (`core.syntax`) and native text (the sqlglot walker), including field and dataset filters, feed one graph used at save time and at query time. (codex)
 12. **Physical reader** = a field whose running form is a bare source column and which has no `filter`. Helpers, drift, ingestion, typing and join keys share this one predicate. (codex)
-13. **Typing**: in portable `sql`, a source column takes the field's declared `datatype`, else the live type, else UNKNOWN. (default)
+13. **Typing**: in portable `sql`, a source column takes the field's declared `datatype`, else the live type, else `Opaque`; a derived field's declared `datatype` is cast exactly as today. (default)
 14. **Metric `datatype`** comes from DEV-1607's rename of `type`; no work here. (default)
 
 ### Old spelling and stored documents
@@ -90,9 +90,12 @@ See proposal.md for why. State on `main` (`e6978e9a`):
     - delete `tests/test_osi_source_columns.py::test_source_column_behind_a_renamed_field_is_reported`;
     - `tests/test_dbt_converter.py::TestJoinKeyColumns::test_target_key_named_by_a_derived_column_drops_the_join` → `…_keys_the_join_on_the_physical_column`, asserting the join keyed on hidden `id_raw` carrying the primary key, the derived `id` kept and not the key, no warning;
     - `tests/test_dev2171_cube_import.py::test_quoting_is_kept_on_the_hidden_base_column` → `test_quoting_is_kept_on_the_physical_read`, asserting `status_upper`'s dialect entry keeps `UPPER("status")` and its values. (user)
-31. **Stacked on DEV-1607**: the tests stage merges DEV-1607's branch in; the PR opens after DEV-1607 lands on `main`. (default; the issue says so)
+31. **Stacked on DEV-1607**: DEV-1607's branch (`egor/dev-1607-ossie-shapes-on-top-of-the-vocabulary-rename`) is merged in (2026-11-19); the PR opens after DEV-1607 lands on `main`. (default; the issue says so)
 32. **Rejected (codex)**: "top-level `sql` must win over a dialect entry" — the owner ruled the reverse (decision 3) and Ossie's text supports it; a test pins the precedence with deliberately different forms.
 33. **Rejected (codex)**: "write-back on load violates storage P3.1" — P3.1 is a `target:` clause; migrated documents are written back today (as DEV-1607's decision 11).
+34. **The `SLAYER` payload moves to version 3**, carrying a field's definition under `expression`; versions 1 and 2 still import, their field `sql` converting as a stored field `sql` does with the import's datasource dialect. DEV-2318's ruling: a renamed wire key bumps its format's version. (default; added after merging DEV-1607, user-approved edit)
+35. **`models/join-keys` › Importers emit logical key names follows the helper rule**: joins key on a physical reader, else the shared hidden helper; a join is dropped only when an ON operand is a member reference that is not a physical reader. Its old text (Cube drops a join over a non-base member; dbt synthesises a key only when no dimension covers the entity) contradicted the Cube and dbt deltas. (default; correction found while rebasing on DEV-1607, user-approved edit)
+36. **Datatype names follow DEV-1607**: the untyped fallback is `Opaque`, and the tripwire delta is rebased on `population`. (default; user-approved edit)
 
 ## Risks / Trade-offs
 
@@ -101,7 +104,7 @@ See proposal.md for why. State on `main` (`e6978e9a`):
 - [A dataset moved to another database type finds no entry for its dialect] → refused at save, or at query time when stored; the error names the dialects present. Authors use portable `sql` for multi-dialect datasets.
 - [Ossie documents whose portable `sql` Mode B cannot read yet (DEV-2282 gaps)] → the importer translates a readable entry into a datasource-dialect entry and reports it.
 - [The suite respelling is large] → value pass first on the tested production conversion; the keyword pass under `dr-refactor` with the full gate; changed expected values need consent.
-- [Concurrent version bumps (DEV-1607, DEV-2277, DEV-2243)] → this step follows DEV-1607's and is renumbered at merge; migration tests pin source versions symbolically.
+- [Concurrent version bumps (DEV-2277, DEV-2243)] → this step follows DEV-1607's (SlayerModel 26 → 27) and is renumbered at merge; migration tests pin source versions symbolically.
 - [Native text with dotted names that are neither paths nor lexical aliases] → kept verbatim as opaque, as today.
 
 ## Migration Plan
