@@ -40,5 +40,5 @@ in `main`'s vocabulary and paths (`slayer.database.client`, `population` / `metr
 
 ## 6. Before the PR opens
 
-- [ ] 6.1 Wait until #605 is merged into `1.x` and its OpenSpec change archived; then `git merge origin/1.x` (message quoting `'origin/1.x'`). Resolve by the same rules; re-run section 5.
-- [ ] 6.2 `poetry run python -m scripts.forward_merge_specs --base origin/main --head HEAD --one-x origin/1.x`; add a ledger entry (title, `1.x` hash, reason "main keeps its own wording: …") to `openspec/forward-merge-ledger.yaml` for each 1.x OTel requirement it names. Verify: the check passes.
+- [x] 6.1 Wait until #605 is merged into `1.x` and its OpenSpec change archived; then `git merge origin/1.x` (message quoting `'origin/1.x'`). Resolve by the same rules; re-run section 5.
+- [x] 6.2 `poetry run python -m scripts.forward_merge_specs --base origin/main --head HEAD --one-x origin/1.x`; add a ledger entry (title, `1.x` hash, reason "main keeps its own wording: …") to `openspec/forward-merge-ledger.yaml` for each 1.x OTel requirement it names. Verify: the check passes.
