@@ -1,4 +1,4 @@
-"""Executed ``{var}`` substitution on Mode-B formula surfaces (SQLite + DuckDB).
+"""Executed ``{var}`` substitution on Mode-B expression surfaces (SQLite + DuckDB).
 
 Dataset: ``tests/_dev1739_fixtures.py`` (amount:sum = 210; by region North=100
 South=50 NULL=60; by month Jan=55 Feb=70 Mar=85).

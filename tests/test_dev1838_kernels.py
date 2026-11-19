@@ -139,7 +139,7 @@ class TestRankedKernelSynthesis:
         kern = attach.kernel
         assert isinstance(kern, RankedProducerKernel)
         assert kern.agg == "last"
-        # No temporal dimension in the grain — the model default wins.
+        # No temporal dimension in the grain — the dataset default wins.
         assert kern.ranking_time_key == FieldKey(path=(), leaf="ordered_at")
 
     def test_explicit_ranking_arg_lands_on_the_kernel(self) -> None:
@@ -193,7 +193,7 @@ def _ranking_leaf(planned) -> str:
 
 class TestRankingKeyPrecedence:
     """Ported from ``test_dev1748_ranked_plan`` (retired): the per-scope
-    ranking-column precedence, now pinned on the attach kernel."""
+    ranking-field precedence, now pinned on the attach kernel."""
 
     def test_the_kernel_carries_an_explicit_ranking_time_key(self) -> None:
         planned = _plan48(_q48(
@@ -252,7 +252,7 @@ class TestRankingKeyPrecedence:
         )
 
     def test_a_target_rooted_kernel_ignores_the_host_time_dimension(self) -> None:
-        """Precedence is per-scope: a cross-model ranked kernel ranks TARGET
+        """Precedence is per-scope: a cross-dataset ranked kernel ranks TARGET
         rows, so a host time dimension is never a candidate."""
         planned = _plan48(_q48(
             time_dimensions=[{"field": "created_at", "granularity": "month"}],

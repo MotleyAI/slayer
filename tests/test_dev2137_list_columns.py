@@ -1,4 +1,4 @@
-"""List columns as model metadata: the type, ingestion, eligibility, NULL elements, refusals, re-typing and rendering
+"""List fields as dataset metadata: the type, ingestion, eligibility, NULL elements, refusals, re-typing and rendering
 (spec: models/list-columns)."""
 
 from __future__ import annotations
@@ -517,7 +517,7 @@ class TestCatalogFallbackLists:
 
 
 # --------------------------------------------------------------------------- #
-# sql-mode list columns
+# sql-mode list fields
 # --------------------------------------------------------------------------- #
 SKILLS_SQL = "SELECT id, skills FROM contractors"
 

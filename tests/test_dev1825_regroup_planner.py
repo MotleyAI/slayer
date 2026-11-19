@@ -2,7 +2,7 @@
 placeholder minting is injective by structural key identity, one producer
 serves N outputs, the filter classifier is total over AND/OR/NOT/scalar-call
 trees, and the discovery guards (joined aggregate source, reserved-prefix
-column) fail loudly.
+field) fail loudly.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _q(**kw) -> SlayerQuery:
 
 
 async def _gen_with_reserved_column(query: SlayerQuery) -> str:
-    """``gen`` over an ``orders`` carrying a stored ``__regroup__x`` column."""
+    """``gen`` over an ``orders`` carrying a stored ``__regroup__x`` field."""
     base, *rest = dev1740_datasets()
     model = base.model_copy(update={"fields": [
         *base.fields, DatasetField(name="__regroup__x", sql="amount", datatype=DataType.FLOAT),
@@ -151,7 +151,7 @@ class TestFilterClassifier:
         assert anded == separate
 
     async def test_mixed_or_in_one_filter_now_types_as_field(self) -> None:
-        # Lifted: the attached band value and the base column
+        # Lifted: the attached band value and the base field
         # both resolve at row scope, so the OR row-masks before re-aggregation.
         query = _q(
             dimensions=["region", {"field": BAND, "alias": "band"}],
@@ -198,7 +198,7 @@ class TestFilterClassifier:
 # --------------------------------------------------------------------------- #
 class TestDiscoveryGuards:
     async def test_joined_aggregate_source_raises_stage_three(self) -> None:
-        # The cross-model SOURCE is now supported via a target-rooted
+        # The cross-dataset SOURCE is now supported via a target-rooted
         # producer, but the explicit ``partition_by=city`` is unattributable
         # from the aggregate's root (customers) — a hard error (F4).
         q = _q(

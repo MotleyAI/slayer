@@ -1,11 +1,11 @@
-"""DEV-1839 executed ground truth (SQLite + DuckDB) for grain-union
-broadcasting in MEASURE and FILTER contexts — the ``queries/
+"""Executed ground truth (SQLite + DuckDB) for grain-union
+broadcasting in METRIC and FILTER contexts — the ``queries/
 partitioned-aggregates`` delta scenarios. Mixed- and same-grain bare composite
 arithmetic is the D10 lift (fails with a leaked-placeholder error today);
-plain+partitioned mix, transform-as-measure, and filter routing are locking.
+plain+partitioned mix, transform-as-metric, and filter routing are locking.
 
 Scenario coverage map (spec: openspec …/specs/queries/partitioned-aggregates):
-  Mixed-grain arithmetic as a measure ......... TestCompositeMeasureLift
+  Mixed-grain arithmetic as a metric .......... TestCompositeMeasureLift
   Same-grain partitioned arithmetic ........... TestCompositeMeasureLift
   Plain and partitioned aggregates mix ........ TestConformingSurfaces
   Transform over mixed-grain arithmetic ....... TestConformingSurfaces
@@ -157,7 +157,7 @@ class TestConformingSurfaces:
         await _dry_scope_closed(engine, query, dialect)
 
     async def test_transform_over_mixed_as_measure(self, exec_backend) -> None:
-        # At the (region, city) query grain the measure rank coincides with the
+        # At the (region, city) query grain the metric rank coincides with the
         # union-grain rank; the dual-role test (union_dim_execution) separates
         # the two on a finer grain.
         dialect, engine = exec_backend

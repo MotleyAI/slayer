@@ -1,4 +1,4 @@
-"""Stage 7a.6 (DEV-1450) — ValueRegistry tests.
+"""ValueRegistry tests.
 
 The ValueRegistry interns ValueKeys by structural identity, producing
 stable SlotIds and ValueSlots. Two structurally-equal keys share one
@@ -160,14 +160,14 @@ class TestMultiAlias:
 
 
 # ---------------------------------------------------------------------------
-# Alias-collision validations (preserved from DEV-1443 via P4)
+# Alias-collision validations (preserved via P4)
 # ---------------------------------------------------------------------------
 
 
 class TestAliasCollisions:
     def test_duplicate_declared_name_raises(self):
-        # Two measures with the same explicit name pointing at DIFFERENT
-        # keys → DuplicateMeasureNameError.
+        # Two metrics with the same explicit name pointing at DIFFERENT
+        # keys → DuplicateMetricNameError.
         r = ValueRegistry()
         r.intern(
             key=AggregateKey(
@@ -187,7 +187,7 @@ class TestAliasCollisions:
             )
 
     def test_name_collides_with_source_column_raises(self):
-        # A declared name matching a column on the host model is rejected.
+        # A declared name matching a field on the host dataset is rejected.
         r = ValueRegistry(source_field_names=frozenset({"amount"}))
         key = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
         with pytest.raises(MetricNameCollidesWithFieldError):
@@ -199,8 +199,8 @@ class TestAliasCollisions:
             )
 
     def test_canonical_alias_shadowing_raises(self):
-        # `sum(revenue)` canonicalises to `revenue_sum`. If the model has
-        # a source column literally named `revenue_sum`, the canonical
+        # `sum(revenue)` canonicalises to `revenue_sum`. If the dataset has
+        # a source field literally named `revenue_sum`, the canonical
         # alias collides — reject.
         r = ValueRegistry(source_field_names=frozenset({"revenue_sum"}))
         key = AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum")
@@ -270,7 +270,7 @@ class TestLiterals:
 
 
 # ---------------------------------------------------------------------------
-# Parameterized / cross-model key interning (DEV-1484 backfill from the
+# Parameterized / cross-dataset key interning (backfill from the
 # deleted ``test_projection_trim.py::TestCanonicalExpressionKey``).
 # ---------------------------------------------------------------------------
 
@@ -278,7 +278,7 @@ class TestLiterals:
 class TestParameterizedKeyInterning:
     def test_cross_model_aggregate_key_different_from_local(self):
         """``sum(customers.revenue)`` and local ``sum(revenue)`` intern to
-        different slots — the join path is part of the structural key."""
+        different slots — the relationship path is part of the structural key."""
         r = ValueRegistry()
         local = r.intern(
             key=AggregateKey(source=FieldKey(path=(), leaf="revenue"), agg="sum"),

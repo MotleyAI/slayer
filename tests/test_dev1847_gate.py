@@ -1,4 +1,4 @@
-"""DEV-1847 task 1.5/2.1 — the narrowed parse/bind gate (spec: aggregations/
+"""The narrowed parse/bind gate (spec: aggregations/
 expression-aggregation + queries/partitioned-aggregates fail-closed scenarios)."""
 
 from __future__ import annotations
@@ -74,8 +74,8 @@ class TestFullyAttachedAccepted:
 class TestRejections:
     def test_mixed_row_and_attached_accepted(self):
         """A source mixing a row-level reference with an attached value is a
-        row-grain aggregation and parses (DEV-1859). A nested transform in a
-        source now parses too (DEV-1832); only a row-level leaf under it is
+        row-grain aggregation and parses. A nested transform in a
+        source now parses too; only a row-level leaf under it is
         rejected, at plan time — see test_dev1832_transform_source."""
         parsed = parse_expr("sum(amount * avg(amount, partition_by=city))")
         assert isinstance(parsed, AggCall)
@@ -84,7 +84,7 @@ class TestRejections:
     async def test_column_parameter_on_outer_rejected(self):
         """Scenario: Column-reference outer parameter fails closed — explicit
         ``weight=id`` is undetermined at the operand grain; the one-rule error
-        (DEV-1892) names the parameter, the grain, and the partition_by remedy,
+        names the parameter, the grain, and the partition_by remedy,
         ref-free."""
         query = sales_q(
             dimensions=["region"],
@@ -100,7 +100,7 @@ class TestRejections:
 
     async def test_column_default_parameter_on_outer_rejected(self):
         """Scenario: Column-reference outer parameter fails closed — ``wavg``'s
-        weight default (the ``amount`` column) is undetermined at the operand
+        weight default (the ``amount`` field) is undetermined at the operand
         grain; same one-rule error."""
         query = sales_q(
             dimensions=["region"],
@@ -127,17 +127,17 @@ class TestRejections:
         assert not isinstance(ei.value, NotImplementedError)
         # The pure-attached source is accepted; the rejection is the specific
         # window-over-aggregate one, NOT the generic expression-nesting gate
-        # (whose message echoes 'window' from the formula — so match the phrase).
+        # (whose message echoes 'window' from the expression — so match the phrase).
         assert "nested inside the expression aggregated" not in msg
         assert "window" in msg.lower()
 
 
 class TestCrossModelAndFilteredOperandNowAccepted:
-    """DEV-1832 lifts the two v1 boundaries DEV-1847 left intact (positive
+    """The two v1 boundaries the narrowed gate kept are lifted (positive
     coverage in test_dev1832_cross_model_exec / test_dev1832_column_filter)."""
 
     async def test_cross_model_expression_accepted(self):
-        """A dotted joined-model leaf inside the expression now compiles."""
+        """A dotted joined-dataset leaf inside the expression now compiles."""
         query = SlayerQuery(
             population="corders",
             dimensions=[QueryDimension(field="customer_id")],
@@ -146,7 +146,7 @@ class TestCrossModelAndFilteredOperandNowAccepted:
         assert "SELECT" in (await gen(query)).upper()
 
     async def test_filtered_column_operand_accepted(self):
-        """A filtered column operand desugars to CASE WHEN, not a rejection."""
+        """A filtered field operand desugars to CASE WHEN, not a rejection."""
         query = sales_q(dimensions=["region"],
                         metrics=[QueryMetric(metric="sum(q_amount - 1)",
                                                alias="x")])

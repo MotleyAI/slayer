@@ -1,9 +1,9 @@
-"""Validation surfaces unproven and contradicted joins.
+"""Validation surfaces unproven and contradicted relationships.
 
 Spec: models/join-cardinality — "Validation surfaces unproven and contradicted joins".
-``audit_join_safety`` flags every join that is neither declared m:1/1:1 nor structurally
+``audit_relationship_safety`` flags every relationship that is neither declared m:1/1:1 nor structurally
 proven (association / input-refusal consequence + remedies), and — given a detection
-report — declarations the data hard-contradicts. CLI: ``slayer validate-models`` prints the flags.
+report — declarations the data hard-contradicts. CLI: ``slayer validate-datasets`` prints the flags.
 """
 
 from __future__ import annotations
@@ -74,8 +74,8 @@ class TestUnprovenJoins:
 
 class TestCrossDatasourceIsolation:
     def test_same_named_model_in_another_datasource_does_not_shadow(self) -> None:
-        """Joins resolve within the parent's datasource: a weaker same-named
-        model elsewhere must not flip a proven join to unproven."""
+        """Relationships resolve within the parent's datasource: a weaker same-named
+        dataset elsewhere must not flip a proven relationship to unproven."""
         customers_a = SlayerDataset(
             name="customers", sql_table="customers", data_source="ds_a",
             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
@@ -98,7 +98,7 @@ class TestCrossDatasourceIsolation:
             datasets=[orders_a, customers_a, customers_b],
         )
         # The edge appears as a per-edge row; proven means no
-        # broadcast flag — a weaker same-named model elsewhere must not flip it.
+        # broadcast flag — a weaker same-named dataset elsewhere must not flip it.
         finding = _findings_by_edge(findings)[("orders", "customers")]
         assert finding.forward_provably_to_one is True
         assert "broadcast" not in finding.message.lower()
@@ -121,7 +121,7 @@ class TestContradictedDeclarations:
     def test_contradicted_declaration_is_flagged(self) -> None:
         """F5 — a detection report that hard-contradicts a declaration."""
         models = dev1836_datasets()
-        # Declare the orders → customers join m:1 so the contradiction bites.
+        # Declare the orders → customers relationship m:1 so the contradiction bites.
         orders = models[0]
         orders.relationships[0].cardinality = RelationshipCardinality.MANY_TO_ONE
         findings = audit_relationship_safety(datasets=models, detection=self._detection())
@@ -148,7 +148,7 @@ class TestContradictedDeclarations:
 
 
 class TestCliValidateModels:
-    """The validate-models CLI surfaces the unproven-join flags."""
+    """The validate-datasets CLI surfaces the unproven-relationship flags."""
 
     @pytest.fixture
     def store(self, tmp_path: Path) -> str:

@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1846 composite-input ``time_shift`` /
+"""Shared fixtures for composite-input ``time_shift`` /
 ``consecutive_periods``. Underscore-prefixed so pytest skips collection.
 
 sales(id, region_id, store, status, revenue, qty, cost, weight, sku, ordered_at)
@@ -53,8 +53,8 @@ def regions_dataset() -> SlayerDataset:
 
 
 def sales_dataset() -> SlayerDataset:
-    """Host: ``wrevenue_sum`` crosses ``sales → regions`` (join-crossing leaf);
-    ``hi_rev`` is a column-filtered projection of ``revenue``."""
+    """Host: ``wrevenue_sum`` crosses ``sales → regions`` (relationship-crossing leaf);
+    ``hi_rev`` is a field-filtered projection of ``revenue``."""
     return SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
         default_time_dimension="ordered_at",

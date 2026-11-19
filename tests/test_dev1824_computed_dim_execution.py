@@ -107,7 +107,7 @@ class TestTransformInDimension:
         assert got == {"top": pytest.approx(100.0), "rest": pytest.approx(110.0)}
 
     async def test_context_grain_dimension_vs_measure(self, exec_engine) -> None:
-        # Dimension context ranks the three regions (1/2/3); measure context
+        # Dimension context ranks the three regions (1/2/3); metric context
         # ranks the five result rows by their attached totals (1/1/1/4/5).
         as_dim = await exec_engine.execute(q(
             dimensions=["region", "city", {"field": RANK_DIM, "alias": "rr"}],
@@ -262,7 +262,7 @@ class TestDimensionErrorSurface:
     async def test_cross_model_unattributable_partition_rejected(
         self, exec_engine,
     ) -> None:
-        # The blanket cross-model-source guard is lifted; a cross-model
+        # The blanket cross-dataset-source guard is lifted; a cross-dataset
         # aggregate whose partition key is unreachable from its root still fails
         # closed, now naming the key.
         cband = (

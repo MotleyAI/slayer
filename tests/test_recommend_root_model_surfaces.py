@@ -1,4 +1,4 @@
-"""Surface smoke tests for recommend_root_model: MCP tool, REST endpoint, CLI
+"""Surface smoke tests for recommend_population: MCP tool, REST endpoint, CLI
 handler, SlayerClient (local-engine).
 """
 
@@ -52,7 +52,7 @@ async def _seed(s: YAMLStorage) -> None:
         name="products", data_source="mydb", sql_table="products",
         fields=[col("id", DataType.INTEGER, pk=True), col("category")],
     ))
-    # Disconnected model for the no-root rendering path.
+    # Disconnected dataset for the no-root rendering path.
     await s.save_dataset(SlayerDataset(
         name="tickets", data_source="mydb", sql_table="tickets",
         fields=[col("id", DataType.INTEGER, pk=True), col("subject")],
@@ -141,7 +141,7 @@ class TestRestEndpoint:
         )
         assert resp.status_code == 200
         body = resp.json()
-        # only orders determines both columns along to-one paths
+        # only orders determines both fields along to-one paths
         # (customers→products is unreachable to-one), so orders is the root.
         assert body["population"] == "orders"
         assert body["data_source"] == "mydb"
@@ -153,7 +153,7 @@ class TestRestEndpoint:
             json={"items": ["customers.name", "products.category"]},
         )
         paths = {ip["input_item"]: ip["path"] for ip in resp.json()["item_paths"]}
-        # root is orders; each column is one to-one hop away.
+        # root is orders; each field is one to-one hop away.
         assert paths == {
             "customers.name": "customers.name",
             "products.category": "products.category",
@@ -168,7 +168,7 @@ class TestRestEndpoint:
         assert resp.status_code == 400
 
     def test_post_wrong_kind_400(self, storage) -> None:
-        # Bare model reference (no leaf) → ValueError → HTTP 400.
+        # Bare dataset reference (no leaf) → ValueError → HTTP 400.
         client = TestClient(create_app(storage=storage))
         resp = client.post(
             "/recommend-population",
@@ -202,7 +202,7 @@ class TestCliHandler:
 
 class TestCliParserWiring:
     def test_main_registers_subcommand(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-        # Exercises the actual `slayer recommend-root-model` argparse wiring.
+        # Exercises the actual `slayer recommend-population` argparse wiring.
 
 
         monkeypatch.setattr(sys, "argv", [
@@ -212,7 +212,7 @@ class TestCliParserWiring:
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
-        # orders determines both columns to-one.
+        # orders determines both fields to-one.
         assert payload["population"] == "orders"
 
 

@@ -1,4 +1,4 @@
-"""Opt-in data-profiling cardinality detection via ``engine.detect_join_cardinality``."""
+"""Opt-in data-profiling cardinality detection via ``engine.detect_relationship_cardinality``."""
 
 from __future__ import annotations
 
@@ -275,7 +275,7 @@ class TestVerdicts:
         assert f.verdict is CardinalityVerdict.REFINES
 
     def test_expression_join_key_rejected_at_construction(self) -> None:
-        # An expression-backed join key is not a base column: the model never builds.
+        # An expression-backed relationship key is not a base field: the dataset never builds.
         columns = [
             _col("id", pk=True),
             DatasetField(name="ck", sql="customer_id + 0", datatype=DataType.INTEGER),
@@ -291,7 +291,7 @@ class TestVerdicts:
         self, workspace: Path
     ) -> None:
         engine, storage, _ = await _build_engine(workspace)
-        # A sql-mode source model with a join is out of scope for v1 profiling.
+        # A sql-mode source dataset with a relationship is out of scope for v1 profiling.
         raw = SlayerDataset(
             name="raw_orders",
             sql="SELECT id, customer_id FROM orders",
@@ -332,9 +332,9 @@ class TestUniqueContradictions:
         assert next(c for c in reloaded.fields if c.name == "customer_id").unique is True
 
     async def test_sole_pk_column_with_dups_is_reported(self, workspace: Path) -> None:
-        """A column that IS the whole primary key does claim solo uniqueness."""
+        """A field that IS the whole primary key does claim solo uniqueness."""
         engine, storage, _ = await _build_engine(workspace)
-        # cart_lines.cart_id has dups; declare it the sole PK of a probe model.
+        # cart_lines.cart_id has dups; declare it the sole PK of a probe dataset.
         probe = SlayerDataset(
             name="solo_pk_lines",
             sql_table="cart_lines",
@@ -397,7 +397,7 @@ class TestPersistence:
 
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders.relationships[0].cardinality is RelationshipCardinality.MANY_TO_ONE
-        # Correct per-(model, join) identity — a different join gets its own value.
+        # Correct per-(dataset, relationship) identity — a different relationship gets its own value.
         profiles = await storage.get_dataset("user_profiles", data_source="ds")
         assert profiles.relationships[0].cardinality is RelationshipCardinality.ONE_TO_ONE
 
@@ -640,7 +640,7 @@ class TestEmptyPopulationIsNoEvidence:
 
 
 class TestScanFailureIsContained:
-    """One unreadable join must not abort the whole report."""
+    """One unreadable relationship must not abort the whole report."""
 
     async def test_failed_scan_becomes_a_finding(self, workspace: Path) -> None:
         engine, _, _ = await _build_engine(workspace)
@@ -662,7 +662,7 @@ class TestScanFailureIsContained:
         assert failed.detected is None
         assert "table is on fire" in (failed.note or "")
 
-        # Every other join still reports.
+        # Every other relationship still reports.
         healthy = _find(report, "orders", "customers")
         assert healthy.detected is RelationshipCardinality.MANY_TO_ONE
 

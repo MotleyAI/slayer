@@ -1,7 +1,7 @@
-"""Render a cross-model aggregate grouped by a joined DERIVED
+"""Render a cross-dataset aggregate grouped by a joined DERIVED
 dimension (shared-grain rendering).
 
-A plain derived (non-time) dimension used as a cross-model
+A plain derived (non-time) dimension used as a cross-dataset
 shared grain was gated behind ``NotImplementedError`` (``derived_shared_grain_not_
 implemented``): before the naming half was fixed, the host aliased the
 grain flat while the CTE join-back expected the dotted form, so silently
@@ -153,7 +153,7 @@ class TestForwardDerivedGrainShape:
 
     async def test_grain_equals_aggregate_source_derived(self) -> None:
         """The derived grain dim and the aggregate source can be the SAME derived
-        column (``deep_pop`` dim + ``sum(deep_pop)``) — grouped and aggregated on
+        field (``deep_pop`` dim + ``sum(deep_pop)``) — grouped and aggregated on
         the same expanded expression, one pulled join."""
         query = SlayerQuery(
             population="orders_x",
@@ -182,7 +182,7 @@ class TestForwardDerivedGrainShape:
         assert "COUNT(DISTINCT" in cm_body.upper(), cm_body
 
     async def test_two_aggregates_share_one_derived_grain(self) -> None:
-        """Two cross-model aggregates grouped by the same derived grain produce
+        """Two cross-dataset aggregates grouped by the same derived grain produce
         two CTEs, each grouped on the grain and joined back on it."""
         query = SlayerQuery(
             population="orders_x",
@@ -372,7 +372,7 @@ class TestFirstLastDerivedGrain:
 
     async def test_val_alias_avoids_target_column_collision(self) -> None:
         """Codex F6: the ranked subquery re-exports ``target.*``. If the target
-        model has a real column literally named ``_val_0``, the grain
+        dataset has a real field literally named ``_val_0``, the grain
         materialisation must NOT mint that same name (it would make the outer
         ``_val_0`` reference ambiguous). The allocator reserves the target's
         physical column names, so the minted alias walks past ``_val_0``."""
@@ -392,8 +392,8 @@ class TestFirstLastDerivedGrain:
 
     async def test_val_alias_avoids_physical_column_collision(self) -> None:
         """The star-projection exports PHYSICAL column names, which differ from
-        the semantic name whenever a column renames its source. A column
-        ``Column(name="renamed", sql="_val_0")`` exports ``_val_0`` through
+        the semantic name whenever a field renames its source. A field
+        ``DatasetField(name="renamed", sql="_val_0")`` exports ``_val_0`` through
         ``target.*``, so the allocator must reserve the physical name too — not
         just ``c.name`` (Codex)."""
         customers_extra = [DatasetField(name="renamed", sql="_val_0", datatype=DataType.INTEGER)]
@@ -415,7 +415,7 @@ class TestFirstLastDerivedGrain:
 # =========================================================================== #
 class TestSiblingPathsDerivedGrain:
     async def test_rerooted_with_derived_on_path_dim(self) -> None:
-        """A cross-model aggregate grouped by an ON-PATH derived dim AND an
+        """A cross-dataset aggregate grouped by an ON-PATH derived dim AND an
         OFF-PATH dim re-roots the CTE at the target; both grains join back on
         their dotted aliases (dotted naming on both sides)."""
         query = SlayerQuery(
@@ -455,7 +455,7 @@ class TestSiblingPathsDerivedGrain:
         on_pred = _joinback_on_predicate(sql)
         assert "orders_x.customers_v2.deep_pop" in on_pred, on_pred
         assert "IS NOT DISTINCT FROM" in on_pred, on_pred
-        # The filtered-local branch was selected: the measure's Column.filter
+        # The filtered-local branch was selected: the metric's field filter
         # (referencing the joined customers_v2) rides into the isolated CTE.
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w+"))
         assert "> 15" in cm_body, cm_body
@@ -484,7 +484,7 @@ class TestUnchangedBehaviourGuards:
         assert "CROSS JOIN" in sql, sql
 
     async def test_derived_source_unaffected(self) -> None:
-        """A derived aggregate SOURCE crossing a join (no derived grain) still
+        """A derived aggregate SOURCE crossing a relationship (no derived grain) still
         renders, unchanged by the gate removal."""
         query = SlayerQuery(
             population="orders_x",
@@ -567,7 +567,7 @@ def _seed_sqlite(db_path: str) -> None:
 
 
 def _sqlite_datasets() -> "list[SlayerDataset]":
-    """SQLite-shaped models (no schema qualifier, no sql= on base columns)."""
+    """SQLite-shaped datasets (no schema qualifier, no sql= on base fields)."""
     return [
         SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
@@ -625,7 +625,7 @@ async def sqlite_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 class TestDerivedGrainExecution:
     async def test_target_local_grain_per_group_values(self, sqlite_engine) -> None:
-        """Group a cross-model sum by a target-local derived grain
+        """Group a cross-dataset sum by a target-local derived grain
         (``ltv_x2``): each distinct ltv*2 is its own group with the right sum."""
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
@@ -642,7 +642,7 @@ class TestDerivedGrainExecution:
         assert by_grain[80.0]["orders_x.customers_v2.lifetime_value_sum"] == 40.0, resp.data
 
     async def test_crossing_grain_per_group_values(self, sqlite_engine) -> None:
-        """Group a cross-model sum by a crossing derived grain (``deep_pop`` =
+        """Group a cross-dataset sum by a crossing derived grain (``deep_pop`` =
         regions.population): region 1 (pop 100) has ltv 10+30 = 40."""
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",

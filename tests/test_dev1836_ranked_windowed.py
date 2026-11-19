@@ -1,9 +1,9 @@
-"""Cross-model ranked (first/last), windowed, and
+"""Cross-dataset ranked (first/last), windowed, and
 partitioned aggregates at safe grains (SQLite + DuckDB).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Explicit grain and
 window on cross-model aggregates". Every explicit key must be attributable
-from the aggregate's root; a windowed cross-model aggregate requires the
+from the aggregate's root; a windowed cross-dataset aggregate requires the
 query's active time dimension attributable from its root.
 """
 

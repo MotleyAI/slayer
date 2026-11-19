@@ -1,8 +1,8 @@
-"""DEV-1910 — the association producer roots at the aggregate's home dataset,
+"""The association producer roots at the aggregate's home dataset,
 so a home entity absent from the query population still counts in the cells its
-own join path reaches. Executed oracles on SQLite + DuckDB.
+own relationship path reaches. Executed oracles on SQLite + DuckDB.
 
-Under ``to_many_handling: "associate"`` a cross-model aggregate over an
+Under ``to_many_handling: "associate"`` a cross-dataset aggregate over an
 unattributable dimension aggregates over its own home rows, each once (Axioms 3,
 4, 8); an entity whose path reaches no related row sits in the NULL cell.
 
@@ -70,7 +70,7 @@ async def null_engine(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def null_engine_reverse(request):
     """Null-status seed with customers owning the orders 1:N edge, so the fanning
-    derived column ``customers.last_status = orders.status`` exists."""
+    derived field ``customers.last_status = orders.status`` exists."""
     async for e in make_null_status_engine(
             request, datasets=dev1840_datasets(declare_reverse=True)):
         yield e
@@ -84,7 +84,7 @@ async def weak_engine(request):
 
 class TestIssueBar:
     async def test_home_entity_absent_from_population_counts(self, engine):
-        """South cross-model spend includes c7 (zero orders); local amount cell unchanged; cells warn."""
+        """South cross-dataset spend includes c7 (zero orders); local amount cell unchanged; cells warn."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], metrics=[SPEND_SUM, AMOUNT_SUM],
             to_many_handling="associate"))
@@ -225,7 +225,7 @@ class TestParameterTyping:
         assert float(wa[230.0]) != pytest.approx(SPEND_WAVG_SOUTH_C7_DROPPED)
 
     async def test_fanning_host_column_weight_is_picked_across_the_reverse_hop(self, engine):
-        """A fanning host column weight (orders.amount) is picked once per
+        """A fanning host field weight (orders.amount) is picked once per
         customer across the hop; c7's NULL weight drops it, South = 75."""
         resp = await engine.execute(orders_q(
             dimensions=[BAD_POP], metrics=[SPEND_WAVG_AMOUNT],
@@ -237,8 +237,8 @@ class TestParameterTyping:
 class TestAssociationRestrictedConjunctEntry:
     async def test_inlined_conjunct_carries_the_semi_join_pushed_entry(self, weak_engine):
         """The one fanning conjunct restricts at two levels (Axiom 2.9): the
-        population spine (measure=None, DEV-1909) and the home-rooted association
-        producer's membership (measure='csp', dev-1910). Both are reported; the
+        population spine (metric=None) and the home-rooted association
+        producer's membership (metric='csp'). Both are reported; the
         executed values are the restricted membership."""
         resp = await weak_engine.execute(assoc_status_q(
             dimensions=["status"], metrics=[SPEND_SUM],

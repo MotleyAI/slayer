@@ -1,7 +1,7 @@
 """BigQuery dialect.
 
 BigQuery rejects ``.`` in column names, so dotted aliases are mangled to ``___``
-(distinct from the ``__`` cross-model flattening) on write and decoded on read.
+(distinct from the ``__`` cross-dataset flattening) on write and decoded on read.
 """
 
 from __future__ import annotations

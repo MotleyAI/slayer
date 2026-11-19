@@ -1,4 +1,4 @@
-"""The edges a stage inherits on its pass-through key columns, and how declared edges absorb them."""
+"""The edges a stage inherits on its pass-through key fields, and how declared edges absorb them."""
 
 from __future__ import annotations
 
@@ -96,13 +96,13 @@ _COMPOSED = {
 
 
 def _cardinality(
-    edge: OrientedRelationship, *, columns: Sequence[str], grain: Optional[Sequence[str]],
+    edge: OrientedRelationship, *, keys: Sequence[str], grain: Optional[Sequence[str]],
 ) -> Optional[RelationshipCardinality]:
     """The target side keeps the edge's arity; the stage side is one iff the grain is covered by the key."""
     target_one = _one(edge.cardinality, target_side=True)
     if target_one is None:
         return None
-    stage_one = grain is not None and set(grain) <= set(columns)
+    stage_one = grain is not None and set(grain) <= set(keys)
     return _COMPOSED[(stage_one, target_one)]
 
 
@@ -113,8 +113,8 @@ def inherited_edges(
     """Every edge touching a dataset the stage reads whose key the stage passes through, oriented from the stage."""
     if root is None:
         return ()
-    positions, columns = _positions(fields)
-    equal = _equal_columns(positions=positions, columns=columns)
+    positions, names = _positions(fields)
+    equal = _equal_fields(positions=positions, names=names)
     out: List[InheritedEdge] = []
     seen: set = set()
     with unobserved():
@@ -123,10 +123,10 @@ def inherited_edges(
             if dataset is None or dataset.list_of is not None:
                 continue
             for edge in neighbors(dataset=dataset, datasets_by_name=datasets_by_name):
-                inherited = _inherit(edge, at=key, columns=columns, grain=grain, datasets_by_name=datasets_by_name)
+                inherited = _inherit(edge, at=key, names=names, grain=grain, datasets_by_name=datasets_by_name)
                 if inherited is None:
                     continue
-                # One source edge is inherited once per key mapping; mappings the joins equate are one mapping.
+                # One source edge is inherited once per key mapping; mappings the relationships equate are one mapping.
                 mapping = (inherited.origin, tuple(equal.get(c, c) for c in inherited.from_columns))
                 if mapping not in seen:
                     seen.add(mapping)
@@ -134,10 +134,10 @@ def inherited_edges(
     return tuple(out)
 
 
-def _equal_columns(
-    *, positions: Mapping[_Position, Tuple[OrientedRelationship, ...]], columns: Mapping[_Position, Mapping[str, str]],
+def _equal_fields(
+    *, positions: Mapping[_Position, Tuple[OrientedRelationship, ...]], names: Mapping[_Position, Mapping[str, str]],
 ) -> Dict[str, str]:
-    """Each stage column's representative among the columns the pass-through joins equate."""
+    """Each stage field's representative among the fields the pass-through relationships equate."""
     parent: Dict[str, str] = {}
 
     def find(c: str) -> str:
@@ -148,7 +148,7 @@ def _equal_columns(
     for key, path in positions.items():
         if not path:
             continue
-        here, there = columns.get(key, {}), columns.get(key[:-1], {})
+        here, there = names.get(key, {}), names.get(key[:-1], {})
         for s, t in path[-1].column_pairs:
             if s in there and t in here:
                 a, b = sorted((find(there[s]), find(here[t])))
@@ -159,8 +159,8 @@ def _equal_columns(
 def _positions(
     fields: Sequence[StageField],
 ) -> Tuple[Dict[_Position, Tuple[OrientedRelationship, ...]], Dict[_Position, Dict[str, str]]]:
-    """Every join path the pass-through fields traverse (prefixes included), and the stage column per field there."""
-    columns: Dict[_Position, Dict[str, str]] = {(): {}}
+    """Every relationship path the pass-through fields traverse (prefixes included), and the stage field per base field there."""
+    names: Dict[_Position, Dict[str, str]] = {(): {}}
     positions: Dict[_Position, Tuple[OrientedRelationship, ...]] = {(): ()}
     for c in fields:
         if c.pass_through is None:
@@ -169,18 +169,18 @@ def _positions(
         for i in range(len(path) + 1):
             key = tuple(_edge_id(e) for e in path[:i])
             positions.setdefault(key, path[:i])
-            columns.setdefault(key, {})
-        columns[tuple(_edge_id(e) for e in path)].setdefault(c.pass_through.field, c.name)
-    return positions, columns
+            names.setdefault(key, {})
+        names[tuple(_edge_id(e) for e in path)].setdefault(c.pass_through.field, c.name)
+    return positions, names
 
 
 def _inherit(
-    edge: OrientedRelationship, *, at: _Position, columns: Mapping[_Position, Mapping[str, str]],
+    edge: OrientedRelationship, *, at: _Position, names: Mapping[_Position, Mapping[str, str]],
     grain: Optional[Sequence[str]], datasets_by_name: Mapping[str, SlayerDataset],
 ) -> Optional[InheritedEdge]:
     if edge.product is not None or edge.lateral is not None or edge.to not in datasets_by_name:
         return None
-    own, proxy = columns.get(at, {}), columns.get((*at, _edge_id(edge)), {})
+    own, proxy = names.get(at, {}), names.get((*at, _edge_id(edge)), {})
     picked = [own.get(d) or proxy.get(t) for d, t in edge.column_pairs]
     declaration = _declaration(edge, datasets_by_name)
     if declaration is None or not picked or any(c is None for c in picked):
@@ -189,6 +189,6 @@ def _inherit(
     return InheritedEdge(
         to=edge.to, from_columns=from_columns, to_columns=tuple(t for _, t in edge.column_pairs), name=edge.name,
         join_type=JoinType.LEFT if declaration.query_local else edge.join_type,
-        cardinality=_cardinality(edge, columns=from_columns, grain=grain),
+        cardinality=_cardinality(edge, keys=from_columns, grain=grain),
         origin=_origin(edge, declaration, datasets_by_name),
     )

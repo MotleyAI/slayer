@@ -1,8 +1,8 @@
-"""Engine-level tests for ``recommend_root_model``.
+"""Engine-level tests for ``recommend_population``.
 
-Given a set of ``model.column`` / ``model.metric`` items an agent wants in
-one query, the engine recommends which model to use as ``source_model``
-(the "root") and returns each item's join-qualified reference path from
+Given a set of ``dataset.field`` / ``dataset.metric`` items an agent wants in
+one query, the engine recommends which dataset to use as ``population``
+(the "root") and returns each item's relationship-qualified reference path from
 that root.
 
 Fixture graph (datasource ``mydb``)::
@@ -17,7 +17,7 @@ Fixture graph (datasource ``mydb``)::
 
 Every declared edge traverses in both directions, so each
 datasource splits into connected components: {orders-world}, {tickets,
-agents}, {logs}. A second datasource ``otherdb`` also has a model named
+agents}, {logs}. A second datasource ``otherdb`` also has a dataset named
 ``orders`` (for data_source disambiguation) plus ``widgets`` (for the
 cross-datasource guard).
 """
@@ -133,7 +133,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
             fields=[_col("id", DataType.INTEGER, pk=True), _col("line")],
         ))
 
-        # otherdb — a uniquely-named model, for the cross-datasource guard.
+        # otherdb — a uniquely-named dataset, for the cross-datasource guard.
         await s.save_dataset(SlayerDataset(
             name="widgets", data_source="otherdb", sql_table="widgets",
             fields=[_col("id", DataType.INTEGER, pk=True), _col("sku")],
@@ -143,7 +143,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
 
 @pytest_asyncio.fixture
 async def collision_storage() -> AsyncIterator[StorageBackend]:
-    """Two datasources sharing the model name 'orders' — for data_source
+    """Two datasources sharing the dataset name 'orders' — for data_source
     disambiguation and the ambiguity-raises path."""
     with tempfile.TemporaryDirectory() as tmpdir:
         s = YAMLStorage(base_dir=tmpdir)
@@ -189,12 +189,12 @@ class TestResolutionValidation:
             await engine.recommend_population(["regions.does_not_exist"])
 
     async def test_bare_model_rejected(self, engine: SlayerQueryEngine) -> None:
-        # "regions" resolves to a model (no leaf) → not a column/metric.
+        # "regions" resolves to a dataset (no leaf) → not a field/metric.
         with pytest.raises(ValueError):
             await engine.recommend_population(["regions"])
 
     async def test_bare_datasource_rejected(self, engine: SlayerQueryEngine) -> None:
-        # "mydb" resolves to a datasource (no model/leaf) → not a column/metric.
+        # "mydb" resolves to a datasource (no dataset/leaf) → not a field/metric.
         with pytest.raises(ValueError):
             await engine.recommend_population(["mydb"])
 
@@ -229,7 +229,7 @@ class TestRootSelection:
 
     async def test_fan_out_picks_bridge_that_determines_both(self, engine: SlayerQueryEngine) -> None:
         # Determination is to-one. Neither customers nor products
-        # determines the other's column (the reverse hop through orders fans
+        # determines the other's field (the reverse hop through orders fans
         # out), so only the shared child orders determines both — the bridge
         # wins outright, no tiebreak needed.
         rec = await engine.recommend_population(["customers.name", "products.category"])
@@ -256,7 +256,7 @@ class TestRootSelection:
         }
 
     async def test_shared_child_is_sole_determiner(self, engine: SlayerQueryEngine) -> None:
-        # Only orders determines both columns along to-one paths;
+        # Only orders determines both fields along to-one paths;
         # customers/products each fan out to the other, so orders is the sole
         # valid root.
         rec = await engine.recommend_population(["customers.name", "products.price"])
@@ -265,7 +265,7 @@ class TestRootSelection:
     async def test_symmetric_tie_broken_lexicographically(self, engine: SlayerQueryEngine) -> None:
         # The single orders→order_items INNER edge routes both ways:
         # root=orders costs 1 hop, root=order_items costs 1 hop. Both are
-        # mentioned owning models, so the mentioned-preference can't break it
+        # mentioned owning datasets, so the mentioned-preference can't break it
         # → lexicographically smallest name wins: "order_items" < "orders".
         rec = await engine.recommend_population(["orders.status", "order_items.sku"])
         assert rec.population == "order_items"
@@ -305,8 +305,8 @@ class TestAggSuffix:
         )
 
     async def test_dotted_kwarg_arg_preserved_verbatim(self, engine: SlayerQueryEngine) -> None:
-        # A dotted column arg is preserved as-is (engine resolves it in the
-        # aggregated column's owning-model frame, invariant under root).
+        # A dotted field arg is preserved as-is (engine resolves it in the
+        # aggregated field's owning-dataset frame, invariant under root).
         item = "weighted_avg(products.price, weight=products.price)"
         rec = await engine.recommend_population([item, "orders.status"])
         assert rec.population == "orders"
@@ -401,7 +401,7 @@ class TestNoCommonRoot:
         assert covered == {"customers", "agents"}
 
     async def test_attachment_only_disconnected_still_lists_coverage(self, engine: SlayerQueryEngine) -> None:
-        # Attachment-only items on disconnected models: coverage falls back to
+        # Attachment-only items on disconnected datasets: coverage falls back to
         # attachment reachability, so it is non-empty (orders.aov / count(logs.line)).
         rec = await engine.recommend_population(
             ["orders.aov", "count(logs.line)"], data_source="mydb"
@@ -419,7 +419,7 @@ class TestNoCommonRoot:
         )
         assert rec.reachable is False
         # To-one determination: only orders determines both order-world
-        # columns (customers/products fan out to the other), so it dominates them
+        # fields (customers/products fan out to the other), so it dominates them
         # on the frontier; agents covers the disconnected item. Item lists preserve
         # original input order.
         assert rec.coverage[0].dataset_name == "orders"
@@ -443,7 +443,7 @@ class TestNoCommonRoot:
             ["customers.name", "products.category", "agents.name"]
         )
         # To-one determination: orders is the sole determiner of both
-        # order-world columns, dominating customers/products (each reaches only its
+        # order-world fields, dominating customers/products (each reaches only its
         # own, a subset); tickets is dominated by agents. Only orders + agents survive.
         names = {c.dataset_name for c in rec.coverage}
         assert "orders" in names
@@ -454,7 +454,7 @@ class TestNoCommonRoot:
 
 
 # --------------------------------------------------------------------------
-# Attachments on unrelated datasets (no join path from the root)
+# Attachments on unrelated datasets (no relationship path from the root)
 # --------------------------------------------------------------------------
 class TestUnrelatedAttachments:
     async def test_unrelated_attachment_is_reported_through_the_product_hop(self, engine: SlayerQueryEngine) -> None:
@@ -542,15 +542,15 @@ class TestDataSourceAndDedup:
         # than the requested scope must be rejected — not silently resolved
         # to the qualified datasource. (widgets lives in otherdb.) Under the
         # requested scope it re-roots to 'mydb.otherdb...' which has no such
-        # model → EntityResolutionError.
+        # dataset → EntityResolutionError.
         with pytest.raises((ValueError, EntityResolutionError)):
             await engine.recommend_population(
                 ["otherdb.widgets.sku"], data_source="mydb"
             )
 
     async def test_dotted_model_colliding_with_datasource_name_scopes_to_model(self) -> None:
-        # A model whose name equals a *datasource* name must still resolve to
-        # the model (not the datasource) when data_source is explicit.
+        # A dataset whose name equals a *datasource* name must still resolve to
+        # the dataset (not the datasource) when data_source is explicit.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
             await s.save_datasource(DatasourceConfig(name="shared", type="postgres", host="x"))
@@ -569,8 +569,8 @@ class TestDataSourceAndDedup:
                 await eng.aclose()
 
     async def test_bare_scope_ignores_aggregation_named_leaf(self) -> None:
-        # A custom aggregation sharing a bare column's name must NOT make the
-        # valid column ambiguous when scoping a bare item to the datasource.
+        # A custom aggregation sharing a bare field's name must NOT make the
+        # valid field ambiguous when scoping a bare item to the datasource.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
             await s.save_datasource(DatasourceConfig(name="d", type="postgres", host="x"))
@@ -592,7 +592,7 @@ class TestDataSourceAndDedup:
                 await eng.aclose()
 
     async def test_bare_item_scoped_to_requested_datasource(self, collision_storage) -> None:
-        # 'status' is a column on 'orders' in BOTH mydb and otherdb. A bare
+        # 'status' is a field on 'orders' in BOTH mydb and otherdb. A bare
         # item with data_source must resolve WITHIN that datasource, not via
         # the global priority list (which could pick the other one and then
         # spuriously reject the scoped request).
@@ -638,7 +638,7 @@ class TestDistinctOwningModelHopSum:
     async def test_only_to_one_determiner_wins(self) -> None:
         # Chain (ds "iso"): A →to-one→ B →to-one→ C (FK→PK forward; reverse hops
         # fan out). Determination is to-one, so only A determines every
-        # column: A reaches A(0), B(1), C(2). B cannot determine A.a* (B→A fans
+        # field: A reaches A(0), B(1), C(2). B cannot determine A.a* (B→A fans
         # out), and neither can C — so A is the sole viable root regardless of how
         # the per-item hops sum.
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -732,9 +732,9 @@ class TestRootHint:
         assert rec.warnings == []
         assert "root_hint" not in rec.message
 
-    # -- infeasible hint (real model) → fallback + warning --------------
+    # -- infeasible hint (real dataset) → fallback + warning --------------
     async def test_infeasible_hint_falls_back_with_warning(self, engine: SlayerQueryEngine) -> None:
-        # 'agents' determines neither order-world column (to-one), so
+        # 'agents' determines neither order-world field (to-one), so
         # it is infeasible and we fall back to the auto-pick (orders, the sole
         # to-one determiner of both).
         rec = await engine.recommend_population(
@@ -746,12 +746,12 @@ class TestRootHint:
         assert "root_hint" in joined
         assert "cannot reach" in joined
         assert "agents" in joined     # the rejected hint
-        assert "products" in joined   # an undetermined owning model
-        assert "customers" in joined  # the other undetermined owning model
+        assert "products" in joined   # an undetermined owning dataset
+        assert "customers" in joined  # the other undetermined owning dataset
 
     async def test_infeasible_warning_echoes_original_ds_qualified_hint(self, engine: SlayerQueryEngine) -> None:
         # The diagnostic must quote what the caller typed ('mydb.agents'),
-        # not the resolved bare model name ('agents').
+        # not the resolved bare dataset name ('agents').
         rec = await engine.recommend_population(
             ["customers.name", "products.category"], root_hint="mydb.agents"
         )
@@ -764,7 +764,7 @@ class TestRootHint:
             await engine.recommend_population(["orders.status"], root_hint="ordrs")
 
     async def test_wrong_kind_bare_hint_raises_not_a_model(self, engine: SlayerQueryEngine) -> None:
-        # 'status' is a column, not a model → "not a model".
+        # 'status' is a field, not a dataset → "not a dataset".
         with pytest.raises(ValueError, match="not a dataset in datasource"):
             await engine.recommend_population(["orders.status"], root_hint="status")
 
@@ -802,7 +802,7 @@ class TestRootHint:
 
     async def test_no_root_zero_reach_hint_row_surfaced(self, engine: SlayerQueryEngine) -> None:
         # 'logs' is isolated and reaches neither {customers, agents}
-        # ('products' reaches customers, so only a disconnected model has
+        # ('products' reaches customers, so only a disconnected dataset has
         # zero reach). Force-included row has an empty reachable list and both
         # items unreachable.
         rec = await engine.recommend_population(
@@ -866,15 +866,15 @@ class TestResultModels:
 
 class TestWarningsSurfaced:
     async def test_resolver_warnings_are_surfaced(self) -> None:
-        # "Case D": a datasource whose name is also a model name in another
+        # "Case D": a datasource whose name is also a dataset name in another
         # datasource. Resolving "shared.leafmodel.status" accepts the
-        # 3-segment column form but emits a datasource-vs-model warning,
-        # which recommend_root_model must surface.
+        # 3-segment field form but emits a datasource-vs-dataset warning,
+        # which recommend_population must surface.
         with tempfile.TemporaryDirectory() as tmpdir:
             s = YAMLStorage(base_dir=tmpdir)
             await s.save_datasource(DatasourceConfig(name="shared", type="postgres", host="x"))
             await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
-            # model named "shared" lives in mydb → collides with ds "shared".
+            # dataset named "shared" lives in mydb → collides with ds "shared".
             await s.save_dataset(SlayerDataset(
                 name="shared", data_source="mydb", sql_table="shared",
                 fields=[_col("id", DataType.INTEGER, pk=True)],
@@ -888,6 +888,6 @@ class TestWarningsSurfaced:
                 rec = await eng.recommend_population(["shared.leafmodel.status"])
                 assert rec.population == "leafmodel"
                 assert rec.data_source == "shared"
-                assert rec.warnings, "expected the datasource-vs-model warning to surface"
+                assert rec.warnings, "expected the datasource-vs-dataset warning to surface"
             finally:
                 await eng.aclose()

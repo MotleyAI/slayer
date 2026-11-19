@@ -7,7 +7,7 @@ like Postgres ``@>`` / ``ILIKE ANY``, MySQL ``<=>``); SLayer DSL
 constructs (aggregation references, transform calls, raw ``OVER (...)``)
 are rejected with a clear actionable error.
 
-DEV-1369 round 2: this validator does **not** invoke sqlglot. It only
+This validator does **not** invoke sqlglot. It only
 checks that no DSL construct is present. Full sqlglot parsing — with
 the appropriate ``read=<dialect>`` — happens at SQL generation time
 where the dataset's datasource (and therefore its dialect) is known.
@@ -71,7 +71,7 @@ def _reject_dsl_constructs(expression: str) -> None:
 
 def _bare_field_refs(expression: str) -> list[str]:
     """Best-effort extraction of field-like identifiers from a SQL-mode
-    predicate. The render-time join-detection use was superseded by structured
+    predicate. The render-time relationship-path detection use was superseded by structured
     extraction (``reference_closure``) and the Mode-A door; this now serves
     only VALIDATION — the dataset-filter metric/windowed-field rejection in
     ``stage_planner`` and the ``schema_drift`` check. Skips string literals,

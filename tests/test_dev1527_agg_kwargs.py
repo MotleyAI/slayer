@@ -1,13 +1,13 @@
-"""DEV-1706 Stage 2 — DEV-1527 local fix: typed parametric-aggregation kwargs.
+"""Typed parametric-aggregation kwargs.
 
 The defect: ``AggRenderSpec.agg_kwargs`` was flattened through
 ``agg_kwarg_canonical_str`` at spec-build, which collapses a derived
 (``ColumnSqlKey``) kwarg to its bare name — emitting ``orders.region_weight``
-(a non-existent column) and never pulling the crossed join.
+(a non-existent column) and never pulling the crossed relationship.
 
 The fix (D-C / D-I): ``AggRenderSpec.agg_kwargs`` becomes
 ``Dict[str, ResolvedAggKwarg]``: a trusted, scope-resolved ``exp.Expression``
-for a column-ref kwarg (the join registers as a side effect → base FROM).
+for a field-ref kwarg (the relationship registers as a side effect → base FROM).
 
 The naming-only use of ``agg_kwarg_canonical_str`` survives (D-H) and is frozen by
 golden tests here.
@@ -130,11 +130,11 @@ class TestResolvedAggKwarg:
 
 
 # --------------------------------------------------------------------------- #
-# DEV-1527 fix — e2e (siblings of the promoted xfail).
+# Kwarg-expansion fix — e2e (siblings of the promoted xfail).
 # --------------------------------------------------------------------------- #
 class TestDev1527KwargExpansion:
     async def test_local_noncrossing_derived_kwarg_expands(self) -> None:
-        # A LOCAL derived column kwarg (no join) also collapses to a bare name
+        # A LOCAL derived field kwarg (no relationship) also collapses to a bare name
         # today (orders.dbl_qty, non-existent). After the fix it expands.
         orders = _orders(extra=[
             DatasetField(name="dbl_qty", sql="quantity * 2", datatype=DataType.FLOAT),
@@ -182,8 +182,8 @@ class TestDev1527KwargExpansion:
 
     async def test_corr_other_derived_crossing_expr_kind(self) -> None:
         # kind="expr" through _build_stat_agg: ``other=region_weight`` is a derived
-        # column crossing a join → its expansion is embedded as the second CORR
-        # operand AND the join is registered (base-pulled).
+        # field crossing a relationship → its expansion is embedded as the second CORR
+        # operand AND the relationship is registered (base-pulled).
         orders = _orders(extra=[
             DatasetField(name="region_weight", sql="customers.regions.weight",
                    datatype=DataType.FLOAT),
@@ -228,9 +228,9 @@ class TestDev1527KwargExpansion:
         assert "LEFT JOIN regions AS customers__regions" in sql
 
     async def test_having_crossing_kwarg_expands(self) -> None:
-        # DEV-1709: the crossing-kwarg aggregate isolates, so the aggregate
+        # The crossing-kwarg aggregate isolates, so the aggregate
         # filter routes to the combined outer WHERE against the CTE's output
-        # column (DEV-1503 rule) — never HAVING. The expanded, join-anchored
+        # column — never HAVING. The expanded, join-anchored
         # kwarg (customers__regions.weight) renders inside the CTE; the bare
         # non-existent orders.region_weight never appears.
         orders = _orders(extra=[
@@ -257,7 +257,7 @@ class TestDev1527KwargExpansion:
         assert "> 5" in outer, sql
 
     async def test_custom_aggregation_str_param_override_substitutes(self) -> None:
-        # kind="str" template path through _build_formula_agg: a model-defined
+        # kind="str" template path through _build_formula_agg: a dataset-defined
         # custom aggregation's ``{scale}`` param, overridden at query time with a
         # numeric literal, substitutes as today (guarded by _SAFE_AGG_PARAM_RE).
         orders = _orders()
@@ -276,8 +276,8 @@ class TestDev1527KwargExpansion:
 
 # --------------------------------------------------------------------------- #
 # F1 — a crossing kwarg ISOLATES the aggregate into a host-rooted CTE
-# (DEV-1709 Stage 5, widened Law-3 trigger); inside that CTE the kwarg's
-# join base-pulls with multiply-per-match semantics (F1 decision — 1:N
+# (widened Law-3 trigger); inside that CTE the kwarg's
+# relationship base-pulls with multiply-per-match semantics (F1 decision — 1:N
 # semantics unchanged, only the scope moved). SQL-shape pin; executed
 # multiply-per-match values live in tests/integration/test_integration_duckdb.py.
 # --------------------------------------------------------------------------- #
@@ -301,9 +301,9 @@ def _extract_cm_body(sql: str) -> str:
 
 class TestDev1527F1BasePull:
     async def test_crossing_kwarg_over_unproven_to_many_hop_fails_closed(self) -> None:
-        # 1:N: one order → many line_items. ``li_weight`` crosses that join,
-        # so the fanned SUM is ambiguous — fails closed per role (DEV-1838 D5;
-        # the class-(d) crossed-argument ledger row). The proven-hop control
+        # 1:N: one order → many line_items. ``li_weight`` crosses that relationship,
+        # so the fanned SUM is ambiguous — fails closed per role (the
+        # class-(d) crossed-argument ledger row). The proven-hop control
         # below pins the still-legal shape.
         orders = _orders(
             extra=[DatasetField(name="li_weight", sql="line_items.qty", datatype=DataType.FLOAT)],

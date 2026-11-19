@@ -2,7 +2,7 @@
 
 ``provably_to_one`` takes the oriented edge: the declared prong uses the
 oriented cardinality (an inverted declared one_to_many proves many_to_one), the structural
-prong checks traversal-target-side columns against that model's unique sets.
+prong checks traversal-target-side fields against that dataset's unique sets.
 ``safe_reachable`` walks any declared edge in either orientation.
 """
 

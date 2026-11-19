@@ -1,7 +1,7 @@
-"""LAW one relation door (python.sql P13): a model reaches SQL only through ``_emit_relation``, as its filtered dataset.
+"""LAW one relation door (python.sql P13): a dataset reaches SQL only through ``_emit_relation``, filtered.
 
 AST scan of ``slayer/sql/``: the backing-relation builders are called only from ``_backing_relation``,
-``_backing_relation`` only from ``_emit_relation``, and a model's ``.filters`` is read only by the door
+``_backing_relation`` only from ``_emit_relation``, and a dataset's ``.filters`` is read only by the door
 (plus the variable-surface collector, which emits nothing).
 """
 
@@ -18,7 +18,7 @@ BACKING = "_backing_relation"
 BUILDERS = frozenset({"_to_table", "_embed_model_sql"})
 #: Readers of ``.filters`` allowed beside the door: the variable-surface collector.
 FILTER_READERS = frozenset({DOOR, "_user_authored_exemptions"})
-#: ``.filters`` receivers that are a plan's or render context's filters, never a model's.
+#: ``.filters`` receivers that are a plan's or render context's filters, never a dataset's.
 PLAN_RECEIVERS = frozenset({"lowered", "ctx"})
 
 
@@ -91,4 +91,4 @@ def test_backing_relation_only_through_the_door():
 def test_model_filters_read_only_by_the_door():
     reads = [r for s in _sites() for r in s.filter_reads if not _is_plan_receiver(r[2].value)]
     assert [(where, fn) for where, fn, _ in reads if fn not in FILTER_READERS] == []
-    assert any(fn == DOOR for _, fn, _ in reads), f"{DOOR} never reads a model's filters"
+    assert any(fn == DOOR for _, fn, _ in reads), f"{DOOR} never reads a dataset's filters"

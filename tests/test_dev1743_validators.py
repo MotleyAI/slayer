@@ -1,11 +1,11 @@
-"""DEV-1743 — validator relaxation (WP1) and the ``__slayer_`` reservation (P3).
+"""Validator relaxation (WP1) and the ``__slayer_`` reservation (P3).
 
-The flip lifts the ``__`` ban on model/query names while keeping ``.``/``:``
+The flip lifts the ``__`` ban on dataset/query names while keeping ``.``/``:``
 banned, and reserves the ``__slayer_`` prefix (which the colon-agg preprocessor
 mints internally) so user input cannot spoof a placeholder.
 
 These fail today because the ban is still in force: constructing a ``__``-named
-model raises, and the parser lets a literal ``__slayer_agg_0__`` through (the
+dataset raises, and the parser lets a literal ``__slayer_agg_0__`` through (the
 pre-existing spoof hole [C3] closes).
 """
 
@@ -26,7 +26,7 @@ from tests._dev1743_fixtures import datasource
 
 
 # --------------------------------------------------------------------------- #
-# The ban is lifted: __ is legal in model / query names.
+# The ban is lifted: __ is legal in dataset / query names.
 # --------------------------------------------------------------------------- #
 class TestDunderNamesAccepted:
     def test_model_name_with_dunder_constructs(self) -> None:
@@ -69,7 +69,7 @@ class TestDotAndColonStillRejected:
 
 
 # --------------------------------------------------------------------------- #
-# Column names with __ stay legal (D5 carve-out — unchanged).
+# Field names with __ stay legal (D5 carve-out — unchanged).
 # --------------------------------------------------------------------------- #
 class TestFlatColumnNamesUnchanged:
     def test_flat_column_name_still_allowed(self) -> None:
@@ -139,7 +139,7 @@ class TestParserSlayerPrefixReservation:
 
 
 # --------------------------------------------------------------------------- #
-# A __-named model round-trips through both storage backends.
+# A __-named dataset round-trips through both storage backends.
 # --------------------------------------------------------------------------- #
 class TestDunderNameRoundTripsStorage:
     @pytest.mark.asyncio

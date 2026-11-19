@@ -271,7 +271,7 @@ class DbtMetricAggregationParams(BaseModel):
 
 class DbtMetricTypeParams(BaseModel):
     measure: DbtMetricInputMeasure | None = None  # simple: measure ref (str shorthand or obj)
-    expr: str | None = None  # derived metrics: formula expression
+    expr: str | None = None  # derived metrics: expression
     metrics: list[DbtMetricInput] | None = None  # derived: input metric refs
     numerator: DbtMetricInput | None = None  # ratio
     denominator: DbtMetricInput | None = None  # ratio
@@ -336,13 +336,13 @@ class DbtRegularModel(BaseModel):
     * ``manifest.json`` (via ``slayer.dbt.manifest``) — provides
       ``database``/``schema_name``/``alias``/``description``/``tags``/``columns``
       for orphan models (those not wrapped by a ``semantic_model``) so they can
-      be introspected and surfaced as hidden SLayer models.
+      be introspected and surfaced as hidden SLayer datasets.
     * The project directory itself (via ``slayer.dbt.parser``) — provides
       ``raw_code``, the SQL body of the ``.sql`` file. That body may contain
       unresolved dbt Jinja (e.g. ``{{ ref('X') }}``, ``{{ source('s','t') }}``,
       ``{{ config(...) }}``); it is resolved by
       ``slayer.dbt.sql_resolver.resolve_refs`` when the converter inlines a
-      regular model's SQL into a semantic-model-derived ``SlayerModel``.
+      regular model's SQL into a semantic-model-derived ``SlayerDataset``.
     """
     name: str
     database: str | None = None

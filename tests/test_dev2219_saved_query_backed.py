@@ -1,4 +1,4 @@
-"""Saved query-backed models inherit edges like a stage; inspect lists them, marked inherited.
+"""Saved query-backed datasets inherit edges like a stage; inspect lists them, marked inherited.
 
 Spec: openspec …/specs/queries/query-backed-inline — "Saved relation relationships survive splicing",
 "Inspect lists a saved relation's inherited edges"; …/specs/queries/multi-stage — "Declared edges win over inherited ones".

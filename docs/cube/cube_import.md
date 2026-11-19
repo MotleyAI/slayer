@@ -105,7 +105,7 @@ A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single
 edge — the to-one declaration — since SLayer traverses every relationship
-[in both directions](../concepts/models.md#bidirectional-traversal);
+[in both directions](../concepts/datasets.md#bidirectional-traversal);
 contradicting declarations import as two edges and surface as an ambiguous hop.
 
 ### Segments → boolean fields
@@ -153,7 +153,7 @@ Stage-1 gap: a JS **view** whose `join_path` is written as a bare cube identifie
 
 Cube's `FILTER_PARAMS.<cube>.<member>.filter(...)` renders a member's filter when
 the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
-[`{variable}` substitution](../concepts/models.md#variables-in-dataset-sql):
+[`{variable}` substitution](../concepts/datasets.md#variables-in-dataset-sql):
 
 - **String form** `.filter('col')` → an optional block `{? col IN ({member}) ?}`
   — the caller passes a list (`{"brand": ["Acme", "Zeta"]}`), a bare scalar
@@ -166,7 +166,7 @@ the caller supplies one, else the neutral `1 = 1`. SLayer represents this with
 
 #### Scalars are accepted for the string form
 
-The general [`{variable}` rule](../concepts/models.md#variables-in-dataset-sql) puts
+The general [`{variable}` rule](../concepts/datasets.md#variables-in-dataset-sql) puts
 quoting on whoever writes the template — a scalar string substitutes *unquoted*,
 which is what makes `amount >= {floor}` and `'{d}'::TIMESTAMP` both expressible.
 That rule assumes an author who can see the SQL position, and the importer's

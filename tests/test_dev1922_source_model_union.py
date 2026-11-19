@@ -1,5 +1,5 @@
 """``SlayerQuery.population`` is a name or None validated at construction, a legacy
-extension object converting into ``extensions`` and an inline model refused; ``TimeDimension``
+extension object converting into ``extensions`` and an inline dataset refused; ``TimeDimension``
 accepts ``column`` as an alias of ``dimension``.
 
 Spec: queries/population — "A population is named, and typed at construction";

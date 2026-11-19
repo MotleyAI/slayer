@@ -3,8 +3,8 @@
 A query rooted at the declared target resolves paths over the inverted edge:
 LEFT keeps the root side whole, INNER restricts to matched pairs, oriented
 cardinality drives exact-vs-broadcast attribution, and multi-hop reverse
-paths and reverse cross-model aggregates work without any declared reverse
-join.
+paths and reverse cross-dataset aggregates work without any declared reverse
+relationship.
 """
 
 from __future__ import annotations
@@ -238,7 +238,7 @@ class TestReverseClosure:
             pytest.approx(CHAIN_REVERSE_AGG_TOTAL)
 
     async def test_reverse_saved_measure_reference_binds(self) -> None:
-        # A saved measure on orders, referenced across the reverse hop.
+        # A saved metric on orders, referenced across the reverse hop.
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(d)
             storage = engine.storage
@@ -256,8 +256,8 @@ class TestReverseClosure:
             assert got == CHAIN_AMOUNT_BY_NAME
 
     async def test_mode_a_column_over_a_reverse_fanning_path_rejected(self) -> None:
-        # A Mode-A derived column across the reverse one_to_many hop is a set per
-        # row, not a column of customers — rejected at save time.
+        # A Mode-A derived field across the reverse one_to_many hop is a set per
+        # row, not a field of customers — rejected at save time.
         with tempfile.TemporaryDirectory() as d:
             engine = await chain_engine(d)
             storage = engine.storage

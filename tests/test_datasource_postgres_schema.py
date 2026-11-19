@@ -1,7 +1,7 @@
-"""Tests for DatasourceConfig.postgres_schema (DEV-1594).
+"""Tests for DatasourceConfig.postgres_schema.
 
 ``postgres_schema`` controls the schema name the Postgres facade advertises a
-datasource's models under. It is distinct from ``schema_name`` (the upstream
+datasource's datasets under. It is distinct from ``schema_name`` (the upstream
 physical source schema) and defaults to ``None`` (=> "public").
 """
 

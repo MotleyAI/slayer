@@ -16,19 +16,19 @@ SLayer has two distinct expression layers and the rules for what each one accept
 * A bare identifier `col`, or `source.col`, resolves to the column named `col` on the underlying table or SQL of this dataset, whatever fields the dataset declares (`source.col` reads a field when the dataset declares a field named `source`).
 * A path from the dataset reads a field: `orders.status` on dataset `orders`, `customers.region` through a relationship.
 * A relationship path is written with **dots**: `a.b.c.col` walks `dataset → a → b → c` and resolves the leaf field `col` on the final dataset. Dots separate relationship hops; the leaf field follows the final dot. The generated SQL emits this walk with a `__`-delimited internal table alias (`LEFT JOIN … AS a__b__c`), but that spelling is an emitted-SQL detail you never write. A `__` token in a qualifier is treated as part of **one exact name**, never split into a hop walk — `customers__region.label` means "the directly-joined dataset literally named `customers__region`, field `label`". The legacy `__`-delimited split-alias input form (`customers__regions.name` meant as a `customers → regions` walk) is a hard error (`LegacyDunderAliasError`), not auto-converted. The flattened form `a__b__c__col` appears only inside virtual-dataset column names produced by the query-backed dataset wrap (see below).
-* A path segment resolves as an incident **edge name first, then a neighbour dataset name**, and traverses the edge in **either direction** (any declared relationship is reachable in reverse — see [Bidirectional traversal](models.md#bidirectional-traversal)); a hop spanned by two or more edges fails closed unless an edge-name segment disambiguates it. A named edge's hop is canonically spelled by its edge name, so result keys use it whichever spelling is typed.
+* A path segment resolves as an incident **edge name first, then a neighbour dataset name**, and traverses the edge in **either direction** (any declared relationship is reachable in reverse — see [Bidirectional traversal](datasets.md#bidirectional-traversal)); a hop spanned by two or more edges fails closed unless an edge-name segment disambiguates it. A named edge's hop is canonically spelled by its edge name, so result keys use it whichever spelling is typed.
 * Single-dot `t.col` is a literal `<table>.<column>` SQL reference (sqlglot's normal behavior).
 * Multi-dot input (`a.b.c`) stays dotted through to resolution — there is no `__` rewrite (the old dotted→`__` normalization is retired).
 * Fields read by path are recursively expanded, so chains like `A.ratio = "A.bar / B.foo_normalized"` (where `A.bar` and `B.foo_normalized` are themselves derived) work.
 * A subquery in a Mode-A surface (`col IN (SELECT … FROM other)`, a scalar `= (SELECT … LIMIT 1)`) must be **self-contained**: its own columns bind against the subquery's own `FROM`, never against this dataset — reference resolution does not reach in to re-qualify them. Correlating back to the outer dataset is **not** supported (an outer reference inside the subquery is a scope leak, flagged by the scope-closure check SLayer runs over generated SQL under `SLAYER_VALIDATE_SCOPES`).
 * `DatasetMetric` names are not visible from SQL mode — saved metrics are DSL-only.
-* `{variable}` placeholders are substituted into these Mode-A surfaces from the merged variable set (raise-on-missing once any variable is in play; a fully variable-free execution leaves braces as literals; Mode-A- and dialect-aware string escaping, so quoted values round-trip on backslash-escaping backends like MySQL/ClickHouse). See [Variables in dataset SQL](models.md#variables-in-dataset-sql).
+* `{variable}` placeholders are substituted into these Mode-A surfaces from the merged variable set (raise-on-missing once any variable is in play; a fully variable-free execution leaves braces as literals; Mode-A- and dialect-aware string escaping, so quoted values round-trip on backslash-escaping backends like MySQL/ClickHouse). See [Variables in dataset SQL](datasets.md#variables-in-dataset-sql).
 
 ### DSL mode (queries + `DatasetMetric.expression`)
 
 * A bare name must resolve to a `DatasetField`, a `DatasetMetric`, or a custom `Aggregation` defined on the dataset; in a dataset metric's `expression`, `source.col` reads a source column unless the dataset declares a field named `source`. Filters additionally accept query-level metric / transform / expression aliases, and synthesised canonical agg names like `revenue_sum`.
 * `{variable}` placeholders bind literal values in every Mode-B expression — metrics, filters, computed and time dimensions, `date_range` bounds, order and saved metric expressions.
-* A single-dot dotted path walks the relationship graph: `customers.regions.name` traverses `dataset → customers → regions` and resolves `name` on the regions dataset. Multi-hop is supported. Each segment resolves as an incident **edge name first, then a neighbour dataset name**, in **either direction** ([bidirectional traversal](models.md#bidirectional-traversal)); an ambiguous hop (parallel edges, no edge-name segment) fails closed naming the candidates.
+* A single-dot dotted path walks the relationship graph: `customers.regions.name` traverses `dataset → customers → regions` and resolves `name` on the regions dataset. Multi-hop is supported. Each segment resolves as an incident **edge name first, then a neighbour dataset name**, in **either direction** ([bidirectional traversal](datasets.md#bidirectional-traversal)); an ambiguous hop (parallel edges, no edge-name segment) fails closed naming the candidates.
 * A reference may start with the query root's own name — a dataset, or a stage by its name in the query list (`sum(orders.amount)` from `orders` is `sum(amount)`); the root wins over a relationship spelled the same.
 * A **short form** naming only the target dataset and field (`regions.name`) auto-routes to its full path when the target is reached by exactly one route — or, among several, exactly one fan-out-free route — surfacing under that full routed path; an ambiguous or unreachable target is rejected (`UnresolvableDimensionRelationshipError`) with a suggested path, and a broken explicit chain is never silently repaired.
 * Aggregations: `<agg>(<col>)` (e.g. `sum(revenue)`), `count(*)`, `<agg>(<col>, <args>)` (e.g. `weighted_avg(price, weight=quantity)`), and `<agg>(<dotted.path>)` for cross-dataset aggregations — see [Aggregation syntax](#aggregation-syntax).
@@ -87,7 +87,7 @@ Disambiguation rules:
   SQL.
 
 An aggregation also accepts a row-level **expression** over its dataset and its to-one relationships as its value —
-`sum(amount - cost)`, `sum(amount - customers.discount)`. See [Expression aggregation](formulas.md#expression-aggregation).
+`sum(amount - cost)`, `sum(amount - customers.discount)`. See [Expression aggregation](expressions.md#expression-aggregation).
 
 ## `__` in identifiers
 
@@ -176,7 +176,7 @@ Rejected at enrichment (when the expression is evaluated against a dataset):
 {"name": "bad", "expression": "initcap(name)"}                  // raw SQL fn
 ```
 
-A bare `aov` or dotted `customers.aov` reuses a saved metric by expanding its expression inline, but only inside a metric expression or computed-dimension expression — see [Reusing another dataset's saved metric](models.md#reusing-another-datasets-saved-metric-customersaov).
+A bare `aov` or dotted `customers.aov` reuses a saved metric by expanding its expression inline, but only inside a metric expression or computed-dimension expression — see [Reusing another dataset's saved metric](datasets.md#reusing-another-datasets-saved-metric-customersaov).
 
 ## Scalar functions and dialect semantics
 
@@ -330,7 +330,7 @@ Test for null separately:
 
 ## See also
 
-* [Datasets](models.md) — field expressions, `DatasetField.filter`, dataset-level filters
+* [Datasets](datasets.md) — field expressions, `DatasetField.filter`, dataset-level filters
 * [Queries](queries.md) — `SlayerQuery` field semantics
-* [Expressions](formulas.md) — DSL grammar and transforms
-* [Relationships](models.md#relationships) — dotted relationship paths in dataset SQL (generated SQL uses `__` internal aliases)
+* [Expressions](expressions.md) — DSL grammar and transforms
+* [Relationships](datasets.md#relationships) — dotted relationship paths in dataset SQL (generated SQL uses `__` internal aliases)

@@ -1,31 +1,31 @@
-"""DEV-1779: a formula measure that references sibling saved measures must
-emit valid SQL regardless of the order the measures appear in the query.
+"""An expression metric that references sibling saved metrics must
+emit valid SQL regardless of the order the metrics appear in the query.
 
 On main the root cause was an ordering asymmetry in the enrichment
-provenance-merge: a formula enriched *before* the sibling measure it
+provenance-merge: an expression enriched *before* the sibling metric it
 references froze that sibling's canonical alias (``orders.id_count``) into
 its expression SQL / transform input, and the later direct selection renamed
 the base-CTE column to the declared name (``orders.order_count``) without
 following the frozen reference — so the outer SELECT referenced a column no
 CTE projected.
 
-The DEV-1450 pipeline replaced order-dependent enrichment with structural
+The typed pipeline replaced order-dependent enrichment with structural
 expansion (``measure_expansion.py``, key-based repointing via ``core/keys``,
-cycle detection), so the frozen-alias hazard cannot arise: a saved-measure
+cycle detection), so the frozen-alias hazard cannot arise: a saved-metric
 reference is resolved to a key, not a rendered alias, and every projection
 alias is derived from the plan at emission time. This suite verifies the
 order-independence property end to end through the public engine.
 
 Test groups:
-  A  string-shape invariant over the measure-ordering matrix (dry-run SQL)
+  A  string-shape invariant over the metric-ordering matrix (dry-run SQL)
   B  end-to-end execution over the same matrix (temp-file SQLite)
   C  the same property through a transform-wrapped reference (cumsum / change_pct)
-  D  full reported scenario: joined dimension + ORDER BY the formula
-  E  bind-time guard: a formula referencing a *nonexistent* measure is
+  D  full reported scenario: joined dimension + ORDER BY the expression
+  E  bind-time guard: an expression referencing a *nonexistent* metric is
      rejected (typed error), never emitted as dangling SQL — the branch's
      stronger equivalent of main's generator defense-in-depth guard
 
-Only the formula-first / formula-middle orderings reproduced the original
+Only the expression-first / expression-middle orderings reproduced the original
 bug; the forward-order, single-ref, and no-ref cases are non-regression
 controls (they assert the invariant is preserved).
 """
@@ -51,14 +51,14 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
-# Canonical auto-aliases of the two aggregates the formula expands to. If
+# Canonical auto-aliases of the two aggregates the expression expands to. If
 # either shows up in the SQL *referenced but not declared*, the bug is live.
 _CANON_ORDER = "orders.id_count"
 _CANON_UNIQUE = "orders.customer_count_distinct"
 
 
 def _habit_metrics() -> list[DatasetMetric]:
-    """order_count / unique_customers, plus the formula that divides them."""
+    """order_count / unique_customers, plus the expression that divides them."""
     return [
         DatasetMetric(name="order_count", expression="count(id)"),
         DatasetMetric(name="unique_customers", expression="count_distinct(customer)"),
@@ -100,10 +100,10 @@ def _stores_dataset() -> SlayerDataset:
 async def _make_engine(
     tmp_path, *, seed: bool, metrics: list[DatasetMetric] | None = None
 ) -> SlayerQueryEngine:
-    """Build a YAMLStorage-backed engine over the orders(+stores) model.
+    """Build a YAMLStorage-backed engine over the orders(+stores) dataset.
 
     ``seed=True`` materialises the SQLite tables for execution tests;
-    ``seed=False`` builds only the datasource + models for dry-run SQL shape.
+    ``seed=False`` builds only the datasource + datasets for dry-run SQL shape.
     """
     db_file = tmp_path / "slayer_test.db"
     if seed:
@@ -148,12 +148,12 @@ async def _make_engine(
 def _referenced_but_undeclared(sql: str) -> set[str]:
     """Generated aliases referenced in ``sql`` but never declared with ``AS``.
 
-    Every ``"model.col"`` alias a SELECT/CTE references must be projected
-    (declared ``AS "model.col"``) by some layer below it. A non-empty result
-    means the SQL references a column no CTE produces — exactly the DEV-1779
+    Every ``"dataset.col"`` alias a SELECT/CTE references must be projected
+    (declared ``AS "dataset.col"``) by some layer below it. A non-empty result
+    means the SQL references a column no CTE produces — exactly the original
     failure (``"orders.id_count"`` referenced, only ``"orders.order_count"``
     declared). Restricted to *dotted* quoted identifiers: SLayer aliases are
-    always ``model.col`` (a dot), while base-table columns / physical
+    always ``dataset.col`` (a dot), while base-table columns / physical
     identifiers are bare, so the dot filter avoids false-failing on a quoted
     physical name. This is a heuristic backstop; the execution tests are the
     authoritative check that the SQL is valid end to end.
@@ -173,7 +173,7 @@ async def _dry_sql(tmp_path, metrics: list[str], **query_kw: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Group A — string-shape invariant over the measure-ordering matrix (dry-run)
+# Group A — string-shape invariant over the metric-ordering matrix (dry-run)
 # ---------------------------------------------------------------------------
 
 
@@ -203,7 +203,7 @@ async def test_formula_ref_sql_has_no_dangling_alias(
 
 
 # ---------------------------------------------------------------------------
-# Group B/C/D — execution + join scenarios (temp-file SQLite)
+# Group B/C/D — execution + relationship scenarios (temp-file SQLite)
 # ---------------------------------------------------------------------------
 
 
@@ -219,8 +219,8 @@ async def test_formula_ref_executes(
     assert resp.data, resp.sql
     row = resp.data[0]
     # Single ungrouped bucket: order_count=8, unique_customers=4 → habit=2.
-    # unique_customers is not always projected (hidden inside the formula for
-    # one_ref/no_ref), so assert against the formula result directly.
+    # unique_customers is not always projected (hidden inside the expression for
+    # one_ref/no_ref), so assert against the expression result directly.
     assert row["orders.habit_score"] == 2
     if "orders.order_count" in row:
         assert row["orders.order_count"] == 8
@@ -250,7 +250,7 @@ async def test_transform_wrapped_reference_follows_rename(tmp_path) -> None:
 
 async def test_change_pct_desugar_reference_follows_rename(tmp_path) -> None:
     """Group C (desugaring): change_pct(order_count) desugars to an
-    expression + a hidden time_shift, both referencing the inner measure.
+    expression + a hidden time_shift, both referencing the inner metric.
     With order_count selected AFTER, both frozen carriers must follow the
     rename."""
     engine = await _make_engine(
@@ -274,7 +274,7 @@ async def test_change_pct_desugar_reference_follows_rename(tmp_path) -> None:
 
 async def test_full_reported_scenario(tmp_path) -> None:
     """Group D: the exact shape from the ticket — joined ``stores.name``
-    dimension, formula measure listed first, and ORDER BY the formula."""
+    dimension, expression metric listed first, and ORDER BY the expression."""
     engine = await _make_engine(tmp_path, seed=True)
     query = SlayerQuery.model_validate({
         "population": "orders",
@@ -303,10 +303,9 @@ async def test_full_reported_scenario(tmp_path) -> None:
 
 
 async def test_formula_referencing_nonexistent_measure_raises(tmp_path) -> None:
-    """A formula referencing a measure that does not exist is rejected at
+    """An expression referencing a metric that does not exist is rejected at
     bind time (``UnknownReferenceError``) — never emitted as dangling SQL.
-    On the DEV-1450 pipeline the guard fires strictly earlier than main's
-    generator-level ValueError: the reference never resolves to a key."""
+    The guard fires before SQL generation: the reference never resolves to a key."""
     engine = await _make_engine(
         tmp_path,
         seed=False,
@@ -323,7 +322,7 @@ async def test_formula_referencing_nonexistent_measure_raises(tmp_path) -> None:
 
 async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> None:
     """Same guard through a transform wrapper: cumsum over a nonexistent
-    measure is rejected at bind, not rendered with a dangling input."""
+    metric is rejected at bind, not rendered with a dangling input."""
     engine = await _make_engine(
         tmp_path,
         seed=False,

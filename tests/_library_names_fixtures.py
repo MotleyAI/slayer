@@ -1,4 +1,4 @@
-"""Raw stores whose models define aggregations named after library functions, written as the previous release did.
+"""Raw stores whose datasets define aggregations named after library functions, written as the previous release did.
 
 Physical tables::
 
@@ -65,7 +65,7 @@ def t_doc(
     *, name: str = "t", aggregations: Sequence[dict] = (), metrics: Sequence[dict] = (),
     version: int = PREVIOUS_MODEL_VERSION,
 ) -> dict:
-    """Stored model over ``t`` joining ``customers``."""
+    """Stored dataset over ``t`` with a relationship to ``customers``."""
     doc: dict[str, Any] = {
         "version": version, "name": name, "sql_table": "t", "data_source": DS,
         "columns": [
@@ -91,7 +91,7 @@ def customers_doc(*, version: int = PREVIOUS_MODEL_VERSION) -> dict:
 
 
 def saved_query_doc(*, name: str, stage: dict, version: int = PREVIOUS_MODEL_VERSION) -> dict:
-    """A query-backed model (run by name) with one stored stage."""
+    """A query-backed dataset (run by name) with one stored stage."""
     return {"version": version, "name": name, "data_source": DS,
             "source_queries": [{"version": PREVIOUS_QUERY_VERSION, **stage}]}
 
@@ -105,7 +105,7 @@ def memory_doc(*, memory_id: str, query: dict) -> dict:
 async def stored_engine(
     *, datasets: Sequence[dict], memories: Sequence[dict] = (), dialect: str = "sqlite",
 ) -> AsyncGenerator[SlayerQueryEngine]:
-    """An engine over a raw YAML store of ``models`` (plus ``customers``) and ``memories``."""
+    """An engine over a raw YAML store of ``datasets`` (plus ``customers``) and ``memories``."""
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, f"live.{'duckdb' if dialect == 'duckdb' else 'db'}")
         seed(db_path, dialect=dialect)

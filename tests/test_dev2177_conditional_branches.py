@@ -67,7 +67,7 @@ def _bundle(dialect: str) -> ResolvedSourceBundle:
 
 
 def inferred_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
-    """The declared type of the one dimension or measure ``x`` in ``item``."""
+    """The declared type of the one dimension or metric ``x`` in ``item``."""
     query = SlayerQuery.model_validate({"population": "orders", **item})
     prebound = bind_query_inputs(query=query, bundle=_bundle(dialect))
     (declared,) = [dm for dm in prebound.declared_metrics if dm.public_name == "x"]

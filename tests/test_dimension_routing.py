@@ -1,10 +1,10 @@
 """Unit tests for the pure route resolver
 ``slayer/engine/population/dimension_routing.py``: ``short_form_route_or_none`` (executable
 hop-token path for a uniquely-routable target, else ``None``, never raises),
-``route_dotted_target`` (same but raises ``UnresolvableDimensionJoinError`` with a
+``route_dotted_target`` (same but raises ``UnresolvableDimensionRelationshipError`` with a
 route-aware ``suggested_path`` on ambiguous/unreachable), and ``_safe_hops`` (the
-oriented provably-to-one addressable hops off a model, ``join_search.addressable_hops``
-with ``HopFilter.TO_ONE``, as ``(token, target_model)`` pairs).
+oriented provably-to-one addressable hops off a dataset, ``relationship_search.addressable_hops``
+with ``HopFilter.TO_ONE``, as ``(token, target_dataset)`` pairs).
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ class TestUniqueRoute:
 
     def test_route_through_reverse_declared_hop(self) -> None:
         """B–C declared on C (reverse from A's side): still one route,
-        same model-name tokens."""
+        same dataset-name tokens."""
         d = _dataset("D", [_pk(), _t("name")])
         c = _dataset(
             "C", [_pk(), _d("b_id"), _d("d_id")],
@@ -105,7 +105,7 @@ class TestFanoutTieBreak:
         """A reaches D via a safe branch Bs and a second branch Cs.
 
         ``second_safe`` toggles whether Cs → D lands on the PK (safe) or on the
-        non-unique ``grp`` column (fan-out).
+        non-unique ``grp`` field (fan-out).
         """
         d = _dataset("D", [_pk(), _t("grp"), _t("name")])
         bs = _dataset("Bs", [_pk(), _d("d_id")], [_join("D", [["d_id", "id"]])])
@@ -298,7 +298,7 @@ class TestSafeHops:
 
     def test_edge_name_shadowing_a_model_makes_it_unreachable(self) -> None:
         """An edge named ``Leaf`` (pointing at ``Other``) captures the ``Leaf`` token
-        by name-priority, so the bare edge to the real ``Leaf`` model is
+        by name-priority, so the bare edge to the real ``Leaf`` dataset is
         unaddressable and drops — even though both hops are PK-safe."""
         leaf = _dataset("Leaf", [_pk(), _t("x")])
         other = _dataset("Other", [_pk(), _t("y")])

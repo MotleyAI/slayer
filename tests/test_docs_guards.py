@@ -1,4 +1,4 @@
-"""Docs-site guards: every page is in the nav, no issue numbers, every Mode-B example parses."""
+"""Docs-site guards: nav coverage, no issue numbers, every Mode-B example parses, links and redirects resolve."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import tomllib
 from functools import cache
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from slayer.core.syntax import parse_expr
 
@@ -25,6 +27,20 @@ NAV_EXEMPT = frozenset({
     "getting-started/flight-sql.md",  # DEV-2103 adds it to the nav
 })
 _ISSUE_NUMBER = re.compile(rb"\bDEV-\d+\b", re.IGNORECASE)
+_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_INLINE_CODE = re.compile(r"(`+).*?\1")
+_DESTINATION = r"(?:<([^>\n]+)>|((?:[^()\s]|\([^()\s]*\))+))"
+_INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*" + _DESTINATION + r"(?:\s+\"[^\"]*\")?\s*\)")
+_REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*" + _DESTINATION)
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+#: Pages moved off old-word paths: old page -> new page, or new folder prefix (ending ``/``).
+MOVED_PAGES = {
+    "concepts/models.md": "concepts/datasets.md",
+    "concepts/formulas.md": "concepts/expressions.md",
+    "examples/05_joins/joins.md": "examples/05_relationships/",
+    "examples/05_joined_measures/joined_measures.md": "examples/05_joined_metrics/",
+    "examples/16_list_columns/list_columns.md": "examples/16_list_fields/",
+}
 #: A git hook's repository-location variables would point ``git ls-files`` away from ``_ROOT``.
 _GIT_LOCATION_VARS = frozenset({"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"})
 
@@ -54,8 +70,12 @@ def _nav_paths(node: Any) -> set[str]:
     return set().union(*(_nav_paths(v) for v in values))
 
 
+def _zensical() -> dict[str, Any]:
+    return tomllib.loads((_ROOT / "zensical.toml").read_text())
+
+
 def _nav() -> set[str]:
-    return _nav_paths(tomllib.loads((_ROOT / "zensical.toml").read_text())["project"]["nav"])
+    return _nav_paths(_zensical()["project"]["nav"])
 
 
 def test_every_docs_page_is_in_the_nav() -> None:
@@ -83,6 +103,83 @@ def test_no_issue_numbers_in_docs() -> None:
         for token in _ISSUE_NUMBER.findall(path.read_bytes())
     }
     assert found == set()
+
+
+# --------------------------------------------------------------------------- #
+# Relative links and redirects resolve
+# --------------------------------------------------------------------------- #
+def _relative_links(markdown: str) -> list[tuple[int, str]]:
+    """``(line, target without anchor)`` per relative link outside code; external URLs and bare anchors skipped."""
+    links: list[tuple[int, str]] = []
+    fence: str | None = None
+    for lineno, line in enumerate(markdown.splitlines(), 1):
+        marker = _FENCE.match(line)
+        if fence is None and marker:
+            fence = marker.group(1)
+            continue
+        if fence is not None:
+            closing = marker is not None and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence)
+            if closing and not line.strip().lstrip(fence[0]):
+                fence = None
+            continue
+        prose = _INLINE_CODE.sub("", line)
+        matches = [*_INLINE_LINK.finditer(prose), *_REFERENCE_LINK.finditer(prose)]
+        for target in (m.group(1) or m.group(2) for m in matches):
+            path = target.split("#", 1)[0]
+            if path and not _SCHEME.match(target):
+                links.append((lineno, path))
+    return links
+
+
+def _docs_markdown() -> list[Path]:
+    return [p for p in _docs_files() if p.suffix == ".md"]
+
+
+def test_every_relative_docs_link_resolves() -> None:
+    broken = [
+        f"{_rel(page)}:{lineno}: {target}"
+        for page in _docs_markdown()
+        for lineno, target in _relative_links(page.read_text())
+        if not (page.parent / target).is_file()
+    ]
+    assert broken == []
+
+
+def test_the_link_guard_reads_a_meaningful_number_of_links() -> None:
+    assert sum(len(_relative_links(p.read_text())) for p in _docs_markdown()) >= 250
+
+
+def _redirect_maps() -> dict[str, str]:
+    return _zensical()["project"].get("plugins", {}).get("redirects", {}).get("redirect_maps", {})
+
+
+def test_every_redirect_source_is_gone_and_its_destination_exists() -> None:
+    redirects = _redirect_maps()
+    assert sorted(src for src in redirects if (_DOCS / src).exists()) == []
+    assert sorted(dst for dst in redirects.values() if not (_DOCS / dst).is_file()) == []
+
+
+@pytest.mark.parametrize(("old", "new"), sorted(MOVED_PAGES.items()))
+def test_every_moved_page_has_a_redirect(old: str, new: str) -> None:
+    destination = _redirect_maps().get(old)
+    assert destination is not None
+    assert destination.startswith(new) if new.endswith("/") else destination == new
+
+
+def test_link_extraction() -> None:
+    page = (
+        "See [datasets](../concepts/datasets.md#fields), ![logo](img/a.png \"Logo\") and [x](<b c.md>).\n"
+        "[ref]: ./other.md\n"
+        "External [site](https://docs.motley.ai/x.md), [mail](mailto:a@b.c), [anchor](#top).\n"
+        "Code `[no](skip.md)` and ``[no](`skip`.md)`` are not links; [p](guide_(new).md) is.\n"
+        "````md\n[fenced](skip.md)\n```\n[still fenced](skip.md)\n````\n"
+        "~~~\n[tilde](skip.md)\n~~~\n"
+        "[after](after.md)\n"
+    )
+    assert _relative_links(page) == [
+        (1, "../concepts/datasets.md"), (1, "img/a.png"), (1, "b c.md"), (2, "./other.md"),
+        (4, "guide_(new).md"), (13, "after.md"),
+    ]
 
 
 # --------------------------------------------------------------------------- #

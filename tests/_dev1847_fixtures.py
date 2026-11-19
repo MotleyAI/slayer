@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1847 — second-order aggregation (re-aggregation).
+"""Shared fixtures for second-order aggregation (re-aggregation).
 
 ``sales`` is denormalized (Alpha appears in North AND South; Gap has a
 NULL-city cell; Void is all-NULL amounts); ``corders``→``customers``→``regions``
@@ -47,7 +47,7 @@ def sales_dataset() -> SlayerDataset:
         ],
         aggregations=[
             Aggregation(name="dsum", expression="SUM({value})"),
-            # weight defaults to a COLUMN — outer use must fail closed.
+            # weight defaults to a FIELD — outer use must fail closed.
             Aggregation(name="wavg",
                         expression="SUM({value} * {weight}) / SUM({weight})",
                         params=[AggregationParam(name="weight", sql="amount")]),
@@ -138,12 +138,12 @@ INNER_CRP = "sum(amount, partition_by=[city, region, product])"
 
 
 def reagg(outer: str, inner: str, *, name: str, **kw) -> QueryMetric:
-    """An ``<outer>(<inner>)`` re-aggregation measure, e.g. reagg('avg', INNER_CR)."""
+    """An ``<outer>(<inner>)`` re-aggregation metric, e.g. reagg('avg', INNER_CR)."""
     extra = "".join(f", {k}={v}" for k, v in kw.items())
     return QueryMetric(metric=f"{outer}({inner}{extra})", alias=name)
 
 
-#: The warning kind DEV-1847 adds for an operand grain == outer grain.
+#: The warning kind for an operand grain == outer grain.
 DEGENERATE_KIND = "degenerate_reaggregation"
 
 
@@ -207,7 +207,7 @@ SPEND_BAND_EXPR = (
 )
 
 
-# --- DEV-1859: mixed row/attached sources over the (quantity, unit_price) widening.
+# --- Mixed row/attached sources over the (quantity, unit_price) widening.
 INNER_UP_PRODUCT = "avg(unit_price, partition_by=product)"
 INNER_UP_CITY = "avg(unit_price, partition_by=city)"
 MIXED_SUM = f"sum(quantity * {INNER_UP_PRODUCT})"
@@ -277,7 +277,7 @@ _SALES_ROWS = [  # (id, region, city, product, amount)
     (14, "Void", "Xi", "P", None),
     (15, "Void", "Xi", "P", None),
 ]
-#: DEV-1859 widening: id -> (quantity, unit_price); Void prices are NULL.
+#: Widening: id -> (quantity, unit_price); Void prices are NULL.
 _SALES_EXTRA = {
     1: (2.0, 4.0), 2: (2.0, 8.0), 3: (3.0, 9.0), 4: (1.0, 15.0),
     5: (4.0, 4.0), 6: (2.0, 5.0), 7: (5.0, 12.0), 8: (3.0, 8.0),

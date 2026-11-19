@@ -1,8 +1,8 @@
-"""DEV-1901 — a definition default computes exactly as its explicit spelling.
+"""A definition default computes exactly as its explicit spelling.
 
 Executed on SQLite and DuckDB against hand-derived oracles: every producer kind
-(local, cross-model, association, trailing window, second-order), every position
-(measure, filter, order key), explicit string fragments, shadowed bare defaults,
+(local, cross-dataset, association, trailing window, second-order), every position
+(metric, filter, order key), explicit string fragments, shadowed bare defaults,
 quoted mixed-frame defaults, and the fanning default homing like its twin.
 """
 
@@ -135,7 +135,7 @@ class TestExpressionDefaultEveryProducer:
 
 
 class TestDefaultInFilterAndOrder:
-    """A dotted / derived default evaluates identically outside measure position."""
+    """A dotted / derived default evaluates identically outside metric position."""
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_measure_position(self, engine, agg: str) -> None:
@@ -174,7 +174,7 @@ class TestStringFragments:
 
 
 class TestShadowedBareDefault:
-    """A bare ``factor`` default reads the owner's column, not the root's."""
+    """A bare ``factor`` default reads the owner's field, not the root's."""
 
     async def test_cross_model(self, engine) -> None:
         assert await _value(engine, "wshadow(customers.spend)") == pytest.approx(SHADOW_CM)

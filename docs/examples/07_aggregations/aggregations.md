@@ -57,7 +57,7 @@ and literals; an unnamed one derives its result key from the expression
 (`sum(order_total - tax_paid)` → `orders.order_total_tax_paid_sum`). Dotted
 joined-dataset paths inside an expression, filtered fields, and nested
 aggregations are rejected with clear errors — see
-[Expressions → Expression aggregation](../../concepts/formulas.md#expression-aggregation).
+[Expressions → Expression aggregation](../../concepts/expressions.md#expression-aggregation).
 
 ## COUNT(*) and the star metric
 
@@ -252,7 +252,7 @@ Conditionals — `CASE WHEN` (or `iif(cond, then, otherwise)`) can branch on an 
 {"metric": "CASE WHEN sum(revenue) >= 10000 THEN 'high' ELSE 'standard' END", "alias": "tier"}
 ```
 
-See [Expressions — Conditionals](../../concepts/formulas.md#conditionals-case-when-iif) for branch-typing rules, and [Queries — Expression dimensions](../../concepts/queries.md) for grouping by a computed expression.
+See [Expressions — Conditionals](../../concepts/expressions.md#conditionals-case-when-iif) for branch-typing rules, and [Queries — Expression dimensions](../../concepts/queries.md) for grouping by a computed expression.
 
 ## Share of parent (`partition_by`)
 
@@ -273,7 +273,7 @@ Most aggregations take an optional `partition_by=` to compute over a subset of t
 
 A local `partition_by` aggregate also composes with the rest of the query: combined with `window=` (a rolling total at the partition grain, per the query's time bucket), on `first`/`last`, nested inside a transform (`cumsum(sum(order_total, partition_by=stores.regions.name))`), and referenced in a filter or `order` target (`sum(order_total, partition_by=stores.regions.name) > 5000`) — for filters and `order` targets, cross-dataset included (`sum(customers.spend, partition_by=customers.regions.name) > 100`). A filter's top-level `AND` conjuncts route independently; a single predicate valid as neither a row-level field nor a metric (e.g. a partitioned aggregate OR-ed with a raw row field that isn't a query dimension) raises a typing error naming both failures. Cross-dataset `partition_by` composes the same way — with `window=` when the query's active time dimension is attributable from the aggregate's root, on `first`/`last` (`last(customers.spend, partition_by=customers.tier)`), and nested inside a transform.
 
-A partitioned aggregate can itself be re-aggregated — `{"metric": "avg(sum(order_total, partition_by=[stores.name, stores.regions.name]))", "alias": "avg_store_total"}` grouped by `stores.regions.name` averages each region's **store totals** (one input per store cell, never a row-weighted value), and the outer aggregation can take a parameter at the same grain — `weighted_avg(sum(order_total, partition_by=[stores.name, stores.regions.name]), weight=count(id, partition_by=[stores.name, stores.regions.name]))` weights each store total by its row count; see [re-aggregation](../../concepts/formulas.md#re-aggregation-aggregate-over-an-attached-value).
+A partitioned aggregate can itself be re-aggregated — `{"metric": "avg(sum(order_total, partition_by=[stores.name, stores.regions.name]))", "alias": "avg_store_total"}` grouped by `stores.regions.name` averages each region's **store totals** (one input per store cell, never a row-weighted value), and the outer aggregation can take a parameter at the same grain — `weighted_avg(sum(order_total, partition_by=[stores.name, stores.regions.name]), weight=count(id, partition_by=[stores.name, stores.regions.name]))` weights each store total by its row count; see [re-aggregation](../../concepts/expressions.md#re-aggregation-aggregate-over-an-attached-value).
 
 ## Result column naming
 

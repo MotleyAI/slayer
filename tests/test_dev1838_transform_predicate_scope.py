@@ -1,5 +1,5 @@
-"""DEV-1838 — a transform-wrapped cross-model aggregate predicate lowers POST,
-never to the combined outer WHERE (mask lowering, DEV-1865)."""
+"""A transform-wrapped cross-dataset aggregate predicate lowers POST,
+never to the combined outer WHERE (mask lowering)."""
 
 from __future__ import annotations
 

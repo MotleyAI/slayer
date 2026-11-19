@@ -1,7 +1,7 @@
-"""DEV-1850 — keyless-grain dual-role cross-model partitioned aggregate.
+"""Keyless-grain dual-role cross-dataset partitioned aggregate.
 
-Exact local/cross-model parity for a partitioned aggregate whose partition key
-is absent from the query dimensions. A combined-position consumer (measure,
+Exact local/cross-dataset parity for a partitioned aggregate whose partition key
+is absent from the query dimensions. A combined-position consumer (metric,
 arithmetic/scalar composite, transform input, raw ORDER BY target, filter-only
 reference) fails at plan time with the SAME ``not a query dimension`` ValueError
 the local twin raises — never the internal ``missing a host / producer``
@@ -9,10 +9,10 @@ RuntimeError. A row-scope reference (filter over the computed dimension's own
 aggregate, ORDER BY the dimension's name) executes row-routed exactly as it does
 locally, with one producer relation and no combined twin.
 
-Feature-missing today: the cross-model combined-consumer and row-scope shapes
-raise the internal RuntimeError (the retired DEV-1838 pin
+Feature-missing today: the cross-dataset combined-consumer and row-scope shapes
+raise the internal RuntimeError (the retired pin
 ``test_dual_role_without_partition_key_in_grain_unsupported`` documented it).
-The local twins, the already-clean cross-model measure-only / filter-only
+The local twins, the already-clean cross-dataset metric-only / filter-only
 errors, and the keyless banded-only shape are green today and stay green.
 """
 
@@ -59,12 +59,12 @@ def _dim(expression: str, name: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Combined-position consumers reject the keyless grain — local == cross-model.
+# Combined-position consumers reject the keyless grain — local == cross-dataset.
 # --------------------------------------------------------------------------- #
 _COMBINED_CONSUMER_CASES = [
     # A computed dimension banding the aggregate AND a combined consumer of it,
-    # with the partition key absent from the dimensions. Cross-model RuntimeError
-    # today; local twin already clean. (dims, measures, order, filters, key)
+    # with the partition key absent from the dimensions. Cross-dataset RuntimeError
+    # today; local twin already clean. (dims, metrics, order, filters, key)
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
         [QueryMetric(metric=LOCAL_AGG, alias="rt")],
@@ -118,7 +118,7 @@ _COMBINED_CONSUMER_CASES = [
         None, None, "customers.tier", id="transform_input-cross_model",
     ),
     # Already-clean today (no computed dimension): the aggregate is consumed only
-    # as a measure, or only in a filter — a combined position, so it stays rejected.
+    # as a metric, or only in a filter — a combined position, so it stays rejected.
     pytest.param(
         ["status"], [QueryMetric(metric=CM_AGG, alias="rt")],
         None, None, "customers.tier", id="measure_only-cross_model",
@@ -157,7 +157,7 @@ _ERROR_TEMPLATE = (
 
 
 async def test_keyless_dual_role_error_shape_matches_local() -> None:
-    """The cross-model clean error is identical IN SHAPE to the local twin's —
+    """The cross-dataset clean error is identical IN SHAPE to the local twin's —
     same wording, differing only in the offending key and the available dims."""
     local_query = q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
@@ -196,7 +196,7 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Row-scope references execute row-routed — cross-model mirrors local exactly.
+# Row-scope references execute row-routed — cross-dataset mirrors local exactly.
 # --------------------------------------------------------------------------- #
 async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
     exec_backend,
@@ -221,7 +221,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
 
 
 def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None:
-    """The dim's OWN cross-model aggregate in a filter types as FIELD (row-scoped, attached), not measure."""
+    """The dim's OWN cross-dataset aggregate in a filter types as FIELD (row-scoped, attached), not metric."""
     models = dev1838_datasets()
     bundle = ResolvedSourceBundle(
         dialect="postgres",
@@ -262,7 +262,7 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     )
 
 
-# Local twins — the mirror the cross-model shapes must match (green today).
+# Local twins — the mirror the cross-dataset shapes must match (green today).
 async def test_keyless_filter_over_own_local_aggregate_row_routes(
     exec_backend,
 ) -> None:

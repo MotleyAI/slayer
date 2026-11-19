@@ -1,7 +1,7 @@
 """Broadcast/strict semantics are inherited, not re-built.
 
-A dotted saved-measure reference expands to ordinary cross-model aggregates, so
-it inherits cross-model broadcast metadata and strict-mode errors verbatim. Every
+A dotted saved-metric reference expands to ordinary cross-dataset aggregates, so
+it inherits cross-dataset broadcast metadata and strict-mode errors verbatim. Every
 assertion compares the dotted spelling against its hand-expanded twin: identical
 broadcast warnings in lenient mode, identical failure under ``to_many_handling="error"``.
 """
@@ -27,7 +27,7 @@ async def exec_backend(request):
 
 def _warn_signature(resp: SlayerResponse) -> list:
     """Order-independent signature of the broadcast warnings: each aggregate's
-    named measure plus the set of dimensions it broadcast across."""
+    named metric plus the set of dimensions it broadcast across."""
     return sorted(
         (w.metric, tuple(sorted(d.dimension for d in w.dimensions)))
         for w in broadcast_warnings(resp)

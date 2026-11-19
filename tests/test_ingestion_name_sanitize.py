@@ -124,7 +124,7 @@ class TestDunderTableIngestion:
     async def test_dunder_table_is_modelled_under_its_faithful_name(
         self, workspace: Path
     ) -> None:
-        """The ``__`` ban is lifted — the model keeps the faithful
+        """The ``__`` ban is lifted — the dataset keeps the faithful
         object name, and ``sql_table`` matches."""
         ds = _sqlite_ds(
             workspace,
@@ -140,7 +140,7 @@ class TestDunderTableIngestion:
         assert model.sql_table == "reports__patient__drug"
 
     async def test_one_bad_name_no_longer_kills_the_run(self, workspace: Path) -> None:
-        """Headline regression: before the fix this produced zero models."""
+        """Headline regression: before the fix this produced zero datasets."""
         ds = _sqlite_ds(
             workspace,
             """
@@ -171,7 +171,7 @@ class TestDunderTableIngestion:
     async def test_schema_qualified_dunder_table_keeps_qualified_sql_table(
         self, workspace: Path
     ) -> None:
-        """The schema prefix stays on ``sql_table``; the model keeps the faithful
+        """The schema prefix stays on ``sql_table``; the dataset keeps the faithful
         ``__`` name."""
         ds = _sqlite_ds(
             workspace,
@@ -188,8 +188,8 @@ class TestDunderTableIngestion:
 
 
 class TestCollisionPolicy:
-    """``__`` is a legal model-name character now, so ``a__b`` and
-    ``a_b`` (and ``a___b``) are DISTINCT models — the old sanitize-collapse
+    """``__`` is a legal dataset-name character now, so ``a__b`` and
+    ``a_b`` (and ``a___b``) are DISTINCT datasets — the old sanitize-collapse
     collision between them no longer exists. A genuine collision is now only two
     objects sharing one raw name across different schemas (covered in
     ``test_ingestion_schema_qualification.py``)."""
@@ -202,7 +202,7 @@ class TestCollisionPolicy:
     async def test_faithful_and_sanitized_names_are_distinct_models(
         self, workspace: Path
     ) -> None:
-        """``a__b`` keeps its faithful name; ``a_b`` is its own model; no skip."""
+        """``a__b`` keeps its faithful name; ``a_b`` is its own dataset; no skip."""
         ds = _sqlite_ds(workspace, self._SCRIPT)
         report = await _report(ds)
 
@@ -253,7 +253,7 @@ class TestCollisionPolicy:
         self, workspace: Path
     ) -> None:
         """``a__b`` and ``a___b`` are different objects → different faithful
-        models; nothing collapses, nothing is skipped."""
+        datasets; nothing collapses, nothing is skipped."""
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
         report = await _report(ds)
         names = {m.name for m in report.datasets}
@@ -263,7 +263,7 @@ class TestCollisionPolicy:
     async def test_two_dunder_names_result_is_order_independent(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Both distinct models appear regardless of scan order."""
+        """Both distinct datasets appear regardless of scan order."""
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
         real = ingestion_module.list_ingestable_objects
 
@@ -444,7 +444,7 @@ class TestWrapperContract:
     async def test_ingest_datasource_still_returns_a_list_of_models(
         self, workspace: Path
     ) -> None:
-        """Existing call sites still expect a plain list of models."""
+        """Existing call sites still expect a plain list of datasets."""
         ds = _sqlite_ds(
             workspace, "CREATE TABLE orders (id INTEGER PRIMARY KEY, x TEXT);"
         )
@@ -481,14 +481,14 @@ class TestWrapperContract:
 
 
 # ---------------------------------------------------------------------------
-# FK targets follow the sanitized model name
+# FK targets follow the sanitized dataset name
 # ---------------------------------------------------------------------------
 
 
 class TestJoinTargetsUseModelNames:
-    """A join must name the persisted MODEL, not the live object.
+    """A relationship must name the persisted DATASET, not the live object.
 
-    Model names keep ``__``, so an FK pointing at
+    Dataset names keep ``__``, so an FK pointing at
     ``reports__patient__drug`` binds to the faithful ``reports__patient__drug``.
     """
 
@@ -510,15 +510,15 @@ class TestJoinTargetsUseModelNames:
 
         visits = models["visits"]
         assert [j.to for j in visits.relationships] == ["reports__patient__drug"]
-        # The whole point: the target resolves to a model that exists.
+        # The whole point: the target resolves to a dataset that exists.
         assert visits.relationships[0].to in models
 
     async def test_join_is_dropped_when_the_target_has_no_model(
         self, workspace: Path
     ) -> None:
-        """An out-of-scope target is not ingested, so a join to it is dropped
+        """An out-of-scope target is not ingested, so a relationship to it is dropped
         rather than left dangling (no longer a sanitize-collision, but
-        the exclude filter still yields a target with no model)."""
+        the exclude filter still yields a target with no dataset)."""
         ds = _sqlite_ds(
             workspace,
             """
@@ -562,8 +562,8 @@ class TestIntrospectionReadsOnlyTheOwnTable:
 
 
 class TestSanitizedNamesDoNotLeakIntoColumns:
-    """A join target's name must never leak into the source model's COLUMNS as a
-    dotted/qualified column — join paths belong in ``joins``, not column names."""
+    """A relationship target's name must never leak into the source dataset's FIELDS as a
+    dotted/qualified field — relationship paths belong in ``relationships``, not field names."""
 
     async def test_no_dotted_columns_when_target_is_a_faithful_dunder_model(
         self, workspace: Path
@@ -580,8 +580,8 @@ class TestSanitizedNamesDoNotLeakIntoColumns:
         )
         models = {m.name: m for m in await _ingest(ds)}
         refs_it = models["refs_it"]
-        # ``a__b`` is a valid model now, so the FK becomes a real join
+        # ``a__b`` is a valid dataset now, so the FK becomes a real relationship
         # (not dropped) targeting the faithful name.
         assert [j.to for j in refs_it.relationships] == ["a__b"]
-        # No qualified column names leaked in from the join target.
+        # No qualified field names leaked in from the relationship target.
         assert all("." not in c.name for c in refs_it.fields)

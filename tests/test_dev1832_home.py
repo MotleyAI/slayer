@@ -1,4 +1,4 @@
-"""DEV-1832 task 1.3 — the home dataset resolved on the term (D2).
+"""The home dataset resolved on the term (D2).
 
 Every ``#### Scenario`` of ``queries/semantics`` › *Home dataset of a row-level
 aggregation source*: the elaborator resolves each aggregate's home once and the
@@ -25,8 +25,8 @@ from tests._dev1832_fixtures import (
 
 
 def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
-    """The ``home_path`` of the outer aggregate in a measure over orders (the
-    measure's bound value key — robust to a nested constituent aggregate)."""
+    """The ``home_path`` of the outer aggregate in a metric over orders (the
+    metric's bound value key — robust to a nested constituent aggregate)."""
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
@@ -41,7 +41,7 @@ def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple
 
 
 def _parallel_edge_datasets() -> list[SlayerDataset]:
-    """A model with two NAMED joins to the same target (parallel edges)."""
+    """A dataset with two NAMED relationships to the same target (parallel edges)."""
     tickets = SlayerDataset(
         name="tk", data_source="test", sql_table="tk",
         fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
@@ -143,10 +143,10 @@ class TestAttachedConstituentGrainWidensTheHome:
 
 
 class TestParallelNamedEdges:
-    """Two named joins to the same target carry distinct path segments (the join
-    name), so their leaves resolve to distinct paths (see test_dev1832_anchor's
+    """Two named relationships to the same target carry distinct path segments (the
+    relationship name), so their leaves resolve to distinct paths (see test_dev1832_anchor's
     ``test_parallel_named_edges_yield_distinct_paths``); the home is their common
-    ancestor. (The synthesized-sub-plan root-relativity and the nested cross-model
+    ancestor. (The synthesized-sub-plan root-relativity and the nested cross-dataset
     producer's consumption of ``home_path`` are observable in
     test_dev1832_cross_model_exec's target-homed execution and the golden SQL.)"""
 

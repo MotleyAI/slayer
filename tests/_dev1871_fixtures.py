@@ -1,7 +1,7 @@
-"""Shared fixtures for DEV-1871 — route-aware rootless population inference.
+"""Shared fixtures for route-aware rootless population inference.
 
 Three topologies, each isolated in its own datasource, exercising the routing
-legs the DEV-1866 fixtures cannot:
+legs the ``_dev1866_fixtures`` cannot:
 
 * ``ds_lit``      — ``stores`` has a DIRECT unknown-cardinality edge to
   ``plants`` (literal resolution, not to-one) AND a provably to-one route
@@ -12,8 +12,8 @@ legs the DEV-1866 fixtures cannot:
 * ``ds_tworoutes``— sale → {cust, store} → city, all hops to-one: two
   fan-out-free routes to ``city`` ⇒ a routed probe is ambiguous.
 
-The chain topology (orders → customers → regions) is reused from the DEV-1866
-fixtures for short-form/full-path parity and routed hop counting.
+The chain topology (orders → customers → regions) is reused from the ``_dev1866_fixtures``
+for short-form/full-path parity and routed hop counting.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def lit_datasets() -> list[SlayerDataset]:
             DatasetField(name="hub_id", datatype=DataType.INTEGER),
         ],
         relationships=[
-            # Direct edge: undeclared cardinality into a non-unique column —
+            # Direct edge: undeclared cardinality into a non-unique field —
             # resolvable literally, never provably to-one.
             DatasetRelationship(
                 to="plants", from_columns=["plant_ref"], to_columns=["code"],

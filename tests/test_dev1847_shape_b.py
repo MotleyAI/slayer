@@ -1,4 +1,4 @@
-"""DEV-1847 task 1.4/3.3 — shape B (partition_by an attach-carrying computed
+"""Shape B (partition_by an attach-carrying computed
 dimension) and the re-aggregation-operand finer-grain exemption (spec:
 queries/partitioned-aggregates)."""
 
@@ -91,7 +91,7 @@ class TestCombinedConsumerExemption:
         assert not isinstance(ei.value, NotImplementedError)
         # The pure-attached operand is accepted; the failure is the outer key's
         # combined-consumer rule, NOT the generic expression-nesting gate (whose
-        # message echoes 'product' from the formula).
+        # message echoes 'product' from the expression).
         assert "nested inside the expression aggregated" not in msg
         assert "product" in msg
 

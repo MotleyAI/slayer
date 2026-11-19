@@ -1,7 +1,7 @@
-"""Mode-A variable discoverability in inspect renders (DEV-1730).
+"""Mode-A variable discoverability in inspect renders.
 
-An sql-mode model parameterised with ``{var}`` / ``{? ... ?}`` surfaces its
-required/optional variables through the model skeleton (additive, no schema
+An sql-mode dataset parameterised with ``{var}`` / ``{? ... ?}`` surfaces its
+required/optional variables through the dataset skeleton (additive, no schema
 bump), so an agent can learn the query contract without reading the SQL.
 """
 
@@ -48,7 +48,7 @@ def test_skeleton_render_omits_variables_line_when_none():
 
 
 def test_variables_are_derived_not_persisted_no_schema_bump():
-    # Discoverability is structural: no new persisted SlayerModel field, so the
+    # Discoverability is structural: no new persisted SlayerDataset field, so the
     # serialized schema version is unchanged and no `variables` key is stored.
     model = _dataset()
     dumped = model.model_dump()

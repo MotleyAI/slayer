@@ -1,4 +1,4 @@
-"""Model filters are validated per reference against the owning model, at both save doors and for every model a query reads."""
+"""Dataset filters are validated per reference against the owning dataset, at both save doors and for every dataset a query reads."""
 
 from __future__ import annotations
 

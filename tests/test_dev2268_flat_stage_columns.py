@@ -1,4 +1,4 @@
-"""A joined stage's flattened columns are read by their flat names; a dotted spelling is refused with the flat name."""
+"""A joined stage's flattened fields are read by their flat names; a dotted spelling is refused with the flat name."""
 
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ async def test_an_unrelated_short_form_suggests_the_populations_flat_column() ->
 
 
 # --------------------------------------------------------------------------- #
-# Reference errors name models as the user spells them.
+# Reference errors name datasets as the user spells them.
 # --------------------------------------------------------------------------- #
 async def test_an_unknown_field_of_a_joined_stage_names_the_stage() -> None:
     err = await _refused(_joined("addresses", "s.nope"))

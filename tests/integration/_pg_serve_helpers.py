@@ -4,7 +4,7 @@ The body matches ``_start_pg_demo_server`` previously inlined at
 ``tests/integration/test_integration_pg_facade.py``; lifted here so the
 existing asyncpg suite and the new live-Metabase suite can share a single
 implementation. Adds an optional ``log_records`` capture knob for the
-Metabase suite's hygiene-noise assertion (DEV-1562, A.6).
+Metabase suite's hygiene-noise assertion.
 """
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ def start_pg_demo_server(
     not removed automatically — tests own the list lifetime.
 
     When ``storage_sink`` is supplied, the engine's ``storage`` reference is
-    appended to it after boot so tests can mutate stored ``SlayerModel``s
-    (e.g. flip ``Column.hidden`` for the B.3 isolation test) and trigger
+    appended to it after boot so tests can mutate stored ``SlayerDataset``s
+    (e.g. flip ``DatasetField.hidden`` for the B.3 isolation test) and trigger
     re-sync.
 
     ``bind_host`` controls which interface the asyncio server listens on.

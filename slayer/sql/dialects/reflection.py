@@ -79,7 +79,7 @@ class ResultColumnType(BaseModel):
 
     @property
     def lossy_db_type(self) -> str | None:
-        """The type name a stored ``Column.db_type`` keeps: only where ``type`` is lossy (opaque, a list or
+        """The type name a stored ``DatasetField.db_type`` keeps: only where ``type`` is lossy (opaque, a list or
         exact-numeric)."""
         if self.db_type is None:
             return None
@@ -440,7 +440,7 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
 
 
 def _raw_db_type_str(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str | None:
-    """Best-effort raw database type string for ``Column.db_type``, spelled by ``sa_dialect`` when given (never raises)."""
+    """Best-effort raw database type string for ``DatasetField.db_type``, spelled by ``sa_dialect`` when given (never raises)."""
     if sa_dialect is not None:
         try:
             compiled = str(sa_type.compile(dialect=sa_dialect)).strip()

@@ -198,7 +198,7 @@ CREATE TABLE tweets (
 #
 # Hand-curated labels, descriptions, formats, and metrics layered on top of
 # the bare auto-ingested datasets. Monetary columns are exact DECIMAL(12,2) dollars
-# (the loader converts jafgen's cents on insert — see CENTS_COLUMNS).
+# (the loader converts jafgen's cents on insert — see CENTS_FIELDS).
 
 
 def _currency() -> NumberFormat:
@@ -233,8 +233,8 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
         "orders": _TableEnrichment(
             description=(
                 "Customer orders — one row per order. Monetary amounts are in "
-                "dollars. The fact table at the center of the demo: joins to "
-                "customers and stores, and is referenced by items."
+                "dollars. The fact table at the center of the demo: has relationships "
+                "to customers and stores, and is referenced by items."
             ),
             # Default the weighted_avg weight to subtotal, so a bare
             # ``weighted_avg(order_total)`` is a sales-weighted average.

@@ -10,10 +10,10 @@ from slayer.storage.base import StorageBackend
 
 
 async def seed_warehouse_datasets(storage: StorageBackend) -> None:
-    """Seed the standard warehouse datasource + orders + customers models.
+    """Seed the standard warehouse datasource + orders + customers datasets.
 
     Centralised here to avoid Sonar duplication-density failures across
-    tests that each need the same model corpus.
+    tests that each need the same dataset corpus.
     """
     await storage.save_datasource(
         DatasourceConfig(name="warehouse", type="sqlite", database=":memory:")

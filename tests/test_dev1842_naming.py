@@ -1,16 +1,16 @@
-"""DEV-1842 task 1.7 — naming and metadata of dotted saved-measure references.
+"""Naming and metadata of dotted saved-metric references.
 
 An unnamed dotted reference surfaces under the dotted text as its implicit name,
 yielding a result key of host prefix + dotted path (``orders.customers.aov``); an
-explicit query ``name`` wins. The saved measure's declared ``type`` is inherited
+explicit query ``name`` wins. The saved metric's declared ``type`` is inherited
 with the same precedence as bare references (query-level type, then saved type,
 then inference), and format/description derive from the bound tree — identical to
 the hand-expanded form.
 
 Result keys are read from the executed response's columns. Type / format parity
 is observed the way the bare-name suites observe it
-(``test_query_backed_typed_expansion``): a query-backed model whose backing stage
-selects the measure exposes a virtual column whose ``type`` / ``format`` are the
+(``test_query_backed_typed_expansion``): a query-backed dataset whose backing stage
+selects the metric exposes a virtual field whose ``type`` / ``format`` are the
 inherited ones, compared against the hand-expanded twin.
 """
 
@@ -54,8 +54,8 @@ class TestImplicitAndExplicitName:
 
 
 class TestTypeAndFormatInheritance:
-    """A dotted saved measure's type/format flow to the virtual column of a
-    query-backed model whose backing stage selects it — identically to its
+    """A dotted saved metric's type/format flow to the virtual field of a
+    query-backed dataset whose backing stage selects it — identically to its
     hand-expanded twin."""
 
     async def _virtual_column(self, metric_spec, col_name: str):
@@ -79,7 +79,7 @@ class TestTypeAndFormatInheritance:
             return next(c for c in saved.fields if c.name == col_name)
 
     async def test_saved_type_is_inherited(self) -> None:
-        """``customers.typed_aov`` declares ``type=DOUBLE``; the virtual column
+        """``customers.typed_aov`` declares ``type=DOUBLE``; the virtual field
         carries it."""
         col = await self._virtual_column(
             QueryMetric(metric="customers.typed_aov", alias="ta"), "ta")

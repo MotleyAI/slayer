@@ -1,8 +1,8 @@
-"""DEV-1707 / DEV-1703 Stage 3 — unified ``reroot_aggregate_key``.
+"""Unified ``reroot_aggregate_key``.
 
 One ``reroot_aggregate_key(key, *, target_path)`` re-anchors ALL embedded
 references of an ``AggregateKey`` from the HOST coordinate system into the
-TARGET's local scope when a cross-model aggregate is rendered inside its
+TARGET's local scope when a cross-dataset aggregate is rendered inside its
 target-rooted CTE: the ``source``, positional ``args``, and keyword ``kwargs``
 values.
 
@@ -22,7 +22,7 @@ residual; the generator's old exact-match is subsumed):
 * ``target_path == ()`` is the identity (filtered-local reroot, where the
   source is already host-local).
 
-Behavioural acceptance for DEV-1476 (c)/(d-cross) lives in
+Behavioural acceptance lives in
 ``tests/test_dev1476_first_last_explicit_time.py`` (end-to-end) and
 ``tests/test_agg_render_spec.py`` (spec builder); this module pins the pure
 key algebra and the reworded residual-hop guard.

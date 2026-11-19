@@ -1,11 +1,11 @@
-"""Query-backed backing SQL must length-fit identifiers (DEV-1756 class).
+"""Query-backed backing SQL must length-fit identifiers.
 
-The backing SQL of a query-backed (virtual) model is emitted once and then
+The backing SQL of a query-backed (virtual) dataset is emitted once and then
 referenced by outer queries; an over-limit projection alias inside it gets
 silently truncated by bounded backends. The fix threads ``projection_aliases``
-through ``_expand_query_backed_model`` and teaches the flat-rename wrapper to
-decode fitted names and fit its own output aliases; ``Column.sql`` carries the
-fitted flat name while ``Column.name`` stays canonical.
+through ``_expand_query_backed_dataset`` and teaches the flat-rename wrapper to
+decode fitted names and fit its own output aliases; ``DatasetField.sql`` carries the
+fitted flat name while ``DatasetField.name`` stays canonical.
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ async def _expand(
     columns: list[DatasetField],
     dimensions: list[str],
 ) -> tuple[SlayerDataset, str]:
-    """Expand a one-stage query-backed model; returns (model, backing sql)."""
+    """Expand a one-stage query-backed dataset; returns (dataset, backing sql)."""
     tmp = tempfile.TemporaryDirectory()
     try:
         storage = YAMLStorage(base_dir=tmp.name)

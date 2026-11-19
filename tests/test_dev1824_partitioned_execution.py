@@ -1,5 +1,5 @@
-"""DEV-1824 executed ground truth (SQLite + DuckDB) for the lifted
-``partition_by=`` measure shapes — the ``queries/partitioned-aggregates`` delta
+"""Executed ground truth (SQLite + DuckDB) for the lifted
+``partition_by=`` metric shapes — the ``queries/partitioned-aggregates`` delta
 scenarios. Every expectation is hand-computed in ``tests/_dev1824_fixtures.py``.
 
 Scenario coverage map (spec: openspec …/specs/queries/partitioned-aggregates):
@@ -83,7 +83,7 @@ class TestWindowPlusPartition:
             assert float(r["orders.w"]) == pytest.approx(
                 TRAILING_90D_REGION[(region, month)]
             )
-            # Adding the measure changes no other column's value.
+            # Adding the metric changes no other column's value.
             assert float(r["orders.s"]) == pytest.approx(
                 float(plain[(region, city, month)]["orders.s"])
             )
@@ -152,7 +152,7 @@ class TestFirstLastPartition:
         # (North, Jan) holds two rows in one month bucket (Jan 10 → 10,
         # Jan 20 → 20): ranking by the truncated partition bucket instead of the
         # raw ordered_at would tie and pick either; the pinned 20 is only
-        # deterministic when ranking stays on the model's resolved time column.
+        # deterministic when ranking stays on the dataset's resolved time field.
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[QueryMetric(
@@ -192,7 +192,7 @@ class TestTransformOverPartitioned:
             assert float(rows[key]["orders.c"]) == pytest.approx(value)
 
     async def test_rank_rows_by_attached_region_total(self, exec_engine) -> None:
-        # As a MEASURE the rank evaluates at query grain: the five (region,
+        # As a METRIC the rank evaluates at query grain: the five (region,
         # city) rows rank by their attached region totals 100/100/100/60/50.
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
@@ -380,7 +380,7 @@ class TestRowCombinedCoexistence:
 
 class TestCoexistenceAcrossFamilies:
     async def _assert_solo_equality(self, exec_engine, *, dims, tds, metrics) -> None:
-        """Each measure's combined-query values equal its solo-query values."""
+        """Each metric's combined-query values equal its solo-query values."""
         def _mk(pairs):
             return [QueryMetric(metric=f, alias=n) for f, n in pairs]
 

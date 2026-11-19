@@ -1,6 +1,6 @@
 """Tests for the Cube curly-reference translator (slayer/cube/refs.py).
 
-DEV-1608 §3 / §4.4. `{CUBE}` / `{member}` / `{cube.member}` are Cube's
+`{CUBE}` / `{member}` / `{cube.member}` are Cube's
 single-brace SQL-ref syntax — distinct from Jinja's `{{ }}` / `{% %}`.
 """
 
@@ -52,7 +52,7 @@ def test_cross_cube_member_single_hop():
 
 
 def test_cross_cube_member_multi_hop():
-    # `{a.b.c}` → SLayer multi-dot `a.b.c` (model-side `_fix_multidot_sql` later
+    # `{a.b.c}` → SLayer multi-dot `a.b.c` (dataset-side `_fix_multidot_sql` later
     # rewrites it to `a__b.c`).
     assert (
         translate_cube_refs("{customers.regions.name}", mode="sql", cube="orders")

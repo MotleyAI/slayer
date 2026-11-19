@@ -1,4 +1,4 @@
-"""DEV-1747 §5.10 — the single order-term resolver.
+"""§5.10 — the single order-term resolver.
 
 Four renderers currently build ORDER BY terms independently
 (``_apply_order_limit_from_planned``, ``_resolve_combined_order_term``,
@@ -10,7 +10,7 @@ dispatch on ``entry.scope``, zero precedence.
 
 Two behaviour changes fall out of the consolidation and are pinned here:
 
-* **D4** — the combined path currently returns ``None`` when a cross-model
+* **D4** — the combined path currently returns ``None`` when a cross-dataset
   order slot has no alias, which SILENTLY drops the sort term and returns
   unsorted rows. ``_planned_order_by_sql`` already raises in the same
   situation. The resolver raises everywhere.
@@ -19,8 +19,6 @@ Two behaviour changes fall out of the consolidation and are pinned here:
   therefore MISSING on the combined and transform-chain paths. It moves into
   the dialect strategy (``SqlDialect.build_ordered``), so every path gets it
   (P-H).
-
-Refs: DEV-1747 (D3, D4, D5), DEV-1742 §5.10 / P-G / P-H, DEV-1571 Bug 2.
 """
 from __future__ import annotations
 
@@ -140,7 +138,7 @@ def _assert_order_reference_resolves(sql: str, *, dialect: str = "postgres") -> 
     an input column of the FROM — which Postgres allows and other engines do
     not, and which silently picks a different column the moment two scopes
     project the same name. That is the shape ``_resolve_combined_order_term``
-    emits for a cross-model measure today (``ORDER BY
+    emits for a cross-dataset metric today (``ORDER BY
     "orders.customers.spend_sum"`` while the SELECT projects it ``AS
     "orders.cs"``), and the drift §5.10's single resolver removes.
     """
@@ -169,7 +167,7 @@ def _assert_order_reference_resolves(sql: str, *, dialect: str = "postgres") -> 
 class TestOrderTargetMatrix:
     async def test_duplicate_display_aliases_order_on_one_column(self) -> None:
         """One structural slot carrying TWO public aliases (C13): the same
-        formula declared under two names interns once and projects twice. The
+        expression declared under two names interns once and projects twice. The
         sort must name a column the SELECT actually projects — the resolver
         takes the FIRST alias, since both hold the same value."""
         sql = await _sql(SlayerQuery(
@@ -269,7 +267,7 @@ class TestOrderTargetMatrix:
         _assert_order_reference_resolves(sql)
 
     async def test_rerooted_aggregate_orders_correctly(self) -> None:
-        """A cross-model aggregate whose CTE is RE-ROOTED at the target still
+        """A cross-dataset aggregate whose CTE is RE-ROOTED at the target still
         exposes one column to order on — the reroot must not change the
         order-term resolution."""
         sql = await _sql(SlayerQuery(
@@ -383,7 +381,7 @@ class TestNullOrdering:
         assert ordered.args.get("nulls_first") is (direction == "asc")
 
     async def test_tsql_combined_path_has_no_case_when_emulation(self) -> None:
-        """The gap D5 closes: the combined (cross-model) path builds its own
+        """The gap D5 closes: the combined (cross-dataset) path builds its own
         ``exp.Ordered`` today and skips the pin entirely."""
         sql = await _sql(
             SlayerQuery(
@@ -418,7 +416,7 @@ class TestNullOrdering:
 # Group 4 — one resolver, not four
 # ---------------------------------------------------------------------------
 class TestSingleResolver:
-    """The four legacy order resolvers were deleted in PR 6 (DEV-1749); the
+    """The four legacy order resolvers were deleted in PR 6; the
     single live resolver (``resolve_order_term`` / ``_apply_planned_order_limit``)
     is exercised across every render shape by ``TestOrderTargetMatrix`` and the
     same-sort-term-across-paths check below."""
@@ -428,7 +426,7 @@ class TestSingleResolver:
         self, dialect: str,
     ) -> None:
         """P-G: ordering by ``rev`` means the same thing whether the query is
-        single-model (base path) or cross-model (combined path).
+        single-dataset (base path) or cross-dataset (combined path).
 
         "Both emit an ORDER BY" is not that claim — two paths can both emit a
         term and order by different things. What is pinned is that the two
@@ -468,7 +466,7 @@ class TestSingleResolver:
 
 
 class TestOrderEnvRequiresDialect:
-    """``OrderEnv.dialect`` is required (DEV-1784 item 19), so no render site
+    """``OrderEnv.dialect`` is required, so no render site
     can fall back to a silent default dialect's null ordering."""
 
     def test_env_without_a_dialect_is_rejected(self) -> None:

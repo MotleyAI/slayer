@@ -1,4 +1,4 @@
-"""Drift vs broken SQL over sql-mode models reading mixed-case and reserved-word tables."""
+"""Drift vs broken SQL over sql-mode datasets reading mixed-case and reserved-word tables."""
 
 from __future__ import annotations
 

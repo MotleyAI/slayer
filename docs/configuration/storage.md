@@ -188,6 +188,6 @@ client = SlayerClient(storage=my_storage)
 
 ## Access-filtered storage
 
-Wrap a store as `AccessFilteredStorage(storage, tags={"fin"}, bypass=False)` (from `slayer.storage.access_filtered`) to serve one caller: every dataset whose [`access_tags`](../concepts/models.md#fields-at-a-glance) it cannot access, every dataset reading one, and every memory linked only to such datasets reads as deleted, relationships into them are pruned, and the caller's writes merge onto the full stored documents (`bypass=True` sees and writes everything).
+Wrap a store as `AccessFilteredStorage(storage, tags={"fin"}, bypass=False)` (from `slayer.storage.access_filtered`) to serve one caller: every dataset whose [`access_tags`](../concepts/datasets.md#fields-at-a-glance) it cannot access, every dataset reading one, and every memory linked only to such datasets reads as deleted, relationships into them are pruned, and the caller's writes merge onto the full stored documents (`bypass=True` sees and writes everything).
 
 Saving a dataset that reads a tagged dataset whose tags do not cover its own emits a `narrowed_access` warning, and `validate_datasets` reports every such dataset as a `narrowed_access` finding.

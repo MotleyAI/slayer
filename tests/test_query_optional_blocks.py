@@ -162,7 +162,7 @@ def test_extract_walks_all_four_mode_a_surfaces():
 
 
 def test_extract_on_malformed_block_does_not_raise():
-    # Read-only inspection must never crash on a stored model whose SQL only
+    # Read-only inspection must never crash on a stored dataset whose SQL only
     # *looks* like a block (a literal '?}' e.g. inside a regex/JSON path). It is
     # classified as block-free; execution still raises.
     model = _sql_dataset(sql="SELECT * FROM t WHERE tag ~ 'a?}' AND x = '{y}'")

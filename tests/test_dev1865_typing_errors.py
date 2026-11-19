@@ -1,9 +1,9 @@
-"""DEV-1865 — a typing failure names both failed typings.
+"""A typing failure names both failed typings.
 
-An expression valid as neither field nor measure fails with a clear typing
+An expression valid as neither field nor metric fails with a clear typing
 error (never a deferred-shape ``NotImplementedError`` and never a silent wrong
-result), stating why field typing failed (the aggregate) and why measure typing
-failed (the unavailable row-level reference / missing measure position).
+result), stating why field typing failed (the aggregate) and why metric typing
+failed (the unavailable row-level reference / missing metric position).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from tests._dev1865_fixtures import q
 
 class TestMixedGrainOr:
     async def test_partitioned_or_nondim_rowlevel_is_typing_error(self, exec_engine) -> None:
-        # Field typing fails (the aggregate); measure typing fails (status is not
+        # Field typing fails (the aggregate); metric typing fails (status is not
         # a query dimension) — neither scope holds the whole OR.
         query = q(
             dimensions=["region", "city"],
@@ -47,8 +47,8 @@ class TestRawRowsHaveNoMeasurePosition:
         assert "metric" in str(ei.value).lower()
 
     async def test_order_on_measure_in_raw_rows_errors(self, exec_engine) -> None:
-        # An aggregate order target is valid as neither field nor measure when the
-        # query has no measure position — rejected, never silently unsorted.
+        # An aggregate order target is valid as neither field nor metric when the
+        # query has no metric position — rejected, never silently unsorted.
         query = q(
             dimensions=["status"],
             distinct_dimension_values=False,

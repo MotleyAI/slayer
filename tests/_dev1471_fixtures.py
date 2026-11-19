@@ -29,7 +29,7 @@ def date_str(value: Any) -> Optional[str]:
 
 
 def one_value(row: dict, *, exclude: Iterable[str] = ()) -> Any:
-    """The single measure value in ``row`` once the excluded dimension keys are dropped."""
+    """The single metric value in ``row`` once the excluded dimension keys are dropped."""
     vals = [v for k, v in row.items() if k not in set(exclude)]
     assert len(vals) == 1, f"expected one value, got {row}"
     return vals[0]
@@ -54,7 +54,7 @@ def orders_dataset(
     extra_columns: Iterable[DatasetField] = (),
     default_time_dimension: Optional[str] = "created_at",
 ) -> SlayerDataset:
-    """The single-table ``orders`` model (id, customer_id, amount, region, created_at, shipped_at)."""
+    """The single-table ``orders`` dataset (id, customer_id, amount, region, created_at, shipped_at)."""
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -90,7 +90,7 @@ MONTHLY_INNER = SlayerQuery.model_validate({
 })
 
 
-# --- orders → customers → regions join chain (multi-hop flat-name tests) ---
+# --- orders → customers → regions relationship chain (multi-hop flat-name tests) ---
 
 def region_chain_datasets(*, data_source: str = "ds") -> list[SlayerDataset]:
     regions = SlayerDataset(
@@ -137,12 +137,12 @@ def region_chain_tables(
 async def make_engine(
     backend: str, *, base_dir: str, db_path: str, tables: list[dict], datasets: list[SlayerDataset],
 ) -> SlayerQueryEngine:
-    """Seed ``tables`` into a fresh ``backend`` DB and return an engine over ``models``.
+    """Seed ``tables`` into a fresh ``backend`` DB and return an engine over ``datasets``.
 
     ``tables`` items: ``{"name", "columns": [(col, kind)], "rows": [tuple, ...]}``.
     DuckDB is skipped (``importorskip``) when the driver is absent.
 
-    DEV-1943: not folded onto ``seeded_exec_engine`` — the caller supplies
+    Not folded onto ``seeded_exec_engine`` — the caller supplies
     ``base_dir``/``db_path`` and a dynamic ``tables`` spec, so it does not fit
     the tempdir-owning context; its sqlite seeding already routes through the door.
     """

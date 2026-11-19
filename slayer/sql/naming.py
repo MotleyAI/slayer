@@ -270,10 +270,10 @@ def identified_datasets(
     reads = {(tuple(k.path), k.leaf) for k in entity_keys if isinstance(k, FieldKey)}
     if root.list_of is None:
         return (with_row_identity(root) if ((), ROW_IDENTITY_FIELD) in reads else root), []
-    parent_name, column = root.list_of
+    parent_name, list_field = root.list_of
     if ((), LIST_POSITION) in reads:
         root = with_list_position(root)
-    if ((column,), ROW_IDENTITY_FIELD) not in reads:
+    if ((list_field,), ROW_IDENTITY_FIELD) not in reads:
         return root, []
     return root, [with_row_identity(datasets_by_name[parent_name])]
 
@@ -420,7 +420,7 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
     if profile in ("cte_schema", "declared_name"):
         return canonical
 
-    # A source's anchor carries its join path, so ``count(customers.*)`` keeps the hop.
+    # A source's anchor carries its relationship path, so ``count(customers.*)`` keeps the hop.
     path: Tuple[str, ...] = source_anchor_path(key.source)
 
     if profile == "stage_expression":

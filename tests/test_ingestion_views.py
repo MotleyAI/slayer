@@ -144,14 +144,14 @@ class TestViewIngestion:
         assert "stg_orders" not in names
 
     def test_view_model_has_columns(self, workspace: Path) -> None:
-        """A view-backed model is a real model, not an empty shell."""
+        """A view-backed dataset is a real dataset, not an empty shell."""
         _, ds = _db_with_view(workspace)
         models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
         assert {c.name for c in view_model.fields} == {"id", "amount", "status"}
 
     def test_view_model_has_no_joins(self, workspace: Path) -> None:
-        """Views carry no FK metadata, so no joins can be derived."""
+        """Views carry no FK metadata, so no relationships can be derived."""
         _, ds = _db_with_view(workspace)
         models = run_sync(_with_client(ingestion.ingest_datasource_async, datasource=ds))
         view_model = next(m for m in models if m.name == "stg_orders")
@@ -261,7 +261,7 @@ class TestFilters:
 
 
 # ---------------------------------------------------------------------------
-# drift must resolve view-backed models — the pre-existing data-loss bug
+# drift must resolve view-backed datasets — the pre-existing data-loss bug
 # ---------------------------------------------------------------------------
 
 
@@ -269,7 +269,7 @@ class TestDriftSeesViews:
     async def test_hand_authored_view_model_is_not_marked_for_deletion(
         self, workspace: Path
     ) -> None:
-        """A model pointing at a view resolved to live_table=None and got a WholeModelDelete."""
+        """A dataset pointing at a view resolved to live_table=None and got a WholeDatasetDelete."""
         _, ds = _db_with_view(workspace)
         model = SlayerDataset(
             name="stg_orders",
@@ -283,7 +283,7 @@ class TestDriftSeesViews:
         )
         entries = await _with_client(validate_datasource, datasource=ds, datasets=[model])
         whole = [e for e in entries if isinstance(e, WholeDatasetDelete)]
-        assert whole == [], f"view-backed model marked for deletion: {whole}"
+        assert whole == [], f"view-backed dataset marked for deletion: {whole}"
 
     async def test_model_pointing_at_a_genuinely_missing_object_still_deletes(
         self, workspace: Path
@@ -381,7 +381,7 @@ class TestOutputLabel:
         assert "[materialized view]" not in out
 
     def test_unknown_source_kind_is_not_labelled(self, capsys) -> None:
-        """source_kind=None (e.g. a pre-existing model) renders as before."""
+        """source_kind=None (e.g. a pre-existing dataset) renders as before."""
         addition = DatasetAddition(
             dataset_name="orders", data_source="ds", created=True, new_fields=["id"]
         )

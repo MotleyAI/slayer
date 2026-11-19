@@ -1,4 +1,4 @@
-"""A model aggregation may take a library function name and shadows it in its own model (spec: models/aggregation-names)."""
+"""A dataset aggregation may reuse a library function's name, shadowing it there (spec: models/aggregation-names)."""
 
 from __future__ import annotations
 

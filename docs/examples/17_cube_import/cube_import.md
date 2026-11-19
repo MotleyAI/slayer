@@ -9,7 +9,7 @@ the whole path on a small jaffle-shop-flavored project.
 ## The one-liner
 
 ```bash
-slayer import-cube cube_project --datasource shop_cube --storage .cache/slayer_models
+slayer import-cube cube_project --datasource shop_cube --storage .cache/slayer_datasets
 ```
 
 `--datasource` is just the SLayer datasource name to file the datasets under — it

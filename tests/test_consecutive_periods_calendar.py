@@ -146,7 +146,7 @@ class TestNesting:
 
 
 async def _ticks_columns(engine, query: SlayerQuery, *names: str) -> dict:
-    """Each named measure's values in bucket order."""
+    """Each named metric's values in bucket order."""
     resp = await engine.execute(query)
     rows = sorted(resp.data, key=lambda r: r["ticks.ts"])
     assert len(rows) == 4, rows

@@ -18,8 +18,6 @@ from slayer.core.keys import AggregateKey, FieldKey, StarKey
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import FieldMetadata
 
-# DEV-1485 Stage D: imported through ``query_engine`` while the legacy
-# ``_query_as_model`` re-exported it; now imported from its owning module.
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.engine.query_engine import ResponseAttributes
 from slayer.mcp.server import _format_attributes
@@ -36,7 +34,7 @@ from slayer.engine.key_metadata import (
 
 
 class TestInferAggregatedFormat:
-    """Tests for _infer_aggregated_format resolving formats from source measures."""
+    """Tests for _infer_aggregated_format resolving formats from source metrics."""
 
     @pytest.fixture()
     def dataset(self):
@@ -75,7 +73,7 @@ class TestInferAggregatedFormat:
         assert fmt.type == NumberFormatType.INTEGER
 
     def test_avg_inherits_currency(self, dataset):
-        # DEV-1788: avg-family now inherits the source column's units (was FLOAT).
+        # avg-family now inherits the source field's units (was FLOAT).
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation="avg")
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
@@ -99,7 +97,7 @@ class TestInferAggregatedFormat:
         assert fmt.type == NumberFormatType.CURRENCY
 
     def test_sum_no_format_returns_none(self, dataset):
-        """Preserving aggregation over a measure without format returns None."""
+        """Preserving aggregation over a metric without format returns None."""
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="quantity", aggregation="sum")
         assert fmt is None
 
@@ -164,7 +162,7 @@ class TestMcpFormatMeta:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1788 shared classifier drift guard.
+# Shared classifier drift guard.
 #
 # ``aggregated_type`` (slot DataType) and ``_infer_aggregated_format`` (display
 # NumberFormat) both read the single ``classify_aggregation`` classifier, so the
@@ -228,7 +226,7 @@ class TestSharedClassifier:
         )
 
     def test_custom_aggregation_falls_back_to_preserving(self, dataset):
-        # Model-defined aggregations (not builtin) inherit source type & format
+        # Dataset-defined aggregations (not builtin) inherit source type & format
         # through both consumers, not only the classifier.
         assert (
             classify_aggregation(metric_name="revenue", aggregation="my_custom", source_type=None)
@@ -321,7 +319,7 @@ class TestSharedClassifier:
             == NumberFormatType.FLOAT
         )
 
-    # --- missing source column ---
+    # --- missing source field ---
 
     def test_preserving_missing_column(self, dataset):
         assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="sum") is None

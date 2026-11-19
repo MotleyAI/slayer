@@ -173,7 +173,7 @@ def test_postgres_explain_statements() -> None:
 #
 # Postgres has no ``round(double precision, integer)`` — only
 # ``round(numeric, integer)``. The target-keyed hook wraps the first arg of a
-# 2-arg ROUND in a numeric CAST so 2-arg round over a DOUBLE measure executes.
+# 2-arg ROUND in a numeric CAST so 2-arg round over a DOUBLE metric executes.
 # 1-arg round and abs are untouched.
 
 

@@ -45,7 +45,7 @@ from tests._engine_helpers import _engine_generate
 
 
 # ===========================================================================
-# Shared model builders.
+# Shared dataset builders.
 # ===========================================================================
 
 
@@ -297,7 +297,7 @@ class TestGlobalNameValidation:
 
 class TestModeAUnchanged:
     async def test_raw_sql_aggregate_column_passthrough(self) -> None:
-        # Mode-A column SQL is raw SQL — the functional parser must never
+        # Mode-A field SQL is raw SQL — the functional parser must never
         # touch it.
         model = _orders()
         model = model.model_copy(
@@ -377,7 +377,7 @@ class TestFunctionalIsFirstClass:
 
 
 # ===========================================================================
-# 1.6 — Entity refs: memories resolution and recommend_root_model.
+# 1.6 — Entity refs: memories resolution and recommend_population.
 # ===========================================================================
 
 
@@ -446,7 +446,7 @@ class TestEntityRefsFunctional:
 
 
 # ===========================================================================
-# Cross-spelling measure/filter matching.
+# Cross-spelling metric/filter matching.
 # ===========================================================================
 
 

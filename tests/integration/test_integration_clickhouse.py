@@ -12,8 +12,8 @@ distinguishing characteristics:
   regression).
 
 Rollup-ingestion tests are intentionally omitted: ClickHouse exposes no
-foreign-key metadata via SQLAlchemy's Inspector. Cross-model coverage
-uses hand-declared ``ModelJoin``s instead.
+foreign-key metadata via SQLAlchemy's Inspector. Cross-dataset coverage
+uses hand-declared ``DatasetRelationship``s instead.
 
 Skipped silently when:
 - ``testcontainers[clickhouse]`` is not installed (importorskip)
@@ -298,7 +298,7 @@ class TestClickHouseQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_dev1933_regex_literal_extension_column(self, clickhouse_env: SlayerQueryEngine) -> None:
-        """A model column holding a ``(?:...)`` regex literal and a ``%``
+        """A dataset field holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         orders = await clickhouse_env.storage.get_dataset("orders")
         assert orders is not None
@@ -564,14 +564,14 @@ class TestClickHouseQueries:
 
 
 # ---------------------------------------------------------------------------
-# Cross-model + multistage (hand-declared joins; no FK metadata available)
+# Cross-dataset + multistage (hand-declared relationships; no FK metadata available)
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def clickhouse_cross_dataset_env(clickhouse_container):
-    """ClickHouse env with orders + customers (with score) and explicit join.
-    No FK metadata is exposed by ClickHouse — the join is hand-declared."""
+    """ClickHouse env with orders + customers (with score) and explicit relationship.
+    No FK metadata is exposed by ClickHouse — the relationship is hand-declared."""
     db_name = _create_module_db(clickhouse_container)
     with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
         with engine.begin() as conn:
@@ -888,7 +888,7 @@ class TestClickHouseStatAggregations:
 
 @pytest.fixture
 def clickhouse_log10_env(clickhouse_container):
-    """Dedicated env for the log10 round-trip so the Column-add doesn't
+    """Dedicated env for the log10 round-trip so the field-add doesn't
     leak into the shared module-scoped storage."""
     db_name = _create_module_db(clickhouse_container)
     with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
@@ -1009,7 +1009,7 @@ async def test_filter_on_windowed_column_clickhouse_raises(planets_clickhouse_en
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql
+# Cross-dataset derived DatasetField.sql
 # ---------------------------------------------------------------------------
 
 
@@ -1168,7 +1168,7 @@ _CH_ESC_ROWS = [
 @pytest.fixture(scope="module")
 def _clickhouse_esc_storage(clickhouse_container, tmp_path_factory):
     """Per-module ClickHouse DB with an ``esc`` table of tricky-status rows +
-    a model whose Mode-A filter carries a ``{v}`` placeholder."""
+    a dataset whose Mode-A filter carries a ``{v}`` placeholder."""
     db_name = _create_module_db(clickhouse_container)
     try:
         with disposable_engine(_ds_url_for_db(clickhouse_container, db_name)) as engine:
@@ -1953,7 +1953,7 @@ class TestClickHousePortableLibrary:
 
 
 # ---------------------------------------------------------------------------
-# List columns (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
+# List fields (spec: models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)
 # ---------------------------------------------------------------------------
 
 
@@ -1998,7 +1998,7 @@ def _versioned_clickhouse_lists(versioned_clickhouse, tmp_path_factory):
 @pytest.mark.integration
 class TestClickHouseLists:
     async def test_lists(self, _clickhouse_lists) -> None:
-        # Below 25.4 a filter across a to-many hop is refused, a list reached through a to-one join included.
+        # Below 25.4 a filter across a to-many hop is refused, a list reached through a to-one relationship included.
         await check_lists(SlayerQueryEngine(storage=_clickhouse_lists[0]), dialect="clickhouse",
                           refused={"through-to-one": "25.4", "elements-filtered-across-another-to-many": "25.4"})
 

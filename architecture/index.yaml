@@ -10,6 +10,7 @@ legacy_arrows: {baseline: 7}
 
 # Fail-closed deferral-site count (tests/test_law_guard_ratchet.py). Only ever lower.
 x-guards: {baseline: 0}
+x-vocabulary-stragglers: {baseline: 37}
 
 cross_cutting_specs:
   queries: {touches: [python.core, python.engine, python.sql, python.storage]}

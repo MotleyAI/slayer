@@ -1,4 +1,4 @@
-"""Importers type columns from sources named with the source dialect's identifier rules (spec:
+"""Importers type fields from sources named with the source dialect's identifier rules (spec:
 importers/meaning-preservation › Column types come from the database first)."""
 
 from __future__ import annotations
@@ -479,7 +479,7 @@ def test_unreadable_or_modifying_sql_source_is_refused_before_execution(live: Li
 # ── Postgres folds unquoted identifiers (spec: importers/meaning-preservation, importers/dbt-import) ──
 
 def _importer_datasets(live: Live, importer: str, table: str) -> tuple[dict[str, SlayerDataset], str]:
-    """``(models, model name)`` of an import whose one model reads ``qty`` from ``table``."""
+    """``(datasets, dataset name)`` of an import whose one dataset reads ``qty`` from ``table``."""
     if importer == "cube":
         return _cube(live, _qty_cube(table))[0], "items"
     if importer == "dbt":

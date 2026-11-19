@@ -1,4 +1,4 @@
-"""Ingestion: composite-FK grouping, structural cardinality, and ``Column.unique``."""
+"""Ingestion: composite-FK grouping, structural cardinality, and ``DatasetField.unique``."""
 
 from __future__ import annotations
 
@@ -152,7 +152,7 @@ class TestCompositeFk:
         mem = await storage.get_dataset("memberships", data_source="ds")
         assert mem is not None
         org_joins = _join_to(mem, "org_units")
-        # Exactly ONE join, carrying BOTH key pairs — not two single-col joins.
+        # Exactly ONE relationship, carrying BOTH key pairs — not two single-col relationships.
         assert len(org_joins) == 1
         assert {tuple(p) for p in org_joins[0].column_pairs} == {
             ("org_id", "org_id"),
@@ -285,7 +285,7 @@ class TestStructuralCardinality:
 
 
 # ---------------------------------------------------------------------------
-# Column.unique population
+# DatasetField.unique population
 # ---------------------------------------------------------------------------
 
 
@@ -382,7 +382,7 @@ class _CrossSchemaFkClient:
 
 
 class TestCrossSchemaFk:
-    """A cross-schema FK has no model to bind to and must not be guessed."""
+    """A cross-schema FK has no dataset to bind to and must not be guessed."""
 
     def test_case_folding_dialect_matches_normalised_schema(self) -> None:
         fk = {"referred_table": "customers", "referred_schema": "slayer_test_ab12"}

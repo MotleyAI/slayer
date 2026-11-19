@@ -1,12 +1,12 @@
-"""DEV-1930: save-time arity of derived columns / column filters.
+"""Save-time arity of derived fields / field filters.
 
-A derived ``Column.sql`` / ``Column.filter`` reference that provably crosses a
-fanning hop from its declaring model is rejected at save time
-(``DerivedColumnFanningError``); an unproven hop warns and defers to the
-DEV-1832 query-time backstop; a provably to-one hop is silent; an unloaded
+A derived ``DatasetField.sql`` / ``DatasetField.filter`` reference that provably crosses a
+fanning hop from its declaring dataset is rejected at save time
+(``DerivedFieldFanningError``); an unproven hop warns and defers to the
+query-time backstop; a provably to-one hop is silent; an unloaded
 target is skipped (best-effort); an ambiguous one is rejected.
 
-The query-time backstop for an aggregated unproven-hop column is pinned by
+The query-time backstop for an aggregated unproven-hop field is pinned by
 ``tests/integration/test_integration_duckdb.py::TestDev1709SiblingProtection``
 (unchanged by this change) — the remaining ADDED-requirement scenario.
 """
@@ -30,7 +30,7 @@ def _storage(tmp_path) -> YAMLStorage:
 
 
 def _line_items(*, extra: tuple[DatasetField, ...] = ()) -> SlayerDataset:
-    """Target model: PK ``id``, non-unique ``order_id``, base ``qty``."""
+    """Target dataset: PK ``id``, non-unique ``order_id``, base ``qty``."""
     return SlayerDataset(
         name="line_items", data_source=DS, sql_table="line_items",
         fields=[
@@ -43,7 +43,7 @@ def _line_items(*, extra: tuple[DatasetField, ...] = ()) -> SlayerDataset:
 
 
 def _orders(*, li_column: DatasetField, joins: list[DatasetRelationship]) -> SlayerDataset:
-    """Declaring model with a per-test derived column and join set."""
+    """Declaring dataset with a per-test derived field and relationship set."""
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
@@ -62,7 +62,7 @@ def _fanning_warnings(rec, *, column: str) -> list:
 
 
 def _hop_warnings(rec, *, column: str, hop: str) -> list:
-    """Recorded warnings naming both the column and the hop (the contract)."""
+    """Recorded warnings naming both the field and the hop (the contract)."""
     return [w for w in rec if column in str(w.message) and hop in str(w.message)]
 
 
@@ -148,7 +148,7 @@ async def test_sql_across_declared_one_to_many_rejected(tmp_path) -> None:
     msg = str(exc)
     assert "li_qty" in msg
     assert "line_items" in msg
-    assert "line_items.qty" in msg  # the cross-model aggregate remedy spelling
+    assert "line_items.qty" in msg  # the cross-dataset aggregate remedy spelling
     # The three remedy components the spec requires: aggregate, filter, or
     # declare a to-one cardinality / covering unique key.
     assert "aggregat" in msg.lower()
@@ -202,7 +202,7 @@ async def test_host_prefixed_reference_rejected(tmp_path) -> None:
 
 async def test_join_declared_on_peer_side_rejected(tmp_path) -> None:
     """The fanning edge is declared on the target as ``many_to_one``; from
-    ``orders`` its reverse orientation is ``one_to_many`` (DEV-1853)."""
+    ``orders`` its reverse orientation is ``one_to_many``."""
     storage = _storage(tmp_path)
     line_items = SlayerDataset(
         name="line_items", data_source=DS, sql_table="line_items",
@@ -219,7 +219,7 @@ async def test_join_declared_on_peer_side_rejected(tmp_path) -> None:
     await storage.save_dataset(line_items)
     orders = _orders(
         li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
-        joins=[],  # no join declared on orders — it resolves over the reverse edge
+        joins=[],  # no relationship declared on orders — it resolves over the reverse edge
     )
     with pytest.raises(DerivedFieldFanningError) as ei:
         await storage.save_dataset(orders)
@@ -238,7 +238,7 @@ async def test_multihop_fanning_then_unproven_rejected(tmp_path) -> None:
     )
     await storage.save_dataset(parts)
     # orders -> line_items fans; line_items -> parts is undeclared on a
-    # non-unique target column (unproven). The fanning hop is first.
+    # non-unique target field (unproven). The fanning hop is first.
     line_items = _line_items(
         extra=(DatasetField(name="part_code", sql="part_code", datatype=DataType.STRING),),
     )
@@ -333,7 +333,7 @@ async def test_declared_many_to_one_accepted_silently(tmp_path) -> None:
 
 
 async def test_proof_beats_contradictory_to_many_declaration(tmp_path) -> None:
-    """Declared ``one_to_many`` but the target-side column covers the PK →
+    """Declared ``one_to_many`` but the target-side field covers the PK →
     provably to-one → accepted silently."""
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
@@ -361,7 +361,7 @@ async def test_proof_beats_contradictory_to_many_declaration(tmp_path) -> None:
 
 
 async def test_reverse_pk_undeclared_hop_warns_and_saves(tmp_path) -> None:
-    """The DEV-1709 shape: undeclared ``orders -> line_items`` whose reverse
+    """Undeclared ``orders -> line_items`` whose reverse
     orientation covers ``orders``'s PK. Forward is unproven → warn."""
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
@@ -404,7 +404,7 @@ async def test_fully_undeclared_hop_warns_and_saves(tmp_path) -> None:
 
 
 async def test_filter_across_unproven_hop_warns_and_saves(tmp_path) -> None:
-    """A ``Column.filter`` across an unproven hop warns like an ``sql`` ref."""
+    """A ``DatasetField.filter`` across an unproven hop warns like an ``sql`` ref."""
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
@@ -422,7 +422,7 @@ async def test_filter_across_unproven_hop_warns_and_saves(tmp_path) -> None:
 
 
 async def test_unproven_warning_deduplicated_per_hop(tmp_path) -> None:
-    """One column referencing the same unproven hop twice warns exactly once."""
+    """One field referencing the same unproven hop twice warns exactly once."""
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
@@ -444,7 +444,7 @@ async def test_unproven_warning_deduplicated_per_hop(tmp_path) -> None:
 
 
 async def test_unloaded_target_skipped(tmp_path) -> None:
-    """Same fanning-declared orders model, but ``line_items`` is not saved:
+    """Same fanning-declared orders dataset, but ``line_items`` is not saved:
     the hop's target is unloaded → skipped (no error, no warning)."""
     storage = _storage(tmp_path)
     orders = _orders(
@@ -462,7 +462,7 @@ async def test_unloaded_target_skipped(tmp_path) -> None:
 
 
 async def test_unresolvable_reference_skipped(tmp_path) -> None:
-    """A qualifier that names no join hop from the host resolves to nothing →
+    """A qualifier that names no relationship hop from the host resolves to nothing →
     skipped at save time (no error, no warning), like the cycle walk."""
     storage = _storage(tmp_path)
     orders = SlayerDataset(
@@ -480,7 +480,7 @@ async def test_unresolvable_reference_skipped(tmp_path) -> None:
 
 
 async def test_ambiguous_parallel_edge_rejected(tmp_path) -> None:
-    """A bare model-name token spanning two parallel named edges is ambiguous
+    """A bare dataset-name token spanning two parallel named edges is ambiguous
     → rejected as ambiguous, never as fanning, even when one edge is fanning-declared."""
     storage = _storage(tmp_path)
     widgets = SlayerDataset(
@@ -518,8 +518,8 @@ async def test_ambiguous_parallel_edge_rejected(tmp_path) -> None:
 
 
 async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
-    """Best-effort scope: arity is classified for the model being saved only.
-    A stored fanning column (persisted via ``_validate=False``) is not
+    """Best-effort scope: arity is classified for the dataset being saved only.
+    A stored fanning field (persisted via ``_validate=False``) is not
     re-rejected or re-warned when an unrelated peer is later saved."""
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
@@ -530,7 +530,7 @@ async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
-    await storage.save_dataset(fanning, _validate=False)  # persist the ill-formed model
+    await storage.save_dataset(fanning, _validate=False)  # persist the ill-formed dataset
     peer = SlayerDataset(
         name="widgets", data_source=DS, sql_table="widgets",
         fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],

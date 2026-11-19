@@ -1,4 +1,4 @@
-"""Saves report a converted ``strict`` on their response and persist only ``to_many_handling``; REST model saves
+"""Saves report a converted ``strict`` on their response and persist only ``to_many_handling``; REST dataset saves
 also return narrowed-access warnings.
 
 Spec: compatibility/removal-tripwire › Deprecated input forms convert with a structured warning;
@@ -50,7 +50,7 @@ async def store(request) -> AsyncGenerator[AccessStore]:
 
 
 def stored_documents(store: AccessStore) -> str:
-    """Every stored model and memory document, as raw text."""
+    """Every stored dataset and memory document, as raw text."""
     if store.backend == "yaml":
         texts = []
         for root, _, files in os.walk(os.path.join(store.base, "store")):
@@ -228,7 +228,7 @@ class TestMemorySave:
 
 
 async def test_reload_keeps_no_strict(store: AccessStore) -> None:
-    """A saved model reloaded from storage carries only the replacement form."""
+    """A saved dataset reloaded from storage carries only the replacement form."""
     client = TestClient(create_app(storage=store.storage))
     with recorded():
         assert client.post("/datasets", json={"name": "saved", "source_queries": [strict(PUB_COUNT)]}).status_code == 200

@@ -1,11 +1,11 @@
-"""DEV-1908 — the cancelling walk in ``core/join_walker.py`` (D1, D2, D4).
+"""The cancelling walk in ``core/join_walker.py`` (D1, D2, D4).
 
 ``walk_cancelling`` resolves a definition default's qualifier ``tokens`` in the
 owner's frame (the owner is ``root`` walked along ``owner_path``). A token equal
 to the name of a dataset already on ``root + owner_path`` truncates the absolute
 path back to that dataset — keeping ``owner_path``'s own spelling of it — then
 resolution continues forward from there; an incident edge-name token always hops
-(precedence edge name → path model → hop) and never cancels. Returns the absolute
+(precedence edge name → path dataset → hop) and never cancels. Returns the absolute
 token path (from ``root``) or ``None`` on a miss/revisit; ambiguity raises. Plain
 ``walk`` is untouched and still refuses revisits.
 """
@@ -103,7 +103,7 @@ class TestEdgeNames:
                                tokens=("loop",), datasets_by_name=M) is None
 
     def test_precedence_edge_name_wins_over_the_path_model(self):
-        # `customers` is BOTH an edge name (regions → plans) and a visited model.
+        # `customers` is BOTH an edge name (regions → plans) and a visited dataset.
         # The edge name wins: it hops to plans, it does not cancel to ("billing_customer",).
         M = _edge_name_collision()
         result = walk_cancelling(root=M["orders"], owner_path=OWNER_PATH,
@@ -127,7 +127,7 @@ class TestMissAndAmbiguity:
 
 class TestPlainWalkUnchanged:
     def test_plain_walk_still_refuses_revisits(self):
-        # DEV-1952: the plain walk refuses a revisit with a typed raise; only
+        # The plain walk refuses a revisit with a typed raise; only
         # ``walk_cancelling`` cancels.
         M = _named_chain()
         with pytest.raises(CircularRelationshipPathError):

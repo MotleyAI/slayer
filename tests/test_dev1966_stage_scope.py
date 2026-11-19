@@ -1,4 +1,4 @@
-"""Stage names are query-local: they override same-named models only inside their own list.
+"""Stage names are query-local: they override same-named datasets only inside their own list.
 
 Spec: openspec …/specs/queries/multi-stage — "Stage names are query-local".
 """

@@ -1,6 +1,6 @@
 """Shared fixtures and helpers for dialect-emission tests.
 
-DEV-1542 cleanup: the SQLGenerator-surface tests and multi-dialect end-to-end
+The SQLGenerator-surface tests and multi-dialect end-to-end
 tests share helpers and an ``orders_model`` fixture. Consolidating them here
 keeps each ``tests/dialects/test_*.py`` file focused on the dialect concern.
 """
@@ -33,11 +33,11 @@ async def _generate(
     query: SlayerQuery,
     dataset: SlayerDataset,
 ) -> str:
-    """Helper: run ``query`` against ``model`` on the typed engine pipeline
+    """Helper: run ``query`` against ``dataset`` on the typed engine pipeline
     and return the SQL emitted for ``generator``'s dialect.
 
     Kept as a thin shim over :func:`tests._engine_helpers._engine_generate`
-    so the existing ``(generator, query, model)`` call shape survives the
+    so the existing ``(generator, query, dataset)`` call shape survives the
     move off the legacy enrichment stack; SQL validity is asserted inside
     ``_engine_generate``.
     """

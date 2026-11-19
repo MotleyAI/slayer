@@ -122,7 +122,7 @@ _STANDARD_GRAINS: frozenset = frozenset({
 
 # Shared workaround text for an unreachable cross-model filter (used by the
 # simple / ratio / derived push-down paths).
-_RELATIONSHIP_REACHABILITY_SUGGESTION = "Add the required join, or filter on a local dimension."
+_RELATIONSHIP_REACHABILITY_SUGGESTION = "Add the required relationship, or filter on a local dimension."
 
 
 class DbtConversionError(Exception):
@@ -262,7 +262,7 @@ class DbtToSlayerConverter:
         self._datasets_by_name: dict[str, SlayerDataset] = {}
         # {model_name: DbtSemanticModel} for looking up entities
         self._dbt_models_by_name: dict[str, DbtSemanticModel] = {}
-        # Filtered-field dedup: {(model, column_expr, normalized_filter): col_name}
+        # Filtered-field dedup: {(dataset, column_expr, normalized_filter): col_name}
         self._filtered_columns: dict[tuple[str, str, str | None], str] = {}
         # {regular_model_name: raw_code} — used to inline SQL into semantic
         # models whose underlying dbt model is a query rather than a table.
@@ -1757,12 +1757,12 @@ class DbtToSlayerConverter:
                 return False, (
                     f"filter dimension '{entity_name}__{dim_name}' references entity "
                     f"'{entity_name}', which is owned by multiple models {owners}; "
-                    f"the filter cannot be unambiguously qualified to one join"
+                    f"the filter cannot be unambiguously qualified to one relationship"
                 )
-            return True, None  # one-hop join → <owner>.<dim>
+            return True, None  # one-hop relationship → <owner>.<dim>
         return False, (
             f"filter dimension '{entity_name}__{dim_name}' is not reachable from "
-            f"dataset '{source_sm.name}' via a direct join (multi-hop cross-model "
+            f"dataset '{source_sm.name}' via a direct relationship (multi-hop cross-dataset "
             f"filters are not exactly expressible)"
         )
 
@@ -1775,11 +1775,11 @@ class DbtToSlayerConverter:
         dbt_measure: DbtMeasure,
         raw_filter: str,
     ) -> str | None:
-        """Get-or-create the filtered leaf DatasetField for ``(model, expr, filter)``
+        """Get-or-create the filtered leaf DatasetField for ``(dataset, expr, filter)``
         and return the aggregate expression over it (or ``None`` on a
         clean-fail that has already been routed to the report).
 
-        Dedup key is ``(model, column_expr, normalized_filter)`` — the
+        Dedup key is ``(dataset, column_expr, normalized_filter)`` — the
         aggregation lives on the expression, so multiple aggregations over the
         same filtered field share one DatasetField. Special measure forms are
         preserved exactly: ``sum_boolean`` builds the CASE-WHEN INT field and

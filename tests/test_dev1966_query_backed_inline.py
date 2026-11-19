@@ -1,4 +1,4 @@
-"""Consuming a stored query-backed model splices its stages into the statement.
+"""Consuming a stored query-backed dataset splices its stages into the statement.
 
 Spec: openspec …/specs/queries/query-backed-inline.
 """
@@ -327,7 +327,7 @@ class TestExtensions:
 
 
 # --------------------------------------------------------------------------- #
-# Warnings raised inside a spliced model.
+# Warnings raised inside a spliced dataset.
 # --------------------------------------------------------------------------- #
 class TestSplicedWarnings:
     async def test_broadcast_inside_a_query_backed_model_is_visible(self, engine: SlayerQueryEngine) -> None:

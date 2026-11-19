@@ -3,17 +3,17 @@
 Pins the structural-identity contract for the new ``TimeTruncKey`` in
 ``slayer.core.keys``:
 
-- Identity is by ``(column, granularity)``: two ``TimeTruncKey``s with
-  the same underlying ``ColumnKey`` and the same granularity string
+- Identity is by ``(field, granularity)``: two ``TimeTruncKey``s with
+  the same underlying ``FieldKey`` and the same granularity string
   intern to the same slot.
-- Different granularities on the same column are STRUCTURALLY distinct
+- Different granularities on the same field are STRUCTURALLY distinct
   (``TimeTruncKey(c, 'day') != TimeTruncKey(c, 'month')``).
-- Different columns are distinct even with the same granularity.
+- Different fields are distinct even with the same granularity.
 - Phase is ``ROW``: time truncation is a per-row transformation that
   belongs in the base SELECT / GROUP BY, not in a window / outer SELECT.
-- ``ColumnKey.path`` is preserved through ``TimeTruncKey.source`` so
-  cross-model time dimensions (``customers.signup_at``) still carry
-  the join walk.
+- ``FieldKey.path`` is preserved through ``TimeTruncKey.source`` so
+  cross-dataset time dimensions (``customers.signup_at``) still carry
+  the relationship walk.
 
 This commit is the first sub-stage of stage 7b.3 (time dimensions).
 The binder + planner wiring follows in 7b.3b; ``date_range`` -> filter
@@ -92,8 +92,8 @@ class TestTimeTruncKeyIdentity:
         assert a != b
 
     def test_distinct_from_raw_columnkey(self) -> None:
-        """A bare ColumnKey for `ordered_at` and TimeTruncKey for the
-        same column must not collide as ValueKey identities — they end
+        """A bare FieldKey for `ordered_at` and TimeTruncKey for the
+        same field must not collide as ValueKey identities — they end
         up as separate slots in the ValueRegistry."""
         col = FieldKey(leaf="ordered_at")
         k_trunc = TimeTruncKey(source=col, granularity=TimeGranularity.MONTH)
@@ -126,9 +126,9 @@ class TestTimeTruncKeyImmutability:
 
 class TestTimeTruncKeyWithColumnSqlKey:
     """``TimeTruncKey.source`` accepts
-    ``ColumnSqlKey`` so a derived (``Column.sql`` set) temporal column can be
-    a time dimension. Identity is structural over the (derived-column, grain)
-    pair, exactly like the base-column case."""
+    ``FieldSqlKey`` so a derived (``DatasetField.sql`` set) temporal field can be
+    a time dimension. Identity is structural over the (derived-field, grain)
+    pair, exactly like the base-field case."""
 
     def test_constructs_from_columnsqlkey(self) -> None:
         col = FieldSqlKey(dataset="orders", field_name="effective_at")

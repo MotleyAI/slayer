@@ -1,4 +1,4 @@
-"""Cardinality/unique surfacing in inspect, search graph, edit_model — not in embeddings."""
+"""Cardinality/unique surfacing in inspect, search graph, edit_dataset — not in embeddings."""
 
 from __future__ import annotations
 
@@ -109,12 +109,12 @@ class TestModelRender:
             md = await render_dataset_inspection(
                 dataset=model, storage=storage, engine=None, format="markdown"
             )
-            # The columns table gains a `unique` column.
+            # The fields table gains a `unique` column.
             assert "unique" in md.lower()
 
 
 # ---------------------------------------------------------------------------
-# search-graph JOINS edge property
+# search-graph RELATIONSHIPS edge property
 # ---------------------------------------------------------------------------
 
 

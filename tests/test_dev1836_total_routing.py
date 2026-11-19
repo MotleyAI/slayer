@@ -1,4 +1,4 @@
-"""DEV-1836 task 1.11 — the total-routing invariant (design D7, F9).
+"""The total-routing invariant (design D7, F9).
 
 Spec: openspec …/specs/queries/cross-model-aggregates — "Every aggregate has
 exactly one disposition"; …/specs/queries/computed-dimensions — "Grain
@@ -63,7 +63,7 @@ class TestExplicitRejections:
         assert "__regroup__" not in str(ei.value)
 
     async def test_aggregate_over_attached_value_executes(self, exec_backend):
-        """Legal since DEV-1847 (shape B): a measure partitioned by an
+        """Legal (shape B): a metric partitioned by an
         attach-carrying computed dimension equals its band's group total."""
         _, engine = exec_backend
         query = q(
@@ -78,8 +78,8 @@ class TestExplicitRejections:
             assert float(row["orders.x"]) == float(row["orders.s"])
 
     def test_migrated_cm_still_renders_in_a_cte_body(self):
-        """A plain cross-model measure renders inside a CTE body today; the
-        migration onto the primitive must not drop it into the DEV-1838 arm."""
+        """A plain cross-dataset metric renders inside a CTE body today; the
+        migration onto the primitive must not drop it into the CTE-body arm."""
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
@@ -121,7 +121,7 @@ class TestTotalRoutingInvariant:
         self, monkeypatch: pytest.MonkeyPatch,
     ):
         """Task 7.1 — the D7 invariant itself, not a coincidental backstop.
-        Blind the CROSS-MODEL discovery: the un-desugared cross-model aggregate
+        Blind the CROSS-DATASET discovery: the un-desugared cross-dataset aggregate
         must be caught by ``_assert_total_routing`` with the explicit
         no-disposition error, not fall through to the legacy dispatch."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
@@ -145,7 +145,7 @@ class TestTotalRoutingInvariant:
     def test_blinded_discovery_catches_filter_and_order_leaves(
         self, monkeypatch: pytest.MonkeyPatch, role_kwargs,
     ):
-        """The invariant walks filters and orders too — a hidden cross-model
+        """The invariant walks filters and orders too — a hidden cross-dataset
         leaf in either role must not survive blinded discovery."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(

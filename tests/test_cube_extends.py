@@ -1,6 +1,6 @@
 """Tests for Cube `extends` flattening (slayer/cube/extends.py + converter).
 
-DEV-1608 §5. Flatten base members into children (child wins); abstract bases
+Flatten base members into children (child wins); abstract bases
 emitted hidden; cycles reported.
 """
 
@@ -30,7 +30,7 @@ def test_child_inherits_base_members():
     ])
     models, _ = _convert(project)
     clicks = models["clicks"]
-    # Inherited dimensions + measure, plus the child's own measure.
+    # Inherited dimensions + metric, plus the child's own metric.
     assert clicks.get_field("id") is not None
     assert clicks.get_field("event_type") is not None
     assert clicks.get_metric("count") is not None

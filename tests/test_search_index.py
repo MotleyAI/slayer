@@ -1,10 +1,10 @@
-"""Tantivy in-memory index — schema + build + query (DEV-1375).
+"""Tantivy in-memory index — schema + build + query.
 
 Covers:
 * The schema is built with `id`, `kind`, `canonical` (raw) and `text`
   (English-stemmed) fields.
 * `build_in_memory_index` produces one doc per memory + one doc per
-  searchable entity, skipping hidden columns / hidden models.
+  searchable entity, skipping hidden fields / hidden datasets.
 * English stemmer tokenization (`shipped` ↔ `shipping`).
 * Snake_case tokenization (default tokenizer splits `customer_id` into
   `customer` and `id`).
@@ -12,7 +12,7 @@ Covers:
   strings.
 * The `kind` field supports filtering memory vs entity hits at query time.
 * `search_index` accepts a `kind_filter` / `exclude_kind` parameter for
-  per-kind queries (DEV-1414).
+  per-kind queries.
 """
 
 from __future__ import annotations
@@ -81,18 +81,18 @@ def test_build_index_skips_hidden_models_and_hidden_columns() -> None:
         datasets=_make_datasets(),
         datasources=["warehouse"],
     )
-    # Hidden model entirely absent.
+    # Hidden dataset entirely absent.
     hits = search_index(index=idx, question="hidden_model", limit=10)
     assert all("hidden_model" not in hit.id for hit in hits)
-    # Hidden column entirely absent.
+    # Hidden field entirely absent.
     hits = search_index(index=idx, question="hidden_col", limit=10)
     assert all("hidden_col" not in hit.id for hit in hits)
 
 
 def test_index_has_one_doc_per_memory_and_per_entity() -> None:
     """Sanity check: a wildcard search returns at least the entities we
-    expect (memories: 2; datasources: 1; models: 2 visible; columns: 5
-    visible across both models)."""
+    expect (memories: 2; datasources: 1; datasets: 2 visible; fields: 5
+    visible across both datasets)."""
     idx = build_in_memory_index(
         memories=_make_memories(),
         datasets=_make_datasets(),
@@ -115,7 +115,7 @@ def test_english_stemmer_matches_singular_to_plural_form() -> None:
     hits = search_index(index=idx, question="ship", limit=10)
     # Should find docs containing "shipping" or "shipped" in description.
     surface_ids = {hit.id for hit in hits}
-    # Either the model description "shipping info" or the column
+    # Either the dataset description "shipping info" or the field
     # "shipped_at" surfaces.
     assert any("orders" in i for i in surface_ids)
 
@@ -128,7 +128,7 @@ def test_snake_case_tokenization_finds_subword() -> None:
         datasources=["warehouse"],
     )
     hits = search_index(index=idx, question="customer", limit=20)
-    # Should find at minimum the customers model + the customer_id column
+    # Should find at minimum the customers dataset + the customer_id field
     # on orders.
     ids = {hit.id for hit in hits}
     assert any("customers" in i for i in ids)
@@ -173,7 +173,7 @@ def test_empty_corpus_returns_empty_results() -> None:
 
 
 def test_memory_id_round_trips_as_string() -> None:
-    """DEV-1428: ``IndexHit.memory_id`` is now the str memory id."""
+    """``IndexHit.memory_id`` is the str memory id."""
     idx = build_in_memory_index(
         memories=_make_memories(),
         datasets=_make_datasets(),
@@ -185,7 +185,7 @@ def test_memory_id_round_trips_as_string() -> None:
 
 
 # ---------------------------------------------------------------------------
-# DEV-1414: per-kind filtering for invariant per-bucket ranking
+# Per-kind filtering for invariant per-bucket ranking
 # ---------------------------------------------------------------------------
 
 
@@ -213,13 +213,13 @@ def test_kind_filter_model_returns_only_model_hits() -> None:
     hits = search_index(
         index=idx, question="customer", limit=50, kind_filter="dataset",
     )
-    assert hits, "expected at least one model hit"
+    assert hits, "expected at least one dataset hit"
     assert all(h.kind == "dataset" for h in hits)
 
 
 def test_exclude_kind_memory_returns_only_non_memory_hits() -> None:
-    """`exclude_kind="memory"` must return entity (datasource/model/column/
-    measure/aggregation) hits and no memory hits."""
+    """`exclude_kind="memory"` must return entity (datasource/dataset/field/
+    metric/aggregation) hits and no memory hits."""
     idx = build_in_memory_index(
         memories=_make_memories(),
         datasets=_make_datasets(),

@@ -1,4 +1,4 @@
-"""Seed data and SLayer model builders for the Ossie export tests."""
+"""Seed data and SLayer dataset builders for the Ossie export tests."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def orders_columns() -> list[DatasetField]:
 
 def orders(*, columns: list[DatasetField] | None = None, metrics: list[DatasetMetric] | None = None,
            joins: list[DatasetRelationship] | None = None, **extra: Any) -> SlayerDataset:
-    """The ``orders`` table model; by default joined many-to-one to ``customers``."""
+    """The ``orders`` table dataset; by default related many-to-one to ``customers``."""
     return SlayerDataset(
         name=extra.pop("name", "orders"), sql_table=extra.pop("sql_table", "orders"), data_source=DATASOURCE,
         fields=orders_columns() if columns is None else columns,
@@ -101,7 +101,7 @@ def customers(*, metrics: list[DatasetMetric] | None = None, joins: list[Dataset
 
 
 def visits(**extra: Any) -> SlayerDataset:
-    """A sql-mode model over ``visits``."""
+    """A sql-mode dataset over ``visits``."""
     return SlayerDataset(
         name="visits", sql="SELECT visit_id, status, customer_id FROM visits", data_source=DATASOURCE,
         fields=[
@@ -114,7 +114,7 @@ def visits(**extra: Any) -> SlayerDataset:
 
 
 def monthly_revenue() -> SlayerDataset:
-    """A query-backed model with a ``{region}`` variable defaulting to ``US``."""
+    """A query-backed dataset with a ``{region}`` variable defaulting to ``US``."""
     return SlayerDataset(
         name="monthly_revenue", data_source=DATASOURCE,
         source_queries=[SlayerQuery.model_validate({
@@ -135,7 +135,7 @@ BASIC_MEASURES = [
 
 
 def rich_orders() -> SlayerDataset:
-    """``orders`` exercising every exportable measure family plus SLayer-only attributes."""
+    """``orders`` exercising every exportable metric family plus SLayer-only attributes."""
     columns = orders_columns()
     for c in columns:
         if c.name == "amount":

@@ -1,4 +1,4 @@
-"""Measures may be named after transforms (spec: queries/measure-naming)."""
+"""Metrics may be named after transforms (spec: queries/measure-naming)."""
 
 from __future__ import annotations
 

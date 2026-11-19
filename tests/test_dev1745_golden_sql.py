@@ -31,7 +31,7 @@ manifest.
 Never regenerate to make the suite green. The whole point is that a change you
 did not intend cannot pass silently.
 
-Some baseline entries record currently-BROKEN SQL (a derived-of-derived column
+Some baseline entries record currently-BROKEN SQL (a derived-of-derived field
 emitted as a dangling reference; a `_cm_` CTE missing a fragment's join). Those
 are expected to change — that is the fix landing, and the diff documents it.
 
@@ -82,7 +82,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 # --------------------------------------------------------------------------- #
-# Model graph — every Mode-A surface is represented at least once.
+# Dataset graph — every Mode-A surface is represented at least once.
 # --------------------------------------------------------------------------- #
 def _regions() -> SlayerDataset:
     return SlayerDataset(
@@ -92,7 +92,7 @@ def _regions() -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="population", datatype=DataType.FLOAT),
             DatasetField(name="weight", datatype=DataType.FLOAT),
-            # Column.sql — derived on a two-hop target
+            # DatasetField.sql — derived on a two-hop target
             DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
         ],
     )
@@ -129,10 +129,10 @@ def _orders() -> SlayerDataset:
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             # 'status' also exists on regions — same-name collision
             DatasetField(name="status", datatype=DataType.STRING),
-            # a column named like a statement keyword
+            # a field named like a statement keyword
             DatasetField(name="select", datatype=DataType.STRING),
             DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
-            # Column.filter — Mode-A predicate crossing a join
+            # DatasetField.filter — Mode-A predicate crossing a relationship
             DatasetField(name="eu_amount", sql="amount",
                    filter="customers.tier = 'eu'", datatype=DataType.FLOAT),
             # raw ref that inlines to a constant (dual-scan contract)
@@ -211,7 +211,7 @@ def _cases() -> dict:
             dimensions=[{"field": "multi_model", "alias": "multi_model"}],
             metrics=[{"metric": "sum(amount)", "alias": "m"}],
         ),
-        # --- cross-model _cm_ scope ---
+        # --- cross-dataset _cm_ scope ---
         "cm/joined_measure": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,

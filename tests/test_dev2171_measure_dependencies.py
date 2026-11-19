@@ -1,4 +1,4 @@
-"""``measure_dependency_problems`` checks aggregation inputs when given the model's columns and join paths."""
+"""``metric_dependency_problems`` checks aggregation inputs when given the dataset's fields and relationship paths."""
 
 from __future__ import annotations
 

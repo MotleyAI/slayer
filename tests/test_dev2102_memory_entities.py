@@ -195,7 +195,7 @@ class TestNamedExtensionJoins:
 
 @pytest_asyncio.fixture
 async def named_storage(storage: StorageBackend) -> StorageBackend:
-    """``orders``'s stored join to ``customers`` named ``buyer``; ``otherdb`` (first priority) also has ``regions``."""
+    """``orders``'s stored relationship to ``customers`` named ``buyer``; ``otherdb`` (first priority) also has ``regions``."""
     orders = await storage.get_dataset("orders", data_source="mydb")
     assert orders is not None
     await storage.save_dataset(orders.model_copy(update={

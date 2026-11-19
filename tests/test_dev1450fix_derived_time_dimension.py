@@ -1,20 +1,20 @@
-"""DEV-1450 follow-up #4a — derived-column time dimensions.
+"""Derived-field time dimensions.
 
-A ``TimeDimension`` whose column resolves to a DERIVED column
-(``Column.sql`` set) now works everywhere a base-column time dimension
+A ``TimeDimension`` whose field resolves to a DERIVED field
+(``DatasetField.sql`` set) now works everywhere a base-field time dimension
 does. The typed pipeline widens ``TimeTruncKey.source`` to
-``Union[ColumnKey, ColumnSqlKey]`` and the SQL generator applies
+``Union[FieldKey, FieldSqlKey]`` and the SQL generator applies
 ``DATE_TRUNC`` over the EXPANDED derived expression rather than over a
 bare identifier.
 
 Two test styles:
 
 * bind-level (``bind_time_dimension`` yields ``TimeTruncKey`` whose
-  ``column`` is a ``ColumnSqlKey``);
+  ``source`` is a ``FieldSqlKey``);
 * engine end-to-end against a seeded SQLite, covering the derived TD as
   a dimension, in ORDER BY, under window (cumsum) and self-join
   (time_shift / change / consecutive_periods) transforms, with
-  ``date_range``, as a joined TD, and as a cross-model shared grain.
+  ``date_range``, as a joined TD, and as a cross-dataset shared grain.
 
 Before the #4a implementation these all fail because
 ``bind_time_dimension`` raises ``NotImplementedError`` for a derived TD.
@@ -56,7 +56,7 @@ def _orders_dataset() -> SlayerDataset:
             DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="shipped_at", datatype=DataType.DATETIME),
             DatasetField(name="amount", datatype=DataType.FLOAT),
-            # Non-trivial derived temporal column: "effective" date is the
+            # Non-trivial derived temporal field: "effective" date is the
             # shipped date when present, else the created date.
             DatasetField(
                 name="effective_at",
@@ -81,7 +81,7 @@ def _customers_dataset() -> SlayerDataset:
             DatasetField(name="region", datatype=DataType.STRING),
             DatasetField(name="revenue", datatype=DataType.FLOAT),
             DatasetField(name="signed_up_at", datatype=DataType.DATETIME),
-            # Derived temporal column on the JOIN TARGET (shifts a month
+            # Derived temporal field on the RELATIONSHIP TARGET (shifts a month
             # forward so it is unambiguously non-trivial).
             DatasetField(
                 name="signup_eff",
@@ -196,8 +196,8 @@ def _amounts(resp: SlayerResponse, key: str):
 
 
 async def test_derived_td_dimension_groups_by_derived_expr(engine: tuple[SlayerQueryEngine, str]) -> None:
-    """A derived TD groups by the EXPANDED expression, not the bare column;
-    the result key matches the base-column TD shape (``orders.effective_at``)."""
+    """A derived TD groups by the EXPANDED expression, not the bare field;
+    the result key matches the base-field TD shape (``orders.effective_at``)."""
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
@@ -340,8 +340,8 @@ async def test_derived_td_date_range(engine: tuple[SlayerQueryEngine, str]) -> N
 
 
 async def test_joined_derived_td(engine: tuple[SlayerQueryEngine, str]) -> None:
-    """A derived TD on a JOIN TARGET (``customers.signup_eff``) resolves
-    through the join and groups orders by the customer's derived month."""
+    """A derived TD on a RELATIONSHIP TARGET (``customers.signup_eff``) resolves
+    through the relationship and groups orders by the customer's derived month."""
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
@@ -356,7 +356,7 @@ async def test_joined_derived_td(engine: tuple[SlayerQueryEngine, str]) -> None:
 
 
 async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine: tuple[SlayerQueryEngine, str]) -> None:
-    """A cross-model aggregate (``sum(customers.revenue)``) grouped by a
+    """A cross-dataset aggregate (``sum(customers.revenue)``) grouped by a
     joined derived TD on the same target shares grain through the derived
     expression."""
     eng, _ = engine

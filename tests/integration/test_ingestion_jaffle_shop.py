@@ -2,10 +2,10 @@
 
 Generate the Jaffle Shop demo into a temp DuckDB, call
 ``ingest_datasource_async``, and assert
-the resulting models conform to the v2 unified-columns shape (one ``Column``
-list per model, ``measures`` library left empty by ingestion, no dotted
-column names, joins resolved to direct FK pairs only). Also round-trips the
-ingested models through YAMLStorage to confirm no v1 keys leak to disk.
+the resulting datasets conform to the v2 unified-fields shape (one ``DatasetField``
+list per dataset, ``metrics`` library left empty by ingestion, no dotted
+field names, relationships resolved to direct FK pairs only). Also round-trips the
+ingested datasets through YAMLStorage to confirm no v1 keys leak to disk.
 """
 
 import asyncio
@@ -76,7 +76,7 @@ async def _ingest(ds: DatasourceConfig) -> list[SlayerDataset]:
 
 @pytest.fixture(scope="module")
 def jaffle_datasets(jaffle_duckdb_path: str) -> dict[str, SlayerDataset]:
-    """Ingest the Jaffle Shop DuckDB and return models keyed by name."""
+    """Ingest the Jaffle Shop DuckDB and return datasets keyed by name."""
     ds = DatasourceConfig(
         name="jaffle_test",
         type="duckdb",
@@ -86,10 +86,10 @@ def jaffle_datasets(jaffle_duckdb_path: str) -> dict[str, SlayerDataset]:
     return {m.name: m for m in models}
 
 
-# Expected non-joined columns per ingested model. The values are dicts of
-# ``column_name -> (DataType, primary_key, format_type_or_None)``. Columns
-# whose source name contained a dot (joined columns) are excluded by
-# ``_columns_to_model`` and so are not listed here.
+# Expected non-joined fields per ingested dataset. The values are dicts of
+# ``field_name -> (DataType, primary_key, format_type_or_None)``. Fields
+# whose source name contained a dot (joined fields) are excluded by
+# ``_fields_to_dataset`` and so are not listed here.
 _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
     "customers": {
         "id": (DataType.STRING, True, None),
@@ -146,7 +146,7 @@ _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
 }
 
 
-# Expected direct joins per model. Values are sets of (target_model, src_col, tgt_col).
+# Expected direct relationships per dataset. Values are sets of (target_dataset, src_col, tgt_col).
 _EXPECTED_JOINS: dict[str, set] = {
     "customers": set(),
     "regions": set(),
@@ -195,17 +195,17 @@ def test_jaffle_model_columns_v2_shape(jaffle_datasets: dict[str, SlayerDataset]
 
 
 def test_jaffle_models_have_empty_measures_library(jaffle_datasets: dict[str, SlayerDataset]) -> None:
-    """Auto-ingestion never populates the named-measures formula library."""
+    """Auto-ingestion never populates the named-metrics expression library."""
     for name, model in jaffle_datasets.items():
-        assert model.metrics == [], f"{name} should have measures == []"
+        assert model.metrics == [], f"{name} should have metrics == []"
 
 
 def test_jaffle_no_dotted_column_names(jaffle_datasets: dict[str, SlayerDataset]) -> None:
-    """Joined columns live on the target model and must not leak into the source."""
+    """Joined fields live on the target dataset and must not leak into the source."""
     for name, model in jaffle_datasets.items():
         for col in model.fields:
             assert "." not in col.name, (
-                f"{name}.{col.name}: ingestion should never emit dotted column names"
+                f"{name}.{col.name}: ingestion should never emit dotted field names"
             )
 
 
@@ -216,7 +216,7 @@ def test_jaffle_model_joins(jaffle_datasets: dict[str, SlayerDataset], model_nam
 
     actual: set = set()
     for j in model.relationships:
-        # Each join in auto-ingestion has exactly one column pair (direct FKs only).
+        # Each relationship in auto-ingestion has exactly one column pair (direct FKs only).
         assert len(j.column_pairs) == 1, f"{model_name} → {j.to}: expected one pair"
         src_col, tgt_col = j.column_pairs[0]
         actual.add((j.to, src_col, tgt_col))
@@ -225,7 +225,7 @@ def test_jaffle_model_joins(jaffle_datasets: dict[str, SlayerDataset], model_nam
 
 
 async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_datasets: dict[str, SlayerDataset]) -> None:
-    """Saving an ingested model to YAML must produce current-schema shape with no v1 keys."""
+    """Saving an ingested dataset to YAML must produce current-schema shape with no v1 keys."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         for model in jaffle_datasets.values():

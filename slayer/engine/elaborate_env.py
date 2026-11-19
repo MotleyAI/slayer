@@ -368,8 +368,7 @@ class PositionClasses(BaseModel):
         return self.row_aggregates | self.row_transform_roots
 
     def dim_keys_for(self, position: ConsumerPosition) -> frozenset:
-        """A position's dimension values; a transform-bearing dimension is none in a
-        metric until DEV-1963 settles a metric transform's grain."""
+        """A position's dimension values; a transform-bearing dimension is none in a metric."""
         return self.dim_keys - self.transform_dim_keys if position == "metric" else self.dim_keys
 
     def opaque(self, position: ConsumerPosition) -> Optional[Callable[[ValueKey], bool]]:
@@ -655,7 +654,7 @@ def validate_dataset_filter(*, mf: str, references: Iterable[Tuple[SlayerDataset
         if col in {m.name for m in owner.metrics or []}:
             raise DatasetFilterError(
                 summary=f"The dataset filter references metric {col!r}. "
-                f"Dataset filters can only reference table columns (WHERE).",
+                f"Dataset filters can only reference row-level fields (WHERE).",
                 location=f"dataset filter {mf!r}",
                 suggestion="Use query-level filters for metric conditions.",
             )

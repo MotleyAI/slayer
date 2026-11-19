@@ -1,14 +1,14 @@
-"""DEV-1743 — the one Mode-A resolution door (WP2), through public seams.
+"""The one Mode-A resolution door (WP2), through public seams.
 
-Exercised end-to-end (``engine.save_model`` for the save-time pass [C5],
+Exercised end-to-end (``engine.save_dataset`` for the save-time pass [C5],
 ``_engine_generate`` for the generation-time door) rather than against a private
 helper, so the tests are robust to the resolver's internal shape.
 
 Fail-first behaviors (feature missing today):
-* a ``__``-named model resolves as an exact-match join target in Mode-A SQL;
+* a ``__``-named dataset resolves as an exact-match relationship target in Mode-A SQL;
 * the legacy ``customers__regions`` split-alias form is a hard D2 error naming
   the dotted replacement, at BOTH save time and generation time;
-* a dotted chain whose later hop is not a join raises naming the failing hop.
+* a dotted chain whose later hop is not a relationship raises naming the failing hop.
 
 Invariant locks (must hold before and after):
 * a physical ``schema.table.column`` reference stays opaque (never split).
@@ -43,7 +43,7 @@ from tests._engine_helpers import _engine_generate
 
 
 async def _engine_with(datasets, *, dialect="postgres"):
-    """Build an engine over ``models`` saved through the ENGINE (save-time pass)."""
+    """Build an engine over ``datasets`` saved through the ENGINE (save-time pass)."""
     d = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=d)
     await storage.save_datasource(DatasourceConfig(name="test", type=dialect))
@@ -61,7 +61,7 @@ def _joined_table_names(sql: str) -> set[str]:
 
 
 # --------------------------------------------------------------------------- #
-# A __-named model resolves as an exact-match Mode-A join target.
+# A __-named dataset resolves as an exact-match Mode-A relationship target.
 # --------------------------------------------------------------------------- #
 class TestDunderTargetResolves:
     def _host_with_label(self) -> SlayerDataset:
@@ -70,7 +70,7 @@ class TestDunderTargetResolves:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="cr_id", datatype=DataType.INTEGER),
-                # Mode-A reference to a DIRECT join target literally named
+                # Mode-A reference to a DIRECT relationship target literally named
                 # ``customer__region`` — exact match, single hop.
                 DatasetField(name="region_label", datatype=DataType.STRING,
                        sql="customer__region.label"),
@@ -101,7 +101,7 @@ class TestLegacyDunderIsHardErrorAtSave:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
-                # No model literally named ``customers__regions`` exists; the
+                # No dataset literally named ``customers__regions`` exists; the
                 # naive split walks customers -> regions, so this must be a D2
                 # error naming the dotted replacement.
                 DatasetField(name="rn", datatype=DataType.STRING,
@@ -159,13 +159,13 @@ class TestLegacyDunderIsHardErrorAtGeneration:
 
 
 # --------------------------------------------------------------------------- #
-# Save-time Mode-A validation covers reverse-only chains on joinless models.
+# Save-time Mode-A validation covers reverse-only chains on relationship-less datasets.
 # --------------------------------------------------------------------------- #
 class TestModeAValidationOverReverseOnlyEdge:
     @pytest.mark.asyncio
     async def test_broken_tail_hop_rejected_on_joinless_model(self) -> None:
-        # orders declares the only edge; customers has NO joins, but its
-        # Mode-A chain over the reverse hop still validates (DEV-1853).
+        # orders declares the only edge; customers has NO relationships, but its
+        # Mode-A chain over the reverse hop still validates.
         orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
@@ -189,7 +189,7 @@ class TestModeAValidationOverReverseOnlyEdge:
 
 
 # --------------------------------------------------------------------------- #
-# A dotted chain whose later hop is not a join raises naming the failing hop.
+# A dotted chain whose later hop is not a relationship raises naming the failing hop.
 # --------------------------------------------------------------------------- #
 class TestBrokenChainNamesFailingHop:
     def _orders_broken_chain(self) -> SlayerDataset:
@@ -198,7 +198,7 @@ class TestBrokenChainNamesFailingHop:
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
-                # customers is a join target; nonexistent is not a join on it.
+                # customers is a relationship target; nonexistent is not one on it.
                 DatasetField(name="bad", datatype=DataType.STRING,
                        sql="customers.nonexistent.name"),
             ],
@@ -215,7 +215,7 @@ class TestBrokenChainNamesFailingHop:
         assert "nonexistent" in str(ei.value)
 
 
-# Physical-ref opacity ("a non-join-target qualifier is never segmented") is a
+# Physical-ref opacity ("a non-relationship-target qualifier is never segmented") is a
 # resolver-level invariant tested against the normalizer in the flipped
 # tests/test_dot_path_in_sql.py — end-to-end it fights the scope checker, since
 # a 3-part ref to a table that is not actually joined leaks scope regardless of
@@ -247,7 +247,7 @@ class TestExactHostQualifier:
 
 # --------------------------------------------------------------------------- #
 # The same resolution applies on the OTHER two Mode-A free-SQL surfaces:
-# Column.filter and SlayerModel.filters (the plan changes all three).
+# DatasetField.filter and SlayerDataset.filters (the plan changes all three).
 # --------------------------------------------------------------------------- #
 class TestFilterSurfacesResolve:
     def _host(self, *, col_filter=None, dataset_filters=None) -> SlayerDataset:
@@ -281,8 +281,8 @@ class TestFilterSurfacesResolve:
 
 
 # --------------------------------------------------------------------------- #
-# D1 headline: ambiguity is structurally impossible. With a direct model named
-# ``a__b`` AND a chain ``a → b``, ``a__b.x`` is the direct model and ``a.b.x`` is
+# D1 headline: ambiguity is structurally impossible. With a direct dataset named
+# ``a__b`` AND a chain ``a → b``, ``a__b.x`` is the direct dataset and ``a.b.x`` is
 # the chain — both resolve, to DIFFERENT relations, no error.
 # --------------------------------------------------------------------------- #
 class TestAmbiguityImpossible:
@@ -309,10 +309,10 @@ class TestAmbiguityImpossible:
                               dimensions=["chain_val", "direct_val"]),
             dataset=self._host(), extra_datasets=[ai_a(), ai_b(), ai_a__b()],
         )
-        # The chain's leaf table and the direct model's table are BOTH joined
+        # The chain's leaf table and the direct dataset's table are BOTH joined
         # (assert on parsed exp.Table names, not a raw substring).
         joined = _joined_table_names(sql)
-        assert "a_b_direct" in joined, f"direct model a__b not joined:\n{sql}"
+        assert "a_b_direct" in joined, f"direct dataset a__b not joined:\n{sql}"
         assert "b" in joined, f"chain leaf table b not joined:\n{sql}"
 
 

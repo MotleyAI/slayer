@@ -1,4 +1,4 @@
-"""Formula aggregations rendered through SqlTemplate (aggregations/formula-templates)."""
+"""Expression aggregations rendered through SqlTemplate (aggregations/formula-templates)."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def _q(expression: str) -> SlayerQuery:
 async def _sql(
     expression: str, *, dialect: str = "postgres", aggs: tuple[Aggregation, ...] = (), validate: bool = True,
 ) -> str:
-    # validate=False: a model stored before its save-time rule existed (still loads, still queried).
+    # validate=False: a dataset stored before its save-time rule existed (still loads, still queried).
     return await _engine_generate(query=_q(expression), dataset=_orders(aggs), dialect=dialect, validate=validate)
 
 
@@ -97,7 +97,7 @@ async def _joined_sql(*, agg: Aggregation, expression: str, validate: bool = Tru
 
 
 async def _fails_as_its_comparison_twin(*, expression: str, twin: str, aggs: tuple[Aggregation, ...]) -> str:
-    """``formula`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
+    """``expression`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
     with pytest.raises(ValueError) as twin_info:
         await _sql(twin, aggs=aggs)
     with pytest.raises(ValueError) as info:
@@ -312,7 +312,7 @@ class TestInvalidTemplates:
 
 
 async def _pct_sql(p: str | None = None, *, default: str | None = None) -> str:
-    """``percentile(price)`` with ``p`` passed as a query-time string and/or a model default."""
+    """``percentile(price)`` with ``p`` passed as a query-time string and/or a dataset default."""
     aggs = (Aggregation(name="percentile", params=[AggregationParam(name="p", sql=default)]),) \
         if default is not None else ()
     arg = "" if p is None else ", p='" + p.replace("'", "''") + "'"
@@ -325,7 +325,7 @@ def _emitted_p(sql: str) -> Expression:
     return node.this
 
 
-# A bare ``nan`` / ``inf`` is a (missing) column name, never a number.
+# A bare ``nan`` / ``inf`` is a (missing) field name, never a number.
 _REJECTED = r"numeric literal|\[0, 1\]|Cannot resolve reference"
 
 

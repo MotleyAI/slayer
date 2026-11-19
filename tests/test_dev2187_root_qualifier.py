@@ -31,7 +31,7 @@ def _orders(**body: Any) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Qualified ≡ bare, every position, model root
+# Qualified ≡ bare, every position, dataset root
 # --------------------------------------------------------------------------- #
 async def test_every_position_at_once(engine: SlayerQueryEngine) -> None:
     resp = await assert_same(

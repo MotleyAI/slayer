@@ -1,8 +1,8 @@
-"""DEV-1866 — the effective population is reported on every response path.
+"""The effective population is reported on every response path.
 
 ``SlayerResponse.population`` / ``.population_inferred`` are populated uniformly
 across execute, dry-run, explain, cache miss/hit, refresh (real re-execution),
-run-by-name, explicit vs inferred vs extended source models, and the
+run-by-name, explicit vs inferred vs extended source datasets, and the
 Python client's decode path. Engine-level datasource forwarding into inference
 is covered here too.
 """
@@ -168,9 +168,9 @@ class TestEngineDatasourceForwarding:
         assert resp.population_inferred is True
 
     async def test_inferred_datasource_pins_bundle_resolution(self) -> None:
-        """The winning model name may also exist in another datasource; anchor
+        """The winning dataset name may also exist in another datasource; anchor
         voting fixes exactly one, and that datasource must pin bundle resolution
-        so the bare model name never resolves ambiguously."""
+        so the bare dataset name never resolves ambiguously."""
         storage = YAMLStorage(base_dir=tempfile.mkdtemp())
         for ds in ("dsa", "dsb"):
             await storage.save_datasource(

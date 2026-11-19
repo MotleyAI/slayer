@@ -1913,14 +1913,14 @@ class SQLGenerator:
         self, *, base_render_order, slots_by_id, scope: ScopeFrame,
         skip_cross_dataset_aggs: bool = False,
     ) -> "Dict[Any, Dict[str, ResolvedAggKwarg]]":
-        """Resolve every LOCAL aggregate's join-crossing inputs through the host"""
+        """Resolve every LOCAL aggregate's relationship-crossing inputs through the host"""
 
         resolved: "Dict[Any, Dict[str, ResolvedAggKwarg]]" = {}
 
         def _walk(key, fn) -> None:
             if isinstance(key, AggregateKey):
-                # A host-grain aggregate renders inline and must register its source join (Law 1) — but not when a _cm_
-                # CTE owns it (would add an unused, cardinality-changing join).
+                # A host-grain aggregate renders inline and must register its source relationship path (Law 1) — but
+                # not when a _cm_ CTE owns it (would add an unused, cardinality-changing join).
                 if not source_anchor_path(key.source) or (
                     _is_host_grain(key) and not skip_cross_dataset_aggs
                 ):
@@ -1942,7 +1942,7 @@ class SQLGenerator:
 
         def _resolve_source(key) -> None:
             # Expression sources resolve too: a FieldSqlKey operand
-            # whose derived SQL crosses joins must register them (Law 1).
+            # whose derived SQL crosses relationships must register them (Law 1).
             if isinstance(
                 key.source, (FieldSqlKey, *_EXPRESSION_SOURCE_KINDS),
             ) or source_anchor_path(key.source):
@@ -1959,7 +1959,7 @@ class SQLGenerator:
             if arg is None:
                 return
             # A path-bearing derived time arg is a hop past the target; skip it — anchoring against source_relation
-            # would register a bogus join.
+            # would register a bogus relationship path.
             if isinstance(arg, FieldSqlKey) and arg.path:
                 return
             scope.resolve(arg)
@@ -2037,7 +2037,7 @@ class SQLGenerator:
         self, *, key, scope: ScopeFrame,
     ) -> "Optional[Dict[str, ResolvedAggKwarg]]":
         """Resolve a LOCAL aggregate's row-valued parameters through ``scope``, registering
-        the joins they cross (a row-attached placeholder resolves to its producer column)."""
+        the relationship paths they cross (a row-attached placeholder resolves to its producer column)."""
         resolved = {
             kname: ResolvedAggKwarg(
                 value=scope.resolve(kval),
@@ -2048,7 +2048,7 @@ class SQLGenerator:
         }
         return resolved or None
 
-    def _build_base_select_for_planned(  # NOSONAR(S3776) — join-path collection and derived-dim expansion are extracted to helpers; the residual is the one cohesive per-slot ROW/AGGREGATE projection + GROUP-BY assembly pass.
+    def _build_base_select_for_planned(  # NOSONAR(S3776) — relationship-path collection and derived-dim expansion are extracted to helpers; the residual is the one cohesive per-slot ROW/AGGREGATE projection + GROUP-BY assembly pass.
         self,
         *,
         planned_query,
@@ -2064,8 +2064,8 @@ class SQLGenerator:
     ):
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``."""
 
-        # Every join-crossing ref registers its path into host_scope.join_paths as it resolves (Law 1); first-seen order
-        # keeps the FROM byte-identical to the legacy collectors'.
+        # Every relationship-crossing ref registers its path into host_scope.join_paths as it resolves (Law 1);
+        # first-seen order keeps the FROM byte-identical to the legacy collectors'.
         needed_join_paths = self._collect_joined_paths_for_base(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
@@ -2083,8 +2083,8 @@ class SQLGenerator:
             bundle=bundle, scope=host_scope,
             order_slot_ids=[e.slot_id for e in planned_query.order],
         )
-        # Pre-render computed dimensions through the host scope so a join their expression crosses registers before the
-        # FROM is built.
+        # Pre-render computed dimensions through the host scope so a relationship their expression crosses registers
+        # before the FROM is built.
         computed_dim_expr_by_sid = self._render_computed_dims_via_scope(
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
@@ -2093,8 +2093,8 @@ class SQLGenerator:
         regroup_attach_conditions = self._resolve_regroup_attach_conditions(
             regroup_join_specs=regroup_join_specs, scope=host_scope,
         )
-        # WHERE filters register their joins too; skip those routed to a _cm_ CTE (registering here would add an unused,
-        # cardinality-changing LEFT JOIN).
+        # WHERE filters register their relationship paths too; skip those routed to a _cm_ CTE (registering here would
+        # add an unused, cardinality-changing LEFT JOIN).
         self._resolve_where_filter_joins_via_scope(
             planned_query=planned_query, scope=host_scope,
             skip_filter_ids=skip_filter_ids,
@@ -2337,7 +2337,7 @@ class SQLGenerator:
 
         return build
 
-    def _render_window_metric_cte_from_planned(  # NOSONAR(S3776) — one cohesive host-rooted range-join CTE build: ``_src`` projection (dims / other-time-dims / raw-window-time / value) with Law-1 join discovery, WHERE inheritance minus date_range, and the ``_base LEFT JOIN _src`` interval range join. Splitting scatters the shared scope / grain-alias / join-eq state.
+    def _render_window_metric_cte_from_planned(  # NOSONAR(S3776) — one cohesive host-rooted range-join CTE build: ``_src`` projection (dims / other-time-dims / raw-window-time / value) with Law-1 relationship-path discovery, WHERE inheritance minus date_range, and the ``_base LEFT JOIN _src`` interval range join. Splitting scatters the shared scope / grain-alias / join-eq state.
         self,
         *,
         plan,
@@ -2486,8 +2486,8 @@ class SQLGenerator:
                 cast_derived=False,
             ).as_("_w_rank"))
 
-        # _src inherits row filters minus their frame bounds; one effective list feeds both join discovery and rendering
-        # so they can't disagree.
+        # _src inherits row filters minus their frame bounds; one effective list feeds both relationship-path discovery
+        # and rendering so they can't disagree.
         lowered_src = _lower_positions(planned_query).filters
         all_filter_ids = {fp.id for fp in lowered_src}
         skip_for_src = all_filter_ids - set(plan.where_filter_ids)
@@ -5207,7 +5207,7 @@ class SQLGenerator:
             available_alias_by_slot_id.setdefault(slot.id, oa)
         return cp_value_cte_name
 
-    def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the joins they cross.
+    def _expand_derived_row_dims(  # NOSONAR(S3776) — one cohesive per-slot pass expanding derived ROW/TIME dimensions and registering the relationship paths they cross.
         self, *, base_render_order, slots_by_id, source_relation: str,
         source_dataset, bundle, scope: ScopeFrame,
         order_slot_ids: Optional[List[str]] = None,
@@ -5229,7 +5229,7 @@ class SQLGenerator:
                 continue
             key = slot.key
             if isinstance(key, TimeTruncKey) and not isinstance(key.source, (FieldKey, FieldSqlKey)):
-                # The bucket's untruncated value, its joins registered before the FROM is built.
+                # The bucket's untruncated value, its relationship paths registered before the FROM is built.
                 derived_expr_by_sid[sid] = render_value_key(
                     key=key.source, ctx=RenderContext(scope=scope, dialect=self._dialect),
                 )
@@ -5259,7 +5259,7 @@ class SQLGenerator:
             if expr is None:
                 continue
             derived_expr_by_sid[sid] = expr
-            _add(key.path)  # the join to the owning dataset itself (cross-dataset)
+            _add(key.path)  # the relationship path to the owning dataset itself (cross-dataset)
             for p in sorted(crossed, key=lambda t: (len(t), t)):
                 _add(p)
         return derived_expr_by_sid
@@ -5508,7 +5508,7 @@ class SQLGenerator:
     def _bucket_source_expr(
         self, *, source: ValueKey, scope, source_dataset, source_relation: str, bundle,
     ) -> Expression:
-        """Untruncated value of a bucket's ``source`` in ``scope``, registering the joins it reads."""
+        """Untruncated value of a bucket's ``source`` in ``scope``, registering the relationship paths it reads."""
         if not isinstance(source, (FieldKey, FieldSqlKey)):
             return render_value_key(key=source, ctx=RenderContext(scope=scope, dialect=self._dialect))
         scope.resolve(source)
@@ -5543,8 +5543,8 @@ class SQLGenerator:
                         f"{'.'.join(time_field.path)!r} which does not "
                         f"resolve from the source bundle.",
                     )
-                # A joined derived TIME dim whose sql crosses a further join must anchor inner refs at the host-path
-                # alias, not the bare direct-join alias, or the FROM references an unjoined table.
+                # A joined derived TIME dim whose sql crosses a further relationship must anchor inner refs at the
+                # host-path alias, not the bare direct-join alias, or the FROM references an unjoined table.
                 expanded_sql = self._expand_derived_field_sql(
                     source_dataset=joined_dataset,
                     source_relation="__".join(time_field.path),
@@ -5623,7 +5623,7 @@ class SQLGenerator:
         skip_filter_ids: Optional[Set[str]] = None,
         filters_override: "Optional[List[Any]]" = None,
     ) -> None:
-        """Register into ``scope.join_paths`` the joins every WHERE-phase filter"""
+        """Register into ``scope.join_paths`` the relationship paths every WHERE-phase filter"""
 
         skip = skip_filter_ids or set()
         filters = (
@@ -5726,7 +5726,7 @@ class SQLGenerator:
         """Reject CROSS-DATASET aggregates' kwarg field refs whose relationship path"""
 
         # A host-locus aggregate's inputs are certified from the home by the
-        # compiler and the scope registers each kwarg's join; the gate keeps
+        # compiler and the scope registers each kwarg's relationship path; the gate keeps
         # guarding target-rooted producers.
         if not source.path or _is_host_grain(key):
             return
@@ -5963,7 +5963,7 @@ class SQLGenerator:
             agg_def = self._resolve_aggregation_def(
                 key=key, source_dataset=source_dataset, src_leaf=expr_leaf,
             )
-            # One resolver for leaves, attached placeholders, derived fields and join registration.
+            # One resolver for leaves, attached placeholders, derived fields and relationship-path registration.
             value = apply_ast_rewrites(
                 tree=param_scope.resolve(source), target_dialect=self._dialect, parse_dialect=self._dialect,
             )
@@ -6476,7 +6476,7 @@ class SQLGenerator:
                 return expr
 
         # A hidden row-level expression in an ungrouped query renders in place over the host's
-        # rows; its joins were collected with the order slots.
+        # rows; its relationship paths were collected with the order slots.
         if (
             source_dataset is not None and bundle is not None and slot.phase == Phase.ROW
             and isinstance(key, SLOT_COMPOSITE_KINDS)

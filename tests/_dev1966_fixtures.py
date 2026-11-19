@@ -1,7 +1,7 @@
 """Shared fixtures for query-local stage names and query-backed splicing.
 
 Graph (datasource ``test``): ``orders`` → ``customers`` / ``clients`` (``clients`` reads the
-physical table ``acct``) → ``cust_rev`` (query-backed). No orphan order, so every join is total.
+physical table ``acct``) → ``cust_rev`` (query-backed). No orphan order, so every relationship is total.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def ext_m(expression: str, name: str) -> Dict[str, str]:
 
 
 # --------------------------------------------------------------------------- #
-# Storage models.
+# Storage datasets.
 # --------------------------------------------------------------------------- #
 def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
@@ -81,7 +81,7 @@ def customers_dataset() -> SlayerDataset:
 
 
 def clients_dataset() -> SlayerDataset:
-    """Named unlike its physical table ``acct``; joins the query-backed ``cust_rev``."""
+    """Named unlike its physical table ``acct``; relates to the query-backed ``cust_rev``."""
     return SlayerDataset(
         name="clients", data_source="test", sql_table="acct",
         fields=[
@@ -113,7 +113,7 @@ def orders_dataset() -> SlayerDataset:
 
 
 def orders_v_dataset(*, default: Optional[str]) -> SlayerDataset:
-    """``orders`` carrying a ``th`` default (the source-model variable layer)."""
+    """``orders`` carrying a ``th`` default (the source-dataset variable layer)."""
     return SlayerDataset(
         name="orders_v", data_source="test", sql_table="orders",
         fields=[
@@ -162,7 +162,7 @@ def ok_rev_dataset() -> SlayerDataset:
 
 
 def qb_shadow_dataset() -> SlayerDataset:
-    """Private stage named ``customers``; the final stage reaches model ``customers`` via a stored join."""
+    """Private stage named ``customers``; the final stage reaches dataset ``customers`` via a stored relationship."""
     return _qb(
         "qb_shadow",
         query(name="customers", population="orders", dimensions=["status"],
@@ -190,7 +190,7 @@ def bcast_qb_dataset() -> SlayerDataset:
 
 
 def jt_qb_dataset() -> SlayerDataset:
-    """``a`` depends on ``b`` only through a join target and is supplied first."""
+    """``a`` depends on ``b`` only through a relationship target and is supplied first."""
     return _qb(
         "jt_qb",
         query(name="a",
@@ -215,7 +215,7 @@ def _sql_dataset(name: str, sql: str) -> SlayerDataset:
     )
 
 
-#: sql-backed models whose SQL carries ``WITH``: name → (sql, per-customer amount sums).
+#: sql-backed datasets whose SQL carries ``WITH``: name → (sql, per-customer amount sums).
 EMBEDDED_WITH: Dict[str, "tuple[str, Dict[int, float]]"] = {
     "with_t": (
         "WITH t AS (SELECT id, customer_id, amount FROM orders) "
@@ -316,8 +316,8 @@ async def dev1966_engine(
 def explicit_splice(
     dataset: SlayerDataset, *, rename: Optional[Dict[str, str]] = None,
 ) -> List[SlayerQuery]:
-    """``model``'s stages as named user stages: private stages renamed per ``rename``, the final one
-    named after the model."""
+    """``dataset``'s stages as named user stages: private stages renamed per ``rename``, the final one
+    named after the dataset."""
     rename = rename or {}
     stages: List[SlayerQuery] = list(dataset.source_queries or [])
 

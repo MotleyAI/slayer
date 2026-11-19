@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1945 — the first/last ranking key is a closure-judged input.
+"""Shared fixtures for the first/last ranking key as a closure-judged input.
 
 Underscore-prefixed so pytest skips collection. ``orders → line_items`` (``id =
 order_id``) and ``line_items → shipments`` (``id = line_item_id``) are undeclared
@@ -12,7 +12,7 @@ line_items (id, order_id, qty, created_at):    1 o1 1.0 2024-01-05 | 2 o1 2.0 20
 shipments (id, line_item_id, shipped_at):      1 li1 2024-01-06 | 2 li1 2024-01-07 | 3 li3 2024-01-08
 
 Ranking ``last(amount)`` by ``created_at`` or by ``cust_signup`` picks order 2 (30.0);
-ranking over the fanned ``li_ts`` join would pick order 1 (its line item dated
+ranking over the fanned ``li_ts`` relationship would pick order 1 (its line item dated
 2024-01-05 is newest) — the defect the refusals guard against.
 """
 
@@ -31,7 +31,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import make_seeded_sqlite_engine
 
 # --------------------------------------------------------------------------- #
-# Models
+# Datasets
 # --------------------------------------------------------------------------- #
 UNPARSEABLE_SQL = ")((( bad"
 
@@ -104,7 +104,7 @@ def customers_dataset() -> SlayerDataset:
 def dev1945_datasets(
     *, orders_default: Optional[str] = None, line_items_default: Optional[str] = None,
 ) -> List[SlayerDataset]:
-    """Host first; each model's ``default_time_dimension`` is set per case."""
+    """Host first; each dataset's ``default_time_dimension`` is set per case."""
     return [
         orders_dataset(default=orders_default),
         line_items_dataset(default=line_items_default),
@@ -153,7 +153,7 @@ async def make_engine(
     base_dir: str, *, orders_default: Optional[str] = None,
     line_items_default: Optional[str] = None,
 ) -> SlayerQueryEngine:
-    """Seeded SQLite engine over the graph with the given model defaults."""
+    """Seeded SQLite engine over the graph with the given dataset defaults."""
     db_path = os.path.join(base_dir, "dev1945.db")
     seed_dev1945_sqlite(db_path)
     return await make_seeded_sqlite_engine(

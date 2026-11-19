@@ -160,7 +160,7 @@ def library_refusal(name: str, *, database: str) -> UnsupportedServerFunctionErr
             else f"`{name}()`")
     return UnsupportedServerFunctionError(
         summary=f"{what} is not supported on {database} yet.",
-        suggestion="Express it in the model's own SQL (Column.sql), or run the query on a database that translates it.",
+        suggestion="Express it in the field's own SQL (DatasetField.sql), or run the query on a database that translates it.",
     )
 
 

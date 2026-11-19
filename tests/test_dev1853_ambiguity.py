@@ -1,6 +1,6 @@
-"""DEV-1853 — ambiguous hops fail closed in both directions.
+"""Ambiguous hops fail closed in both directions.
 
-Two or more edges between the same pair of models make a bare model-name hop
+Two or more edges between the same pair of datasets make a bare dataset-name hop
 an error naming every candidate; the silent forward first-match is retired.
 """
 

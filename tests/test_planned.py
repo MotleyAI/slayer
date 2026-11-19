@@ -89,7 +89,7 @@ class TestValueSlot:
         assert s.public_aliases == []
 
     def test_multi_alias(self):
-        # P4: two measures with the same structural key but different
+        # P4: two metrics with the same structural key but different
         # declared `name`s share one slot internally; both aliases appear
         # in the public projection.
         key = AggregateKey(source=FieldKey(path=(), leaf="rev"), agg="sum")
@@ -239,7 +239,7 @@ class TestOrderEntry:
 
 class TestPlannedQuery:
     def test_minimal_zero_dimension_count(self):
-        # The simplest possible PlannedQuery: just *:count on a model.
+        # The simplest possible PlannedQuery: just *:count on a dataset.
         agg_key = AggregateKey(source=StarKey(), agg="count")
         slot = ValueSlot(
             id="a1",

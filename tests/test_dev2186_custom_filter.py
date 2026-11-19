@@ -1,4 +1,4 @@
-"""``FILTER (WHERE c)`` on a custom aggregation restricts every row its formula reads.
+"""``FILTER (WHERE c)`` on a custom aggregation restricts every row its expression reads.
 
 Spec: aggregations/functional-form › An aggregation accepts a FILTER clause.
 """
@@ -271,7 +271,7 @@ class TestCrossModelAndStage:
 
 
 def _override_datasets() -> list[SlayerDataset]:
-    """``count`` redeclared with a formula (non-built-in); ``sum`` redeclared without one (built-in)."""
+    """``count`` redeclared with an expression (non-built-in); ``sum`` redeclared without one (built-in)."""
     orders, *rest = dev2101_datasets()
     extra = [Aggregation(name="count", expression="COUNT(*)"), Aggregation(name="sum")]
     return [orders.model_copy(update={"aggregations": [*orders.aggregations, *extra]}), *rest]

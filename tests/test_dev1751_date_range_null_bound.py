@@ -1,7 +1,7 @@
 """A ``null`` ``date_range`` bound is an open side; ``[null, null]`` is rejected at construction.
 
-Exercised through the public planning path on a plain model and on a
-multi-stage ``source_queries`` model; a one-sided range must never render
+Exercised through the public planning path on a plain dataset and on a
+multi-stage ``source_queries`` dataset; a one-sided range must never render
 ``BETWEEN ... AND NULL``.
 """
 

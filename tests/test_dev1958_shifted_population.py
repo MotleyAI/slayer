@@ -1,4 +1,4 @@
-"""Shifted evaluation honours population restriction and cross-model partition keys
+"""Shifted evaluation honours population restriction and cross-dataset partition keys
 (queries/transforms, "Composite-input time_shift"): association-restricted filters,
 associate-mode fanning dimensions, an attributable ``customers.tier`` key, and the
 fanning-hop key typed error — on Graph A, SQLite + DuckDB. Every oracle is

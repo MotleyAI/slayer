@@ -207,7 +207,7 @@ class TestNestedAttachEmission:
 
     async def test_query_backed_model_backing_sql_stays_fit_eligible(self) -> None:
         """SLayer-generated backing SQL is not a user surface: over-limit
-        aliases inside an expanded query-backed model are fitted, not exempted."""
+        aliases inside an expanded query-backed dataset are fitted, not exempted."""
         names = await _canonical_internal_aliases()
         qb = SlayerDataset(name="qb", source_queries=[NESTED], data_source=DS)
         query = SlayerQuery(

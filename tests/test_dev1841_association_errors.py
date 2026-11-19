@@ -119,7 +119,7 @@ class TestUnsafeInputInAssociate:
 
 
 class TestColumnReferenceParameter:
-    """A column-reference parameter is picked once per distinct entity: the explicit
+    """A field-reference parameter is picked once per distinct entity: the explicit
     weight and the definition default both execute."""
 
     WAVG = QueryMetric(

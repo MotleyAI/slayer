@@ -1,15 +1,15 @@
-"""DEV-1835 guard dissolution (design D7/D8) — executed values for the shapes
-the DEV-1504 G4/G5/G6/G7 guards, their post-projection twin, and the
+"""Guard dissolution (design D7/D8) — executed values for the shapes
+the G4/G5/G6/G7 guards, their post-projection twin, and the
 ``time_shift``-over-ranked guard reject today, plus the
 ``change``/``change_pct``-over-attached internal-error fix (fails today with
 ``RenderContextMissingFacilityError``).
 
 Scenario coverage map (spec: openspec …/specs/queries/partitioned-aggregates):
-  Transform over a bare windowed measure ............. TestWindowedTransforms
-  Bare windowed measure inside arithmetic ............ TestWindowedComposites
-  Filter-only reference to a bare windowed measure ... TestWindowedFilters
+  Transform over a bare windowed metric .............. TestWindowedTransforms
+  Bare windowed metric inside arithmetic ............. TestWindowedComposites
+  Filter-only reference to a bare windowed metric .... TestWindowedFilters
   One predicate mixing a bare windowed and a plain ... TestWindowedFilters
-  Temporal transform over a bare first/last measure .. TestTemporalOverRanked
+  Temporal transform over a bare first/last metric ... TestTemporalOverRanked
   Change over a partitioned aggregate executes ....... TestChangeOverAttached
 """
 
@@ -92,7 +92,7 @@ class TestWindowedTransforms:
 
 
 class TestWindowedComposites:
-    """G5 dissolves: a bare windowed measure composes in arithmetic."""
+    """G5 dissolves: a bare windowed metric composes in arithmetic."""
 
     async def test_windowed_over_plain_ratio(self, exec_backend) -> None:
         dialect, engine = exec_backend

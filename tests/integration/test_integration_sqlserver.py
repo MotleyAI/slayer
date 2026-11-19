@@ -353,7 +353,7 @@ class TestSQLServerQueries:
         assert result.data[0]["orders._count"] == 6
 
     async def test_regex_literal_extension_column(self, sqlserver_env: SlayerQueryEngine) -> None:
-        """A model column holding a ``(?:...)`` regex literal and a ``%``
+        """A dataset field holding a ``(?:...)`` regex literal and a ``%``
         LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
         orders = await sqlserver_env.storage.get_dataset("orders")
         assert orders is not None
@@ -570,13 +570,13 @@ class TestSQLServerQueries:
 
 
 # ---------------------------------------------------------------------------
-# Cross-model + multistage
+# Cross-dataset + multistage
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
 def sqlserver_cross_dataset_env(sqlserver_container):
-    """SQL Server env with orders + customers (with score) + join."""
+    """SQL Server env with orders + customers (with score) + relationship."""
     db_name = _create_module_db(sqlserver_container)
     with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
         with engine.begin() as conn:
@@ -1309,7 +1309,7 @@ async def test_filter_on_windowed_column_sqlserver_raises(planets_sqlserver_env)
 
 
 # ---------------------------------------------------------------------------
-# Cross-model derived Column.sql
+# Cross-dataset derived DatasetField.sql
 # ---------------------------------------------------------------------------
 
 

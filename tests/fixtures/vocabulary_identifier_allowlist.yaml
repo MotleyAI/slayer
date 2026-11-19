@@ -1,0 +1,551 @@
+# Old-word identifiers defined in slayer/ (tests/test_vocabulary_identifier_guard.py).
+# carve_outs keep their word for the stated reason. stragglers still name a SLayer concept with an old
+# word: they may only shrink, capped by x-vocabulary-stragglers in architecture/index.yaml.
+carve_outs:
+  - {name: columns, file: slayer/api/server.py, reason: "physical database or result-set column"}
+  - {name: create_model, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
+  - {name: get_model, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
+  - {name: get_model_sync, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
+  - {name: list_models, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
+  - {name: list_models_sync, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
+  - {name: recommend_root_model, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
+  - {name: recommend_root_model_sync, file: slayer/client/slayer_client.py, reason: "deprecated twin until 3.0"}
+  - {name: JoinType, file: slayer/core/enums.py, reason: "SQL JOIN as an operation"}
+  - {name: AmbiguousJoinPathError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: AmbiguousModelError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: CanonicalAliasShadowsColumnError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: CircularJoinPathError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: ColumnCycleError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: ColumnSqlStatementError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: DerivedColumnAmbiguousError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: DerivedColumnCircularError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: DerivedColumnFanningError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: DuplicateMeasureNameError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: JoinKeyError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: JoinTargetCaseError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: MeasureCycleError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: MeasureNameCollidesWithColumnError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: MeasureRecursionLimitError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelFilterCycleError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelFilterError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelNotFoundError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelSqlValidationError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: ReservedModelNameError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: TimeDimensionColumnError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: UnknownJoinTargetError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: UnresolvableDimensionJoinError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: UnresolvableOrderColumnError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: UnsafeJoinInputError, file: slayer/core/errors.py, reason: "deprecated twin until 3.0"}
+  - {name: column, file: slayer/core/errors.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _join, file: slayer/core/format.py, reason: "string join, not a relationship"}
+  - {name: join_conditional_branch_types, file: slayer/core/keys.py, reason: "type-lattice join, not a relationship"}
+  - {name: Column, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelJoin, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelMeasure, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: SlayerModel, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: SourceModelOrigin, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: agg_column_names, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: awaits_columns, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: column, file: slayer/core/models.py, reason: "physical database or result-set column"}
+  - {name: column_pairs, file: slayer/core/models.py, reason: "Ossie's own wire name"}
+  - {name: columns, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: formula, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: from_columns, file: slayer/core/models.py, reason: "Ossie's own wire name"}
+  - {name: get_column, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: get_measure, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: join_key_error, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: join_pairs, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: join_type, file: slayer/core/models.py, reason: "SQL JOIN as an operation"}
+  - {name: joins, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: list_columns, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: measures, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: physical_column_sql, file: slayer/core/models.py, reason: "physical database or result-set column"}
+  - {name: source_model_origin, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: target_model, file: slayer/core/models.py, reason: "deprecated twin until 3.0"}
+  - {name: to_columns, file: slayer/core/models.py, reason: "Ossie's own wire name"}
+  - {name: ColumnFilterRuleset, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: JoinFilterRule, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: JoinFilterRuleset, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: JoinHop, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _non_blank_column, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _validate_join_rule_anchor, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: column, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: from_column, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: join_path, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: joins, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: to_column, file: slayer/core/policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: ColumnRef, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelExtension, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelMeasure, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelVariables, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: column, file: slayer/core/query.py, reason: "deprecated twin until 3.0; also reads the removed legacy key to explain the refusal"}
+  - {name: column_ref, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: columns, file: slayer/core/query.py, reason: "reads the removed legacy key to explain the refusal"}
+  - {name: formula, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: joins, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: measures, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: model, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: raw_formula, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: source_model, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: source_model_name, file: slayer/core/query.py, reason: "deprecated twin until 3.0"}
+  - {name: RootModelRecommendation, file: slayer/core/recommend.py, reason: "deprecated twin until 3.0"}
+  - {name: model_name, file: slayer/core/recommend.py, reason: "deprecated twin until 3.0"}
+  - {name: root_model, file: slayer/core/recommend.py, reason: "deprecated twin until 3.0"}
+  - {name: column_pairs, file: slayer/core/relationship_edges.py, reason: "Ossie's own wire name"}
+  - {name: from_columns, file: slayer/core/relationship_edges.py, reason: "Ossie's own wire name"}
+  - {name: to_columns, file: slayer/core/relationship_edges.py, reason: "Ossie's own wire name"}
+  - {name: column_pairs, file: slayer/core/relationship_walker.py, reason: "Ossie's own wire name"}
+  - {name: join_type, file: slayer/core/relationship_walker.py, reason: "SQL JOIN as an operation"}
+  - {name: from_columns, file: slayer/core/scope.py, reason: "Ossie's own wire name"}
+  - {name: join_type, file: slayer/core/scope.py, reason: "SQL JOIN as an operation"}
+  - {name: to_columns, file: slayer/core/scope.py, reason: "Ossie's own wire name"}
+  - {name: PRODUCT_JOIN_TYPE, file: slayer/core/time_spine.py, reason: "SQL JOIN as an operation"}
+  - {name: model, file: slayer/core/vocabulary.py, reason: "a Pydantic model, not a dataset"}
+  - {name: ExtensionColumnInlinedWarning, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: SemiJoinPushedWarningPayload, file: slayer/core/warnings.py, reason: "SQL JOIN as an operation"}
+  - {name: SlayerExtensionColumnInlinedWarning, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: SlayerSpineJoinDroppedWarning, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: SpineJoinDroppedWarning, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: column, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: join, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: measure, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: measures, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: model, file: slayer/core/warnings.py, reason: "deprecated twin until 3.0"}
+  - {name: _DEFERRED_MEASURE_TYPES, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _MeasureInfo, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _convert_agg_measure, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _convert_calc_measure, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _convert_measure, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _join_keys, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _measure_info, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _measures, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: _pending_joins, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: column, file: slayer/cube/converter.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: join, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: measure, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: measure_names, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: measures, file: slayer/cube/converter.py, reason: "Cube's own word (foreign format)"}
+  - {name: joins, file: slayer/cube/fold.py, reason: "Cube's own word (foreign format)"}
+  - {name: measures, file: slayer/cube/fold.py, reason: "Cube's own word (foreign format)"}
+  - {name: joins, file: slayer/cube/js_parser.py, reason: "Cube's own word (foreign format)"}
+  - {name: CubeJoin, file: slayer/cube/models.py, reason: "Cube's own word (foreign format)"}
+  - {name: CubeMeasure, file: slayer/cube/models.py, reason: "Cube's own word (foreign format)"}
+  - {name: CubeMeasureFilter, file: slayer/cube/models.py, reason: "Cube's own word (foreign format)"}
+  - {name: join_path, file: slayer/cube/models.py, reason: "Cube's own word (foreign format)"}
+  - {name: joins, file: slayer/cube/models.py, reason: "Cube's own word (foreign format)"}
+  - {name: measures, file: slayer/cube/models.py, reason: "Cube's own word (foreign format)"}
+  - {name: joins, file: slayer/cube/parser.py, reason: "Cube's own word (foreign format)"}
+  - {name: JoinSide, file: slayer/cube/refs.py, reason: "Cube's own word (foreign format)"}
+  - {name: column, file: slayer/cube/refs.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: parse_join_keys, file: slayer/cube/refs.py, reason: "Cube's own word (foreign format)"}
+  - {name: parse_join_on, file: slayer/cube/refs.py, reason: "Cube's own word (foreign format)"}
+  - {name: COMPLEX_MEASURE, file: slayer/cube/report.py, reason: "Cube's own word (foreign format)"}
+  - {name: UNSUPPORTED_JOIN, file: slayer/cube/report.py, reason: "Cube's own word (foreign format)"}
+  - {name: _get_result_column_types, file: slayer/database/client.py, reason: "physical database or result-set column"}
+  - {name: _get_result_column_types_async, file: slayer/database/client.py, reason: "physical database or result-set column"}
+  - {name: _reflect_columns_sync, file: slayer/database/client.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/database/client.py, reason: "physical database or result-set column"}
+  - {name: get_result_column_types, file: slayer/database/client.py, reason: "physical database or result-set column"}
+  - {name: get_result_column_types_sync, file: slayer/database/client.py, reason: "physical database or result-set column"}
+  - {name: reflect_columns, file: slayer/database/client.py, reason: "physical database or result-set column"}
+  - {name: _EXPECTED_ORDER_COLUMNS, file: slayer/database/conformance.py, reason: "physical database or result-set column"}
+  - {name: column_comments, file: slayer/database/conformance.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/database/conformance.py, reason: "physical database or result-set column"}
+  - {name: get_result_column_types, file: slayer/database/conformance.py, reason: "physical database or result-set column"}
+  - {name: reflect_column_comments, file: slayer/database/conformance.py, reason: "physical database or result-set column"}
+  - {name: reflect_columns, file: slayer/database/conformance.py, reason: "physical database or result-set column"}
+  - {name: reflect_columns_not_found, file: slayer/database/conformance.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/database/sqlite_introspect.py, reason: "physical database or result-set column"}
+  - {name: probe_sqlite_integer_column, file: slayer/database/sqlite_introspect.py, reason: "physical database or result-set column"}
+  - {name: _add_measure_source, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _convert_measures, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _convert_regular_model, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _convert_regular_models, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _convert_semantic_model, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _dbt_models_by_name, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _entity_column, file: slayer/dbt/converter.py, reason: "physical database or result-set column"}
+  - {name: _fail_measure, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _find_measure_model, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _find_metric_source_model, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _inlined_models, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _measure_expression, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _model_source, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _regular_models_sql, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _resolve_measure_to_name, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: _simple_metric_measure_name, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: column_expr, file: slayer/dbt/converter.py, reason: "physical database or result-set column"}
+  - {name: dbt_measure, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: dbt_measures, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: inner_measure, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: measure_cols, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: measure_name, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: measure_names, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: measure_ref, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: model_entities, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: model_meta, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: semantic_models, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: source_model_name, file: slayer/dbt/converter.py, reason: "dbt's own word (foreign format)"}
+  - {name: existing_model, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: get_primary_model, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: model, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: models, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: peer_model_name, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: resolve_entity_to_model, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: resolve_relationships_for_model, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: target_model_name, file: slayer/dbt/entities.py, reason: "dbt's own word (foreign format)"}
+  - {name: all_semantic_models, file: slayer/dbt/filters.py, reason: "dbt's own word (foreign format)"}
+  - {name: peer_models, file: slayer/dbt/filters.py, reason: "dbt's own word (foreign format)"}
+  - {name: target_model, file: slayer/dbt/filters.py, reason: "dbt's own word (foreign format)"}
+  - {name: _column_from_manifest, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: _regular_model_from_node, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: _semantic_model_referenced_nodes, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: columns, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: columns_raw, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: find_orphan_model_nodes, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: regular_models_from_manifest, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: semantic_models, file: slayer/dbt/manifest.py, reason: "dbt's own word (foreign format)"}
+  - {name: DbtColumnMeta, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: DbtMeasure, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: DbtMeasureAggParams, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: DbtMetricInputMeasure, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: DbtRegularModel, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: DbtSemanticModel, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: _coerce_measure, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: base_measure, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: columns, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: conversion_measure, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: join_to_timespine, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: measure, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: measure_name, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: measures, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: model, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: regular_models, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: semantic_model, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: semantic_models, file: slayer/dbt/models.py, reason: "dbt's own word (foreign format)"}
+  - {name: _declared_models, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: _models_directory_quoting, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: _overlay_declared_columns, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: _parse_regular_models, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: _regular_models, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: _semantic_models, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: all_semantic_models, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: columns, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: model, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: model_paths, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: raw_models, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: regular_models, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: schema_model, file: slayer/dbt/parser.py, reason: "dbt's own word (foreign format)"}
+  - {name: model_name, file: slayer/dbt/sql_resolver.py, reason: "dbt's own word (foreign format)"}
+  - {name: referenced_models, file: slayer/dbt/sql_resolver.py, reason: "dbt's own word (foreign format)"}
+  - {name: column, file: slayer/demo/jaffle_shop.py, reason: "physical database or result-set column"}
+  - {name: csv_columns, file: slayer/demo/jaffle_shop.py, reason: "physical database or result-set column"}
+  - {name: target_columns, file: slayer/demo/jaffle_shop.py, reason: "physical database or result-set column"}
+  - {name: DEFAULT_EMBEDDING_MODEL, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: SLAYER_EMBEDDING_MODEL_ENV, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: _resolve_model_cap, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: bare_model_name, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: current_model, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: model, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: resolved_model, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: truncate_text_for_model, file: slayer/embeddings/client.py, reason: "embedding model"}
+  - {name: embedding_model_name, file: slayer/embeddings/models.py, reason: "embedding model"}
+  - {name: _source_column_key, file: slayer/engine/binding.py, reason: "physical database or result-set column"}
+  - {name: column_pairs, file: slayer/engine/cardinality/inference.py, reason: "Ossie's own wire name"}
+  - {name: _local_regroup_join_pairs, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: _semi_join_filter, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: _semi_join_groups_from_pushes, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: _shifted_join_pairs, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: has_semi_joins, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: join_pairs, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: pop_semi_join_groups, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: population_semi_join_metrics, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: semi_join_names, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: semi_joins, file: slayer/engine/compile/stages.py, reason: "SQL JOIN as an operation"}
+  - {name: _attach_join_keys, file: slayer/engine/compile/staging.py, reason: "SQL JOIN as an operation"}
+  - {name: ColumnTypes, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: _column_type, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: _metric_source_columns, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: portable_columns, file: slayer/engine/definitions.py, reason: "physical database or result-set column"}
+  - {name: _source_column_reads, file: slayer/engine/field_dependency.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/engine/field_dependency.py, reason: "physical database or result-set column"}
+  - {name: _attach_semi_join_texts, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
+  - {name: _collect_semi_join_pushed_warnings, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
+  - {name: _column_presence_cache, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _column_present, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _has_column, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _live_column_types, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
+  - {name: _semi_join_filter_texts, file: slayer/engine/query_engine.py, reason: "SQL JOIN as an operation"}
+  - {name: _source_column_types, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
+  - {name: create_model_from_query, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: create_model_from_query_sync, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: delete_model_by_name, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: detect_join_cardinality, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: edit_model_remove, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: expand_query_backed_model, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: expected_columns, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
+  - {name: get_result_column_types, file: slayer/engine/query_engine.py, reason: "physical database or result-set column"}
+  - {name: has_column, file: slayer/engine/query_engine.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: recommend_root_model, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: recommend_root_model_sync, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: save_model, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: validate_models, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: validate_sql_model_source, file: slayer/engine/query_engine.py, reason: "deprecated twin until 3.0"}
+  - {name: column, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
+  - {name: expected_columns, file: slayer/engine/response_meta.py, reason: "physical database or result-set column"}
+  - {name: measures, file: slayer/engine/response_meta.py, reason: "deprecated twin until 3.0"}
+  - {name: from_columns, file: slayer/engine/stage_edges.py, reason: "Ossie's own wire name"}
+  - {name: column_pairs, file: slayer/facade/catalog.py, reason: "Ossie's own wire name"}
+  - {name: join_type, file: slayer/facade/catalog.py, reason: "SQL JOIN as an operation"}
+  - {name: _build_is_columns, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _build_is_key_column_usage, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _column_specs, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _discover_referenced_columns, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _strip_column_schema_qualifiers, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _substitute_bareword_column, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _substitute_qualified_context_column, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: column_defs, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: columns, file: slayer/facade/catalog_sql.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _serve_columns, file: slayer/facade/info_schema.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: columns, file: slayer/facade/info_schema.py, reason: "physical database or result-set column"}
+  - {name: FacadeColumn, file: slayer/facade/rows.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: columns, file: slayer/facade/rows.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: _JoinOverlays, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _JoinPlan, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _dynamic_join_cardinality, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _emit_join_warnings, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _extensions_from_join, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _join_subquery_fields, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _match_parent_join, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _materialise_dynamic_join_lookups, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _parse_left_join, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _prepare_join_overlays, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _reject_non_left_join, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _reject_unprojected_join_fields, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: _resolve_join_subquery_target, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: column_names, file: slayer/facade/translator.py, reason: "column of the SQL facade's tables (SQL surface)"}
+  - {name: join, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: join_plan, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: joins, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: parsed_joins, file: slayer/facade/translator.py, reason: "SQL JOIN as an operation"}
+  - {name: column, file: slayer/importers/aggregates.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _table_columns, file: slayer/importers/column_types.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/importers/column_types.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/importers/physical.py, reason: "physical database or result-set column"}
+  - {name: root_physical_columns, file: slayer/importers/physical.py, reason: "physical database or result-set column"}
+  - {name: agg_columns, file: slayer/inspect/dataset_render.py, reason: "header columns of a rendered table"}
+  - {name: col_columns, file: slayer/inspect/dataset_render.py, reason: "header columns of a rendered table"}
+  - {name: columns, file: slayer/inspect/dataset_render.py, reason: "physical database or result-set column"}
+  - {name: SemiJoinFilter, file: slayer/ir/planned.py, reason: "SQL JOIN as an operation"}
+  - {name: SemiJoinHop, file: slayer/ir/planned.py, reason: "SQL JOIN as an operation"}
+  - {name: join_pairs, file: slayer/ir/planned.py, reason: "SQL JOIN as an operation"}
+  - {name: plan_has_semi_join_filters, file: slayer/ir/planned.py, reason: "SQL JOIN as an operation"}
+  - {name: population_semi_join_metrics, file: slayer/ir/planned.py, reason: "SQL JOIN as an operation"}
+  - {name: semi_join_filters, file: slayer/ir/planned.py, reason: "SQL JOIN as an operation"}
+  - {name: semi_join_metric, file: slayer/ir/planned.py, reason: "SQL JOIN as an operation"}
+  - {name: IntrospectedColumn, file: slayer/live_schema/ingestion.py, reason: "physical database or result-set column"}
+  - {name: _introspect_table_columns, file: slayer/live_schema/ingestion.py, reason: "physical database or result-set column"}
+  - {name: _sqlite_probe_integer_columns, file: slayer/live_schema/ingestion.py, reason: "physical database or result-set column"}
+  - {name: introspect_table_columns, file: slayer/live_schema/ingestion.py, reason: "physical database or result-set column"}
+  - {name: introspect_table_to_model, file: slayer/live_schema/ingestion.py, reason: "deprecated twin until 3.0"}
+  - {name: pk_columns, file: slayer/live_schema/ingestion.py, reason: "physical database or result-set column"}
+  - {name: result_column_types, file: slayer/live_schema/ingestion.py, reason: "physical database or result-set column"}
+  - {name: reflect_columns, file: slayer/live_schema/introspect_utils.py, reason: "physical database or result-set column"}
+  - {name: EditModelDelete, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: ModelAddition, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: WholeModelDelete, file: slayer/live_schema/schema_drift.py, reason: "deprecated twin until 3.0"}
+  - {name: _diff_sql_table_columns, file: slayer/live_schema/schema_drift.py, reason: "physical database or result-set column"}
+  - {name: _live_columns_for_sql_dataset, file: slayer/live_schema/schema_drift.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/live_schema/schema_drift.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: columns, file: slayer/live_schema/schema_drift.py, reason: "physical database or result-set column"}
+  - {name: join, file: slayer/live_schema/schema_drift.py, reason: "SQL JOIN as an operation"}
+  - {name: joins, file: slayer/live_schema/schema_drift.py, reason: "SQL JOIN as an operation"}
+  - {name: live_columns, file: slayer/live_schema/schema_drift.py, reason: "physical database or result-set column"}
+  - {name: live_columns, file: slayer/live_schema/type_refinement.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/mcp/server.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/osi/converter.py, reason: "physical database or result-set column"}
+  - {name: _shared_semantic_model, file: slayer/osi/exporter.py, reason: "OSI's own word (foreign format)"}
+  - {name: column, file: slayer/osi/exporter.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: from_columns, file: slayer/osi/exporter.py, reason: "Ossie's own wire name"}
+  - {name: model_metrics, file: slayer/osi/exporter.py, reason: "OSI's own word (foreign format)"}
+  - {name: to_columns, file: slayer/osi/exporter.py, reason: "Ossie's own wire name"}
+  - {name: from_columns, file: slayer/osi/models.py, reason: "Ossie's own wire name"}
+  - {name: to_columns, file: slayer/osi/models.py, reason: "Ossie's own wire name"}
+  - {name: from_columns, file: slayer/osi/slayer_extension.py, reason: "Ossie's own wire name"}
+  - {name: to_columns, file: slayer/osi/slayer_extension.py, reason: "Ossie's own wire name"}
+  - {name: ColumnTypeIndex, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: ColumnTypeKey, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _build_column_type_index, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _column_param_pairs_from_node, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _column_type_index, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _map_column_tables, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _pair_column_and_param, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _record_column_type, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _resolve_column_table, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _try_extract_column, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column_to_table, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column_type_index, file: slayer/pg_facade/connection.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column_attr, file: slayer/pg_facade/protocol.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column_count, file: slayer/pg_facade/protocol.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: collect_model_entity_pairs, file: slayer/search/render.py, reason: "deprecated twin until 3.0"}
+  - {name: _model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
+  - {name: model_name, file: slayer/search/retrievers/embeddings.py, reason: "embedding model"}
+  - {name: describe_cursor_column, file: slayer/sql/dialects/_tier2.py, reason: "physical database or result-set column"}
+  - {name: _column_comments, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: column_comments_query, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: columns_from_inspector, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: columns_query, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: describe_cursor_column, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: join_kind, file: slayer/sql/dialects/base.py, reason: "SQL JOIN as an operation"}
+  - {name: read_column, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: reflect_columns, file: slayer/sql/dialects/base.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
+  - {name: columns_query, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
+  - {name: read_column, file: slayer/sql/dialects/bigquery.py, reason: "physical database or result-set column"}
+  - {name: _exists_beside_array_join, file: slayer/sql/dialects/clickhouse.py, reason: "SQL JOIN as an operation"}
+  - {name: _system_columns, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
+  - {name: column_comments_query, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
+  - {name: columns_from_inspector, file: slayer/sql/dialects/clickhouse.py, reason: "physical database or result-set column"}
+  - {name: _plain_index_columns, file: slayer/sql/dialects/duckdb.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/duckdb.py, reason: "physical database or result-set column"}
+  - {name: describe_cursor_column, file: slayer/sql/dialects/duckdb.py, reason: "physical database or result-set column"}
+  - {name: reflect_columns, file: slayer/sql/dialects/duckdb.py, reason: "physical database or result-set column"}
+  - {name: column_comments_query, file: slayer/sql/dialects/mysql.py, reason: "physical database or result-set column"}
+  - {name: describe_cursor_column, file: slayer/sql/dialects/mysql.py, reason: "physical database or result-set column"}
+  - {name: column_comments_query, file: slayer/sql/dialects/postgres.py, reason: "physical database or result-set column"}
+  - {name: describe_cursor_column, file: slayer/sql/dialects/postgres.py, reason: "physical database or result-set column"}
+  - {name: describe_pg_cursor_column, file: slayer/sql/dialects/postgres.py, reason: "physical database or result-set column"}
+  - {name: ReflectedColumn, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: ResultColumnType, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: column_from_sa_type, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: column_from_type_string, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: comment_column, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: inspector_column_names, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: referred_columns, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: result_column_type_of_name, file: slayer/sql/dialects/reflection.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
+  - {name: column_comments_query, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
+  - {name: describe_cursor_column, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
+  - {name: read_column, file: slayer/sql/dialects/snowflake.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
+  - {name: referred_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
+  - {name: reflect_columns, file: slayer/sql/dialects/sqlite.py, reason: "physical database or result-set column"}
+  - {name: describe_cursor_column, file: slayer/sql/dialects/tsql.py, reason: "physical database or result-set column"}
+  - {name: reads_source_column, file: slayer/sql/field_expansion.py, reason: "physical database or result-set column"}
+  - {name: _SemiJoinOps, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _apply_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _build_from_and_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _build_semi_join_exists, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _hop_join, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _join_alias, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _join_alias_resolver, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _join_key, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _list_join, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _semi_join_exists_conditions, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _semi_join_flat, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _semi_join_spine, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: base_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: join, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: join_expr, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: join_on_parts, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: join_specs, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: join_type, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: placeholder_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: regroup_join_specs, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: row_regroup_join_specs, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: select_columns, file: slayer/sql/generator.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: src_joins, file: slayer/sql/generator.py, reason: "SQL JOIN as an operation"}
+  - {name: _join_alias_memo, file: slayer/sql/naming.py, reason: "SQL JOIN as an operation"}
+  - {name: _join_alias_used, file: slayer/sql/naming.py, reason: "SQL JOIN as an operation"}
+  - {name: columns, file: slayer/sql/render/cte_assembly.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column, file: slayer/sql/render/row_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: column, file: slayer/sql/render/value_expr.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: _root_columns, file: slayer/sql/root_scope.py, reason: "physical database or result-set column"}
+  - {name: columns, file: slayer/sql/root_scope.py, reason: "physical database or result-set column"}
+  - {name: respelled_columns, file: slayer/sql/root_scope.py, reason: "physical database or result-set column"}
+  - {name: column, file: slayer/sql/scope.py, reason: "SQL column in a SQL AST, statement or wire surface"}
+  - {name: joins, file: slayer/sql/scope_check.py, reason: "SQL JOIN as an operation"}
+  - {name: HasColumn, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _apply_column_ruleset, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _apply_join_ruleset, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: _wrap_table_join_rules, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: column, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: global_joins, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: has_column, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: policy_column_checks, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: semi_join, file: slayer/sql/session_policy.py, reason: "session-policy (RLS) name: physical column and SQL JOIN carve-out"}
+  - {name: expected_columns, file: slayer/sql/stage_wrapper.py, reason: "physical database or result-set column"}
+  - {name: join, file: slayer/sql/stage_wrapper.py, reason: "SQL JOIN as an operation"}
+  - {name: columns, file: slayer/sql/type_probe.py, reason: "physical database or result-set column"}
+  - {name: embedding_model_name, file: slayer/storage/access_filtered.py, reason: "embedding model"}
+  - {name: _rewrite_legacy_join_aliases, file: slayer/storage/base.py, reason: "stored-document upgrade path"}
+  - {name: builtin_models, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: delete_model, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: embedding_model_name, file: slayer/storage/base.py, reason: "embedding model"}
+  - {name: get_model, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: get_model_or_builtin, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: list_models, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: load_models, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: resolve_model_identity, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: save_model, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: update_column_sampled, file: slayer/storage/base.py, reason: "deprecated twin until 3.0"}
+  - {name: column, file: slayer/storage/colon_spelling_migration.py, reason: "stored-document upgrade path"}
+  - {name: columns, file: slayer/storage/date_only_migration.py, reason: "stored-document upgrade path"}
+  - {name: models, file: slayer/storage/date_only_migration.py, reason: "stored-document upgrade path"}
+  - {name: embedding_model_name, file: slayer/storage/engine_view.py, reason: "embedding model"}
+  - {name: column, file: slayer/storage/extension_fields.py, reason: "stored-document upgrade path"}
+  - {name: columns, file: slayer/storage/extension_fields.py, reason: "stored-document upgrade path"}
+  - {name: raw_columns, file: slayer/storage/extension_fields.py, reason: "stored-document upgrade path"}
+  - {name: embedding_model_name, file: slayer/storage/sidecar_embedding_store.py, reason: "embedding model"}
+  - {name: list_for_model, file: slayer/storage/sidecar_embedding_store.py, reason: "embedding model"}
+  - {name: columns, file: slayer/storage/v2_migration.py, reason: "stored-document upgrade path"}
+  - {name: raw_measures, file: slayer/storage/v2_migration.py, reason: "stored-document upgrade path"}
+  - {name: models_dir, file: slayer/storage/v4_migration.py, reason: "storage layout (the models/ directory)"}
+  - {name: models_dir, file: slayer/storage/yaml_storage.py, reason: "storage layout (the models/ directory)"}
+stragglers:
+  - {name: SEGMENT_AS_COLUMN, file: slayer/cube/report.py}
+  - {name: _filtered_columns, file: slayer/dbt/converter.py}
+  - {name: model_failed, file: slayer/engine/profiling.py}
+  - {name: model_key, file: slayer/engine/profiling.py}
+  - {name: measure, file: slayer/engine/query_engine.py}
+  - {name: formula, file: slayer/facade/catalog.py}
+  - {name: joined_model, file: slayer/facade/catalog.py}
+  - {name: joins, file: slayer/facade/catalog.py}
+  - {name: model, file: slayer/facade/catalog.py}
+  - {name: models, file: slayer/facade/catalog.py}
+  - {name: columns, file: slayer/facade/translator.py}
+  - {name: formula, file: slayer/facade/translator.py}
+  - {name: metrics_by_formula, file: slayer/facade/translator.py}
+  - {name: model_ref, file: slayer/facade/translator.py}
+  - {name: temporal_columns, file: slayer/facade/translator.py}
+  - {name: models, file: slayer/flight/handlers.py}
+  - {name: models_by_ds, file: slayer/flight/handlers.py}
+  - {name: columns, file: slayer/live_schema/broken_dependents.py}
+  - {name: column, file: slayer/live_schema/ingestion.py}
+  - {name: column_name, file: slayer/live_schema/ingestion.py}
+  - {name: columns, file: slayer/live_schema/ingestion.py}
+  - {name: retyped_sql_columns, file: slayer/live_schema/ingestion.py}
+  - {name: _first_dropped_sql_column_ref, file: slayer/live_schema/schema_drift.py}
+  - {name: columns, file: slayer/live_schema/type_refinement.py}
+  - {name: _walk_join_alias, file: slayer/osi/converter.py}
+  - {name: _raise_if_broken_join_walk, file: slayer/sql/field_expansion.py}
+  - {name: _gen_column_types, file: slayer/sql/generator.py}
+  - {name: _resolve_where_filter_joins_via_scope, file: slayer/sql/generator.py}
+  - {name: _value_key_join_paths, file: slayer/sql/generator.py}
+  - {name: _walk_join_path_dataset, file: slayer/sql/generator.py}
+  - {name: axis_column, file: slayer/sql/generator.py}
+  - {name: column, file: slayer/sql/generator.py}
+  - {name: column_type, file: slayer/sql/generator.py}
+  - {name: needed_join_paths, file: slayer/sql/generator.py}
+  - {name: column_type, file: slayer/sql/render/value_expr.py}
+  - {name: _register_join_paths, file: slayer/sql/scope.py}
+  - {name: join_paths, file: slayer/sql/scope.py}

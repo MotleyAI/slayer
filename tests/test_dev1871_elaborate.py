@@ -1,4 +1,4 @@
-"""DEV-1871 — the one elaboration pass and its typing environment (design D2).
+"""The one elaboration pass and its typing environment (design D2).
 
 ``elaborate_query`` gives every top-level expression a position verdict, home
 dataset, resolved grain, and Broadcast insertions at grain-union points, and
@@ -80,7 +80,7 @@ class TestTypingEnvironment:
         assert entry.grain == Grain.of({_STATUS})
 
     def test_aggregate_terms_memoized_by_key_identity(self) -> None:
-        """The same aggregate in measure and filter position is one term."""
+        """The same aggregate in metric and filter position is one term."""
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],

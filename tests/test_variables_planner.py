@@ -1,4 +1,4 @@
-"""``slayer.ir.variables``: layer merging, query-surface substitution, saved-measure substitution."""
+"""``slayer.ir.variables``: layer merging, query-surface substitution, saved-metric substitution."""
 
 from __future__ import annotations
 
@@ -281,7 +281,7 @@ class TestApplyVariablesToQuery:
         assert out.filter == ["status = 'active' AND amount > 100"]
 
     def test_non_filter_fields_untouched(self) -> None:
-        """Measure metadata (``label``) is not a variable surface."""
+        """Metric metadata (``label``) is not a variable surface."""
         q = SlayerQuery(
             population="orders",
             metrics=[
