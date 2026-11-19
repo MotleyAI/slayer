@@ -153,8 +153,10 @@ class TestEmptyIngestMessage:
             con.execute("CREATE TABLE t (id INTEGER)")
         _stored_datasource(tmp_path, DatasourceConfig(name="app", type="duckdb", database=db))
         result = _ingest(tmp_path, "--schema", "information_schema")
-        assert ("Skipped schemas (1)" in result.stdout, "information_schema" in result.stdout,
-                "never ingested" in result.stdout, _EMPTY in result.stdout) == (True, True, True, False), result.stdout
+        assert (result.returncode, "Skipped schemas (1)" in result.stdout, "information_schema" in result.stdout,
+                "never ingested" in result.stdout, _EMPTY in result.stdout) == (1, True, True, True, False), (
+            result.stdout
+        )
 
     def test_truly_empty_schema_prints_the_message_and_exits_one(self, tmp_path: Path) -> None:
         _stored_datasource(tmp_path, DatasourceConfig(name="app", type="sqlite", database=_sqlite(tmp_path)))
@@ -189,6 +191,20 @@ class TestEmptyIngestMessage:
         _patch_idempotent(monkeypatch, IdempotentIngestResult.model_validate(fields))
         result = _ingest(tmp_path)
         assert (section in result.stdout, _EMPTY in result.stdout) == (True, False), result.stdout
+
+    #: ``slayer ingest`` exit codes from before the shared emptiness check: 1 without a live object or model change.
+    _INGEST_EXIT = {"objects-in-sync": 0, "updated": 0, "drift": 0, "skipped": 1, "error": 1, "description-only": 1,
+                    "skipped-schema": 1, "hidden-internal": 1, "broken-dependent": 1}
+
+    @pytest.mark.parametrize(("fields", "section"), _NON_EMPTY)
+    def test_slayer_ingest_keeps_its_exit_code(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+        fields: dict[str, Any], section: str,
+    ) -> None:
+        _stored_datasource(tmp_path, DatasourceConfig(name="app", type="sqlite", database=_sqlite(tmp_path)))
+        _patch_idempotent(monkeypatch, IdempotentIngestResult.model_validate(fields))
+        result = _ingest(tmp_path)
+        assert result.returncode == self._INGEST_EXIT[request.node.callspec.id], section + result.stdout
 
     @pytest.mark.parametrize(("fields", "section"), _NON_EMPTY)
     def test_create_prints_the_section_not_the_empty_message(

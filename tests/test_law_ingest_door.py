@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import ast
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 
-from tests.test_law_resource_ownership import _canonical, _import_bindings
+from tests.test_law_resource_ownership import _canonical, _dotted
 
 REPO = Path(__file__).resolve().parent.parent
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 #: The ``surfaces`` and ``protocols`` bucket packages.
 PACKAGES = (
@@ -25,23 +27,56 @@ _SCANS = {"ingest_datasource_report_async", "ingest_datasource_report", "ingest_
 _ENGINE_SCANS = {"ingest", "ingest_sync"}
 
 
-def _door(func: ast.AST, bindings: dict[str, str]) -> str | None:
-    """The bypassing ingest a call target runs, or None."""
+def _door(func: ast.AST, bindings: dict[str, set[str]]) -> str | None:
+    """The bypassing ingest a call target may run, or None."""
     if isinstance(func, ast.Attribute) and func.attr in _ENGINE_SCANS:
         return f"engine scan `.{func.attr}(`"
-    canonical = _canonical(func, bindings)
-    if canonical and canonical.split(".")[-1] in _SCANS:
-        return f"scan `{canonical}`"
+    chain = _dotted(func)
+    base = chain[0] if chain else ""
+    for origin in sorted(bindings.get(base, ())) or [None]:
+        canonical = _canonical(func, {base: origin} if origin else {})
+        if canonical and canonical.split(".")[-1] in _SCANS:
+            return f"scan `{canonical}`"
     return None
 
 
-def _sites(tree: ast.AST) -> list[tuple[int, str]]:
-    bindings = _import_bindings(tree)
-    return [
-        (node.lineno, door)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and (door := _door(node.func, bindings)) is not None
-    ]
+def _in_scope(scope: ast.AST) -> Iterator[ast.AST]:
+    """The nodes of ``scope``, stopping at (but yielding) nested scopes."""
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _origins(node: ast.Import | ast.ImportFrom) -> Iterator[tuple[str, str]]:
+    """An import's (local name, dotted origin) pairs, relative imports included."""
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            top = alias.name.split(".")[0]
+            yield alias.asname or top, alias.name if alias.asname else top
+        return
+    module = "." * node.level + (node.module or "")
+    for alias in node.names:
+        yield alias.asname or alias.name, f"{module}.{alias.name}"
+
+
+def _sites(scope: ast.AST, inherited: dict[str, set[str]] | None = None) -> list[tuple[int, str]]:
+    """Bypassing calls in ``scope``; a name may be any origin it is bound to in this or an enclosing scope."""
+    bindings = {name: set(origins) for name, origins in (inherited or {}).items()}
+    nodes = list(_in_scope(scope))
+    for node in nodes:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for name, origin in _origins(node):
+                bindings.setdefault(name, set()).add(origin)
+    out: list[tuple[int, str]] = []
+    for node in nodes:
+        if isinstance(node, ast.Call) and (door := _door(node.func, bindings)) is not None:
+            out.append((node.lineno, door))
+        if isinstance(node, _SCOPES):
+            out.extend(_sites(node, bindings))
+    return sorted(out)
 
 
 def _package_paths(package: str) -> list[Path]:
@@ -103,3 +138,38 @@ def test_the_idempotent_pass_is_not_a_bypass() -> None:
             engine.ingest_idempotent_sync(ds)
     """)
     assert _sites(ast.parse(source)) == []
+
+
+def test_the_scanner_resolves_relative_import_aliases() -> None:
+    source = textwrap.dedent("""
+        from ..engine.ingestion import ingest_datasource_async as scan
+
+        async def f(ds):
+            await scan(datasource=ds)
+    """)
+    assert len(_sites(ast.parse(source))) == 1
+
+
+def test_the_scanner_resolves_names_per_scope() -> None:
+    source = textwrap.dedent("""
+        async def f(ds):
+            from slayer.engine.ingestion import ingest_datasource_async as scan
+            await scan(datasource=ds)
+
+        async def g(ds, storage):
+            from slayer.engine.ingestion import ingest_datasource_idempotent as scan
+            await scan(datasource=ds, storage=storage)
+    """)
+    assert [line for line, _ in _sites(ast.parse(source))] == [4]
+
+
+def test_a_rebound_name_may_be_any_of_its_origins() -> None:
+    source = textwrap.dedent("""
+        from slayer.engine.ingestion import ingest_datasource_async as run
+
+        async def f(ds, storage, flag):
+            if flag:
+                from slayer.engine.ingestion import ingest_datasource_idempotent as run
+            await run(datasource=ds, storage=storage)
+    """)
+    assert [line for line, _ in _sites(ast.parse(source))] == [7]

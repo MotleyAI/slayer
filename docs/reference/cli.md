@@ -364,7 +364,7 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `connection_string` | Yes | Database URL (e.g. `postgresql://…`, `mysql+pymysql://…`, `sqlite:///path/to/file.db`, `duckdb:///…`, `clickhouse+http://…`). `${ENV_VAR}` references are resolved at use time. Pass the literal `demo` to spin up the bundled Jaffle Shop demo DuckDB. |
 | `--name` | No | Override the auto-derived name (default for the demo: `jaffle_shop`) |
 | `--description` | No | Human-readable description |
-| `--ingest` | No | Run `slayer ingest` immediately after creating the datasource |
+| `--ingest` | No | Run `slayer ingest` immediately after creating the datasource (the demo runs its own enriched ingest instead) |
 | `--schema` | No | (with `--ingest`) Schema to ingest from |
 | `--include` | No | (with `--ingest`) Comma-separated tables to include |
 | `--exclude` | No | (with `--ingest`) Comma-separated tables to exclude |
@@ -378,7 +378,7 @@ The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is i
 
 If a datasource with the same name already exists, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
 
-`--ingest` runs the same idempotent, additive ingest as `slayer ingest` and prints the same output. Re-creating a datasource replaces its config but merges the fresh scan into its stored models, never overwriting them. To reset a model to a fresh scan, run `slayer models delete` first. Once the datasource is created, the command exits 0 whatever the ingest reports. An ingest that raises exits 1.
+For a database URL (not `demo`), `--ingest` runs the same idempotent, additive ingest as `slayer ingest` and prints the same output. Re-creating a datasource replaces its config but merges the fresh scan into its stored models, never overwriting them. To reset a model to a fresh scan, run `slayer models delete` first. Once the datasource is created, the command exits 0 whatever the ingest reports. An ingest that raises exits 1.
 
 With `--ingest`, the `Hidden` and `Skipped` sections described under [`slayer ingest`](#slayer-ingest) are printed after the models are written. Neither affects the exit code here — creating the datasource is this command's job, and it succeeded.
 

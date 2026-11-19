@@ -1924,7 +1924,13 @@ async def _ingest_workflow(args, engine: SlayerQueryEngine) -> None:
     result = await _ingest_and_print(engine=engine, ds=ds, args=args)
     # A skip means we declined to ingest a perfectly valid object, so it fails
     # the command — `--exclude <name>` is the documented way to make it green.
-    if result is None or result.errors or result.skipped:
+    # No live object and no model change (e.g. every schema skipped) fails too.
+    if (
+        result is None
+        or result.errors
+        or result.skipped
+        or not (result.objects or result.additions or result.to_delete)
+    ):
         sys.exit(1)
 
 
@@ -2671,7 +2677,7 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-@otel.request(surface="cli", token="datasources.create")
+@otel.request(surface="cli", token="datasources.create")  # NOSONAR(S6418) — usage-operation name, not a secret
 def _run_datasources_create(args, storage):
     if (args.connection_string or "").strip().lower() == "demo":
         _run_datasources_create_demo(args, storage)
