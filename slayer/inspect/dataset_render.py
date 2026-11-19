@@ -13,7 +13,6 @@ from typing import Any
 from sqlalchemy.exc import DatabaseError, OperationalError
 
 from slayer.core.enums import DataType, NUMERIC_DATATYPES
-from slayer.core.errors import SlayerError
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, neighbors
 from slayer.core.models import DatasetField, RelationshipOrigin, SlayerDataset, field_type_text, is_identifier
@@ -624,7 +623,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 dataset_name=dataset.name,
                 data_source=dataset.data_source or None,
             )
-        except (SlayerError, ValueError):
+        except ValueError:  # SlayerError included
             pass  # an unplannable dataset still renders; the profile reports its error
 
     visible_fields = [c for c in dataset.fields if not c.hidden]

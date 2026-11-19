@@ -36,9 +36,9 @@ def stage_sibling_reads(
     written = _written_names(query=query, siblings=siblings, displays=displays or {})
     own = _extension_relationship_spellings(query)
     for parts in query_reference_parts(query) if expressions else ():
-        for i, head in enumerate(parts[:-1]):
-            if i == 0 and _spells_relationship(head, edges=population_edges, own=own):
-                continue
+        if len(parts) > 1 and _spells_relationship(parts[0], edges=population_edges, own=own):
+            continue  # a relationship path, not a sibling reference
+        for head in parts[:-1]:
             hit = match_name(name=head, declared=written, quoted=False)
             if hit is not None and written[hit] != query.name:
                 found.add(written[hit])

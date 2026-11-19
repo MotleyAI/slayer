@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from slayer.core.enums import JoinType, RelationshipCardinality
 from slayer.core.errors import AmbiguousRelationshipPathError
-from slayer.core.keys import FieldKey, ValueKey
+from slayer.core.keys import FieldKey, FieldSqlKey, ValueKey
 from slayer.core.models import DatasetRelationship, RelationshipOrigin, SlayerDataset
 from slayer.core.relationship_walker import OrientedRelationship, follow, neighbors, unobserved
 from slayer.core.scope import InheritedEdge, PassThrough, StageField
@@ -23,15 +23,25 @@ _Position = Tuple[_EdgeId, ...]
 def pass_through(
     *, key: ValueKey, root: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
 ) -> Optional[PassThrough]:
-    """What a row-level output of ``key`` passes through unchanged; ``None`` unless ``key`` is a plain field."""
-    if not isinstance(key, FieldKey) or root is None:
+    """What a row-level output of ``key`` passes through unchanged; ``None`` unless ``key`` is a plain field (a base
+    field renamed onto another column included)."""
+    if root is None or not isinstance(key, (FieldKey, FieldSqlKey)):
         return None
+    leaf = key.leaf if isinstance(key, FieldKey) else key.field_name
     try:
         with unobserved():
             chain = follow(root=root, path=key.path, datasets_by_name=datasets_by_name)
     except AmbiguousRelationshipPathError:
         return None
-    return None if chain is None else PassThrough(path=tuple(chain), field=key.leaf)
+    if chain is None or (isinstance(key, FieldSqlKey) and not _renamed_base(
+            datasets_by_name.get(chain[-1].to) if chain else root, leaf)):
+        return None
+    return PassThrough(path=tuple(chain), field=leaf)
+
+
+def _renamed_base(dataset: Optional[SlayerDataset], leaf: str) -> bool:
+    field = dataset.get_field(leaf) if dataset is not None else None
+    return field is not None and field.is_base and field.filter is None
 
 
 def _edge_id(edge: OrientedRelationship) -> _EdgeId:

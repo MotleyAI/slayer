@@ -61,7 +61,6 @@ from slayer.core.time_bounds import is_frame_bound
 from slayer.core.time_points import floor_to
 from slayer.core.scope import (
     DatasetScope,
-    StageSchema,
     host_dataset_name,
     root_spelling,
     stale_spelling_position,
@@ -363,7 +362,6 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     query: SlayerQuery,
     bundle: ResolvedSourceBundle,
     scope: Optional[DatasetScope] = None,
-    stage_schemas: Optional[Dict[str, StageSchema]] = None,
 ) -> PreboundQuery:
     """Parse and bind every text surface of a ``SlayerQuery`` (the only door into the parser); returns fully-normalized keys. Dataset filters excluded (scope-owned)."""
     if scope is None:

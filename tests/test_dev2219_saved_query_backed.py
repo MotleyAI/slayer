@@ -104,6 +104,16 @@ class TestExecution:
             resp = await engine.execute(over("customer_revenue", dimensions=["customers.region"]))
         assert by(resp, key="customers.region", value="total") == REVENUE_BY_REGION
 
+    async def test_inspection_lists_an_edge_declared_back_once(self) -> None:
+        back = customers()
+        back = back.model_copy(update={"relationships": [*back.relationships, DatasetRelationship(
+            to="customer_revenue", from_columns=["id"], to_columns=["customer_id"])]})
+        async with shop("sqlite", with_datasets(back)) as engine:
+            await engine.save_dataset(_saved())
+            relationships, error = await engine.relationships_as_read(_saved())
+        assert error is None
+        assert [j for j in relationships if j.inherited_from is not None] == []
+
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_ordinary_stage_hides_a_source_edge_whose_key_it_drops(self, dialect: str) -> None:
         stage = per_customer(dimensions=["status"])

@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import AmbiguousRelationshipPathError, UnrelatedDatasetError
+from slayer.core.models import DatasetField
 
 from tests._dev2219_fixtures import (
     DIALECTS,
@@ -31,6 +33,7 @@ from tests._dev2219_fixtures import (
     over,
     per_customer,
     q,
+    rel,
     shop,
     with_datasets,
 )
@@ -53,6 +56,18 @@ class TestPassThrough:
     async def test_renamed_key_is_inherited(self, engine) -> None:
         stage = per_customer(dimensions=[{"field": "customer_id", "alias": "cid"}])
         resp = await engine.execute([stage, over("per_customer", dimensions=["customers.region"])])
+        assert by(resp, key="customers.region", value="total") == REVENUE_BY_REGION
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_base_field_renamed_onto_its_column_is_inherited(self, dialect: str) -> None:
+        renamed = orders()
+        renamed = renamed.model_copy(update={
+            "fields": [*renamed.fields, DatasetField(name="cid", sql="customer_id", datatype=DataType.INTEGER)],
+            "relationships": [rel("customers", [("cid", "id")], join_type=JoinType.LEFT,
+                                  cardinality=RelationshipCardinality.MANY_TO_ONE)]})
+        async with shop(dialect, with_datasets(renamed)) as engine:
+            resp = await engine.execute([per_customer(dimensions=["cid"]),
+                                         over("per_customer", dimensions=["customers.region"])])
         assert by(resp, key="customers.region", value="total") == REVENUE_BY_REGION
 
     @pytest.mark.parametrize("expr", ["CAST(customer_id AS TEXT)", "customer_id + 0"])

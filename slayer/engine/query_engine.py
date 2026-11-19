@@ -154,7 +154,7 @@ from slayer.engine.response_meta import (
     projection_result_keys,
 )
 from slayer.sql.field_expansion import expand_derived_refs_sync
-from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
+from slayer.ir.source_bundle import ResolvedSourceBundle, absorb_inherited, dataset_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
@@ -3023,9 +3023,14 @@ class SlayerQueryEngine:
                 name=dataset.name, schema=expansion.stage_schema, data_source=dataset.data_source or "_stage",
                 saved=dataset,
             )
-        except (SlayerError, ValueError) as exc:
+        except ValueError as exc:  # SlayerError included
             return list(dataset.relationships), str(exc)
-        return list(view.relationships), None
+        # An identical edge a peer declares back absorbs the inherited one, as in execution.
+        if not dataset.data_source:
+            return list(view.relationships), None
+        peers = await self._preload_relationship_targets(view, failures=DocumentLoadFailures())
+        loaded = {n: d for n, d in peers.items() if d is not None}
+        return list(absorb_inherited(loaded)[view.name].relationships), None
 
     async def create_dataset_from_query(
         self,

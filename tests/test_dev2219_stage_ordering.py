@@ -163,3 +163,13 @@ class TestEdgeAwareExtractor:
             await engine.execute([sibling, z, q(population="z", metrics=[m("sum(n)", "t")])], dry_run=True)
         (reader,) = [p for p in planned if p.stage_schema is not None and p.stage_schema.relation_name.endswith("_z")]
         assert reader.stage_reads == []
+
+    @pytest.mark.parametrize("dialect", DIALECTS)
+    async def test_a_relationship_path_is_never_a_sibling_reference(self, dialect: str) -> None:
+        a = q(name="a", population="orders", dimensions=["customers.regions.name"], metrics=[m("count(*)", "n")])
+        sibling = q(name="regions", population="a", dimensions=["customers__regions__name"],
+                    metrics=[m("sum(n)", "nn")])
+        root = q(population="regions", metrics=[m("sum(nn)", "t")])
+        async with shop(dialect) as engine:
+            resp = await engine.execute([a, sibling, root])
+        assert [float(v) for v in resp.data[0].values()] == [7.0]

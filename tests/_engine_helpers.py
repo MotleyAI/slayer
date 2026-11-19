@@ -367,7 +367,7 @@ def plan_as_producer(*, query: SlayerQuery, bundle):
     """Compile ``query`` through the producer entry (``compile_synthesized``), with no
     inherited population."""
     scope = resolve_scope(bundle=bundle)
-    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
+    prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
     return stages.compile_synthesized(
         prebound, source_dataset=query.population if isinstance(query.population, str) else None,
         bundle=bundle, scope=scope, stage_schemas={},

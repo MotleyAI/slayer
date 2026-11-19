@@ -53,10 +53,7 @@ def elaborate_query(
     if scope is None:
         scope = resolve_scope(bundle=bundle)
     if prebound is None:
-        prebound = bind_query_inputs(
-            query=query, bundle=bundle, scope=scope,
-            stage_schemas=stage_schemas,
-        )
+        prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
     if scope.population is not None:
         datasets = bundle.datasets_by_name
         with unobserved():
