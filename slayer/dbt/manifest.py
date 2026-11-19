@@ -50,7 +50,7 @@ def _run_dbt_parse(project_path: str) -> bool:
         return False
     if dbtRunner is None:
         try:
-            from dbt.cli.main import dbtRunner as _dbtRunner  # type: ignore[import-not-found]
+            from dbt.cli.main import dbtRunner as _dbtRunner  # type: ignore[import-not-found]  # ALLOW(import-not-top): optional heavy dependency; a top-level import costs ~4s on every slayer.dbt import
             dbtRunner = _dbtRunner
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("dbt-core import failed: %s", exc)

@@ -33,6 +33,6 @@ Gotcha: give every worker the carve-out table from the issue and design decision
 
 ## 6. Gate
 
-- [ ] 6.1 Run the local test scope (`la-affected-tests --base main`, plus `test_mcp_surface_budget.py`, the docs guards, the notebook harness and every message-pinning test touched in 4.4) and fix every failure.
-- [ ] 6.2 Verify that ruff, `la-typecheck` (no new errors, baseline not rewritten), `la-arch-check` and LikeC4 validation pass.
-- [ ] 6.3 Run the issue's word-boundary sweep for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `tests/`, `docs/` and `examples/`. Verify that every hit is a carve-out, an upgrade path, a back-compat test, `tests/perf/compare/`, a guard straggler, a DEV-2364 test identifier or test-data literal, or a test function or class name or test local.
+- [x] 6.1 Run the local test scope (`la-affected-tests --base main`, plus `test_mcp_surface_budget.py`, the docs guards, the notebook harness and every message-pinning test touched in 4.4) and fix every failure.
+- [x] 6.2 Verify that ruff, `la-typecheck` (no new errors, baseline not rewritten), `la-arch-check` and LikeC4 validation pass.
+- [x] 6.3 Run the issue's word-boundary sweep for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `tests/`, `docs/` and `examples/`. Verify that every hit is a carve-out, an upgrade path, a back-compat test, `tests/perf/compare/`, a guard straggler, a DEV-2364 test identifier or test-data literal, or a test function or class name or test local.
