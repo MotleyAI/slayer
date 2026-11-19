@@ -1005,8 +1005,8 @@ class TestTrinoIngestion:
         columns = {c.name: c for c in _ingested(trino_ingest_ds, "orders").fields}
         assert {name: c.datatype for name, c in columns.items()} == {
             "id": DataType.INTEGER, "customer_id": DataType.INTEGER, "quantity": DataType.INTEGER,
-            "amount": DataType.FLOAT, "price": DataType.FLOAT, "status": DataType.STRING,
-            "created_at": DataType.DATETIME, "created_tz": DataType.DATETIME,
+            "amount": DataType.FLOAT, "price": DataType.DECIMAL, "status": DataType.STRING,
+            "created_at": DataType.DATETIME, "created_tz": DataType.DATETIME_TZ,
             "order_date": DataType.DATE, "is_paid": DataType.BOOLEAN,
         }
         assert "DECIMAL" in (columns["price"].db_type or "").upper()

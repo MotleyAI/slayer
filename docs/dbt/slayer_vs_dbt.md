@@ -106,7 +106,7 @@ dbt filters require `{{ Dimension('entity__name') }}` syntax with entity resolut
 
 ### Explicit Relationships (Predictable)
 
-dbt's entity-based implicit join resolution is powerful but opaque — you must understand the entity graph to predict which tables will be joined. SLayer's explicit `join_pairs` are visible in the dataset definition.
+dbt's entity-based implicit join resolution is powerful but opaque — you must understand the entity graph to predict which tables will be joined. SLayer's explicit `from_columns` and `to_columns` are visible in the dataset definition.
 
 ### Query-as-Dataset (Multi-Stage Without New Concepts)
 

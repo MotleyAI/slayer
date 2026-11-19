@@ -46,6 +46,7 @@ from slayer.core.keys import (
 from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.core.granularity import Granularity, nests_into, resolve_granularity
 from slayer.core.query import (
+    FieldRef,
     QueryDimension,
     QueryMetric,
     SlayerQuery,
@@ -266,19 +267,27 @@ def _reject_metric_refs_in_order(
                     parsed, metric_names=metric_names, scope=scope, bundle=bundle,
                 ) else None,
             )
-        ref = item.ref
-        name = ref.name if ref is not None else None
-        check_raw_rows_order_metric_ref(
-            saved_name=name if name and name in metric_names else None,
-            source_name=source_name,
-        )
-        # A dotted ORDER BY field whose leaf is a saved metric on the terminal dataset is a metric ref too.
-        full = ref.full_name if ref is not None else None
-        check_raw_rows_order_metric_ref(
-            saved_dotted=full if full and "." in full and _resolve_saved_metric_ref(
-                scope=scope, bundle=bundle, expression=full,
-            ) is not None else None,
-        )
+        if item.ref is not None:
+            _reject_metric_ref_in_order_ref(
+                ref=item.ref, metric_names=metric_names, source_name=source_name, scope=scope, bundle=bundle,
+            )
+
+
+def _reject_metric_ref_in_order_ref(
+    *, ref: FieldRef, metric_names: FrozenSet[str], source_name: Optional[str], scope, bundle: ResolvedSourceBundle,
+) -> None:
+    name = ref.name
+    check_raw_rows_order_metric_ref(
+        saved_name=name if name and name in metric_names else None,
+        source_name=source_name,
+    )
+    # A dotted ORDER BY field whose leaf is a saved metric on the terminal dataset is a metric ref too.
+    full = ref.full_name
+    check_raw_rows_order_metric_ref(
+        saved_dotted=full if full and "." in full and _resolve_saved_metric_ref(
+            scope=scope, bundle=bundle, expression=full,
+        ) is not None else None,
+    )
 
 
 def _map_bound_keys(

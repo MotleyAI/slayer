@@ -813,6 +813,25 @@ class SourceDatasetOrigin(BaseModel):
         self.agg_field_names = value
 
 
+def check_relationship_key_lists(*, to: str, from_columns: Sequence[str], to_columns: Sequence[str]) -> None:
+    """Raise ``RelationshipKeyError`` unless the key lists are non-empty, of equal length, and valid field names."""
+    if not from_columns and not to_columns:
+        raise RelationshipKeyError(
+            summary=f"relationship to {to!r} has empty from_columns and to_columns",
+            suggestion="to combine a dataset no relationship path reaches, drop the relationship and aggregate "
+                       "its fields in the query (e.g. count(events.id) / count(*))",
+        )
+    if len(from_columns) != len(to_columns):
+        raise RelationshipKeyError(
+            summary=f"relationship to {to!r} has {len(from_columns)} from_columns and {len(to_columns)} to_columns",
+            suggestion="list one to_columns entry per from_columns entry, in pair order",
+        )
+    for key in (*from_columns, *to_columns):
+        if not key:
+            raise RelationshipKeyError(summary=f"relationship to {to!r} has an empty key field name")
+        _validate_field_name(key, "Relationship key")
+
+
 class DatasetRelationship(DatasetPart):
     """A relationship to another dataset."""
     to: str                               # Name of the joined dataset
@@ -864,22 +883,7 @@ class DatasetRelationship(DatasetPart):
 
     @model_validator(mode="after")
     def _check_key_lists(self) -> "DatasetRelationship":
-        if not self.from_columns and not self.to_columns:
-            raise RelationshipKeyError(
-                summary=f"relationship to {self.to!r} has empty from_columns and to_columns",
-                suggestion="to combine a dataset no relationship path reaches, drop the relationship and aggregate "
-                           "its fields in the query (e.g. count(events.id) / count(*))",
-            )
-        if len(self.from_columns) != len(self.to_columns):
-            raise RelationshipKeyError(
-                summary=f"relationship to {self.to!r} has {len(self.from_columns)} from_columns and "
-                        f"{len(self.to_columns)} to_columns",
-                suggestion="list one to_columns entry per from_columns entry, in pair order",
-            )
-        for key in (*self.from_columns, *self.to_columns):
-            if not key:
-                raise RelationshipKeyError(summary=f"relationship to {self.to!r} has an empty key field name")
-            _validate_field_name(key, "Relationship key")
+        check_relationship_key_lists(to=self.to, from_columns=self.from_columns, to_columns=self.to_columns)
         return self
 
     @property

@@ -1459,7 +1459,9 @@ def _scalar_temporal_type(key: ScalarCallKey, *, field_type: FieldTypeFn) -> Opt
     if key.name == "nullif" and not _is_null_arg(key.args[0]):
         return types[0]
     stamps = {t for t in types if kind_of(t) is TypeKind.TIMESTAMP}
-    return (stamps.pop() if len(stamps) == 1 else DataType.DATETIME) if stamps else DataType.DATE
+    if not stamps:
+        return DataType.DATE
+    return stamps.pop() if len(stamps) == 1 else DataType.DATETIME
 
 
 # Aggregations whose value is one of their (boolean) inputs.

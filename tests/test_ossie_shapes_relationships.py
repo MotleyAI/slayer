@@ -133,6 +133,11 @@ class TestEdgeReference:
         assert RelationshipEdgeRef(to="parts", from_columns=["b", "a"], to_columns=["y", "x"]).matches(rel)
         assert not RelationshipEdgeRef(to="parts", from_columns=["a", "b"], to_columns=["y", "x"]).matches(rel)
 
+    @pytest.mark.parametrize(("from_columns", "to_columns"), [(["a", "b"], ["x"]), ([], [])], ids=["unequal", "empty"])
+    def test_an_edge_reference_refuses_malformed_key_lists(self, from_columns: list[str], to_columns: list[str]) -> None:
+        with pytest.raises((ValidationError, RelationshipKeyError)):
+            RelationshipEdgeRef(to="parts", from_columns=from_columns, to_columns=to_columns)
+
 
 class TestOrderKept:
     async def test_the_join_condition_pairs_in_order(self) -> None:

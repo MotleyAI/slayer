@@ -370,14 +370,14 @@ class TestMeasureTypeInference:
     """get_result_column_types infers column types via LIMIT 0 against a real DB."""
 
     async def test_infers_numeric_types(self, env: InspectEnv) -> None:
-        """amount (REAL) infers as DOUBLE and quantity (INTEGER) as INT."""
+        """amount (REAL) infers as Float and quantity (INTEGER) as Integer."""
         engine = env["engine"]
         types = await engine.get_result_column_types(dataset_name="orders")
         assert types["amount"].type == DataType.FLOAT
         assert types["quantity"].type == DataType.INTEGER
 
     async def test_string_measure_inferred(self, tmp_path) -> None:
-        """A TEXT column infers as TEXT."""
+        """A TEXT column infers as String."""
         db_path = tmp_path / "types.db"
         with transaction(str(db_path)) as conn:
             conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, label TEXT, price REAL)")
@@ -411,7 +411,7 @@ class TestMeasureTypeInference:
         result = content[0].text
         columns_section = result.split("## Fields")[1].split("##")[0]
         assert "| datatype |" in columns_section
-        assert "DOUBLE" in columns_section
+        assert "Float" in columns_section
 
     async def test_measure_sampled_shows_min_max(self, env: InspectEnv) -> None:
         """Measures with data show min .. max in the sampled column."""

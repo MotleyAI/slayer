@@ -23,7 +23,9 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 from typing_extensions import deprecated
 
-from slayer.core.enums import DataType, NUMERIC_DATATYPES, TEMPORAL_DATATYPES, pre_2_0_datatype, stored_datatype
+from slayer.core.enums import (
+    DataType, NUMERIC_DATATYPES, PRE_2_0_DATATYPES, TEMPORAL_DATATYPES, pre_2_0_datatype, stored_datatype,
+)
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
@@ -174,7 +176,7 @@ class RetypeFinding(BaseModel):
                 for k, v in data.items()}
         for key, db_type in (("stored_type", None), ("live_type", data.get("live_db_type"))):
             value = data.get(key)
-            if isinstance(value, str) and stored_datatype(value) is not None and value not in DataType:
+            if isinstance(value, str) and value in PRE_2_0_DATATYPES and stored_datatype(value) is not None:
                 data = {**data, key: pre_2_0_datatype(value, db_type=db_type)}
         if "remedy_kind" in data:
             return data

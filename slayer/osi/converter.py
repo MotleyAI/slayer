@@ -64,9 +64,6 @@ from slayer.osi.source import ParsedSource, parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
 
-_TIME_DIMENSION_TYPES = (DataType.DATE, DataType.DATETIME)
-
-
 def _typed_field(*, name: str, data_type: DataType, sql: str | None = None, element: DataType | None = None,
                   hidden: bool = False, db_type: str | None = None) -> DatasetField:
     """A field of a probed type, narrowed by its database type; a list's elements are ``element``, else Opaque (a
@@ -141,7 +138,7 @@ def _is_time_role(field: OSIField) -> bool:
 def _first_time_dimension(dataset: SlayerDataset) -> str | None:
     return next(
         (c.name for c in dataset.fields
-         if (c.meta or {}).get("osi_is_time") and c.datatype in _TIME_DIMENSION_TYPES),
+         if (c.meta or {}).get("osi_is_time") and c.datatype is not None and c.datatype.is_temporal),
         None,
     )
 

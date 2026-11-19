@@ -290,7 +290,7 @@ def _renamed(data: Any, table: Mapping[str, str], spellings: Spellings) -> Any:
     return spellings.rename(data, table) if isinstance(data, dict) else data
 
 
-def _datatype_replacement(old: str, new: DataType) -> str:
+def _datatype_replacement(new: DataType) -> str:
     """How a pre-2.0 datatype value's replacement reads: its two values when the database type splits it."""
     if new in (DataType.DECIMAL, DataType.FLOAT):
         return "Float (Decimal for an exact numeric database type)"
@@ -307,7 +307,7 @@ def _datatype(data: dict[str, Any], key: str, spellings: Spellings, *, db_type: 
     new = pre_2_0_datatype(value, db_type=db_type if isinstance(db_type, str) else None)
     if new is None:
         return {k: v for k, v in data.items() if k != key}
-    spellings.note(value, _datatype_replacement(value, new))
+    spellings.note(value, _datatype_replacement(new))
     return {**data, key: new.value}
 
 
@@ -368,7 +368,7 @@ def _reference_text(data: dict[str, Any]) -> Any:
     name, model = data.get("name"), data.get("model")
     if not isinstance(name, str) or not (model is None or isinstance(model, str)):
         return name
-    parts = [*(model.split(".") if model else ()), *name.split(".")] if model else name.split(".")
+    parts = [*model.split("."), *name.split(".")] if model else name.split(".")
     quoted = data.get("quoted")
     flags = quoted if isinstance(quoted, list) and len(quoted) == len(parts) else [False] * len(parts)
     if set(data) != {"name"}:

@@ -11,7 +11,9 @@ from slayer.core.enums import RelationshipCardinality, JoinType, invert_cardinal
 from slayer.core.errors import QueryExtensionError
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, orient_relationship
 from slayer.core import vocabulary
-from slayer.core.models import DatasetRelationship, SlayerDataset, _check_relationship_keys, _validate_dataset_name
+from slayer.core.models import (
+    DatasetRelationship, SlayerDataset, _check_relationship_keys, _validate_dataset_name, check_relationship_key_lists,
+)
 
 __all__ = [
     "EdgeMerge",
@@ -43,6 +45,11 @@ class RelationshipEdgeRef(BaseModel):
     @classmethod
     def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler[RelationshipEdgeRef]) -> RelationshipEdgeRef:
         return vocabulary.converted_input(data, handler, vocabulary.relationship, stored=False)
+
+    @model_validator(mode="after")
+    def _check_key_lists(self) -> RelationshipEdgeRef:
+        check_relationship_key_lists(to=self.to, from_columns=self.from_columns, to_columns=self.to_columns)
+        return self
 
     @property
     def column_pairs(self) -> list[tuple[str, str]]:

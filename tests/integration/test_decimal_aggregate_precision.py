@@ -31,7 +31,7 @@ async def decimal_engine(tmp_path):
     model = next(model for model in models if model.name == "orders")
     amount = model.get_field("amount")
     assert amount is not None
-    assert amount.datatype is DataType.FLOAT
+    assert amount.datatype is DataType.DECIMAL
     assert amount.db_type == "DECIMAL(18,2)"
 
     await storage.save_datasource(datasource)

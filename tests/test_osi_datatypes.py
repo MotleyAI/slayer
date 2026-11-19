@@ -93,6 +93,13 @@ def test_role_defaulted_from_datatype(db: Path) -> None:
     assert by_name(result)["orders"].default_time_dimension == "ordered_on"
 
 
+def test_zoned_datetime_role_defaulted_from_datatype(db: Path) -> None:
+    result = convert(db=db, docs=documents(_orders(f("ordered_at", datatype="DateTimeTz"))))
+    orders = by_name(result)["orders"]
+    assert cols(orders)["ordered_at"].datatype == DataType.DATETIME_TZ
+    assert orders.default_time_dimension == "ordered_at"
+
+
 def test_explicit_opt_out(db: Path) -> None:
     field = f("ordered_at", datatype="DateTime", dimension={"is_time": False})
     result = convert(db=db, docs=documents(_orders(field)))
