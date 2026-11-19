@@ -26,6 +26,7 @@ from slayer.sql.dialects.reflection import (
 )
 
 ch_types = pytest.importorskip("clickhouse_sqlalchemy.types")
+ch_base = pytest.importorskip("clickhouse_sqlalchemy.drivers.base")
 
 
 @pytest.fixture(autouse=True)
@@ -218,6 +219,7 @@ class _InspectorClient(DelegatingSqlClient):
 
 async def _introspect_columns(columns):
     inspector = MagicMock()
+    inspector.dialect = ch_base.ClickHouseDialect()
     inspector.get_columns.return_value = columns
     inspector.get_pk_constraint.return_value = {"constrained_columns": []}
     results = await _introspect_table_columns(

@@ -439,8 +439,16 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
     return DataType.STRING
 
 
-def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
-    """Best-effort raw database type string for ``Column.db_type`` (never raises)."""
+def _raw_db_type_str(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str | None:
+    """Best-effort raw database type string for ``Column.db_type``, spelled by ``sa_dialect`` when given (never raises)."""
+    if sa_dialect is not None:
+        try:
+            compiled = str(sa_type.compile(dialect=sa_dialect)).strip()
+        except Exception:  # noqa: BLE001 — a type its dialect cannot spell keeps the generic form
+            logger.debug("type %r does not compile on %s", sa_type, sa_dialect.name)
+            compiled = ""
+        if compiled:
+            return compiled
     try:
         text = str(sa_type).strip()
     except Exception:
@@ -494,7 +502,7 @@ def column_from_sa_type(
             name=name, type=data_type, element_type=element_type, db_type=list_type,
             comment=clean_comment(comment), type_name=list_type, quoted=getattr(name, "quote", None) is True,
         )
-    type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
+    type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type), sa_dialect=sa_dialect)
     lossy = data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(
         sa_type, json_types=json_types,
     ) or type(sa_type).__name__.upper() in zoned_types

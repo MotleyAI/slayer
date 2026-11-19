@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy.dialects import oracle, postgresql
 
 from slayer.core.enums import DataType, type_display
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.render import render_field_text
+from slayer.sql.dialects.reflection import column_from_sa_type
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._deprecated_input_helpers import deprecations, payload_of, recorded
 from tests._dev1737_fixtures import CUSTOMERS, ORDERS, seed_backend
@@ -211,6 +213,24 @@ async def test_ingestion_assigns_the_finer_type(tmp_path: Path) -> None:
     types = {f.name: f.datatype.value for f in dataset.fields}
     assert types == {"id": "Integer", "price": "Decimal", "ratio": "Float", "at": "DateTimeTz", "ts": "DateTime",
                      "d": "Date"}
+
+
+@pytest.mark.parametrize(("sa_type", "sa_dialect", "expected"), [
+    pytest.param(postgresql.TIMESTAMP(timezone=True), postgresql.dialect(), DataType.DATETIME_TZ, id="postgres-zoned"),
+    pytest.param(postgresql.TIMESTAMP(), postgresql.dialect(), DataType.DATETIME, id="postgres-naive"),
+    pytest.param(oracle.TIMESTAMP(timezone=True), oracle.dialect(), DataType.DATETIME_TZ, id="oracle-zoned"),
+])
+def test_inspector_columns_narrow_by_the_dialects_type_name(sa_type: Any, sa_dialect: Any, expected: DataType) -> None:
+    assert column_from_sa_type(name="at", sa_type=sa_type, sa_dialect=sa_dialect).narrowed_type is expected
+
+
+@pytest.mark.parametrize(("zoned", "expected"), [(True, DataType.DATETIME_TZ), (False, DataType.DATETIME)])
+def test_trino_inspector_columns_narrow_by_zone(zoned: bool, expected: DataType) -> None:
+    trino_types = pytest.importorskip("trino.sqlalchemy.datatype")
+    trino_dialect = pytest.importorskip("trino.sqlalchemy.dialect")
+    column = column_from_sa_type(name="at", sa_type=trino_types.TIMESTAMP(6, timezone=zoned),
+                                 sa_dialect=trino_dialect.TrinoDialect())
+    assert column.narrowed_type is expected
 
 
 async def test_drift_reports_the_finer_live_type(tmp_path: Path) -> None:
