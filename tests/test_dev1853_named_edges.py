@@ -61,7 +61,7 @@ class TestNamesAreDirectionAgnostic:
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
             "dimensions": ["name"],
-            "metrics": [{"expression": "sum(billing_customer.amount)", "name": "b"}],
+            "metrics": [{"metric": "sum(billing_customer.amount)", "alias": "b"}],
         }))
         got = {r["customers.name"]: r["customers.b"] for r in resp.data}
         assert got == PARALLEL_BILLING_AMOUNTS
@@ -74,7 +74,7 @@ class TestNamedTerminalMetadata:
             "time_dimensions": [TimeDimension(
                 field="billing_customer.signup_at",
                 granularity=TimeGranularity.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "t"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "t"}],
             "order": [{"field": "billing_customer.signup_at",
                     "direction": "asc"}],
         }))
@@ -95,8 +95,8 @@ class TestNamedTerminalMetadata:
     ) -> None:
         resp = await named_engine.execute(SlayerQuery(
             population="orders", dimensions=["billing_customer.tier"],
-            metrics=[{"expression": "sum(billing_customer.spend)",
-                       "name": "cs"}]))
+            metrics=[{"metric": "sum(billing_customer.spend)",
+                       "alias": "cs"}]))
         got = {r["orders.billing_customer.tier"]: r["orders.cs"]
                for r in resp.data}
         assert got == PARALLEL_REROOT_BY_TIER
@@ -107,9 +107,9 @@ class TestNamedEdgeInRankedProducer:
     async def test_last_transform_over_the_named_edge(self, named_engine) -> None:
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
-            metrics=[{"expression":
+            metrics=[{"metric":
                        "last(billing_customer.spend, billing_customer.signup_at)",
-                       "name": "l"}]))
+                       "alias": "l"}]))
         assert len(resp.data) == 1
         assert resp.data[0]["orders.l"] == \
             pytest.approx(PARALLEL_LAST_SPEND_BY_SIGNUP)
@@ -143,9 +143,9 @@ class TestNamedEdgeValidationConsumers:
         assert cust is not None
         cust.fields = [*cust.fields, DatasetField(
             name="gold_spend", sql="spend", filter="tier = 'gold'",
-            datatype=DataType.DOUBLE), DatasetField(
-            name="tier_uc", sql="UPPER(tier)", datatype=DataType.TEXT), DatasetField(
-            name="signup_day", sql="signup_at", datatype=DataType.TIMESTAMP)]
+            datatype=DataType.FLOAT), DatasetField(
+            name="tier_uc", sql="UPPER(tier)", datatype=DataType.STRING), DatasetField(
+            name="signup_day", sql="signup_at", datatype=DataType.DATETIME)]
         for col in cust.fields:
             if col.name == "spend":
                 col.allowed_aggregations = ["sum"]
@@ -159,8 +159,8 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
-            metrics=[{"expression": "sum(billing_customer.gold_spend)",
-                       "name": "g"}]))
+            metrics=[{"metric": "sum(billing_customer.gold_spend)",
+                       "alias": "g"}]))
         # Gold customers only (Alice 100 + Cara 60), not the full 310.
         assert resp.data[0]["orders.g"] == 160.0
 
@@ -170,7 +170,7 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "avg(billing_customer.spend)", "name": "a"}],
+            "metrics": [{"metric": "avg(billing_customer.spend)", "alias": "a"}],
         })
         with pytest.raises(AggregationNotAllowedError):
             await named_engine.execute(query)
@@ -181,7 +181,7 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "billing_customer.total_b", "name": "r"}]})
+            "metrics": [{"metric": "billing_customer.total_b", "alias": "r"}]})
         # A second ``orders`` occurrence over every order (10 + 20 + 30), as from ``customers``.
         resp = await named_engine.execute(query)
         assert resp.data[0]["orders.r"] == 60.0
@@ -204,7 +204,7 @@ class TestNamedEdgeValidationConsumers:
             "time_dimensions": [TimeDimension(
                 field="billing_customer.signup_day",
                 granularity=TimeGranularity.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "t"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "t"}],
         }))
         months = {str(r["orders.billing_customer.signup_day"])[:7]: r["orders.t"]
                   for r in resp.data}
@@ -217,7 +217,7 @@ class TestNamedEdgeValidationConsumers:
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)", "name": "t"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "t"}],
             "order": [{"field": "billing_customer.name", "direction": "desc"}],
         }))
         # Desc by each group's max billing name: ok (Bob) before new (Alice).

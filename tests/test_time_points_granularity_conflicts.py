@@ -10,10 +10,10 @@ from tests._time_points_fixtures import ev_dataset, tp_engine
 
 async def test_two_spellings_of_one_column_warn() -> None:
     model = ev_dataset(name="ev_buyer", table="ev").model_copy(update={"relationships": [
-        DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], name="buyer"),
+        DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], name="buyer"),
     ]})
     query = SlayerQuery.model_validate({
-        "population": "ev_buyer", "metrics": [{"expression": "count(*)", "name": "n"}],
+        "population": "ev_buyer", "metrics": [{"metric": "count(*)", "alias": "n"}],
         "time_dimensions": [
             {"field": "buyer.created_at", "granularity": "week"},
             {"field": "customers.created_at", "granularity": "month"},

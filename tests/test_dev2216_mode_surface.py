@@ -11,12 +11,12 @@ from xdist.remote import serialize_warning_message
 from xdist.workermanage import unserialize_warning_message
 
 from slayer.core.errors import BroadcastGrainWarning
-from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
+from slayer.core.query import QueryMetric, QueryRefinement, SlayerQuery, refine_query
 from slayer.core.warnings import DICE_SLICE_HINT, BroadcastDimension, BroadcastGrainWarningPayload
 from slayer.usage_reporting.features import query_features
-from tests._dev1841_fixtures import DatasetMetric, make_exec_engine
+from tests._dev1841_fixtures import make_exec_engine
 
-LAST = DatasetMetric(expression="last(customers.spend, customers.signup_at)", name="ls")
+LAST = QueryMetric(metric="last(customers.spend, customers.signup_at)", alias="ls")
 
 
 def _saved(**kw) -> SlayerQuery:

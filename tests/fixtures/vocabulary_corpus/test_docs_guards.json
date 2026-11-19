@@ -24,8 +24,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -52,16 +52,16 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "cumsum(sum(revenue))"
    },
    "new": {
-    "expression": "cumsum(sum(revenue))"
+    "metric": "cumsum(sum(revenue))"
    }
   },
   {
-   "kind": "metric",
+   "kind": "aggregation",
    "old": {
     "name": "wavg",
     "formula": "SUM({value})",

@@ -24,12 +24,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "Target.aov"
    },
    "new": {
-    "expression": "Target.aov"
+    "metric": "Target.aov"
    }
   },
   {
@@ -168,7 +168,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -193,27 +193,27 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "Consumer.aov"
    },
    "new": {
-    "expression": "Consumer.aov"
+    "metric": "Consumer.aov"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "Subscription.Customer.Consumer.aov"
    },
    "new": {
-    "expression": "Subscription.Customer.Consumer.aov"
+    "metric": "Subscription.Customer.Consumer.aov"
    }
   },
   {
@@ -236,7 +236,7 @@
     ],
     "metrics": [
      {
-      "expression": "Consumer.aov"
+      "metric": "Consumer.aov"
      }
     ]
    }
@@ -261,7 +261,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -280,7 +280,7 @@
     "population": "qb",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -306,8 +306,8 @@
     ],
     "metrics": [
      {
-      "expression": "Consumer.aov",
-      "name": "a"
+      "metric": "Consumer.aov",
+      "alias": "a"
      }
     ]
    }
@@ -326,7 +326,7 @@
     "population": "qb",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -353,7 +353,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -378,7 +378,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -403,7 +403,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }

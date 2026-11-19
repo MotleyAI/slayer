@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
 from slayer.database.client import SlayerSQLClient
@@ -139,7 +139,7 @@ class TestIngestDanglingRefCleanup:
         # drop the column to make the query stale.
         attached = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         await storage.save_memory(
             learning="x",
@@ -176,4 +176,4 @@ class TestIngestDanglingRefCleanup:
         assert reloaded.query is not None
         assert reloaded.query.population == "orders"
         assert reloaded.query.metrics is not None
-        assert reloaded.query.metrics[0].expression == "sum(amount)"
+        assert reloaded.query.metrics[0].metric == "sum(amount)"

@@ -18,36 +18,36 @@ from slayer.core.keys import (
 
 
 class TestBranchTypeJoin:
-    @pytest.mark.parametrize("t", [DataType.INT, DataType.TEXT, DataType.BOOLEAN,
-                                   DataType.DATE, DataType.TIMESTAMP, DataType.DOUBLE])
+    @pytest.mark.parametrize("t", [DataType.INTEGER, DataType.STRING, DataType.BOOLEAN,
+                                   DataType.DATE, DataType.DATETIME, DataType.FLOAT])
     def test_identical_types_pass_through(self, t: DataType) -> None:
         assert join_conditional_branch_types(t, t) == t
 
     @pytest.mark.parametrize("a,b", [
-        (DataType.INT, DataType.DOUBLE),
-        (DataType.DOUBLE, DataType.INT),
+        (DataType.INTEGER, DataType.FLOAT),
+        (DataType.FLOAT, DataType.INTEGER),
     ])
     def test_numeric_mix_widens_to_double(self, a: DataType, b: DataType) -> None:
-        assert join_conditional_branch_types(a, b) == DataType.DOUBLE
+        assert join_conditional_branch_types(a, b) == DataType.FLOAT
 
     @pytest.mark.parametrize("a,b,joined", [
-        (DataType.BOOLEAN, DataType.DOUBLE, DataType.DOUBLE),
-        (DataType.INT, DataType.BOOLEAN, DataType.INT),
+        (DataType.BOOLEAN, DataType.FLOAT, DataType.FLOAT),
+        (DataType.INTEGER, DataType.BOOLEAN, DataType.INTEGER),
     ])
     def test_boolean_beside_a_number_is_its_integer(self, a: DataType, b: DataType, joined: DataType) -> None:
         assert join_conditional_branch_types(a, b) == joined
 
-    @pytest.mark.parametrize("other", [DataType.INT, DataType.TEXT, DataType.DATE])
+    @pytest.mark.parametrize("other", [DataType.INTEGER, DataType.STRING, DataType.DATE])
     def test_null_branch_is_absorbed(self, other: DataType) -> None:
         # ``None`` marks a NULL-literal branch; it takes the other branch's type.
         assert join_conditional_branch_types(other, None) == other
         assert join_conditional_branch_types(None, other) == other
 
     @pytest.mark.parametrize("a,b", [
-        (DataType.INT, DataType.TEXT),
-        (DataType.TEXT, DataType.INT),   # both orders
-        (DataType.DATE, DataType.INT),
-        (DataType.BOOLEAN, DataType.TEXT),
+        (DataType.INTEGER, DataType.STRING),
+        (DataType.STRING, DataType.INTEGER),   # both orders
+        (DataType.DATE, DataType.INTEGER),
+        (DataType.BOOLEAN, DataType.STRING),
     ])
     def test_incomparable_mix_raises_naming_both(self, a: DataType, b: DataType) -> None:
         with pytest.raises(ValueError) as ei:

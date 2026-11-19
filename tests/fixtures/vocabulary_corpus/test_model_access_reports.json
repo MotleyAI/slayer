@@ -16,8 +16,8 @@
     "population": "pub",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -47,8 +47,8 @@
     "population": "fin",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "spend"
+      "metric": "sum(amount)",
+      "alias": "spend"
      }
     ],
     "order": [
@@ -78,8 +78,8 @@
     "population": "fin",
     "dimensions": [
      {
-      "expression": "amount * 2",
-      "name": "dbl"
+      "field": "amount * 2",
+      "alias": "dbl"
      }
     ]
    }

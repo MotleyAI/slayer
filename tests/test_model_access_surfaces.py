@@ -200,22 +200,22 @@ class TestSearch:
 
 class TestQueries:
     async def test_visible_model_queries_normally(self, pair: Pair) -> None:
-        kind, text = await engine_outcome(pair.fin, {"population": "fin", "metrics": [{"expression": "sum(amount)", "name": "total"}]})
+        kind, text = await engine_outcome(pair.fin, {"population": "fin", "metrics": [{"metric": "sum(amount)", "alias": "total"}]})
         assert kind == "ok"
         assert str(LEDGER_TOTAL) in text
 
     @pytest.mark.parametrize("query", [
-        {"population": "hr", "metrics": [{"expression": "count(*)"}]},
-        {"population": "hr_summary", "metrics": [{"expression": "sum(total)"}]},
-        {"population": "pay", "metrics": [{"expression": "sum(gross)"}]},
-        {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(amount)"}]},
-        {"population": "fin", "metrics": [{"expression": "sum(hr.salary)"}]},
-        {"population": "fin", "metrics": [{"expression": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
+        {"population": "hr", "metrics": [{"metric": "count(*)"}]},
+        {"population": "hr_summary", "metrics": [{"metric": "sum(total)"}]},
+        {"population": "pay", "metrics": [{"metric": "sum(gross)"}]},
+        {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"metric": "sum(amount)"}]},
+        {"population": "fin", "metrics": [{"metric": "sum(hr.salary)"}]},
+        {"population": "fin", "metrics": [{"metric": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
         {"population": "fin",
-         "extensions": [{"source_name": "fin", "relationships": [{"to": "hr", "join_pairs": [["staff_id", "id"]]}]}],
+         "extensions": [{"dataset": "fin", "relationships": [{"to": "hr", "from_columns": ["staff_id"], "to_columns": ["id"]}]}],
          "dimensions": ["hr.dept"]},
-        {"population": "fin", "dimensions": ["dept"], "metrics": [{"expression": "sum(amount)"}]},
-        {"population": "fin", "dimensions": ["hrr.dept"], "metrics": [{"expression": "sum(amount)"}]},
+        {"population": "fin", "dimensions": ["dept"], "metrics": [{"metric": "sum(amount)"}]},
+        {"population": "fin", "dimensions": ["hrr.dept"], "metrics": [{"metric": "sum(amount)"}]},
         {"population": "pub_link", "dimensions": ["salary"]},
         {"dimensions": ["hr.dept"]},
         {"dimensions": ["fin.id", "hr.dept"]},
@@ -297,7 +297,7 @@ class TestBareNameAmbiguity:
             for ds, tags in (("east", []), ("west", ["hr"])):
                 await storage.save_dataset(SlayerDataset(
                     name="shared", sql_table="t", data_source=ds, access_tags=tags,
-                    fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                    fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
                 ), _validate=False)
             yield storage
 

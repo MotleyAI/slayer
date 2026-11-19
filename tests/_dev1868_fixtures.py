@@ -120,9 +120,9 @@ def daily_dataset() -> SlayerDataset:
         name="daily", data_source="test", sql_table="daily",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
     )
 

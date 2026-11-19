@@ -29,15 +29,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "a",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      }
     ]
@@ -80,15 +80,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "a",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      }
     ]
@@ -131,15 +131,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "a",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      }
     ]
@@ -171,15 +171,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "b",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      }
     ]
@@ -202,15 +202,15 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "relationships": [
      {
       "to": "a",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      }
     ]
@@ -322,11 +322,11 @@
    },
    "new": {
     "to": "a",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -377,15 +377,15 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders",
+      "dataset": "orders",
       "relationships": [
        {
         "to": "a",
-        "join_pairs": [
-         [
-          "id",
-          "id"
-         ]
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "id"
         ]
        }
       ]

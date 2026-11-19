@@ -15,7 +15,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }

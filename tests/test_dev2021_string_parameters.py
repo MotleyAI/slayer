@@ -16,8 +16,8 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.errors import UnanalyzableAggregationParameterError
-from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -67,19 +67,19 @@ _LABEL = Aggregation(name="lbl", expression="MAX(CASE WHEN {value} > 0 THEN '{n}
 def _datasets(*aggs: Aggregation) -> list[SlayerDataset]:
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="region_id", datatype=DataType.INT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="region_id", datatype=DataType.INTEGER)],
     )
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.INTEGER),
             DatasetField(name="created_at", datatype=DataType.DATE),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         aggregations=list(aggs),
     )
     return [customers, orders]
@@ -106,7 +106,7 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def _q(expression: str, **extra: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": expression, "name": "m"}], **extra})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": expression, "alias": "m"}], **extra})
 
 
 async def _value(engine: SlayerQueryEngine, expression: str) -> float:
@@ -175,8 +175,8 @@ class TestQuotedPlaceholder:
     async def test_a_mode_b_string_literal_cannot_escape_the_literal(self, dialect: str) -> None:
         orders = _datasets(_LABEL)[1]
         sql = await _engine_generate(
-            query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=f"lbl(amount, n={_MODE_B_LITERAL})",
-                                                                            name="m")]),
+            query=SlayerQuery(population="orders", metrics=[QueryMetric(metric=f"lbl(amount, n={_MODE_B_LITERAL})",
+                                                                            alias="m")]),
             dataset=orders, dialect=dialect, extra_datasets=[_datasets()[0]],
         )
         case = sqlglot.parse_one(sql, read=dialect).find(exp.Case)

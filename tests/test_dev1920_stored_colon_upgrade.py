@@ -14,7 +14,7 @@ import pytest
 
 from slayer.core.errors import GranularityCallError, NameCollisionError
 from slayer.core.models import SlayerDataset
-from slayer.core.query import ComputedDimension, SlayerQuery, computed_dimension_name
+from slayer.core.query import SlayerQuery, computed_dimension_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -132,7 +132,7 @@ QUERY_POSITIONS = [
                  [{"column": "rank(sum(amount), direction='desc')"}], id="order-expression"),
     pytest.param("order", [{"amount:sum": "desc"}], [{"sum(amount)": "desc"}], id="order-shorthand"),
     pytest.param("source_model", {"source_name": "orders", "measures": [{"name": "m", "formula": "amount:sum"}]},
-                 {"source_name": "orders", "metrics": [{"name": "m", "expression": "sum(amount)"}]},
+                 {"dataset": "orders", "metrics": [{"name": "m", "expression": "sum(amount)"}]},
                  id="model-extension-measure"),
 ]
 
@@ -148,7 +148,7 @@ class TestQueryPositions:
             name="rev_q", stage=stored_query(measures=[{"name": "rev", "formula": "amount:sum"}],
                                              filters=["*:count > 1"])))
         [stage] = model.source_queries or []
-        assert [m.expression for m in stage.metrics or []] == ["sum(amount)"]
+        assert [m.metric for m in stage.metrics or []] == ["sum(amount)"]
         assert stage.filter == ["count(*) > 1"]
 
 
@@ -179,8 +179,8 @@ class TestExecution:
         by_fiscal = _stored(measures=["sum(amount)"], dimensions=[
             {"name": "created_at_fiscal_quarter", "expression": "created_at:fiscal_quarter"}])
         [dim] = by_fiscal.dimensions or []
-        assert isinstance(dim, ComputedDimension)
-        assert dim.expression == "fiscal_quarter(created_at)"
+        assert dim.ref is None
+        assert dim.field == "fiscal_quarter(created_at)"
         with pytest.raises(GranularityCallError, match=re.escape("date_trunc('fiscal_quarter', created_at)")):
             await run(storage, by_fiscal)
 
@@ -214,14 +214,14 @@ RECORDED_KEYS = [
 class TestKeysAndNames:
     def test_names_kept_and_still_automatic(self) -> None:
         query = _stored(dimensions=KEYED_DIMENSIONS)
-        dims = [d for d in query.dimensions or [] if isinstance(d, ComputedDimension)]
-        assert [d.name for d in dims] == [d["name"] for d in KEYED_DIMENSIONS]
-        assert [d.expression for d in dims] == [
+        dims = [d for d in query.dimensions or [] if d.ref is None]
+        assert [d.alias for d in dims] == [d["name"] for d in KEYED_DIMENSIONS]
+        assert [d.field for d in dims] == [
             "sum(amount, partition_by=region)",
             "case when sum(amount, partition_by=customer_id) > 50 then 'high' else 'other' end",
             "sum(amount, partition_by=status)",
         ]
-        assert [d.name == computed_dimension_name(d.template) for d in dims] == [True, True, False]
+        assert [d.alias == computed_dimension_name(d.template) for d in dims] == [True, True, False]
 
     def test_names_survive_a_dump(self) -> None:
         query = _stored(dimensions=KEYED_DIMENSIONS)
@@ -252,7 +252,7 @@ class TestMemories:
         for _ in range(2):
             loaded = await storage.get_memory("m_rev")
             assert loaded.query is not None
-            assert [m.expression for m in loaded.query.metrics or []] == ["sum(amount)"]
+            assert [m.metric for m in loaded.query.metrics or []] == ["sum(amount)"]
             assert rows(await run(storage, loaded.query)) == [{"orders.rev": 150.0}]
         assert raw_documents(backend=backend, base=store_base(tmp_path, backend=backend))["memories/m_rev"] == before
 
@@ -284,8 +284,8 @@ class TestGranularityRename:
         expected = rows(await run(storage, fresh))
         for loaded in (stage, memory.query):
             dumped = loaded.model_dump()
-            assert (dumped["dimensions"], dumped["time_dimensions"]) == (
-                fresh.model_dump()["dimensions"], fresh.model_dump()["time_dimensions"])
+            assert (dumped.get("dimensions"), dumped.get("time_dimensions")) == (
+                fresh.model_dump().get("dimensions"), fresh.model_dump().get("time_dimensions"))
             assert rows(await run(storage, loaded)) == expected
 
 
@@ -311,7 +311,7 @@ def _messages(caplog: pytest.LogCaptureFixture) -> Generator[list[str]]:
 async def _assert_refused_unrewritten(storage: Any, payload: dict) -> None:
     """``payload`` keeps its colon text and fails with the colon-spelling error."""
     query = SlayerQuery.model_validate(payload)
-    assert [m.expression for m in query.metrics or []] == ["amount:sum"]
+    assert [m.metric for m in query.metrics or []] == ["amount:sum"]
     engine = SlayerQueryEngine(storage=storage)
     try:
         with pytest.raises(ValueError) as ei:

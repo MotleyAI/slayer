@@ -71,7 +71,7 @@
    "new": {
     "metrics": [
      {
-      "expression": "revenue",
+      "metric": "revenue",
       "label": "Rev"
      }
     ]

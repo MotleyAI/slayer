@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "warehouses",
-    "join_pairs": [
-     [
-      "warehouse_id",
-      "id"
-     ]
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -125,7 +125,7 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders",
+      "dataset": "orders",
       "metrics": [
        {
         "name": "discount",
@@ -257,7 +257,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -299,7 +299,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -341,7 +341,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }
@@ -374,11 +374,11 @@
    },
    "new": {
     "to": "audit",
-    "join_pairs": [
-     [
-      "audit_id",
-      "id"
-     ]
+    "from_columns": [
+     "audit_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -444,7 +444,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -465,7 +465,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -484,7 +484,7 @@
     "population": "stage_a",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }

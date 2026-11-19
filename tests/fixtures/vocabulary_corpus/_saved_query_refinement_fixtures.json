@@ -27,8 +27,8 @@
     "population": "per_customer",
     "metrics": [
      {
-      "expression": "avg(revenue)",
-      "name": "avg_revenue"
+      "metric": "avg(revenue)",
+      "alias": "avg_revenue"
      }
     ]
    }

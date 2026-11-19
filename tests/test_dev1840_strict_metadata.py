@@ -18,10 +18,10 @@ from slayer.core.errors import (
     AssociatedGrainWarning,
     BroadcastGrainWarning,
 )
+from slayer.core.query import QueryMetric
 
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1840_fixtures import (
-    DatasetMetric,
     SPEND_APP_BY_TIER,
     SPEND_BASIC_BY_TIER,
     ambiguity_datasets,
@@ -53,10 +53,10 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-SM = DatasetMetric(expression="sum(agents.score)", name="sm")
-RV = DatasetMetric(expression="sum(reviews.stars)", name="rv")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+SM = QueryMetric(metric="sum(agents.score)", alias="sm")
+RV = QueryMetric(metric="sum(reviews.stars)", alias="rv")
 
 
 class TestPushedFiltersAreSilent:

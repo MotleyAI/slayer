@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1839_fixtures import (
     CITY_TOTAL,
     DUAL_MEASURE_RANK_OF,
@@ -14,7 +16,6 @@ from tests._dev1839_fixtures import (
     KEYLESS_RANK_OF,
     MIXED_DIFF_OF,
     MIXED_RANK_OF,
-    DatasetMetric,
     NESTED_RANK_OF,
     OK_REGION_TOTAL,
     RCC_TOTAL,
@@ -102,7 +103,7 @@ class TestSeededDataset:
     async def test_channel_grain_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city", "channel"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city", "orders.channel")
         assert set(by) == set(RCC_TOTAL)
@@ -112,7 +113,7 @@ class TestSeededDataset:
     async def test_ok_region_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(ok_amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(ok_amount)", alias="s")],
         ))
         by = rows_by(resp, "orders.region")
         assert {k[0]: float(r["orders.s"]) for k, r in by.items()} == pytest.approx(

@@ -18,14 +18,16 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 CUSTOMERS_EXT = {
-    "source_name": "customers",
+    "dataset": "customers",
     "metrics": [{"name": "credit_total", "expression": "sum(credit)"}],
-    "relationships": [{"to": "regions", "join_pairs": [["region_id", "id"]]}],
+    "relationships": [{"to": "regions", "from_columns": ["region_id"], "to_columns": ["id"]}],
 }
-ORDERS_EXT = {"source_name": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}
-WITH_FILTERS = {"source_name": "customers", "filters": ["credit > 5"]}
-MEASURES_ONLY = {"source_name": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
-ONE_MEASURE = [{"expression": "count(*)"}]
+ORDERS_EXT = {"dataset": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}
+#: ``ORDERS_EXT`` as a versioned (1.x) body spells it.
+ORDERS_EXT_1X = {"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}
+WITH_FILTERS = {"dataset": "customers", "filters": ["credit > 5"]}
+MEASURES_ONLY = {"dataset": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
+ONE_MEASURE = [{"metric": "count(*)"}]
 
 
 def _query(**raw: Any) -> SlayerQuery:
@@ -70,7 +72,7 @@ class TestTyped:
         assert q.population == "orders"
         assert [type(e) for e in q.extensions or []] == [DatasetExtension, DatasetExtension]
         first = (q.extensions or [])[0]
-        assert first.source_name == "customers"
+        assert first.dataset == "customers"
         assert isinstance((first.metrics or [])[0], DatasetMetric)
         assert isinstance((first.relationships or [])[0], DatasetRelationship)
 
@@ -80,7 +82,7 @@ class TestTyped:
     def test_extensions_on_a_rootless_query(self) -> None:
         q = _query(extensions=[CUSTOMERS_EXT], dimensions=["customers.regions.name"])
         assert q.population is None
-        assert (q.extensions or [])[0].source_name == "customers"
+        assert (q.extensions or [])[0].dataset == "customers"
 
     def test_source_model_name_ignores_extensions(self) -> None:
         assert _query(population="orders", extensions=[CUSTOMERS_EXT]).population_name == "orders"
@@ -89,7 +91,7 @@ class TestTyped:
 class TestRejected:
     def test_two_extensions_of_one_model(self) -> None:
         with pytest.raises(ValidationError) as info:
-            _query(population="orders", extensions=[CUSTOMERS_EXT, {"source_name": "customers"}])
+            _query(population="orders", extensions=[CUSTOMERS_EXT, {"dataset": "customers"}])
         _assert_rejected_naming(info.value, "customers")
 
     def test_unknown_extension_key_is_named(self) -> None:
@@ -97,8 +99,8 @@ class TestRejected:
             _query(population="orders", extensions=[WITH_FILTERS])
         assert {(e["type"], str(e["loc"][-1])) for e in info.value.errors()} == {("extra_forbidden", "filters")}
 
-    def test_an_extension_without_source_name(self) -> None:
-        with pytest.raises(ValidationError, match="source_name"):
+    def test_an_extension_without_a_dataset(self) -> None:
+        with pytest.raises(ValidationError, match="dataset"):
             _query(population="orders", extensions=[{"metrics": []}])
 
     def test_refinements_carry_no_extensions(self) -> None:
@@ -110,7 +112,7 @@ class TestRejected:
         with pytest.raises(ValidationError) as info:
             SlayerDataset.model_validate({"name": "qb", "source_queries": [{
                 "population": "orders", "metrics": ONE_MEASURE,
-                "extensions": [{"source_name": "customers"}, {"source_name": "customers"}]}]})
+                "extensions": [{"dataset": "customers"}, {"dataset": "customers"}]}]})
         _assert_rejected_naming(info.value, "customers")
 
 
@@ -128,7 +130,7 @@ class TestSchema:
         assert prop.get("description")
         ext = schema["$defs"]["DatasetExtension"]
         assert ext["additionalProperties"] is False
-        assert ext["required"] == ["source_name"]
+        assert ext["required"] == ["dataset"]
 
     def test_refinement_schema_has_no_extensions(self) -> None:
         assert "extensions" not in QueryRefinement.model_json_schema()["properties"]
@@ -156,12 +158,12 @@ class TestRestAndMcp:
 
     @pytest.mark.parametrize("version", [9, 10, 11, 12])
     def test_rest_body_migrates_a_versioned_legacy_root_extension(self, version: int) -> None:
-        req = QueryRequest.model_validate({"version": version, "source_model": ORDERS_EXT, "measures": ["count(*)"]})
+        req = QueryRequest.model_validate({"version": version, "source_model": ORDERS_EXT_1X, "measures": ["count(*)"]})
         assert req.population == "orders"
-        assert [e.source_name for e in req.extensions or []] == ["orders"]
+        assert [e.dataset for e in req.extensions or []] == ["orders"]
 
     @pytest.mark.parametrize("extensions", [
-        [WITH_FILTERS], [{"source_name": "orders"}, {"source_name": "orders"}],
+        [WITH_FILTERS], [{"dataset": "orders"}, {"dataset": "orders"}],
     ], ids=["unknown-key", "duplicate"])
     def test_rest_body_rejects_malformed_extensions_with_422(self, rest_client, extensions) -> None:
         resp = rest_client.post("/query", json={

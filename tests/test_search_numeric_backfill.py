@@ -53,10 +53,10 @@ async def search_setup(tmp_path) -> AsyncIterator[tuple[SearchService, object]]:
         data_source="ds",
         description="Checkout orders.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT,
                    description="Order total in USD."),
-            DatasetField(name="status", datatype=DataType.TEXT,
+            DatasetField(name="status", datatype=DataType.STRING,
                    description="Order lifecycle status."),
         ],
     ))

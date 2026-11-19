@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import (
-    DatasetMetric,
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
@@ -29,15 +30,15 @@ async def exec_engine(request):
 
 async def test_shifted_share_over_stage_time_dimension(exec_engine) -> None:
     inner = monthly_q(name="s1", dimensions=["region"], time_dimensions=month_td(),
-                      metrics=[DatasetMetric(expression="sum(amount)", name="rev")])
+                      metrics=[QueryMetric(metric="sum(amount)", alias="rev")])
     outer = SlayerQuery.model_validate({
         "population": "s1", "dimensions": ["region"],
         "time_dimensions": [TimeDimension(field="ordered_at",
                                           granularity=TimeGranularity.MONTH,
                                           date_range=["2024-02-01", "2024-03-31"])],
-        "metrics": [DatasetMetric(
-            expression="time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
-            name="t")]})
+        "metrics": [QueryMetric(
+            metric="time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
+            alias="t")]})
     resp = await exec_engine.execute([inner, outer])
     got = {(r["s1.region"], month_key(r["s1.ordered_at"])): r["s1.t"] for r in resp.data}
     assert set(got) == set(EXPECTED)

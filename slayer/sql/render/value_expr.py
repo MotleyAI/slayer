@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TEMPORAL_DATATYPES
 from slayer.core.errors import RenderContextMissingFacilityError
 from slayer.core.keys import (
     NULL_SAFE_COMPARISON_OPS,
@@ -87,7 +87,7 @@ def _wrap_cast_for_type(
     """Wrap ``expr`` in ``CAST(expr AS <dt>)`` to enforce a declared ``DataType``. Skipped for
     ``None`` / ``TEXT`` / opaque types and a bare ``exp.Column`` (on SQLite the cast can truncate).
     Idempotent: a cast that renders as the same ``dialect`` type (a re-parsed one included) is kept."""
-    if dt is None or dt == DataType.TEXT or dt.is_opaque:
+    if dt is None or dt == DataType.STRING or dt.is_opaque:
         return expr
     if isinstance(expr, exp.Column):
         return expr
@@ -113,7 +113,7 @@ def keeps_native_type(*, col: DatasetField | None, dialect: SqlDialect) -> bool:
 def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
     """CAST target for a derived field inside WHERE/HAVING; temporal types suppressed
     (``CAST(text AS TIMESTAMP)`` truncates on SQLite, and a base field here isn't cast either)."""
-    if dt in (DataType.DATE, DataType.TIMESTAMP):
+    if dt in TEMPORAL_DATATYPES:
         return None
     return dt
 
@@ -121,7 +121,7 @@ def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
 def _ranked_value_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
     """CAST target for a ``first`` / ``last`` value; temporal casts suppressed (the value IS
     the raw picked column, redundant and truncating on SQLite). Non-temporal types keep their cast."""
-    if dt in (DataType.DATE, DataType.TIMESTAMP):
+    if dt in TEMPORAL_DATATYPES:
         return None
     return dt
 

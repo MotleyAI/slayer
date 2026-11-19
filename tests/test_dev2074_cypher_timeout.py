@@ -32,9 +32,9 @@ def _dataset(i: int) -> SlayerDataset:
     targets = _EDGES[i]
     return SlayerDataset(
         name=f"m{i}", sql_table=f"m{i}", data_source="shop",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 *(DatasetField(name=f"f{j}", datatype=DataType.INT) for j in range(len(targets)))],
-        relationships=[DatasetRelationship(to=f"m{t}", join_pairs=[[f"f{j}", "id"]], name=f"e{i}_{j}")
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 *(DatasetField(name=f"f{j}", datatype=DataType.INTEGER) for j in range(len(targets)))],
+        relationships=[DatasetRelationship(to=f"m{t}", from_columns=[f"f{j}"], to_columns=["id"], name=f"e{i}_{j}")
                for j, t in enumerate(targets)],
     )
 

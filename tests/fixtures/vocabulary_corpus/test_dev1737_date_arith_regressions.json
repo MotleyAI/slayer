@@ -28,8 +28,8 @@
     "metrics": [
      "sum(v)",
      {
-      "expression": "time_shift(sum(v), -1, 'hour')",
-      "name": "x"
+      "metric": "time_shift(sum(v), -1, 'hour')",
+      "alias": "x"
      }
     ]
    }
@@ -61,8 +61,8 @@
     "metrics": [
      "sum(v)",
      {
-      "expression": "time_shift(sum(v), -1, 'month')",
-      "name": "x"
+      "metric": "time_shift(sum(v), -1, 'month')",
+      "alias": "x"
      }
     ]
    }
@@ -92,8 +92,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(v, window='1m')",
-      "name": "x"
+      "metric": "sum(v, window='1m')",
+      "alias": "x"
      }
     ]
    }
@@ -123,8 +123,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(v, window='6h1d')",
-      "name": "x"
+      "metric": "sum(v, window='6h1d')",
+      "alias": "x"
      }
     ]
    }

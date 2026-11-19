@@ -2,12 +2,12 @@
  "source": "tests/test_search_invariance.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount_paid)"
    },
    "new": {
-    "expression": "sum(amount_paid)"
+    "metric": "sum(amount_paid)"
    }
   }
  ],

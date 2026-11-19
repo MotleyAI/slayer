@@ -26,7 +26,7 @@ slayer query '{"population": "orders", "metrics": ["count(*)"]}'
 This generates ~2 years of synthetic coffee-shop data into a local DuckDB file under your storage directory and ingests the datasets (`customers`, `orders`, `items`, `products`, `regions`, `stores`, `supplies`, `tweets`). The demo datasets come pre-enriched with a curated semantic layer: field labels and descriptions, currency/percent formats, ready-made metrics (`total_revenue`, `avg_order_value`, `effective_tax_rate`, `unique_customers`, …), and a custom-aggregation example (`weighted_avg` defaulting its weight to `subtotal`) — so `datasets_summary` / `inspect` output is informative out of the box and there are saved metrics to query by name:
 
 ```bash
-slayer query '{"population": "orders", "metrics": [{"expression": "total_revenue"}, {"expression": "avg_order_value"}], "dimensions": ["stores.name"]}'
+slayer query '{"population": "orders", "metrics": ["total_revenue", "avg_order_value"], "dimensions": ["stores.name"]}'
 ```
 
 Monetary columns (`price`, `subtotal`, `tax_paid`, `order_total`, `cost`) are stored as exact `DECIMAL(12,2)` dollars, so revenue sums carry no floating-point noise. Re-running is idempotent — an up-to-date DuckDB is reused (one built with an older schema is regenerated), and ingestion plus enrichment are additive-only (missing relationships are added; your edits to labels, descriptions, or metrics are never overwritten). Override the years with `--years N`; the default is kept small so `slayer serve --demo` / `slayer mcp --demo` finish quickly enough to fit inside MCP-client startup timeouts. Only the first four bundled stores open within the first two years — bump `--years` to 4+ if you want all six.

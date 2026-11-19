@@ -87,7 +87,7 @@ def _data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 class TestReservedName:
     async def test_save_rejected(self, engine: SlayerQueryEngine) -> None:
         clash = SlayerDataset(name="time_spine", sql_table="customers", data_source="test",
-                            fields=[DatasetField(name="foo", datatype=DataType.INT, primary_key=True)])
+                            fields=[DatasetField(name="foo", datatype=DataType.INTEGER, primary_key=True)])
         with pytest.raises(SlayerError) as exc:
             await engine.storage.save_dataset(clash)
         assert "time_spine" in str(exc.value)
@@ -319,7 +319,7 @@ class TestPopulation:
         def cells(resp, by=()):
             return sorted((*(value(r, d) for d in by), bucket_key(r["time_spine.timestamp"])) for r in resp.data)
 
-        edit = (lambda ms: [x for x in ms if x["name"] != "r"]) if variant == "drop" else (
+        edit = (lambda ms: [x for x in ms if x["alias"] != "r"]) if variant == "drop" else (
             lambda ms: [*ms, m("avg(orders.amount)", "a")])
         base = await engine.execute(spine_query(metrics=TWO_FACTS))
         other = await engine.execute(spine_query(metrics=edit(TWO_FACTS)))
@@ -511,7 +511,7 @@ class TestNoCountableRows:
     @pytest.mark.parametrize("extra", [
         {"dimensions": ["time_spine.timestamp"], "time_dimensions": [], "metrics": TWO_FACTS},
         {"distinct_dimension_values": False, "metrics": []},
-        {"dimensions": [{"expression": "date_part('month', time_spine.timestamp)", "name": "mo"}],
+        {"dimensions": [{"field": "date_part('month', time_spine.timestamp)", "alias": "mo"}],
          "metrics": TWO_FACTS},
         {"order": [{"field": "date_trunc('day', time_spine.timestamp)"}], "metrics": TWO_FACTS},
     ], ids=["plain-dimension", "raw-rows", "computed-dimension-operand", "unprojected-order-key"])

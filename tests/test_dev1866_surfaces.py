@@ -31,7 +31,7 @@ def rest_client() -> TestClient:
 def test_rest_rootless_query_executes_and_reports_population(rest_client) -> None:
     resp = rest_client.post("/query", json={
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+        "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
     })
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -56,7 +56,7 @@ async def test_mcp_rootless_query_executes_and_reports_population() -> None:
         result = await _call(server, name="query", arguments={
             "query": {
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             },
             "format": "json",
         })

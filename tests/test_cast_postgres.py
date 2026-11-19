@@ -44,7 +44,7 @@ async def test_try_cast_fractional_double_column(pg) -> None:
     engine, version_num = pg
     if version_num < 160000:
         pytest.skip("Postgres before 16 gets a plain CAST")
-    resp = await engine.execute(q(dimensions=["id", {"expression": "TRY_CAST(price / 2 AS INT)", "name": "x"}]))
+    resp = await engine.execute(q(dimensions=["id", {"field": "TRY_CAST(price / 2 AS INT)", "alias": "x"}]))
     got = {int(k): (None if v is None else int(v)) for k, v in by_key(resp, "id", "x").items()}
     assert got == {1: 1, 2: None, 3: 2, 4: None, 5: None}, resp.sql
 
@@ -59,7 +59,7 @@ async def test_try_cast_of_a_constant_never_fails_at_plan_time(pg, expr: str, ex
     engine, version_num = pg
     if version_num < 160000:
         pytest.skip("Postgres before 16 gets a plain CAST")
-    resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "x"}]))
+    resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "x"}]))
     assert set(by_key(resp, "id", "x").values()) == {expected}, resp.sql
 
 
@@ -68,8 +68,8 @@ async def test_try_cast_of_an_aggregate_reads_the_group(pg) -> None:
     if version_num < 160000:
         pytest.skip("Postgres before 16 gets a plain CAST")
     resp = await engine.execute(q(dimensions=["region"], metrics=[
-        {"expression": "TRY_CAST(count(*) AS INT)", "name": "n"},
-        {"expression": "TRY_CAST(count(*) + TRY_CAST('1' AS INT) AS INT)", "name": "m"},
+        {"metric": "TRY_CAST(count(*) AS INT)", "alias": "n"},
+        {"metric": "TRY_CAST(count(*) + TRY_CAST('1' AS INT) AS INT)", "alias": "m"},
     ]))
     assert by_key(resp, "region", "n") == {"EU": 2, "US": 2, None: 1}, resp.sql
     assert by_key(resp, "region", "m") == {"EU": 3, "US": 3, None: 2}, resp.sql
@@ -81,7 +81,7 @@ async def test_array_cast_is_a_list(pg) -> None:
 
 async def test_zoned_timestamp_with_precision_executes(pg) -> None:
     resp = await pg[0].execute(q(
-        dimensions=["id", {"expression": "CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)", "name": "x"}],
+        dimensions=["id", {"field": "CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)", "alias": "x"}],
         filter=["id = 1"], distinct_dimension_values=False,
     ))
     assert len(resp.data) == 1, resp.sql

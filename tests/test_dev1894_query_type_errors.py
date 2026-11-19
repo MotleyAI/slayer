@@ -33,7 +33,7 @@ from slayer.core.errors import (
     WindowDurationError,
 )
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _dev1739_fixtures as f1739
@@ -52,20 +52,20 @@ _MONTH = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
 _NO_AXIS = "sum(cumsum(sum(amount, partition_by=region)))"
 
 
-def _m(expression: str, name: str) -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def _m(metric: str, alias: str) -> QueryMetric:
+    return QueryMetric(metric=metric, alias=alias)
 
 
 def _orders(*, extra_columns: Tuple[DatasetField, ...] = (), **kw) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="profit", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="profit", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             *extra_columns,
         ],
         **kw,
@@ -123,8 +123,8 @@ FAMILY_CASES = [
      TransformInputError, "transform 'cumsum'", True),
     ("computed-dimension",
      lambda: (SlayerQuery.model_validate({
-         "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "t"}],
-         "dimensions": ["region", {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END", "name": "band"}],
+         "population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "t"}],
+         "dimensions": ["region", {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END", "alias": "band"}],
      }), f1740.dev1740_datasets()),
      ComputedDimensionError, "dimension 'band'", False),
     ("association",
@@ -143,8 +143,8 @@ FAMILY_CASES = [
      ReaggregationError, "metric 'w'", True),
     ("name-collision",
      lambda: (SlayerQuery.model_validate({
-         "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}],
-         "dimensions": ["region", {"expression": "lower(city)", "name": "rev"}],
+         "population": "orders", "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+         "dimensions": ["region", {"field": "lower(city)", "alias": "rev"}],
      }), f1740.dev1740_datasets()),
      NameCollisionError, "dimension 'rev'", True),
     ("stage-flatten-collision",
@@ -154,22 +154,22 @@ FAMILY_CASES = [
      ), [_orders(default_time_dimension="created_at")]),
      NameCollisionError, None, True),
     ("dimension-type",
-     lambda: (SlayerQuery(population="orders", dimensions=[FieldRef(name="loc")]),
-              [_orders(extra_columns=(DatasetField(name="loc", datatype=DataType.UNKNOWN, db_type="point"),))]),
+     lambda: (SlayerQuery(population="orders", dimensions=[QueryDimension(field="loc")]),
+              [_orders(extra_columns=(DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point"),))]),
      DimensionTypeError, "dimension 'loc'", True),
     ("model-filter",
-     lambda: (SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")]),
-              [_orders(metrics=[_m("sum(amount)", "tot")], filters=["tot > 100"])]),
+     lambda: (SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")]),
+              [_orders(metrics=[DatasetMetric(name="tot", expression="sum(amount)")], filters=["tot > 100"])]),
      DatasetFilterError, "dataset filter 'tot > 100'", True),
     ("position-typing",
      lambda: (SlayerQuery(
-         population="orders", time_dimensions=_MONTH, metrics=[DatasetMetric(expression="count(*)")],
+         population="orders", time_dimensions=_MONTH, metrics=[QueryMetric(metric="count(*)")],
          filter=["_count > 1 or status == 'ok'"],
      ), [_orders()]),
      PositionTypingError, None, True),
     ("raw-rows",
      lambda: (SlayerQuery(
-         population="orders", dimensions=[FieldRef(name="status")],
+         population="orders", dimensions=[QueryDimension(field="status")],
          filter=["sum(amount) > 100"], distinct_dimension_values=False,
      ), [_orders()]),
      DistinctDimensionValuesError, "filter 'sum(amount) > 100'", True),
@@ -209,15 +209,15 @@ async def test_family_error_layout(
 
 @pytest.mark.parametrize(("case", "cls", "location"), [
     pytest.param(lambda: (SlayerQuery(
-        population="orders", dimensions=[FieldRef(name="id")], metrics=[_m("sum(amount)", "status")],
+        population="orders", dimensions=[QueryDimension(field="id")], metrics=[_m("sum(amount)", "status")],
     ), [_orders()]), MetricNameCollidesWithFieldError, "metric 'status'", id="measure-collides-with-column"),
     pytest.param(lambda: (SlayerQuery(
-        population="orders", dimensions=[FieldRef(name="status")], metrics=[_m("sum(amount)", "rev2")],
-    ), [_orders(extra_columns=(DatasetField(name="amount_sum", datatype=DataType.DOUBLE),))]),
+        population="orders", dimensions=[QueryDimension(field="status")], metrics=[_m("sum(amount)", "rev2")],
+    ), [_orders(extra_columns=(DatasetField(name="amount_sum", datatype=DataType.FLOAT),))]),
         CanonicalAliasShadowsFieldError, "metric 'rev2'", id="canonical-alias-shadows"),
     pytest.param(lambda: (SlayerQuery(
-        population="orders", dimensions=[FieldRef(name="status")],
-        metrics=[_m("sum(revenue)", "profit_avg"), DatasetMetric(expression="avg(profit)")],
+        population="orders", dimensions=[QueryDimension(field="status")],
+        metrics=[_m("sum(revenue)", "profit_avg"), QueryMetric(metric="avg(profit)")],
     ), [_orders()]), DuplicateMetricNameError, "metric 'profit_avg'", id="duplicate-measure-name"),
 ])
 async def test_structured_name_collisions(case: Case, cls: type, location: str) -> None:
@@ -259,8 +259,8 @@ async def test_rest_answers_time_axis_violation_with_400(tmp_path) -> None:
     await storage.save_dataset(f1832.monthly_dataset(), _validate=False)
     body = {
         "population": "monthly",
-        "time_dimensions": [{"field": {"name": "ordered_at"}, "granularity": "month"}],
-        "metrics": [{"expression": _NO_AXIS, "name": "m"}],
+        "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
+        "metrics": [{"metric": _NO_AXIS, "alias": "m"}],
     }
     resp = TestClient(create_app(storage=storage)).post("/query", json=body)
     assert resp.status_code == 400, resp.text

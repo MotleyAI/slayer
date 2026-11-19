@@ -36,8 +36,8 @@ async def storage() -> AsyncIterator[StorageBackend]:
         await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         ))
         yield s
@@ -148,7 +148,7 @@ async def test_default_no_op_write_hooks() -> None:
     memory = Memory(id="1", learning="x", entities=[])
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     assert await retriever.upsert_memory(memory) == []
     assert await retriever.refresh_dataset_subtree(model) == []

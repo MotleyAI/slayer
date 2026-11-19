@@ -79,8 +79,8 @@
     ],
     "metrics": [
      {
-      "expression": "max(tier)",
-      "name": "tr"
+      "metric": "max(tier)",
+      "alias": "tr"
      }
     ]
    }
@@ -106,8 +106,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }

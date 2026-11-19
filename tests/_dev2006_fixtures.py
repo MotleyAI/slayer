@@ -47,8 +47,8 @@ from typing import AsyncIterator, List, Optional
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -65,14 +65,14 @@ def snapshots_dataset() -> SlayerDataset:
         name="account_snapshots", sql_table="account_snapshots", data_source="test",
         default_time_dimension="snapshot_date",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="account_id", datatype=DataType.INT),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="account_id", datatype=DataType.INTEGER),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="snapshot_date", datatype=DataType.DATE),
             DatasetField(name="recorded_at", datatype=DataType.DATE),
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -80,8 +80,8 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -112,8 +112,8 @@ def snap_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def month_td(column: str = "snapshot_date") -> List[TimeDimension]:

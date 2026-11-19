@@ -16,8 +16,8 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "month(ordered_at)",
-      "name": "m"
+      "field": "month(ordered_at)",
+      "alias": "m"
      }
     ]
    }
@@ -43,8 +43,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "r"
+      "metric": "sum(rev)",
+      "alias": "r"
      }
     ]
    }
@@ -79,8 +79,8 @@
     "population": "doubled",
     "metrics": [
      {
-      "expression": "sum(d)",
-      "name": "t"
+      "metric": "sum(d)",
+      "alias": "t"
      }
     ]
    }

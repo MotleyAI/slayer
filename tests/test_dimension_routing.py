@@ -23,15 +23,15 @@ from slayer.engine.population.dimension_routing import (
 
 
 def _pk() -> DatasetField:
-    return DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)
+    return DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True)
 
 
 def _d(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.DOUBLE)
+    return DatasetField(name=name, sql=name, datatype=DataType.FLOAT)
 
 
 def _t(name: str) -> DatasetField:
-    return DatasetField(name=name, sql=name, datatype=DataType.TEXT)
+    return DatasetField(name=name, sql=name, datatype=DataType.STRING)
 
 
 def _dataset(
@@ -47,7 +47,7 @@ def _by_name(*models: SlayerDataset) -> dict[str, SlayerDataset]:
 
 
 def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=pairs, **kw)
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], **kw)
 
 
 def _safe_hops(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> list[tuple[str, str]]:

@@ -3,7 +3,7 @@ loads omitted (the association default). Stored-only."""
 
 from typing import Any
 
-from slayer.storage.migrations import register_migration, stamp_stored
+from slayer.storage.migrations import is_legacy_root_extension, register_migration, stamp_stored
 
 #: The SlayerQuery version whose saves wrote the broadcast default.
 _BROADCAST_DEFAULT_VERSION = 11
@@ -26,7 +26,7 @@ def drop_stored_broadcast(data: dict) -> dict:
     if data.get("to_many_handling") == "broadcast":
         del data["to_many_handling"]
     source = data.get("source_model")
-    if isinstance(source, dict) and "source_name" not in source:
+    if isinstance(source, dict) and not is_legacy_root_extension(source):
         data["source_model"] = stamp_stored(source)
     return data
 

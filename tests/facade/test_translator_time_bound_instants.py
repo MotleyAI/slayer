@@ -26,11 +26,11 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             DatasetField(name="delivered_at", datatype=DataType.DATE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 

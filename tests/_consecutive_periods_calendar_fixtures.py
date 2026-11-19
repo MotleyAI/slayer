@@ -101,21 +101,21 @@ def calendar_datasets() -> list[SlayerDataset]:
             name="orders", data_source="test", sql_table="orders",
             default_time_dimension="order_date",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="order_date", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="order_date", datatype=DataType.DATETIME),
             ],
         ),
         SlayerDataset(
             name="ticks", data_source="test", sql_table="ticks",
             default_time_dimension="ts",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="series", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="series", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="ts", datatype=DataType.DATETIME),
             ],
         ),
     ]
@@ -179,7 +179,7 @@ def orders_query(*, expression: str, filters=None, dimensions=None, date_range=N
         "time_dimensions": [td],
         "dimensions": dimensions or [],
         "filter": ["customer_id = 1"] if filters is None else filters,
-        "metrics": [{"expression": expression, "name": "v"}],
+        "metrics": [{"metric": expression, "alias": "v"}],
     })
 
 

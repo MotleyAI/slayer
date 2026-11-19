@@ -81,8 +81,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(scaled)",
-      "name": "v"
+      "metric": "sum(scaled)",
+      "alias": "v"
      }
     ],
     "variables": {

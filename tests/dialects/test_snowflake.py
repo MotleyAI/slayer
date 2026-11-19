@@ -403,19 +403,19 @@ def test_statement_timeout_zero_seconds() -> None:
 @pytest.mark.parametrize(
     "type_code,expected",
     [
-        (0, DataType.INT),         # FIXED, scale 0
-        (1, DataType.DOUBLE),      # REAL
-        (2, DataType.TEXT),        # TEXT
+        (0, DataType.INTEGER),         # FIXED, scale 0
+        (1, DataType.FLOAT),      # REAL
+        (2, DataType.STRING),        # TEXT
         (3, DataType.DATE),        # DATE
-        (4, DataType.TIMESTAMP),   # TIMESTAMP
-        (5, DataType.TEXT),        # VARIANT
-        (6, DataType.TIMESTAMP),   # TIMESTAMP_LTZ
-        (7, DataType.TIMESTAMP),   # TIMESTAMP_TZ
-        (8, DataType.TIMESTAMP),   # TIMESTAMP_NTZ
-        (9, DataType.TEXT),        # OBJECT
+        (4, DataType.DATETIME),   # TIMESTAMP
+        (5, DataType.STRING),        # VARIANT
+        (6, DataType.DATETIME),   # TIMESTAMP_LTZ
+        (7, DataType.DATETIME),   # TIMESTAMP_TZ
+        (8, DataType.DATETIME),   # TIMESTAMP_NTZ
+        (9, DataType.STRING),        # OBJECT
         (10, DataType.ARRAY),      # ARRAY
-        (11, DataType.TEXT),       # BINARY
-        (12, DataType.TIMESTAMP),  # TIME
+        (11, DataType.STRING),       # BINARY
+        (12, DataType.DATETIME),  # TIME
         (13, DataType.BOOLEAN),    # BOOLEAN
     ],
 )

@@ -143,7 +143,7 @@ async def test_inner_join_is_lossy_without_extensions(env) -> None:
 
 
 async def test_one_to_many_join_is_lossy_without_extensions(env) -> None:
-    to_orders = DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
+    to_orders = DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
                           cardinality=RelationshipCardinality.ONE_TO_MANY)
     result = await export_datasets(env, customers(joins=[to_orders]), orders(metrics=BASIC_MEASURES, joins=[]),
                                  extensions=False)
@@ -167,7 +167,7 @@ async def test_slayer_only_content_is_dropped_without_extensions(env) -> None:
 # ─────────────────────────────── report ────────────────────────────────────
 
 async def test_complete_report(env) -> None:
-    m2m = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+    m2m = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                     cardinality=RelationshipCardinality.MANY_TO_MANY)
     growth = slayer_metric("revenue_growth", "change_pct(revenue)")
     result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, growth]), visits(relationships=[m2m]))

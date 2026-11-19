@@ -30,11 +30,11 @@ def test_mode_b_walk_reads_legacy_keys() -> None:
 
 def test_mode_b_walk_reads_current_keys() -> None:
     doc = {"metrics": [{"name": "m", "expression": "sum(x)"}],
-           "source_queries": [{"population": "o", "metrics": [{"expression": "count(*)"}], "filter": ["a > 1"]}]}
+           "source_queries": [{"population": "o", "metrics": [{"metric": "count(*)"}], "filter": ["a > 1"]}]}
     out = rewrite_dataset_doc(doc, _upper, keys=CURRENT_KEYS)
     assert out["metrics"][0]["expression"] == "SUM(X)"
     stage = out["source_queries"][0]
-    assert stage["metrics"][0]["expression"] == "COUNT(*)"
+    assert stage["metrics"][0]["metric"] == "COUNT(*)"
     assert stage["filter"] == ["A > 1"]
 
 
@@ -44,9 +44,9 @@ def test_mode_b_walk_leaves_the_other_spelling_alone() -> None:
 
 
 def test_memory_walk_follows_the_given_keys() -> None:
-    memory = {"query": {"population": "o", "metrics": [{"expression": "sum(x)"}]}}
+    memory = {"query": {"population": "o", "metrics": [{"metric": "sum(x)"}]}}
     out = rewrite_memory_doc(memory, _upper, keys=CURRENT_KEYS)
-    assert out["query"]["metrics"][0]["expression"] == "SUM(X)"
+    assert out["query"]["metrics"][0]["metric"] == "SUM(X)"
 
 
 @pytest.mark.parametrize(("version", "fields", "metrics", "expression"), [

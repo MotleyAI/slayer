@@ -43,88 +43,88 @@ def _cases() -> dict:
         # W1 — cross-model ranked × partition_by, every position.
         "w1/last_tier_measure": _orders(
             dimensions=["customers.tier"],
-            metrics=[{"expression": LAST_TIER, "name": "l"}],
+            metrics=[{"metric": LAST_TIER, "alias": "l"}],
         ),
         "w1/first_region_measure": _orders(
             dimensions=["customers.regions.name"],
-            metrics=[{"expression": FIRST_REGION, "name": "f"}],
+            metrics=[{"metric": FIRST_REGION, "alias": "f"}],
         ),
         "w1/filter": _orders(
             dimensions=["customers.tier"],
             filter=[f"{LAST_TIER} > 100"],
-            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}],
         ),
         "w1/order": _orders(
             dimensions=["customers.tier"],
             filter=["customers.tier is not null"],
-            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}],
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ),
         # W2 — cross-model partitioned inners under transforms.
         "w2/cumsum_part_tier": _orders(
             dimensions=["customers.tier"], time_dimensions=_MONTH,
-            metrics=[{"expression": f"cumsum({CM_PART_TIER})", "name": "c"}],
+            metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
         ),
         "w2/change_last_region": _orders(
             dimensions=["customers.regions.name"], time_dimensions=_MONTH,
-            metrics=[{"expression": f"change({LAST_REGION})", "name": "ch"}],
+            metrics=[{"metric": f"change({LAST_REGION})", "alias": "ch"}],
         ),
         "w2/shared_inner": _orders(
             dimensions=["customers.tier"], time_dimensions=_MONTH,
             filter=[f"{CM_PART_TIER} > 100"],
-            metrics=[{"expression": f"cumsum({CM_PART_TIER})", "name": "c"}],
+            metrics=[{"metric": f"cumsum({CM_PART_TIER})", "alias": "c"}],
         ),
         # W3 — composite routes (already combined; pinned against regression).
         "w3/scalar_call": _orders(
             dimensions=["customers.tier"],
-            metrics=[{"expression": "round(sum(customers.spend) / sum(amount), 2)",
-                       "name": "r"}],
+            metrics=[{"metric": "round(sum(customers.spend) / sum(amount), 2)",
+                       "alias": "r"}],
         ),
         "w3/multi_remote": _orders(
             dimensions=["customers.tier"],
-            metrics=[{"expression": "sum(customers.spend) - max(customers.spend)",
-                       "name": "r"}],
+            metrics=[{"metric": "sum(customers.spend) - max(customers.spend)",
+                       "alias": "r"}],
         ),
         "w3/two_roots": _orders(
             dimensions=["customers.regions.name"],
-            metrics=[{"expression": "sum(customers.spend) / sum(customers.regions.pop)",
-                       "name": "r"}],
+            metrics=[{"metric": "sum(customers.spend) / sum(customers.regions.pop)",
+                       "alias": "r"}],
         ),
         # Series-regime time_shift emission.
         "ts/series_nested_cumsum": _sales(metrics=[
-            {"expression": "time_shift(cumsum(sum(revenue)), -1)", "name": "t"},
+            {"metric": "time_shift(cumsum(sum(revenue)), -1)", "alias": "t"},
         ]),
         "ts/series_nested_by_store": _sales(
             dimensions=["store"],
-            metrics=[{"expression": "time_shift(cumsum(sum(revenue)), -1)",
-                       "name": "t"}],
+            metrics=[{"metric": "time_shift(cumsum(sum(revenue)), -1)",
+                       "alias": "t"}],
         ),
         "ts/series_cm_leaf": _sales(to_many_handling="broadcast", metrics=[
-            {"expression": "time_shift(sum(revenue) + sum(regions.factor), -1)",
-             "name": "t"},
+            {"metric": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+             "alias": "t"},
         ]),
         "ts/series_in_pred": _sales(metrics=[
-            {"expression": "time_shift(sum(revenue) in (100, 999), -1)", "name": "t"},
+            {"metric": "time_shift(sum(revenue) in (100, 999), -1)", "alias": "t"},
         ]),
         "ts/series_filters_once": _sales(
             filter=["status = 'a'"],
-            metrics=[{"expression": "time_shift(cumsum(sum(revenue)), -1)",
-                       "name": "t"}],
+            metrics=[{"metric": "time_shift(cumsum(sum(revenue)), -1)",
+                       "alias": "t"}],
         ),
         # Residue split — the two permanent typed errors, recorded as raises.
         "res/transform_no_aggregate": _orders(
             dimensions=["customers.tier",
-                        {"expression": "CASE WHEN cumsum(amount) > 50 "
-                                       "THEN 1 ELSE 0 END", "name": "b"}],
+                        {"field": "CASE WHEN cumsum(amount) > 50 "
+                                       "THEN 1 ELSE 0 END", "alias": "b"}],
             time_dimensions=_MONTH,
-            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}],
         ),
         "res/transform_ungrained": _orders(
             dimensions=["customers.tier",
-                        {"expression": "CASE WHEN cumsum(sum(amount)) > 50 "
-                                       "THEN 1 ELSE 0 END", "name": "b"}],
+                        {"field": "CASE WHEN cumsum(sum(amount)) > 50 "
+                                       "THEN 1 ELSE 0 END", "alias": "b"}],
             time_dimensions=_MONTH,
-            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}],
         ),
     }
 

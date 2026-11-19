@@ -408,7 +408,7 @@ survive unambiguously:
 
 ```text
 Column: warehouse.orders.status
-Type: TEXT
+Type: String
 Description: Order status.
 Sample values: ["paid", "refunded", "cancelled", "pending", …]
 ```

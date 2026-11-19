@@ -19,9 +19,9 @@ ROWS = [
     {"MixedCase": None, 'say "hi"': "x", "n": 3},
 ]
 RELATION = CatalogRelation(name='Odd "Tbl"', columns=[
-    FacadeColumn(name="MixedCase", type=DataType.TEXT),
-    FacadeColumn(name='say "hi"', type=DataType.TEXT),
-    FacadeColumn(name="n", type=DataType.INT),
+    FacadeColumn(name="MixedCase", type=DataType.STRING),
+    FacadeColumn(name='say "hi"', type=DataType.STRING),
+    FacadeColumn(name="n", type=DataType.INTEGER),
 ], rows=ROWS)
 
 

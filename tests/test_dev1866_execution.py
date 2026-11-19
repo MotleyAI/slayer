@@ -52,12 +52,12 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             }),
             explicit=SlayerQuery.model_validate({
                 "population": "customers",
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             }),
             population="customers",
         )
@@ -67,13 +67,13 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
                 "filter": ["orders.status = 'ok'"],
             }),
             explicit=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
                 "filter": ["orders.status = 'ok'"],
             }),
             population="orders",
@@ -108,7 +108,7 @@ class TestExplicitOverride:
         resp = await chain_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         }))
         assert resp.population == "orders"
         assert resp.population_inferred is False
@@ -131,7 +131,7 @@ class TestNullAttachment:
     async def test_region_without_orders_attaches_null(self, chain_engine) -> None:
         resp = await chain_engine.execute(SlayerQuery.model_validate({
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }))
         assert resp.population == "customers"
         assert resp.population_inferred is True

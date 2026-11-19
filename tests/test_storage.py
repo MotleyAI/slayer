@@ -26,9 +26,9 @@ def sample_dataset() -> SlayerDataset:
         sql_table="public.test_table",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 

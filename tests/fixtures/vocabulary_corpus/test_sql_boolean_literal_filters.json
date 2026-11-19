@@ -18,7 +18,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -43,7 +43,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -68,7 +68,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [

@@ -12,8 +12,8 @@ from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import RelationshipKeyError
 from slayer.core.relationship_walker import edges_between, provably_to_one, unique_key_sets
 from slayer.core.keys import FieldKey, Grain
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.cardinality.relationship_safety import grain_determines
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -35,7 +35,7 @@ from tests._dev1902_fixtures import (
 from slayer.sql.naming import key_identifier
 from tests._engine_helpers import datasets_bundle
 
-AMT = DatasetMetric(expression="sum(amount)", name="amt")
+AMT = QueryMetric(metric="sum(amount)", alias="amt")
 
 
 def _query(**kw) -> SlayerQuery:
@@ -101,7 +101,7 @@ class TestExecutedRenamedKeys:
     async def test_association_over_renamed_pk_root(self, all_renamed: SlayerQueryEngine):
         resp = await all_renamed.execute(_query(
             population="orders", dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(customers.credit)", name="cr")],
+            metrics=[QueryMetric(metric="sum(customers.credit)", alias="cr")],
             to_many_handling="associate"))
         assert cells(resp, dim_suffix="status", metric="cr") == ASSOC_CREDIT_BY_STATUS
 
@@ -109,7 +109,7 @@ class TestExecutedRenamedKeys:
         # The FK dimension reroots onto the target key, so it slices, not broadcasts.
         resp = await all_renamed.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "sum(customers.credit)", "name": "cr"}]}))
+            "metrics": [{"metric": "sum(customers.credit)", "alias": "cr"}]}))
         assert cells(resp, dim_suffix="customer_id", metric="cr") == {
             1: 100.0, 2: 200.0, 3: 300.0}
         assert warnings_of(resp, "broadcast") == []
@@ -117,7 +117,7 @@ class TestExecutedRenamedKeys:
     async def test_population_pushdown_over_renamed_keys(self, all_renamed: SlayerQueryEngine):
         resp = await all_renamed.execute(_query(
             population="customers",
-            metrics=[DatasetMetric(expression="sum(credit)", name="cr")],
+            metrics=[QueryMetric(metric="sum(credit)", alias="cr")],
             filter=["orders.status = 'new'"]))
         (row,) = resp.data
         value = next(v for k, v in row.items() if k.endswith("cr"))
@@ -184,12 +184,12 @@ class TestJoinSafetyLogicalSpace:
         hub = SlayerDataset(
             name="hub", data_source="test", sql_table="hub",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region_fk", sql="region_code", datatype=DataType.INT),
-                DatasetField(name="region_id", sql="region_fk", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_fk", sql="region_code", datatype=DataType.INTEGER),
+                DatasetField(name="region_id", sql="region_fk", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="regions",
-                             join_pairs=[["region_id", "id"]])],
+                             from_columns=["region_id"], to_columns=["id"])],
         )
         regions = regions_dataset()
         assert not grain_determines(
@@ -204,8 +204,8 @@ def _customer_totals(*, key: str = "customer_id") -> SlayerDataset:
     return SlayerDataset.model_validate({
         "name": "customer_totals", "data_source": "test",
         "source_queries": [{"population": "orders", "dimensions": ["customer_id"],
-                            "metrics": [{"expression": "sum(amount)", "name": "amt"}]}],
-        "relationships": [{"to": "customers", "join_pairs": [[key, "id"]]}],
+                            "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}],
+        "relationships": [{"to": "customers", "from_columns": [key], "to_columns": ["id"]}],
     })
 
 
@@ -214,7 +214,7 @@ class TestQueryBackedJoinKeys:
         await all_renamed.save_dataset(_customer_totals())
         resp = await all_renamed.execute(_query(
             population="customer_totals", dimensions=["customers.name"],
-            metrics=[{"expression": "sum(amt)", "name": "total"}]))
+            metrics=[{"metric": "sum(amt)", "alias": "total"}]))
         assert cells(resp, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
 
     async def test_extension_join_over_query_backed_base_executes(self, all_renamed: SlayerQueryEngine):
@@ -223,10 +223,10 @@ class TestQueryBackedJoinKeys:
         await all_renamed.save_dataset(base)
         resp = await all_renamed.execute(_query(
             population="customer_totals",
-            extensions=[{"source_name": "customer_totals", "relationships": [
-                {"to": "customers", "join_pairs": [["customer_id", "id"]]}]}],
+            extensions=[{"dataset": "customer_totals", "relationships": [
+                {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}]}],
             dimensions=["customers.name"],
-            metrics=[{"expression": "sum(amt)", "name": "total"}]))
+            metrics=[{"metric": "sum(amt)", "alias": "total"}]))
         assert cells(resp, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
 
     async def test_join_on_undeclared_output_rejected_at_save(self, all_renamed: SlayerQueryEngine):

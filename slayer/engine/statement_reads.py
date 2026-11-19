@@ -72,7 +72,7 @@ def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerDatas
         chain = []
     for edge in chain:
         forward = edge.source_dataset == edge.declaring_dataset
-        pairs = [(s, t) if forward else (t, s) for s, t in edge.join_pairs]
+        pairs = [(s, t) if forward else (t, s) for s, t in edge.column_pairs]
         target = edge.to if forward else edge.source_dataset
         reads.relationships.add((edge.declaring_dataset, target, edge.name, frozenset(pairs)))
         reads.fields.update((edge.declaring_dataset, s) for s, _ in pairs)

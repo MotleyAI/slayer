@@ -62,7 +62,7 @@ async def test_try_cast_follows_the_server_version(pg) -> None:
 
 @pytest.mark.integration
 async def test_plain_cast_raises_on_invalid_input(pg) -> None:
-    query = q(dimensions=["id", {"expression": "CAST(code AS INT)", "name": "x"}])
+    query = q(dimensions=["id", {"field": "CAST(code AS INT)", "alias": "x"}])
     with pytest.raises(Exception, match="(?i)invalid input syntax"):  # noqa: B017 — Postgres's own error
         await pg[0].execute(query)
 
@@ -76,6 +76,6 @@ async def test_parameterised_cast_is_postgres_numeric(pg) -> None:
 
 @pytest.mark.integration
 async def test_cast_to_json_executes(pg) -> None:
-    resp = await pg[0].execute(q(dimensions=["id", {"expression": "CAST(payload AS JSON)", "name": "x"}],
+    resp = await pg[0].execute(q(dimensions=["id", {"field": "CAST(payload AS JSON)", "alias": "x"}],
                                  filter=["id = 1"], distinct_dimension_values=False))
     assert by_key(resp, "id", "x")[1] in ({"a": 1}, '{"a": 1}')

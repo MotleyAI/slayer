@@ -20,8 +20,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }

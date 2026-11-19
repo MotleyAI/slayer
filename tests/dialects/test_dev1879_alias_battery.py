@@ -15,8 +15,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from tests._dev1879_helpers import dry_response
 from slayer.engine.query_engine import SlayerResponse
 
@@ -65,7 +64,7 @@ _UNSUPPORTED_CELLS = {
 def _shape_query(shape: str) -> SlayerQuery:
     return SlayerQuery(
         population="mart",
-        metrics=[DatasetMetric(expression=_SHAPES[shape])],
+        metrics=[QueryMetric(metric=_SHAPES[shape])],
         time_dimensions=[
             TimeDimension(
                 field="created_at",
@@ -130,8 +129,8 @@ async def test_bigquery_unnamed_formula_measures() -> None:
     query = SlayerQuery(
         population="mart",
         metrics=[
-            DatasetMetric(expression="sum(logo_churn) / sum(logo_bop)"),
-            DatasetMetric(expression="time_shift(sum(cmrr_eop), -1, 'year')"),
+            QueryMetric(metric="sum(logo_churn) / sum(logo_bop)"),
+            QueryMetric(metric="time_shift(sum(cmrr_eop), -1, 'year')"),
         ],
         time_dimensions=[
             TimeDimension(

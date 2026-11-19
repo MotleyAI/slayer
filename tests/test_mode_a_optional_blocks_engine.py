@@ -57,9 +57,9 @@ def _block_dataset() -> SlayerDataset:
         sql="SELECT * FROM orders WHERE 1=1 AND {? region IN ({regions}) ?}",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -70,7 +70,7 @@ def _block_dataset() -> SlayerDataset:
 async def test_optional_block_collapses_to_unfiltered_when_missing():
     engine, tmp = await _engine_with(_block_dataset())
     try:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 735.0
     finally:
@@ -82,7 +82,7 @@ async def test_optional_block_filters_with_in_list_when_present():
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "variables": {"regions": ["US", "CA"]},
         })
         resp = await engine.execute(q)
@@ -96,7 +96,7 @@ async def test_optional_block_single_value_list():
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "variables": {"regions": ["EU"]},
         })
         resp = await engine.execute(q)
@@ -112,16 +112,16 @@ async def test_required_var_alongside_block_raises_and_names_it():
             "AND {? region IN ({regions}) ?}",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
     engine, tmp = await _engine_with(model)
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "variables": {"regions": ["US"]},
         })
         with pytest.raises(Exception, match="min_amount"):
@@ -175,14 +175,14 @@ async def test_bare_var_default_satisfies_required_at_runtime():
         data_source="ds",
         query_variables={"region": "EU"},
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
     engine, tmp = await _engine_with(model)
     try:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 275.0  # EU only
     finally:
@@ -201,9 +201,9 @@ async def test_get_result_column_types_probes_scalar_and_date_and_list_contexts(
             "AND {? region IN ({regions}) ?}",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
     engine, tmp = await _engine_with(model)

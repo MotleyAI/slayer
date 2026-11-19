@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "targets",
-    "join_pairs": [
-     [
-      "target_id",
-      "id"
-     ]
+    "from_columns": [
+     "target_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

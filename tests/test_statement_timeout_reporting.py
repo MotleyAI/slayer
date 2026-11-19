@@ -6,8 +6,8 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.core.warnings import (
     AnySlayerWarning,
     SlayerStatementTimeoutSkippedWarning,
@@ -80,8 +80,8 @@ async def engine(tmp_path, monkeypatch: pytest.MonkeyPatch) -> SlayerQueryEngine
     await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     ))
 
@@ -104,7 +104,7 @@ async def engine(tmp_path, monkeypatch: pytest.MonkeyPatch) -> SlayerQueryEngine
     return SlayerQueryEngine(storage=storage)
 
 
-_QUERY = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])  # pyright: ignore[reportArgumentType]
+_QUERY = SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")])  # pyright: ignore[reportArgumentType]
 
 
 async def test_data_query_response_carries_skip(engine: SlayerQueryEngine) -> None:

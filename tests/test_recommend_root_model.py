@@ -51,16 +51,16 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _col(name: str, type_: DataType = DataType.TEXT, pk: bool = False) -> DatasetField:
+def _col(name: str, type_: DataType = DataType.STRING, pk: bool = False) -> DatasetField:
     return DatasetField(name=name, sql=name, datatype=type_, primary_key=pk)
 
 
 def _left(target: str, pairs: list[list[str]]) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=pairs, join_type=JoinType.LEFT)
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], join_type=JoinType.LEFT)
 
 
 def _inner(target: str, pairs: list[list[str]]) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=pairs, join_type=JoinType.INNER)
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], join_type=JoinType.INNER)
 
 
 @pytest_asyncio.fixture
@@ -73,15 +73,15 @@ async def storage() -> AsyncIterator[StorageBackend]:
         await s.save_dataset(SlayerDataset(
             name="orders", data_source="mydb", sql_table="orders",
             fields=[
-                _col("id", DataType.INT, pk=True),
+                _col("id", DataType.INTEGER, pk=True),
                 _col("status"),
-                _col("revenue", DataType.DOUBLE),
-                _col("amount", DataType.DOUBLE),
-                _col("qty", DataType.INT),
-                _col("ordered_at", DataType.TIMESTAMP),
-                DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
-                DatasetField(name="product_id", datatype=DataType.INT, hidden=True),
-                DatasetField(name="warehouse_id", datatype=DataType.INT, hidden=True),
+                _col("revenue", DataType.FLOAT),
+                _col("amount", DataType.FLOAT),
+                _col("qty", DataType.INTEGER),
+                _col("ordered_at", DataType.DATETIME),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
+                DatasetField(name="product_id", datatype=DataType.INTEGER, hidden=True),
+                DatasetField(name="warehouse_id", datatype=DataType.INTEGER, hidden=True),
             ],
             metrics=[DatasetMetric(expression="sum(revenue) / count(*)", name="aov")],
             aggregations=[Aggregation(
@@ -97,46 +97,46 @@ async def storage() -> AsyncIterator[StorageBackend]:
         ))
         await s.save_dataset(SlayerDataset(
             name="customers", data_source="mydb", sql_table="customers",
-            fields=[_col("id", DataType.INT, pk=True), _col("name"), _col("region_id", DataType.INT)],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("name"), _col("region_id", DataType.INTEGER)],
             relationships=[_left("regions", [["region_id", "id"]])],
         ))
         await s.save_dataset(SlayerDataset(
             name="products", data_source="mydb", sql_table="products",
-            fields=[_col("id", DataType.INT, pk=True), _col("category"), _col("price", DataType.DOUBLE)],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("category"), _col("price", DataType.FLOAT)],
         ))
         await s.save_dataset(SlayerDataset(
             name="warehouses", data_source="mydb", sql_table="warehouses",
-            fields=[_col("id", DataType.INT, pk=True), _col("name"), _col("region_id", DataType.INT)],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("name"), _col("region_id", DataType.INTEGER)],
             relationships=[_left("regions", [["region_id", "id"]])],
         ))
         await s.save_dataset(SlayerDataset(
             name="regions", data_source="mydb", sql_table="regions",
-            fields=[_col("id", DataType.INT, pk=True), _col("name"), _col("population", DataType.INT)],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("name"), _col("population", DataType.INTEGER)],
         ))
         # No reverse declaration on order_items — the orders→order_items INNER
         # edge traverses both ways; a mirror would be rejected.
         await s.save_dataset(SlayerDataset(
             name="order_items", data_source="mydb", sql_table="order_items",
-            fields=[_col("id", DataType.INT, pk=True), _col("order_id", DataType.INT), _col("sku"), _col("quantity", DataType.INT)],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("order_id", DataType.INTEGER), _col("sku"), _col("quantity", DataType.INTEGER)],
         ))
         await s.save_dataset(SlayerDataset(
             name="tickets", data_source="mydb", sql_table="tickets",
-            fields=[_col("id", DataType.INT, pk=True), _col("subject"), _col("agent_id", DataType.INT)],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("subject"), _col("agent_id", DataType.INTEGER)],
             relationships=[_left("agents", [["agent_id", "id"]])],
         ))
         await s.save_dataset(SlayerDataset(
             name="agents", data_source="mydb", sql_table="agents",
-            fields=[_col("id", DataType.INT, pk=True), _col("name")],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("name")],
         ))
         await s.save_dataset(SlayerDataset(
             name="logs", data_source="mydb", sql_table="logs",
-            fields=[_col("id", DataType.INT, pk=True), _col("line")],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("line")],
         ))
 
         # otherdb — a uniquely-named model, for the cross-datasource guard.
         await s.save_dataset(SlayerDataset(
             name="widgets", data_source="otherdb", sql_table="widgets",
-            fields=[_col("id", DataType.INT, pk=True), _col("sku")],
+            fields=[_col("id", DataType.INTEGER, pk=True), _col("sku")],
         ))
         yield s
 
@@ -152,7 +152,7 @@ async def collision_storage() -> AsyncIterator[StorageBackend]:
         for ds in ("mydb", "otherdb"):
             await s.save_dataset(SlayerDataset(
                 name="orders", data_source=ds, sql_table="orders",
-                fields=[_col("id", DataType.INT, pk=True), _col("status")],
+                fields=[_col("id", DataType.INTEGER, pk=True), _col("status")],
             ))
         yield s
 
@@ -557,7 +557,7 @@ class TestDataSourceAndDedup:
             await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
             await s.save_dataset(SlayerDataset(
                 name="shared", data_source="mydb", sql_table="shared",
-                fields=[_col("id", DataType.INT, pk=True), _col("status")],
+                fields=[_col("id", DataType.INTEGER, pk=True), _col("status")],
             ))
             eng = SlayerQueryEngine(storage=s)
             try:
@@ -576,11 +576,11 @@ class TestDataSourceAndDedup:
             await s.save_datasource(DatasourceConfig(name="d", type="postgres", host="x"))
             await s.save_dataset(SlayerDataset(
                 name="sales", data_source="d", sql_table="sales",
-                fields=[_col("id", DataType.INT, pk=True), _col("revenue", DataType.DOUBLE)],
+                fields=[_col("id", DataType.INTEGER, pk=True), _col("revenue", DataType.FLOAT)],
             ))
             await s.save_dataset(SlayerDataset(
                 name="calc", data_source="d", sql_table="calc",
-                fields=[_col("id", DataType.INT, pk=True)],
+                fields=[_col("id", DataType.INTEGER, pk=True)],
                 aggregations=[Aggregation(name="revenue", expression="SUM({expr})")],
             ))
             eng = SlayerQueryEngine(storage=s)
@@ -646,18 +646,18 @@ class TestDistinctOwningModelHopSum:
             await s.save_datasource(DatasourceConfig(name="iso", type="postgres", host="x"))
             await s.save_dataset(SlayerDataset(
                 name="A", data_source="iso", sql_table="A",
-                fields=[_col("id", DataType.INT, pk=True), _col("b_id", DataType.INT)]
+                fields=[_col("id", DataType.INTEGER, pk=True), _col("b_id", DataType.INTEGER)]
                 + [_col(f"a{i}") for i in range(1, 6)],
                 relationships=[_left("B", [["b_id", "id"]])],
             ))
             await s.save_dataset(SlayerDataset(
                 name="B", data_source="iso", sql_table="B",
-                fields=[_col("id", DataType.INT, pk=True), _col("b1"), _col("c_id", DataType.INT)],
+                fields=[_col("id", DataType.INTEGER, pk=True), _col("b1"), _col("c_id", DataType.INTEGER)],
                 relationships=[_left("C", [["c_id", "id"]])],
             ))
             await s.save_dataset(SlayerDataset(
                 name="C", data_source="iso", sql_table="C",
-                fields=[_col("id", DataType.INT, pk=True), _col("c1")],
+                fields=[_col("id", DataType.INTEGER, pk=True), _col("c1")],
             ))
             eng = SlayerQueryEngine(storage=s)
             try:
@@ -877,11 +877,11 @@ class TestWarningsSurfaced:
             # model named "shared" lives in mydb → collides with ds "shared".
             await s.save_dataset(SlayerDataset(
                 name="shared", data_source="mydb", sql_table="shared",
-                fields=[_col("id", DataType.INT, pk=True)],
+                fields=[_col("id", DataType.INTEGER, pk=True)],
             ))
             await s.save_dataset(SlayerDataset(
                 name="leafmodel", data_source="shared", sql_table="leafmodel",
-                fields=[_col("id", DataType.INT, pk=True), _col("status")],
+                fields=[_col("id", DataType.INTEGER, pk=True), _col("status")],
             ))
             eng = SlayerQueryEngine(storage=s)
             try:

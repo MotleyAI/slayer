@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customer__region",
-    "join_pairs": [
-     [
-      "cr_id",
-      "id"
-     ]
+    "from_columns": [
+     "cr_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

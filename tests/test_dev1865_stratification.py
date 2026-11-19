@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1865_fixtures import (
     BAND35,
     CITY_TOTAL,
     GRAND_TOTAL,
     REGION_TOTAL,
-    DatasetMetric,
     month_td,
     q,
     rows_by,
@@ -35,7 +36,7 @@ class TestFieldMaskRestrictsPopulation:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region", "orders.city")
         expected = {**CITY_TOTAL, ("South", "CityC"): 25.0}
         assert set(by) == set(expected)
@@ -48,7 +49,7 @@ class TestFieldMaskRestrictsPopulation:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount, partition_by=region)", name="part")],
+            metrics=[QueryMetric(metric="sum(amount, partition_by=region)", alias="part")],
         )), "orders.region", "orders.city")
         ok_region_total = {"North": 100.0, "South": 25.0, None: 60.0}
         for key, row in by.items():
@@ -57,8 +58,8 @@ class TestFieldMaskRestrictsPopulation:
     async def test_stratum0_reaches_the_windowed_producer(self, exec_engine) -> None:
         # Same stratum-0 filter reaches a windowed producer: the (South, Mar)
         # bucket is the lone 'hold' order, so it drops when status='ok' applies.
-        win = DatasetMetric(
-            expression="sum(amount, window='90d', partition_by=region)", name="w",
+        win = QueryMetric(
+            metric="sum(amount, window='90d', partition_by=region)", alias="w",
         )
         unfiltered = {_bucket_key(r): r for r in (await exec_engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(), metrics=[win],
@@ -80,7 +81,7 @@ class TestFieldMaskRestrictsPopulation:
         # A host-local stratum-0 filter reaches a cross-model producer via the
         # established cross-root propagation (axiom D): the grand total counts
         # only customers with >=1 app order (c1+c3 = 150), not the full 350.
-        total = DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total")
+        total = QueryMetric(metric="sum(customers.spend, partition_by=[])", alias="total")
         unfiltered = (await exec_engine.execute(q(
             dimensions=["customers.tier"], metrics=[total],
         ))).data
@@ -100,7 +101,7 @@ class TestFieldWinsTieBreak:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
             filter=["city != 'CityB'"],
-            metrics=[DatasetMetric(expression="sum(amount, partition_by=region)", name="part")],
+            metrics=[QueryMetric(metric="sum(amount, partition_by=region)", alias="part")],
         )), "orders.region", "orders.city")
         assert float(by[("North", "CityA")]["orders.part"]) == pytest.approx(30.0)
         assert float(by[("South", "CityC")]["orders.part"]) == pytest.approx(50.0)
@@ -111,11 +112,11 @@ class TestAttachedValueDoesNotFeedProducers:
         # Filtering on the computed dim's own aggregate masks the re-aggregation,
         # but the grand-total producer still sees the unmasked population.
         by = rows_by(await exec_engine.execute(q(
-            dimensions=["region", "city", {"expression": BAND35, "name": "band"}],
+            dimensions=["region", "city", {"field": BAND35, "alias": "band"}],
             filter=["sum(amount, partition_by=city) > 45"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="s"),
-                DatasetMetric(expression="sum(amount, partition_by=[])", name="grand"),
+                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(metric="sum(amount, partition_by=[])", alias="grand"),
             ],
         )), "orders.region", "orders.city")
         expected_s = {k: v for k, v in CITY_TOTAL.items() if v > 45}
@@ -131,7 +132,7 @@ class TestMeasureMaskPrunesCellsOnly:
         by = rows_by(await exec_engine.execute(q(
             dimensions=["region"],
             filter=["sum(amount) > 55"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )), "orders.region")
         expected = {k: v for k, v in REGION_TOTAL.items() if v > 55}
         assert {k[0] for k in by} == set(expected)
@@ -143,7 +144,7 @@ class TestHiddenPositionsAddNoColumns:
     async def test_filter_only_and_order_only_add_no_columns(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             filter=["count(*) > 0"],
             order=[{"field": "max(amount)", "direction": "desc"}],
         ))

@@ -210,7 +210,7 @@ def _typed(dataset: SlayerDataset, name: str) -> DataType:
 
 def _probed(live: Live) -> DataType:
     """An integer probe's type: ``INT`` on every backend (the typed probe certifies integers)."""
-    return DataType.INT
+    return DataType.INTEGER
 
 
 def _items_cube(sql_table: str) -> dict[str, Any]:
@@ -229,8 +229,8 @@ def _qty_cube(sql_table: str) -> dict[str, Any]:
 
 def test_mixed_case_schema_qualified_table(live: Live) -> None:
     models, messages = _cube(live, _items_cube(live.mixed))
-    assert _typed(models["items"], "qty") is DataType.INT
-    assert _typed(models["items"], "placed_at") is DataType.TIMESTAMP
+    assert _typed(models["items"], "qty") is DataType.INTEGER
+    assert _typed(models["items"], "placed_at") is DataType.DATETIME
     assert typing_notes(messages) == []
 
 
@@ -254,7 +254,7 @@ async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live
     _schemas(live)
     models, messages = _cube(live, _qty_cube(UNQUOTED_MIXED))
     folds = live.engine.dialect.name == "postgresql"
-    assert _typed(models["items"], "qty") is (DataType.TEXT if folds else DataType.INT)
+    assert _typed(models["items"], "qty") is (DataType.STRING if folds else DataType.INTEGER)
     assert typing_notes(messages) == []
     assert await _grouped(live, tmp_path, models, "items", "qty") == (["t"] if folds else [4])
 
@@ -262,14 +262,14 @@ async def test_unquoted_mixed_case_table_types_the_table_queries_read(live: Live
 def test_reserved_word_table_cube(live: Live) -> None:
     models, messages = _cube(live, {"name": "orders", "sql_table": RESERVED,
                                     "dimensions": [{"name": "amount", "sql": "{CUBE}.amount", "type": "number"}]})
-    assert _typed(models["orders"], "amount") is DataType.INT
+    assert _typed(models["orders"], "amount") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
 def test_reserved_word_table_dbt(live: Live) -> None:
     models, messages = _dbt(live, [{"name": "orders", "model": RESERVED,
                                     "dimensions": [{"name": "amount", "type": "categorical"}]}])
-    assert _typed(models["orders"], "amount") is DataType.INT
+    assert _typed(models["orders"], "amount") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
@@ -277,21 +277,21 @@ def test_catalog_qualified_table(live: Live) -> None:
     if live.catalog is None:
         pytest.skip("SQLite reaches no catalog")
     models, messages = _cube(live, _qty_cube(f"{live.catalog}.sales.orders"))
-    assert _typed(models["items"], "qty") is DataType.INT
+    assert _typed(models["items"], "qty") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
 def test_unreachable_catalog_takes_the_reason_path(live: Live) -> None:
     models, messages = _dbt(live, [{"name": "m", "model": "elsewhere.sales.orders",
                                     "dimensions": [{"name": "qty", "type": "categorical"}]}])
-    assert _typed(models["m"], "qty") is not DataType.INT
+    assert _typed(models["m"], "qty") is not DataType.INTEGER
     assert len(typing_notes(messages)) == 1
 
 
 def test_quoted_name_containing_a_dot(live: Live) -> None:
     _schemas(live)
     models, messages = _cube(live, _qty_cube(DOTTED))
-    assert _typed(models["items"], "qty") is DataType.INT
+    assert _typed(models["items"], "qty") is DataType.INTEGER
     assert typing_notes(messages) == []
 
 
@@ -299,8 +299,8 @@ def test_quoted_dotted_schema_is_not_a_three_part_name(duck: Live) -> None:
     """``sales.v2.orders`` (catalog ``sales``) holds a text ``qty``; ``"sales.v2".orders`` an integer one."""
     dotted, _ = _cube(duck, _qty_cube(DOTTED))
     three_part, _ = _cube(duck, _qty_cube("sales.v2.orders"))
-    assert _typed(dotted["items"], "qty") is DataType.INT
-    assert _typed(three_part["items"], "qty") is DataType.TEXT
+    assert _typed(dotted["items"], "qty") is DataType.INTEGER
+    assert _typed(three_part["items"], "qty") is DataType.STRING
 
 
 def _doubled(dataset: str, *, dimension: str = "doubled", expr: str = "qty * 2") -> dict[str, Any]:
@@ -337,18 +337,18 @@ def test_cube_expression_probe_over_a_reserved_word_table(live: Live) -> None:
 
 def test_osi_expression_probe_over_a_reserved_word_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("orders", source=RESERVED, fields=[f("id"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is _probed(live)
+    assert _typed(models["orders"], "doubled") is DataType.STRING
 
 
 def test_osi_expression_probe_over_a_mixed_case_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("items", source=live.mixed, fields=[f("qty"), f("doubled", "qty * 2", datatype="String")])]))
-    assert _typed(models["items"], "doubled") is _probed(live)
+    assert _typed(models["items"], "doubled") is DataType.STRING
 
 
 def test_osi_sql_source_selecting_from_a_reserved_word_table(live: Live) -> None:
     models, _ = _osi(live, flat([ds("orders", source='SELECT id, amount FROM "order"',
                                     fields=[f("id"), f("amount"), f("doubled", "amount * 2", datatype="String")])]))
-    assert _typed(models["orders"], "doubled") is _probed(live)
+    assert _typed(models["orders"], "doubled") is DataType.STRING
 
 
 @pytest.mark.parametrize("source_sql", [
@@ -361,7 +361,7 @@ def test_source_sql_the_importer_cannot_read(live: Live, source_sql: str) -> Non
     models, messages = _dbt(live, [{"name": "m", "model": "src", "dimensions": [
         {"name": "id", "type": "categorical"}],
         "measures": [{"name": "total", "agg": "sum", "expr": "id"}]}], regular_datasets=[regular])
-    assert _typed(models["m"], "id_col") is DataType.DOUBLE
+    assert _typed(models["m"], "id_col") is DataType.FLOAT
     assert len(typing_notes(messages)) == 1
     assert live.ran("_slayer_src") == []
 
@@ -456,12 +456,12 @@ def test_unreadable_probe_expression_is_none_without_a_round_trip(live: Live) ->
 def test_statement_keyword_function_still_probes(live: Live) -> None:
     """``REPLACE(...)`` reads as a statement on SQLite unless parsed in expression context."""
     source = _source(live, sql_table=RESERVED)
-    assert source.probe("REPLACE(CAST(amount AS VARCHAR), '1', '2')") == (DataType.TEXT, None)
+    assert source.probe("REPLACE(CAST(amount AS VARCHAR), '1', '2')") == (DataType.STRING, None)
 
 
 def test_sql_source_is_described_by_one_statement(live: Live) -> None:
     source = _source(live, sql=f"SELECT qty, placed_at FROM {live.mixed}")
-    assert source.column("qty") in ((DataType.INT, None), (DataType.DOUBLE, None))
+    assert source.column("qty") in ((DataType.INTEGER, None), (DataType.FLOAT, None))
     selects = [s for s in live.statements if s.lstrip().upper().startswith("SELECT") and s != _PING]
     (describe,) = source.probes
     assert selects == _probe_statements(live, describe, columns=["qty", "placed_at"])
@@ -491,13 +491,13 @@ def _importer_datasets(live: Live, importer: str, table: str) -> tuple[dict[str,
 
 @pytest.mark.parametrize("importer", ["cube", "dbt", "osi"])
 @pytest.mark.parametrize(("table", "typed", "value"), [
-    (UNQUOTED_MIXED, DataType.TEXT, "t"),
-    ('"Sales"."OrderItems"', DataType.INT, 4),
+    (UNQUOTED_MIXED, DataType.STRING, "t"),
+    ('"Sales"."OrderItems"', DataType.INTEGER, 4),
 ])
 async def test_postgres_reads_a_source_table_with_its_folding(pg: Live, tmp_path: Path, importer: str, table: str,
                                                               typed: DataType, value: Any) -> None:
     models, name = _importer_datasets(pg, importer, table)
-    sql_source_integer = importer == "dbt" and typed is DataType.INT
+    sql_source_integer = importer == "dbt" and typed is DataType.INTEGER
     assert _typed(models[name], "qty") is (_probed(pg) if sql_source_integer else typed)
     assert await _grouped(pg, tmp_path, models, name, "qty") == [value]
 
@@ -507,10 +507,10 @@ async def test_mixed_case_column_reads_the_folded_physical_column(pg: Live, tmp_
         {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True},
         {"name": "amount", "sql": "{CUBE}.OrderAmount", "type": "number"}],
         "measures": [{"name": "total", "type": "sum", "sql": "{CUBE}.OrderAmount"}]})
-    assert _typed(models["payments"], "amount") is DataType.INT
+    assert _typed(models["payments"], "amount") is DataType.INTEGER
     assert await _grouped(pg, tmp_path, models, "payments", "amount") == [7]
     (row,) = await _rows(pg, tmp_path / "measure", models.values(), {
-        "population": "payments", "metrics": [{"expression": "total", "name": "v"}]})
+        "population": "payments", "metrics": [{"metric": "total", "alias": "v"}]})
     assert row["payments.v"] == 7
 
 
@@ -518,7 +518,7 @@ async def test_names_local_to_a_source_query(pg: Live, tmp_path: Path) -> None:
     models, _ = _cube(pg, {"name": "recent", "dimensions": [{"name": "total", "sql": "{CUBE}.total", "type": "number"}],
                            "sql": "WITH Recent AS (SELECT Qty AS Total FROM Sales.OrderItems) "
                                   "SELECT Total FROM Recent ORDER BY Total"})
-    assert _typed(models["recent"], "total") is DataType.TEXT
+    assert _typed(models["recent"], "total") is DataType.STRING
     assert await _grouped(pg, tmp_path, models, "recent", "total") == ["t"]
 
 
@@ -549,8 +549,8 @@ def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, in
 
 
 @pytest.mark.parametrize(("quoting", "typed", "value"), [
-    (None, DataType.INT, 4),
-    ({"identifier": False}, DataType.TEXT, "t"),
+    (None, DataType.INTEGER, 4),
+    ({"identifier": False}, DataType.STRING, "t"),
 ])
 async def test_dbt_relation_follows_the_quoting_policy(pg: Live, tmp_path: Path, quoting: dict[str, Any] | None,
                                                        typed: DataType, value: Any) -> None:
@@ -559,7 +559,7 @@ async def test_dbt_relation_follows_the_quoting_policy(pg: Live, tmp_path: Path,
     assert await _grouped(pg, tmp_path, models, "items", "qty") == [value]
 
 
-@pytest.mark.parametrize(("quoting", "typed"), [(None, DataType.INT), ({"identifier": False}, DataType.TEXT)])
+@pytest.mark.parametrize(("quoting", "typed"), [(None, DataType.INTEGER), ({"identifier": False}, DataType.STRING)])
 def test_dbt_hidden_model_lookup_follows_the_quoting_policy(pg: Live, tmp_path: Path, quoting: dict[str, Any] | None,
                                                            typed: DataType) -> None:
     models = _dbt_files(pg, tmp_path, quoting=quoting, include_hidden=True)

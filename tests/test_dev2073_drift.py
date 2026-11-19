@@ -60,7 +60,7 @@ class TestDropAddressesOneEdge:
         entry = await _orders_entry(drifted)
         assert entry.remove.relationships == ["billing_address"]
         assert entry.remove.model_dump(mode="json")["relationship_edges"] == [
-            {"to": "addresses", "name": "billing_address", "join_pairs": [["billing_address_id", "id"]]},
+            {"to": "addresses", "name": "billing_address", "from_columns": ["billing_address_id"], "to_columns": ["id"]},
         ]
         assert "relationship:billing_address" in {r.target for r in entry.reasons}
 
@@ -92,7 +92,7 @@ class TestQueryBackedCascadeFollowsTheEdge:
     async def test_only_a_stage_walking_the_dropped_edge_is_whole_dropped(self, drifted: Live, prefix: str) -> None:
         for name, edge in (("by_shipping", "shipping_address"), ("by_billing", "billing_address")):
             stage = SlayerQuery.model_validate(
-                {"population": "orders", "dimensions": [f"{prefix}{edge}.city"], "metrics": [{"expression": "count(*)"}]},
+                {"population": "orders", "dimensions": [f"{prefix}{edge}.city"], "metrics": [{"metric": "count(*)"}]},
             )
             await drifted.storage.save_dataset(SlayerDataset(name=name, data_source=DS, source_queries=[stage]))
         models = list((await drifted.datasets()).values())
@@ -117,9 +117,9 @@ def _route_datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name=table, data_source=DS, sql_table=table,
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="email", datatype=DataType.TEXT),
-                     *(DatasetField(name=fk, datatype=DataType.INT) for fk in fks)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="email", datatype=DataType.STRING),
+                     *(DatasetField(name=fk, datatype=DataType.INTEGER) for fk in fks)],
             relationships=[join_to([[fk, "id"]], target=_ROUTE_FKS[fk]) for fk in fks],
         )
         for table, fks in _ROUTE_TABLES.items()
@@ -147,7 +147,7 @@ class TestEveryHopOfTheRouteCounts:
                 await lv.storage.save_dataset(model)
             for name, dim in (("full", "subscription.customer.consumer.email"), ("short", "consumer.email")):
                 stage = SlayerQuery.model_validate(
-                    {"population": "invoice", "dimensions": [dim], "metrics": [{"expression": "count(*)"}]},
+                    {"population": "invoice", "dimensions": [dim], "metrics": [{"metric": "count(*)"}]},
                 )
                 await lv.storage.save_dataset(SlayerDataset(name=name, data_source=DS, source_queries=[stage]))
             models = list((await lv.datasets()).values())
@@ -160,13 +160,13 @@ class TestNonParallelDropReportsTheTarget:
         async with live(LIVE_WITHOUT_BILLING) as lv:
             customers = SlayerDataset(
                 name="customers", data_source=DS, sql_table="customers",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                         DatasetField(name="name", datatype=DataType.TEXT)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                         DatasetField(name="name", datatype=DataType.STRING)],
             )
             orders = SlayerDataset(
                 name="orders", data_source=DS, sql_table="orders",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                         DatasetField(name="customer_id", datatype=DataType.INT)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                         DatasetField(name="customer_id", datatype=DataType.INTEGER)],
                 relationships=[join_to([["customer_id", "id"]], target="customers")],
             )
             for model in (customers, orders):

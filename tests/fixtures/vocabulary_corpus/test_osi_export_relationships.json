@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "orders",
-    "join_pairs": [
-     [
-      "status",
-      "status"
-     ]
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "status"
     ]
    }
   }

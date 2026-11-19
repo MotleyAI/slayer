@@ -69,7 +69,7 @@ def _seed_db(db_path: str) -> None:
         )
 
 
-def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INT) -> DatasetField:
+def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INTEGER) -> DatasetField:
     return DatasetField(name=name, sql=name, datatype=dtype, primary_key=pk)
 
 
@@ -80,61 +80,61 @@ def _datasets() -> list[SlayerDataset]:
         )
 
     return [
-        m("customers", "customers", [_col("id", pk=True), _col("region", dtype=DataType.TEXT)]),
+        m("customers", "customers", [_col("id", pk=True), _col("region", dtype=DataType.STRING)]),
         m(
             "orders",
             "orders",
             [_col("id", pk=True), _col("customer_id")],
-            [DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
         m(
             "user_profiles",
             "user_profiles",
-            [_col("customer_id", pk=True), _col("bio", dtype=DataType.TEXT)],
-            [DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            [_col("customer_id", pk=True), _col("bio", dtype=DataType.STRING)],
+            [DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
         m("cart_lines", "cart_lines", [_col("id", pk=True), _col("cart_id")]),
         m(
             "carts",
             "carts",
             [_col("id", pk=True)],
-            [DatasetRelationship(to="cart_lines", join_pairs=[["id", "cart_id"]])],
+            [DatasetRelationship(to="cart_lines", from_columns=["id"], to_columns=["cart_id"])],
         ),
-        m("right_m", "right_tbl", [_col("k"), _col("label", dtype=DataType.TEXT)]),
+        m("right_m", "right_tbl", [_col("k"), _col("label", dtype=DataType.STRING)]),
         m(
             "left_m",
             "left_tbl",
             [_col("k")],
-            [DatasetRelationship(to="right_m", join_pairs=[["k", "k"]])],
+            [DatasetRelationship(to="right_m", from_columns=["k"], to_columns=["k"])],
         ),
         m("empty_tgt", "empty_tgt", [_col("k", pk=True)]),
         m(
             "empty_src",
             "empty_src",
             [_col("k")],
-            [DatasetRelationship(to="empty_tgt", join_pairs=[["k", "k"]])],
+            [DatasetRelationship(to="empty_tgt", from_columns=["k"], to_columns=["k"])],
         ),
         m(
             "populated_src",
             "populated_src",
             [_col("k")],
-            [DatasetRelationship(to="empty_tgt", join_pairs=[["k", "k"]])],
+            [DatasetRelationship(to="empty_tgt", from_columns=["k"], to_columns=["k"])],
         ),
         m(
             "all_null_src",
             "all_null_src",
             [_col("k")],
-            [DatasetRelationship(to="customers", join_pairs=[["k", "id"]])],
+            [DatasetRelationship(to="customers", from_columns=["k"], to_columns=["id"])],
         ),
-        m("ck_parent", "ck_parent", [_col("a"), _col("b", dtype=DataType.TEXT)]),
+        m("ck_parent", "ck_parent", [_col("a"), _col("b", dtype=DataType.STRING)]),
         m(
             "ck_child",
             "ck_child",
-            [_col("a"), _col("b", dtype=DataType.TEXT)],
+            [_col("a"), _col("b", dtype=DataType.STRING)],
             [
                 DatasetRelationship(
                     to="ck_parent",
-                    join_pairs=[["a", "a"], ["b", "b"]],
+                    from_columns=["a", "b"], to_columns=["a", "b"],
                 )
             ],
         ),
@@ -278,9 +278,9 @@ class TestVerdicts:
         # An expression-backed join key is not a base column: the model never builds.
         columns = [
             _col("id", pk=True),
-            DatasetField(name="ck", sql="customer_id + 0", datatype=DataType.INT),
+            DatasetField(name="ck", sql="customer_id + 0", datatype=DataType.INTEGER),
         ]
-        joins = [DatasetRelationship(to="customers", join_pairs=[["ck", "id"]])]
+        joins = [DatasetRelationship(to="customers", from_columns=["ck"], to_columns=["id"])]
         with pytest.raises(ValueError, match=r"orders_expr.*customers.*'ck'"):
             SlayerDataset(
                 name="orders_expr", sql_table="orders", data_source="ds",
@@ -297,7 +297,7 @@ class TestVerdicts:
             sql="SELECT id, customer_id FROM orders",
             data_source="ds",
             fields=[_col("id", pk=True), _col("customer_id")],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         await storage.save_dataset(raw)
 
@@ -340,7 +340,7 @@ class TestUniqueContradictions:
             sql_table="cart_lines",
             data_source="ds",
             fields=[_col("cart_id", pk=True), _col("id")],
-            relationships=[DatasetRelationship(to="carts", join_pairs=[["cart_id", "id"]])],
+            relationships=[DatasetRelationship(to="carts", from_columns=["cart_id"], to_columns=["id"])],
         )
         await storage.save_dataset(probe)
 
@@ -364,8 +364,8 @@ class TestUniqueContradictions:
             name="ck_child_solo",
             sql_table="ck_child",
             data_source="ds",
-            fields=[_col("a", pk=True), _col("b", pk=True, dtype=DataType.TEXT)],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["a", "id"]])],
+            fields=[_col("a", pk=True), _col("b", pk=True, dtype=DataType.STRING)],
+            relationships=[DatasetRelationship(to="customers", from_columns=["a"], to_columns=["id"])],
         )
         await storage.save_dataset(probe)
 
@@ -497,7 +497,7 @@ class TestSideStatsSqlShape:
 
     def test_keys_read_as_slayer_reads_them_on_snowflake(self) -> None:
         model = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
-            DatasetField(name="customer_id", datatype=DataType.INT), DatasetField(name="exact", sql='"exact_key"', datatype=DataType.INT)])
+            DatasetField(name="customer_id", datatype=DataType.INTEGER), DatasetField(name="exact", sql='"exact_key"', datatype=DataType.INTEGER)])
         rows_sql, _ = _side_stats_sql(
             table="orders", key_cols=_physical_keys(dataset=model, keys=["customer_id", "exact"]),
             sqlglot_name="snowflake",
@@ -624,7 +624,7 @@ class TestEmptyPopulationIsNoEvidence:
             sql="SELECT k FROM empty_src",
             data_source="ds",
             fields=[_col("k")],
-            relationships=[DatasetRelationship(to="empty_tgt", join_pairs=[["k", "k"]])],
+            relationships=[DatasetRelationship(to="empty_tgt", from_columns=["k"], to_columns=["k"])],
         )
         await storage.save_dataset(raw)
         report = await engine.detect_relationship_cardinality(data_source="ds")

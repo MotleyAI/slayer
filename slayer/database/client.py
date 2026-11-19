@@ -232,7 +232,7 @@ def _abandon(engines: list[AsyncEngine]) -> None:
             logger.warning("Failed to abandon a closed loop's async engine.", exc_info=True)
 
 
-_TEXT = ResultColumnType(type=DataType.TEXT)
+_TEXT = ResultColumnType(type=DataType.STRING)
 
 
 def _first_value_type(value: Any) -> ResultColumnType:
@@ -242,9 +242,9 @@ def _first_value_type(value: Any) -> ResultColumnType:
     if isinstance(value, (list, tuple)):
         return ResultColumnType(type=DataType.ARRAY)
     if isinstance(value, (int, float, Decimal)):
-        return ResultColumnType(type=DataType.DOUBLE)
+        return ResultColumnType(type=DataType.FLOAT)
     if isinstance(value, datetime):
-        return ResultColumnType(type=DataType.TIMESTAMP)
+        return ResultColumnType(type=DataType.DATETIME)
     if isinstance(value, date):
         return ResultColumnType(type=DataType.DATE)
     return _TEXT

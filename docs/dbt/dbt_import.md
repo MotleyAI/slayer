@@ -59,7 +59,8 @@ The converter builds an entity registry by scanning all semantic models, then re
 # SLayer output: orders dataset gets a relationship
 relationships:
   - to: customers
-    join_pairs: [["customer_id", "id"]]
+    from_columns: ["customer_id"]
+    to_columns: ["id"]
     cardinality: many_to_one
 ```
 
@@ -166,7 +167,7 @@ Every legal dbt construct that reaches the importer is either represented exactl
 | Measure `agg: sum/avg/min/max/count/count_distinct/median` | `DatasetMetric` `<agg>(col)` |
 | Measure `agg: percentile` (continuous) | `percentile(col, p=<value>)` |
 | Measure `agg: count_distinct_approx` | `count_distinct_approx(col)` (dialect-aware) |
-| Measure `agg: sum_boolean` | `DatasetField.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, datatype `INT`, `sum(col)` |
+| Measure `agg: sum_boolean` | `DatasetField.sql = "CASE WHEN (<expr>) THEN 1 ELSE 0 END"`, datatype `Integer`, `sum(col)` |
 | Metric-level / per-input `filter` | pushed down into a leaf `DatasetField.filter` (CASE-inside-aggregate) |
 | Filter as string **or** list (`WhereFilterIntersection`) | AND-joined into one filter |
 | Ratio metric | `num / nullif(den, 0)` |

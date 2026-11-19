@@ -21,7 +21,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -88,10 +88,10 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="orders",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
             metrics=[
                 DatasetMetric(expression="sum(amount) / count(*)", name="aov"),
@@ -105,9 +105,9 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
             sql_table="customers",
             fields=[
                 DatasetField(
-                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
+                    name="id", sql="id", datatype=DataType.FLOAT, primary_key=True
                 ),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
     )
@@ -157,7 +157,7 @@ class TestInspectModelLearningsSection:
             entities=["mydb.orders.amount"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                metrics=[QueryMetric(metric="sum(amount)")],
             ),
         )
         result = await _call(

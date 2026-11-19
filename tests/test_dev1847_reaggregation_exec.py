@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryDimension, QueryMetric
+
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     CHAIN_AVG_BY_REGION,
@@ -24,8 +26,6 @@ from tests._dev1847_fixtures import (
     INNER_CR,
     KEYLESS_GRAND_TOTAL,
     ROW_WEIGHTED_WRONG,
-    FieldRef,
-    DatasetMetric,
     SlayerQuery,
     broadcast_warnings,
     chain_q,
@@ -67,10 +67,10 @@ class TestHeadlineOracle:
         sibling plain measure (the core SLayer invariant)."""
         base = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
         with_reagg = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
                       reagg("avg", INNER_CR, name="acr")]))
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
         b = {k: v["sales.tot"] for k, v in region_key(with_reagg).items()}
@@ -86,7 +86,7 @@ class TestDegenerateIdentity:
         remedy (operand grain == outer grain)."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="avg(sum(amount))", name="acr")]))
+            metrics=[QueryMetric(metric="avg(sum(amount))", alias="acr")]))
         vals = _region_vals(resp)
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(total)
@@ -170,7 +170,7 @@ class TestNullEmptyKeyless:
         # Inner producer grain: the (Gap, NULL) cell totals both NULL-city rows.
         cells = await exec_engine.execute(sales_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression=INNER_CR, name="cr")]))
+            metrics=[QueryMetric(metric=INNER_CR, alias="cr")]))
         by_cell = rows_by(cells, "sales.region", "sales.city")
         assert float(by_cell[("Gap", None)]["sales.cr"]) == pytest.approx(
             GAP_NULL_CELL_TOTAL)
@@ -199,8 +199,8 @@ class TestNullEmptyKeyless:
         South/Alpha would otherwise average in as 0)."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"], filter=["product = 'Q'"],
-            metrics=[DatasetMetric(
-                expression=f"avg(coalesce({INNER_CR}, 0))", name="acz")]))
+            metrics=[QueryMetric(
+                metric=f"avg(coalesce({INNER_CR}, 0))", alias="acz")]))
         vals = _region_vals(resp, "sales.acz")
         assert set(vals) == set(FILTERED_COALESCE_AVG_BY_REGION)
         for region, expected in FILTERED_COALESCE_AVG_BY_REGION.items():
@@ -234,10 +234,10 @@ class TestCrossModelInner:
         cells — region 1 orders 10+20+40, region 2 order 100."""
         resp = await exec_engine.execute(SlayerQuery(
             population="customers",
-            dimensions=[FieldRef(name="region_id")],
-            metrics=[DatasetMetric(
-                expression="avg(sum(corders.amount, partition_by=region_id))",
-                name="art")]))
+            dimensions=[QueryDimension(field="region_id")],
+            metrics=[QueryMetric(
+                metric="avg(sum(corders.amount, partition_by=region_id))",
+                alias="art")]))
         by = rows_by(resp, "customers.region_id")
         assert float(by[(1,)]["customers.art"]) == pytest.approx(70.0)
         assert float(by[(2,)]["customers.art"]) == pytest.approx(100.0)

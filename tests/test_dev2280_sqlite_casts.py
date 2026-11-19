@@ -29,7 +29,7 @@ def stamp(value: Any) -> Any:
 
 
 async def dimension(engine: SlayerQueryEngine, expr: str) -> dict[int, Any]:
-    resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "v"}]))
+    resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "v"}]))
     return {int(k): stamp(v) for k, v in by_key(resp, "id").items()}
 
 

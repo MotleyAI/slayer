@@ -65,7 +65,7 @@ their ranking key, a row-level expression (`last(balance, updated_at)`,
 `last(balance, CAST(updated_at AS DATE))`), never a literal or a nested aggregate.
 
 Naming and matching read the parse tree, not the text: a metric declared
-`{"expression": "sum(revenue)", "name": "rev"}` is matched by a filter written
+`{"metric": "sum(revenue)", "alias": "rev"}` is matched by a filter written
 `sum(revenue) > 100`, and the result key is `revenue_sum` either way.
 
 Disambiguation rules:
@@ -113,9 +113,9 @@ The query-backed dataset wrap (`_expand_query_backed_dataset`, via `flat_name` i
 Accepted at `DatasetField` construction:
 
 ```json
-{"name": "active_amount", "sql": "amount", "filter": "json_extract(metadata, '$.active') = 1", "datatype": "DOUBLE"}
-{"name": "amt", "sql": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "datatype": "DOUBLE"}
-{"name": "amt", "sql": "amount", "filter": "customers.regions.name = 'US'", "datatype": "DOUBLE"}
+{"name": "active_amount", "sql": "amount", "filter": "json_extract(metadata, '$.active') = 1", "datatype": "Float"}
+{"name": "amt", "sql": "amount", "filter": "CASE WHEN status = 'active' THEN 1 ELSE 0 END = 1", "datatype": "Float"}
+{"name": "amt", "sql": "amount", "filter": "customers.regions.name = 'US'", "datatype": "Float"}
 ```
 
 Rejected at `DatasetField` construction:
@@ -279,8 +279,8 @@ case-insensitively):
 ```json
 {
   "population": "orders",
-  "dimensions": [{"expression": "date_part('day_of_week', created_at)", "name": "dow"}],
-  "metrics": [{"expression": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "name": "age_days"}],
+  "dimensions": [{"field": "date_part('day_of_week', created_at)", "alias": "dow"}],
+  "metrics": [{"metric": "avg(date_diff('day', created_at, coalesce(shipped_at, now())))", "alias": "age_days"}],
   "filter": ["created_at >= date_add(current_date(), -30, 'day')"]
 }
 ```

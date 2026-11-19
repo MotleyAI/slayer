@@ -29,20 +29,20 @@ def _dataset(name: str, cols: list[str], joins: list[DatasetRelationship] | None
 class TestModelJoinNameField:
     def test_valid_name_accepted(self) -> None:
         join = DatasetRelationship(to="customers",
-                         join_pairs=[["customer_id", "id"]],
+                         from_columns=["customer_id"], to_columns=["id"],
                          name="billing_customer")
         assert join.name == "billing_customer"
 
     def test_default_is_unnamed(self) -> None:
         join = DatasetRelationship(to="customers",
-                         join_pairs=[["customer_id", "id"]])
+                         from_columns=["customer_id"], to_columns=["id"])
         assert join.name is None
 
     @pytest.mark.parametrize("bad", ["a.b", "a:b", "__slayer_x"])
     def test_model_name_identifier_rules_apply(self, bad: str) -> None:
         with pytest.raises(ValueError):
             DatasetRelationship(to="customers",
-                      join_pairs=[["customer_id", "id"]], name=bad)
+                      from_columns=["customer_id"], to_columns=["id"], name=bad)
 
 
 async def _storage(tmpdir: str) -> YAMLStorage:
@@ -60,7 +60,7 @@ class TestSaveTimeEdgeNames:
             await storage.save_dataset(_dataset("regions", ["id"]))
             orders = _dataset("orders", ["id", "customer_id"], [
                 DatasetRelationship(to="customers",
-                          join_pairs=[["customer_id", "id"]], name="regions"),
+                          from_columns=["customer_id"], to_columns=["id"], name="regions"),
             ])
             with pytest.raises(ValueError, match="regions"):
                 await storage.save_dataset(orders)
@@ -71,9 +71,9 @@ class TestSaveTimeEdgeNames:
             await storage.save_dataset(_dataset("customers", ["id"]))
             orders = _dataset("orders", ["id", "a_id", "b_id"], [
                 DatasetRelationship(to="customers",
-                          join_pairs=[["a_id", "id"]], name="bill"),
+                          from_columns=["a_id"], to_columns=["id"], name="bill"),
                 DatasetRelationship(to="customers",
-                          join_pairs=[["b_id", "id"]], name="bill"),
+                          from_columns=["b_id"], to_columns=["id"], name="bill"),
             ])
             with pytest.raises(ValueError, match="bill"):
                 await storage.save_dataset(orders)
@@ -84,12 +84,12 @@ class TestSaveTimeEdgeNames:
             await storage.save_dataset(_dataset("regions", ["id"]))
             await storage.save_dataset(_dataset("customers", ["id", "region_id"], [
                 DatasetRelationship(to="regions",
-                          join_pairs=[["region_id", "id"]], name="hop"),
+                          from_columns=["region_id"], to_columns=["id"], name="hop"),
             ]))
             # Both edges are incident to customers — the shared name is ambiguous there.
             orders = _dataset("orders", ["id", "customer_id"], [
                 DatasetRelationship(to="customers",
-                          join_pairs=[["customer_id", "id"]], name="hop"),
+                          from_columns=["customer_id"], to_columns=["id"], name="hop"),
             ])
             with pytest.raises(ValueError, match="hop"):
                 await storage.save_dataset(orders)
@@ -99,8 +99,8 @@ class TestSaveTimeEdgeNames:
             storage = await _storage(d)
             await storage.save_dataset(_dataset("customers", ["id"]))
             orders = _dataset("orders", ["id", "a_id", "b_id"], [
-                DatasetRelationship(to="customers", join_pairs=[["a_id", "id"]]),
-                DatasetRelationship(to="customers", join_pairs=[["b_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["a_id"], to_columns=["id"]),
+                DatasetRelationship(to="customers", from_columns=["b_id"], to_columns=["id"]),
             ])
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -119,8 +119,8 @@ class TestSaveTimeEdgeNames:
             await storage.save_dataset(_dataset("customers", ["id"]))
             orders = _dataset("orders", ["id", "a_id", "b_id"], [
                 DatasetRelationship(to="customers",
-                          join_pairs=[["a_id", "id"]], name="bill"),
-                DatasetRelationship(to="customers", join_pairs=[["b_id", "id"]]),
+                          from_columns=["a_id"], to_columns=["id"], name="bill"),
+                DatasetRelationship(to="customers", from_columns=["b_id"], to_columns=["id"]),
             ])
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -135,9 +135,9 @@ class TestSaveTimeEdgeNames:
             await storage.save_dataset(_dataset("customers", ["id"]))
             orders = _dataset("orders", ["id", "a_id", "b_id"], [
                 DatasetRelationship(to="customers",
-                          join_pairs=[["a_id", "id"]], name="bill"),
+                          from_columns=["a_id"], to_columns=["id"], name="bill"),
                 DatasetRelationship(to="customers",
-                          join_pairs=[["b_id", "id"]], name="ship"),
+                          from_columns=["b_id"], to_columns=["id"], name="ship"),
             ])
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -157,7 +157,7 @@ class TestModelNameVsEdgeNameCollision:
             await storage.save_dataset(_dataset("customers", ["id"]))
             await storage.save_dataset(_dataset("orders", ["id", "customer_id"], [
                 DatasetRelationship(to="customers",
-                          join_pairs=[["customer_id", "id"]], name="billing"),
+                          from_columns=["customer_id"], to_columns=["id"], name="billing"),
             ]))
             clashing = _dataset("billing", ["id"])
             with pytest.raises(ValueError, match="billing"):
@@ -170,7 +170,7 @@ class TestSaveTimeExactInverse:
         await storage.save_dataset(_dataset("customers", ["id"]))
         await storage.save_dataset(_dataset("orders", ["id", "customer_id"], [
             DatasetRelationship(to="customers",
-                      join_pairs=[["customer_id", "id"]],
+                      from_columns=["customer_id"], to_columns=["id"],
                       join_type=JoinType.INNER,
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
         ]))
@@ -181,7 +181,7 @@ class TestSaveTimeExactInverse:
             storage = await self._seed_forward(d)
             customers = _dataset("customers", ["id"], [
                 DatasetRelationship(to="orders",
-                          join_pairs=[["id", "customer_id"]],
+                          from_columns=["id"], to_columns=["customer_id"],
                           join_type=JoinType.INNER,
                           cardinality=RelationshipCardinality.ONE_TO_MANY),
             ])
@@ -193,7 +193,7 @@ class TestSaveTimeExactInverse:
             storage = await self._seed_forward(d)
             customers = _dataset("customers", ["id"], [
                 DatasetRelationship(to="orders",
-                          join_pairs=[["id", "customer_id"]],
+                          from_columns=["id"], to_columns=["customer_id"],
                           join_type=JoinType.INNER),
             ])
             with pytest.raises(ValueError, match="automatic"):
@@ -206,7 +206,7 @@ class TestSaveTimeExactInverse:
             storage = await self._seed_forward(d)
             customers = _dataset("customers", ["id"], [
                 DatasetRelationship(to="orders",
-                          join_pairs=[["id", "customer_id"]],
+                          from_columns=["id"], to_columns=["customer_id"],
                           join_type=JoinType.INNER,
                           cardinality=RelationshipCardinality.ONE_TO_MANY,
                           name="back"),
@@ -223,7 +223,7 @@ class TestSaveTimeExactInverse:
             # Different pair set — a deliberate second edge, not a mirror.
             customers = _dataset("customers", ["id", "rep_order_id"], [
                 DatasetRelationship(to="orders",
-                          join_pairs=[["rep_order_id", "id"]],
+                          from_columns=["rep_order_id"], to_columns=["id"],
                           join_type=JoinType.INNER),
             ])
             await storage.save_dataset(customers)

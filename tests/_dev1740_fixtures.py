@@ -63,7 +63,7 @@ from slayer.core.models import (
     DatasetRelationship,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, ComputedDimension, DatasetMetric, SlayerQuery, TimeDimension
+from slayer.core.query import DatasetMetric, FieldRef, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -90,21 +90,21 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="city", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             # Filtered column (CASE-WHEN at aggregation time) — for a filtered
             # aggregate reconciliation under the computed dimension.
-            DatasetField(name="ok_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="status = 'ok'"),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -223,13 +223,13 @@ def two_stage_banding() -> list:
     stage1 = SlayerQuery(
         name="per_city", population="orders",
         dimensions=["city", "region"],
-        metrics=[DatasetMetric(expression="sum(amount)", name="city_total")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="city_total")],
     )
     stage2 = SlayerQuery(
         population="per_city",
-        dimensions=[FieldRef(name="region"),
-                    ComputedDimension(expression="CASE WHEN city_total > 5000 THEN 1 ELSE 0 END", name="band")],
-        metrics=[DatasetMetric(expression="sum(city_total)", name="band_total")],
+        dimensions=[QueryDimension(field="region"),
+                    QueryDimension(field="CASE WHEN city_total > 5000 THEN 1 ELSE 0 END", alias="band")],
+        metrics=[QueryMetric(metric="sum(city_total)", alias="band_total")],
     )
     return [stage1, stage2]
 

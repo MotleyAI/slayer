@@ -10,7 +10,7 @@
    },
    "new": {
     "name": "id",
-    "datatype": "number",
+    "datatype": "Float",
     "primary_key": true
    }
   },
@@ -29,8 +29,8 @@
     "population": "items",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }

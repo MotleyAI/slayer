@@ -73,18 +73,18 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         )
     )
 
     def _base_cols():
         return [
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ]
 
     # Same-model derived column referenced by the model filter.
@@ -115,7 +115,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 ),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
             filters=["eu_flag"],
         )
@@ -141,7 +141,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
                 DatasetField(
                     name="ranked",
                     sql="rank() over (order by amount)",
-                    datatype=DataType.INT,
+                    datatype=DataType.INTEGER,
                 ),
             ],
             filters=["ranked > 1"],
@@ -165,7 +165,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 async def test_model_filter_inlines_same_model_derived(engine):
     """A model filter naming a same-model derived column inlines its SQL."""
-    q = SlayerQuery.model_validate({"population": "orders_big", "metrics": [{"expression": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders_big", "metrics": [{"metric": "count(*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -181,7 +181,7 @@ async def test_model_filter_inlines_same_model_derived(engine):
 async def test_model_filter_derived_crosses_join(engine):
     """A derived column whose SQL crosses a join pulls the LEFT JOIN into the
     FROM and qualifies the predicate to the join alias."""
-    q = SlayerQuery.model_validate({"population": "orders_eu", "metrics": [{"expression": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders_eu", "metrics": [{"metric": "count(*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -197,7 +197,7 @@ async def test_model_filter_derived_crosses_join(engine):
 
 async def test_base_only_model_filter_unchanged(engine):
     """The base-column model-filter path is unaffected (regression guard)."""
-    q = SlayerQuery.model_validate({"population": "orders_base", "metrics": [{"expression": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders_base", "metrics": [{"metric": "count(*)"}]})
     dry = await engine.execute(q, dry_run=True)
     sql = dry.sql
     assert sql is not None
@@ -209,13 +209,13 @@ async def test_base_only_model_filter_unchanged(engine):
 
 async def test_windowed_derived_column_model_filter_raises(engine):
     """A model filter referencing a windowed ``Column.sql`` still raises."""
-    q = SlayerQuery.model_validate({"population": "orders_win", "metrics": [{"expression": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders_win", "metrics": [{"metric": "count(*)"}]})
     with pytest.raises(ValueError, match="window"):
         await engine.execute(q)
 
 
 async def test_measure_ref_model_filter_raises(engine):
     """A model filter referencing a same-model ModelMeasure still raises."""
-    q = SlayerQuery.model_validate({"population": "orders_meas", "metrics": [{"expression": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders_meas", "metrics": [{"metric": "count(*)"}]})
     with pytest.raises(ValueError, match="metric"):
         await engine.execute(q)

@@ -146,7 +146,7 @@ def test_unparseable_expression_contributes_no_names() -> None:
 def test_every_position_is_read() -> None:
     found = query_features({
         "population": "orders",
-        "dimensions": [{"name": "c", "expression": "upper(city)"}],
+        "dimensions": [{"alias": "c", "field": "upper(city)"}],
         "time_dimensions": [{"field": "coalesce(shipped_at, ordered_at)", "granularity": "month"}],
         "metrics": ["sum(amount)"],
         "filter": ["length(name) > 3"],
@@ -162,8 +162,8 @@ def test_plain_dimension_expression_is_read() -> None:
 
 def test_every_stage_is_read() -> None:
     found = query_features([
-        {"name": "s1", "population": "orders", "dimensions": [{"name": "c", "expression": "upper(city)"}],
-         "metrics": [{"expression": "sum(amount)", "name": "rev"}]},
+        {"name": "s1", "population": "orders", "dimensions": [{"alias": "c", "field": "upper(city)"}],
+         "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
         {"population": "s1", "metrics": ["max(abs(rev))"]},
     ])
     assert Counter(found.functions) == Counter(["upper", "abs"])
@@ -172,7 +172,7 @@ def test_every_stage_is_read() -> None:
 
 
 @pytest.mark.parametrize("body", [
-    {"dimensions": [{"name": "m", "expression": "month(ordered_at)"}], "metrics": ["count(*)"]},
+    {"dimensions": [{"alias": "m", "field": "month(ordered_at)"}], "metrics": ["count(*)"]},
     {"metrics": ["count(*)"], "filter": ["year(ordered_at) = 2024"]},
 ])
 def test_extraction_calls_count_as_date_part(body: dict[str, Any]) -> None:

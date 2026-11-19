@@ -70,8 +70,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "tot"
+      "metric": "sum(amount)",
+      "alias": "tot"
      }
     ]
    }
@@ -97,8 +97,8 @@
     ],
     "metrics": [
      {
-      "expression": "iif(region == 'North', sum(tot), 0)",
-      "name": "m"
+      "metric": "iif(region == 'North', sum(tot), 0)",
+      "alias": "m"
      }
     ]
    }

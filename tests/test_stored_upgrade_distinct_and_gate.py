@@ -73,7 +73,7 @@ class TestDistinctRewrite:
     @pytest.mark.parametrize(("stored", "loaded"), DISTINCT_CASES)
     def test_query_fields(self, stored: str, loaded: str) -> None:
         query = _query(version=8, measures=[stored], filters=[f"{stored} > 1"])
-        assert [m.expression for m in query.metrics or []] == [loaded]
+        assert [m.metric for m in query.metrics or []] == [loaded]
         assert query.filter == [f"{loaded} > 1"]
 
     def test_saved_query_stage(self) -> None:
@@ -82,13 +82,13 @@ class TestDistinctRewrite:
                                    "measures": [{"formula": "sum(distinct)", "name": "d"}]}]}
         model = SlayerDataset.model_validate(doc)
         stage = (model.source_queries or [])[0]
-        assert [m.expression for m in stage.metrics or []] == ['sum("distinct")']
+        assert [m.metric for m in stage.metrics or []] == ['sum("distinct")']
 
     def test_memory_query(self) -> None:
         query = {"version": 8, "source_model": "orders", "measures": ["sum(distinct)"]}
         mem = Memory.model_validate(memory_v2(memory_id="m", version=6, query=query))
         assert mem.query is not None
-        assert [m.expression for m in mem.query.metrics or []] == ['sum("distinct")']
+        assert [m.metric for m in mem.query.metrics or []] == ['sum("distinct")']
 
     def test_a_current_document_is_not_rewritten(self) -> None:
         doc = _model_doc(version=CURRENT_VERSIONS["SlayerModel"], measures=[{"name": "x", "formula": "sum(distinct)"}])
@@ -96,7 +96,7 @@ class TestDistinctRewrite:
 
     def test_a_client_query_is_not_rewritten(self) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(distinct)"]})
-        assert [m.expression for m in query.metrics or []] == ["sum(distinct)"]
+        assert [m.metric for m in query.metrics or []] == ["sum(distinct)"]
 
 
 @pytest.fixture
@@ -217,7 +217,7 @@ class TestOldGrammarGate:
             query = _query(version=6, name="gate_q", filters=[BETWEEN, 'status == "paid"'],
                            dimensions=[{"expression": "status | region", "name": "tag"}])
         assert query.filter == [BETWEEN, "status = 'paid'"]
-        assert [getattr(d, "expression") for d in query.dimensions or []] == ["status || region"]
+        assert [d.field for d in query.dimensions or []] == ["status || region"]
         assert _warned(messages, document="gate_q", field=(BETWEEN, "filters")), messages
 
     def test_memory(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -227,6 +227,6 @@ class TestOldGrammarGate:
             mem = Memory.model_validate(memory_v2(memory_id="m_gate", version=4, query=query))
         assert mem.query is not None
         assert mem.query.filter == [BETWEEN]
-        assert [m.expression for m in mem.query.metrics or []] == ["sum(a || b)"]
+        assert [m.metric for m in mem.query.metrics or []] == ["sum(a || b)"]
         assert _warned(messages, document="m_gate", field=(BETWEEN, "filters")), messages
         assert _warned(messages, document="m_gate", field=("sum(a || b)", "ab")), messages

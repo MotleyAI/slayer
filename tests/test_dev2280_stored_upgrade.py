@@ -203,7 +203,7 @@ class TestRewrites:
         for stale in ("<= '2024-04-10'", "> '2024-04-10'", "= '2024-04-10'"):
             assert stale not in text, text
         assert mem.query.filter == ["created_at < '2024-04-11'"]
-        assert [m.expression for m in mem.query.metrics or []] == [EARLY_COUNT_UPGRADED]
+        assert [m.metric for m in mem.query.metrics or []] == [EARLY_COUNT_UPGRADED]
         assert "iif(created_at >= '2024-04-11', 'late', 'early')" in text
         assert "iif(created_at < '2024-04-11', created_at, NULL)" in text
         assert "iif(created_at in '2024-04-10', 0, 1)" in text

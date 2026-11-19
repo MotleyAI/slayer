@@ -48,11 +48,11 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="orders_t",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
         ],
     )
 
@@ -157,7 +157,7 @@ class TestLocalMode:
     ) -> None:
         """Local-mode ``query_sync`` reaches the engine (not HTTP)."""
         await _save_orders(storage)
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
         resp = client.query_sync(query, dry_run=True)
         assert resp.sql is not None
         assert "amount" in resp.sql.lower()
@@ -169,7 +169,7 @@ class TestLocalMode:
         await _save_orders(storage)
         query_dict = {
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         }
         resp = client.query_sync(query_dict, dry_run=True)
         assert resp.sql is not None
@@ -182,7 +182,7 @@ class TestLocalMode:
         await _save_orders(storage)
         query_dict = {
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         }
         sql = client.sql_sync(query_dict)
         assert isinstance(sql, str)
@@ -197,12 +197,12 @@ class TestLocalMode:
             {
                 "name": "by_customer",
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
-                "dimensions": [{"name": "customer_id"}],
+                "metrics": [{"metric": "sum(amount)"}],
+                "dimensions": ["customer_id"],
             },
             {
                 "population": "by_customer",
-                "metrics": [{"expression": "avg(amount_sum)"}],
+                "metrics": [{"metric": "avg(amount_sum)"}],
             },
         ]
         resp = client.query_sync(queries, dry_run=True)
@@ -220,7 +220,7 @@ class TestLocalMode:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                     "dimensions": ["region"],
                 })
             ],
@@ -242,12 +242,12 @@ class TestLocalMode:
             {
                 "name": "by_customer",
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
-                "dimensions": [{"name": "customer_id"}],
+                "metrics": [{"metric": "sum(amount)"}],
+                "dimensions": ["customer_id"],
             },
             {
                 "population": "by_customer",
-                "metrics": [{"expression": "avg(amount_sum)"}],
+                "metrics": [{"metric": "avg(amount_sum)"}],
             },
         )
         resp = client.query_sync(queries, dry_run=True)
@@ -263,7 +263,7 @@ class TestLocalMode:
         payload: Mapping[str, Any] = MappingProxyType(
             {
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             }
         )
         resp = client.query_sync(payload, dry_run=True)
@@ -292,7 +292,7 @@ class TestHttpBodyShape:
             {
                 "name": "a",
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             },
             {"population": "a"},
         ]
@@ -320,7 +320,7 @@ class TestHttpBodyShape:
         q = SlayerQuery.model_validate({
             "name": "a",
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
         items: list[Any] = [q, {"population": "a"}]
         client.query_sync(items)
@@ -363,7 +363,7 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         payload = {
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         }
         client.query_sync(payload)
         body = cap.last_body
@@ -388,10 +388,7 @@ class TestHttpBodyShape:
         client.query_sync(payload)
         body = cap.last_body
         assert body is not None
-        # Each measure landed as a dict, not a bare string.
-        for m in body["metrics"]:
-            assert isinstance(m, dict)
-            assert m.get("expression") == "sum(amount)"
+        assert body["metrics"] == ["sum(amount)"]
 
     # --- SlayerQuery --------------------------------------------------- #
 
@@ -400,7 +397,7 @@ class TestHttpBodyShape:
         http_client_with_capture: tuple[SlayerClient, _CapturedRequests],
     ) -> None:
         client, cap = http_client_with_capture
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
         client.query_sync(q)
         # JSON mode — see codex note (4); matches _coerce_linked_entities.
         assert cap.last_body == q.model_dump(mode="json", exclude_none=True)
@@ -416,7 +413,7 @@ class TestHttpBodyShape:
             {
                 "name": "a",
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             },
             {"population": "a"},
         ]
@@ -474,7 +471,7 @@ class TestHttpBodyShape:
         client, _cap = http_client_with_capture
         payload = {
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         }
         snapshot = dict(payload)
         client.query_sync(payload, dry_run=True, explain=True)
@@ -536,7 +533,7 @@ class TestHttpBodyShape:
         AND route through the SlayerQuery normalisation pipeline."""
         client, cap = http_client_with_capture
         payload: Mapping[str, Any] = MappingProxyType(
-            {"population": "orders", "metrics": [{"expression": "sum(amount)"}]}
+            {"population": "orders", "metrics": [{"metric": "sum(amount)"}]}
         )
         client.query_sync(payload)
         assert cap.last_body == SlayerQuery.model_validate(
@@ -574,7 +571,7 @@ class TestHttpBodyShape:
         client, cap = http_client_with_capture
         payload = {
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "variables": {"region": "US"},
         }
         client.query_sync(payload)

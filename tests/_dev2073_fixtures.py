@@ -102,7 +102,7 @@ def run_script(*, db_path: str, dialect: str, script: str) -> None:
 
 
 def edge_key(dataset: str, join: DatasetRelationship) -> EdgeKey:
-    return (dataset, join.to, tuple((p[0], p[1]) for p in join.join_pairs))
+    return (dataset, join.to, tuple((p[0], p[1]) for p in join.column_pairs))
 
 
 class Live(BaseModel):
@@ -184,19 +184,19 @@ SHIPPING_PAIRS = [["shipping_address_id", "id"]]
 
 
 def join_to(pairs: list[list[str]], name: str | None = None, target: str = "addresses") -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=pairs, name=name, cardinality=RelationshipCardinality.MANY_TO_ONE)
+    return DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs], name=name, cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
 def orders_with(*joins: DatasetRelationship) -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="billing_address_id", datatype=DataType.INT),
-            DatasetField(name="shipping_address_id", datatype=DataType.INT),
-            DatasetField(name="legacy_addr", datatype=DataType.INT),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="billing_address_id", datatype=DataType.INTEGER),
+            DatasetField(name="shipping_address_id", datatype=DataType.INTEGER),
+            DatasetField(name="legacy_addr", datatype=DataType.INTEGER),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         relationships=list(joins),
     )
@@ -205,8 +205,8 @@ def orders_with(*joins: DatasetRelationship) -> SlayerDataset:
 def addresses_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="addresses", data_source=DS, sql_table="addresses",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="city", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="city", datatype=DataType.STRING)],
     )
 
 
@@ -232,4 +232,4 @@ async def dataset_store(*models: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
 async def stored_joins(storage: YAMLStorage, dataset: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
     stored = await storage.get_dataset(dataset, data_source=DS)
     assert stored is not None
-    return [(j.name, j.join_pairs) for j in stored.relationships]
+    return [(j.name, [list(p) for p in j.column_pairs]) for j in stored.relationships]

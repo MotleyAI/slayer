@@ -28,12 +28,12 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      },
      {
       "name": "revenue",
       "sql": "amount",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }
@@ -77,23 +77,23 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      },
      {
       "name": "internal_flag",
       "sql": "flag",
-      "datatype": "string",
+      "datatype": "String",
       "hidden": true
      },
      {
       "name": "revenue",
       "sql": "amount",
-      "datatype": "number"
+      "datatype": "Float"
      },
      {
       "name": "secret_sum",
       "sql": "x",
-      "datatype": "number",
+      "datatype": "Float",
       "hidden": true
      }
     ]
@@ -131,7 +131,7 @@
      {
       "name": "amount",
       "sql": "amount",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ],
     "metrics": [
@@ -160,7 +160,7 @@
     "population": "nonexistent",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -179,7 +179,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -198,7 +198,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -217,7 +217,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -269,7 +269,7 @@
       "population": "upstream",
       "metrics": [
        {
-        "expression": "sum(amount)"
+        "metric": "sum(amount)"
        }
       ],
       "dry_run": true
@@ -308,7 +308,7 @@
       "population": "upstream",
       "metrics": [
        {
-        "expression": "sum(amount)"
+        "metric": "sum(amount)"
        }
       ]
      }
@@ -316,7 +316,7 @@
     "fields": [
      {
       "name": "x",
-      "datatype": "string"
+      "datatype": "String"
      }
     ]
    }
@@ -382,17 +382,17 @@
      {
       "name": "amount",
       "sql": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      },
      {
       "name": "status",
       "sql": "status",
-      "datatype": "TEXT"
+      "datatype": "String"
      },
      {
       "name": "customer_id",
       "sql": "customer_id",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -419,7 +419,7 @@
      {
       "name": "amount",
       "sql": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -448,7 +448,7 @@
       "population": "upstream",
       "metrics": [
        {
-        "expression": "sum(amount)"
+        "metric": "sum(amount)"
        }
       ]
      }
@@ -477,7 +477,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }
@@ -504,7 +504,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }
@@ -531,7 +531,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }
@@ -558,7 +558,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }

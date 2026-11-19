@@ -61,21 +61,21 @@ def test_invert_cardinality_is_involutive() -> None:
 
 
 def test_modeljoin_cardinality_defaults_none() -> None:
-    j = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])
+    j = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])
     assert j.cardinality is None
 
 
 def test_modeljoin_accepts_cardinality_enum_and_string() -> None:
     j1 = DatasetRelationship(
         to="customers",
-        join_pairs=[["customer_id", "id"]],
+        from_columns=["customer_id"], to_columns=["id"],
         cardinality=RelationshipCardinality.MANY_TO_ONE,
     )
     assert j1.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     j2 = DatasetRelationship(
         to="customers",
-        join_pairs=[["customer_id", "id"]],
+        from_columns=["customer_id"], to_columns=["id"],
         cardinality="one_to_one",
     )
     assert j2.cardinality is RelationshipCardinality.ONE_TO_ONE
@@ -84,7 +84,7 @@ def test_modeljoin_accepts_cardinality_enum_and_string() -> None:
 def test_modeljoin_cardinality_serializes() -> None:
     j = DatasetRelationship(
         to="customers",
-        join_pairs=[["customer_id", "id"]],
+        from_columns=["customer_id"], to_columns=["id"],
         cardinality=RelationshipCardinality.MANY_TO_ONE,
     )
     dumped = j.model_dump()
@@ -97,7 +97,7 @@ def test_modeljoin_cardinality_orthogonal_to_join_type() -> None:
     # LEFT join can still carry many_to_one; the two axes are independent.
     j = DatasetRelationship(
         to="customers",
-        join_pairs=[["customer_id", "id"]],
+        from_columns=["customer_id"], to_columns=["id"],
         join_type=JoinType.LEFT,
         cardinality=RelationshipCardinality.MANY_TO_ONE,
     )
@@ -111,17 +111,17 @@ def test_modeljoin_cardinality_orthogonal_to_join_type() -> None:
 
 
 def test_column_unique_defaults_false() -> None:
-    c = DatasetField(name="id", datatype=DataType.INT)
+    c = DatasetField(name="id", datatype=DataType.INTEGER)
     assert c.unique is False
 
 
 def test_column_accepts_unique() -> None:
-    c = DatasetField(name="email", datatype=DataType.TEXT, unique=True)
+    c = DatasetField(name="email", datatype=DataType.STRING, unique=True)
     assert c.unique is True
 
 
 def test_column_unique_serializes() -> None:
-    c = DatasetField(name="email", datatype=DataType.TEXT, unique=True)
+    c = DatasetField(name="email", datatype=DataType.STRING, unique=True)
     assert c.model_dump()["unique"] is True
     assert DatasetField.model_validate(c.model_dump()).unique is True
 
@@ -132,12 +132,12 @@ def test_column_unique_serializes() -> None:
 
 
 def test_old_join_without_cardinality_validates() -> None:
-    j = DatasetRelationship.model_validate({"to": "c", "join_pairs": [["a", "b"]]})
+    j = DatasetRelationship.model_validate({"to": "c", "from_columns": ["a"], "to_columns": ["b"]})
     assert j.cardinality is None
 
 
 def test_old_column_without_unique_validates() -> None:
-    c = DatasetField.model_validate({"name": "id", "datatype": "INT"})
+    c = DatasetField.model_validate({"name": "id", "datatype": "Integer"})
     assert c.unique is False
 
 
@@ -156,9 +156,9 @@ def test_current_version_data_without_the_new_fields_needs_no_migration() -> Non
             "name": "orders",
             "sql_table": "orders",
             "data_source": "testds",
-            "fields": [{"name": "customer_id", "datatype": "INT"}],
+            "fields": [{"name": "customer_id", "datatype": "Integer"}],
             "relationships": [
-                {"to": "customers", "join_pairs": [["customer_id", "id"]]}
+                {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}
             ],
         }
     )
@@ -196,14 +196,14 @@ def _dataset_with_cardinality() -> SlayerDataset:
         sql_table="orders",
         data_source="testds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="email", datatype=DataType.TEXT, unique=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="email", datatype=DataType.STRING, unique=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             )
         ],

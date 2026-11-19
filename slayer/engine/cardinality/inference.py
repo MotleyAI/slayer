@@ -81,7 +81,7 @@ class RelationshipCardinalityFinding(BaseModel):
     data_source: str
     dataset: str
     to: str
-    join_pairs: list[list[str]]
+    column_pairs: list[tuple[str, str]]
     stored: RelationshipCardinality | None = None
     detected: RelationshipCardinality | None = None
     source_side: SideStats | None = None

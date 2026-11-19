@@ -24,7 +24,7 @@ class TestACaseVariantIsNoOverride:
     @pytest.mark.parametrize("spelling", _SPELLINGS)
     async def test_every_spelling_is_the_builtin(self, builtin: str, expected: float, spelling: str) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_hijacker(builtin)])]) as engine:
-            resp = await engine.execute({"population": "t", "metrics": [{"expression": _spell(spelling, builtin)}]})
+            resp = await engine.execute({"population": "t", "metrics": [{"metric": _spell(spelling, builtin)}]})
         (row,) = resp.data
         assert float(row[f"t.a_{builtin}"]) == expected, row
 

@@ -12,8 +12,8 @@ from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.field_expansion import expand_derived_refs_sync, root_scope_field_ids
 
 MODEL = SlayerDataset(name="orders", sql_table="orders", data_source="ds", fields=[
-    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-    DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.TEXT),
+    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+    DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.STRING),
 ])
 
 

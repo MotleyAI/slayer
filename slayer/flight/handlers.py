@@ -23,7 +23,7 @@ from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer import usage_reporting
 from slayer import otel
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 from slayer.core.format import encode_text
 from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
@@ -105,9 +105,9 @@ def _arrow_cell(value: object, dt: DataType | None) -> object:
         return None
     if dt is None or datatype_to_arrow(dt) == pa.utf8():
         return encode_text(value)
-    if dt == DataType.DOUBLE and isinstance(value, decimal.Decimal):
+    if dt.kind is TypeKind.DOUBLE and isinstance(value, decimal.Decimal):
         return float(value)
-    if dt == DataType.INT and isinstance(value, decimal.Decimal):
+    if dt == DataType.INTEGER and isinstance(value, decimal.Decimal):
         return int(value)
     return value
 

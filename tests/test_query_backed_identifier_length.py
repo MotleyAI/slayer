@@ -42,8 +42,8 @@ GOLDEN_UNDER_LIMIT_PG = (
 
 def _long_column(name: str) -> list[DatasetField]:
     return [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name=name, sql="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name=name, sql="amount", datatype=DataType.FLOAT),
     ]
 
 
@@ -126,8 +126,8 @@ class TestBackingSqlIsLengthFitted:
         expanded, sql = await _expand(
             ds_type="postgres",
             columns=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
             dimensions=["status"],
         )

@@ -36,11 +36,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -57,11 +57,11 @@
    },
    "new": {
     "to": "products",
-    "join_pairs": [
-     [
-      "product_id",
-      "id"
-     ]
+    "from_columns": [
+     "product_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -80,8 +80,8 @@
     "population": "per_customer",
     "metrics": [
      {
-      "expression": "sum(revenue)",
-      "name": "total"
+      "metric": "sum(revenue)",
+      "alias": "total"
      }
     ]
    }

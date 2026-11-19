@@ -24,8 +24,9 @@ from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1750_fixtures import (
-    DatasetMetric,
     SlayerQuery,
     base_cte_body,
     gen,
@@ -50,7 +51,7 @@ class TestShiftedCteFragmentDefaultParam:
 
     async def test_shifted_cte_joins_the_fragment_hops(self) -> None:
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="time_shift(wscaled_sum(amount), -1)", name="prev"),
+            QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
         ]))
         # The shift reads the crossing producer; the fragment's two hops + the
         # qualified weight fragment + the host ``amount`` operand all live there.
@@ -65,8 +66,8 @@ class TestShiftedCteFragmentDefaultParam:
         """The shifted re-aggregation belongs to the shifted CTE, not the host
         ``base`` — a leak there would double-join ``regions`` at host grain."""
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="sum(amount)", name="s"),
-            DatasetMetric(expression="time_shift(wscaled_sum(amount), -1)", name="prev"),
+            QueryMetric(metric="sum(amount)", alias="s"),
+            QueryMetric(metric="time_shift(wscaled_sum(amount), -1)", alias="prev"),
         ]))
         base = base_cte_body(sql)
         # The local sibling ``sum(amount)`` lives in the base; the crossing
@@ -82,9 +83,9 @@ class TestShiftedCteFragmentUserKwarg:
 
     async def test_user_string_kwarg_crossing_join_registers(self) -> None:
         sql = await gen(_q(metrics=[
-            DatasetMetric(
-                expression="time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
-                name="prev",
+            QueryMetric(
+                metric="time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
+                alias="prev",
             ),
         ]))
         assert shifted_relation(sql).startswith("_cm_"), sql
@@ -134,10 +135,10 @@ class TestShiftedCtePositionalArgRegistration:
     @pytest.mark.parametrize("agg", ["last", "first"])
     async def test_first_last_crossing_time_arg_no_silent_leak(self, agg: str) -> None:
         q = _q(metrics=[
-            DatasetMetric(expression="sum(customers.spend)", name="cm"),
-            DatasetMetric(
-                expression=f"time_shift({agg}(amount, customers.signup_at), -1)",
-                name="prev",
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(
+                metric=f"time_shift({agg}(amount, customers.signup_at), -1)",
+                alias="prev",
             ),
         ])
         sql = await gen(q)  # DEV-1835 lift: renders via the desugared producer
@@ -167,10 +168,10 @@ class TestCrossModelHiddenAliasReservation:
         # arithmetic-wrapped ``time_shift`` mints a hidden ``_time_shift_inner``
         # slot that would collide with the like-named user measure.
         sql = await gen(_q(metrics=[
-            DatasetMetric(expression="sum(customers.spend)", name="cm"),
-            DatasetMetric(expression="sum(amount)", name="_time_shift_inner"),
-            DatasetMetric(
-                expression="sum(amount) - time_shift(sum(amount), -1)", name="growth",
+            QueryMetric(metric="sum(customers.spend)", alias="cm"),
+            QueryMetric(metric="sum(amount)", alias="_time_shift_inner"),
+            QueryMetric(
+                metric="sum(amount) - time_shift(sum(amount), -1)", alias="growth",
             ),
         ]))
         # The user measure keeps its own key (closing quote pins the exact

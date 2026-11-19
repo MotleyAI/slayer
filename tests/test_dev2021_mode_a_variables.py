@@ -60,8 +60,8 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 _BASE_COLUMNS = (
-    ("id", DataType.INT), ("status", DataType.TEXT), ("name", DataType.TEXT),
-    ("amount", DataType.DOUBLE), ("created_at", DataType.DATE),
+    ("id", DataType.INTEGER), ("status", DataType.STRING), ("name", DataType.STRING),
+    ("amount", DataType.FLOAT), ("created_at", DataType.DATE),
 )
 
 
@@ -78,7 +78,7 @@ def _sql_dataset(sql: str, *, name: str = "orders_sql") -> SlayerDataset:
 
 
 def _query(source: str, expression: str, *, variables: dict[str, Any] | None = None, **extra: Any) -> SlayerQuery:
-    raw: dict[str, Any] = {"population": source, "metrics": [{"expression": expression, "name": "v"}], **extra}
+    raw: dict[str, Any] = {"population": source, "metrics": [{"metric": expression, "alias": "v"}], **extra}
     if variables is not None:
         raw["variables"] = variables
     return SlayerQuery.model_validate(raw)
@@ -137,10 +137,10 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-_SCALED = DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.DOUBLE)
-_FLOORED = DatasetField(name="big", sql="amount", filter="amount >= {floor}", datatype=DataType.DOUBLE)
-_TAGGED = DatasetField(name="tagged", sql="name || '{suffix}'", datatype=DataType.TEXT)
-_FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.DOUBLE)
+_SCALED = DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.FLOAT)
+_FLOORED = DatasetField(name="big", sql="amount", filter="amount >= {floor}", datatype=DataType.FLOAT)
+_TAGGED = DatasetField(name="tagged", sql="name || '{suffix}'", datatype=DataType.STRING)
+_FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.FLOAT)
 
 #: (model, formula, variables) — one hostile value per Mode-A surface.
 _HOSTILE = {
@@ -204,7 +204,7 @@ class TestLiteralValuesBind:
         assert await env.value(model, _query("orders", "sum(flagged)", variables={"flag": flag})) == expected
 
     async def test_sql_and_filter_of_one_column_both_bind(self, env: _Env) -> None:
-        both = DatasetField(name="both", sql="amount * {k}", filter="amount >= {floor}", datatype=DataType.DOUBLE)
+        both = DatasetField(name="both", sql="amount * {k}", filter="amount >= {floor}", datatype=DataType.FLOAT)
         model = _table_dataset(extra=(both,))
         assert await env.value(model, _query("orders", "sum(both)", variables={"k": 2, "floor": 25})) == 140
 
@@ -212,14 +212,14 @@ class TestLiteralValuesBind:
 #: (field, model) pairs whose placeholder stands in a non-literal position.
 _NON_LITERAL = {
     "model-sql-table": _sql_dataset("SELECT * FROM {table}"),
-    "column-function-name": _table_dataset(extra=(DatasetField(name="c", sql="{f}(amount)", datatype=DataType.DOUBLE),)),
-    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", sql='"{c}"', datatype=DataType.DOUBLE),)),
-    "column-comment": _table_dataset(extra=(DatasetField(name="c", sql="amount /* {c} */", datatype=DataType.DOUBLE),)),
-    "column-type-name": _table_dataset(extra=(DatasetField(name="c", sql="CAST(amount AS {t})", datatype=DataType.DOUBLE),)),
+    "column-function-name": _table_dataset(extra=(DatasetField(name="c", sql="{f}(amount)", datatype=DataType.FLOAT),)),
+    "column-quoted-identifier": _table_dataset(extra=(DatasetField(name="c", sql='"{c}"', datatype=DataType.FLOAT),)),
+    "column-comment": _table_dataset(extra=(DatasetField(name="c", sql="amount /* {c} */", datatype=DataType.FLOAT),)),
+    "column-type-name": _table_dataset(extra=(DatasetField(name="c", sql="CAST(amount AS {t})", datatype=DataType.FLOAT),)),
     "column-partial-in-list": _table_dataset(extra=(DatasetField(name="c", sql="status IN ('x', {s})", datatype=DataType.BOOLEAN),)),
 }
 #: A bare slot is a literal position: saved, and refused at query time when its value is no number or boolean.
-_BARE_SLOT = _table_dataset(extra=(DatasetField(name="c", sql="{col} * 2", datatype=DataType.DOUBLE),))
+_BARE_SLOT = _table_dataset(extra=(DatasetField(name="c", sql="{col} * 2", datatype=DataType.FLOAT),))
 
 
 class TestNonLiteralPositionsAreRefused:
@@ -261,7 +261,7 @@ class TestOptionalBlocks:
             await env.engine.execute(query)
 
     async def test_escaped_braces_render_one_brace(self, env: _Env) -> None:
-        tag = DatasetField(name="tag", sql="'{{x}}' || '{suffix}'", datatype=DataType.TEXT)
+        tag = DatasetField(name="tag", sql="'{{x}}' || '{suffix}'", datatype=DataType.STRING)
         resp = await env.run(_table_dataset(extra=(tag,)), SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["tag"], "variables": {"suffix": "!"},
         }))
@@ -272,7 +272,7 @@ class TestPostgres:
     async def test_literal_values_bind(self, pg_env: _Env) -> None:
         model = _table_dataset(filters=["status IN ({statuses})", "amount >= {floor}"], extra=(_SCALED, _TAGGED))
         resp = await pg_env.run(model, SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["tagged"], "metrics": [{"expression": "sum(scaled)", "name": "v"}],
+            "population": "orders", "dimensions": ["tagged"], "metrics": [{"metric": "sum(scaled)", "alias": "v"}],
             "variables": {"statuses": ["ok", "new"], "floor": "15", "k": 2, "suffix": "O'Brien"},
         }))
         assert {r["orders.tagged"]: float(r["orders.v"]) for r in resp.data} == {

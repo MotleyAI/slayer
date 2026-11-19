@@ -16,8 +16,8 @@
     "population": "hr",
     "metrics": [
      {
-      "expression": "sum(salary)",
-      "name": "v"
+      "metric": "sum(salary)",
+      "alias": "v"
      }
     ]
    }
@@ -37,8 +37,8 @@
     "population": "hr",
     "metrics": [
      {
-      "expression": "sum(salary)",
-      "name": "v"
+      "metric": "sum(salary)",
+      "alias": "v"
      }
     ]
    }
@@ -58,8 +58,8 @@
     "population": "pc",
     "metrics": [
      {
-      "expression": "sum(v)",
-      "name": "total"
+      "metric": "sum(v)",
+      "alias": "total"
      }
     ]
    }

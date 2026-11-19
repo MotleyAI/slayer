@@ -77,8 +77,8 @@ class TestPatternSource:
         await _rejected(engine, "pattern", filter=[f"regexp_like(word, {pattern})"])
 
     async def test_non_literal_replacement_rejected(self, engine: SlayerQueryEngine) -> None:
-        await _rejected(engine, "replacement", dimensions=["id", {"expression": "regexp_replace(word, 'a', p)",
-                                                                  "name": "v"}])
+        await _rejected(engine, "replacement", dimensions=["id", {"field": "regexp_replace(word, 'a', p)",
+                                                                  "alias": "v"}])
 
     @pytest.mark.parametrize("text", [
         "regexp_like(name, {v}) AND name = {v}",
@@ -148,7 +148,7 @@ class TestFunctionArguments:
         "regexp_extract(tag, '@(.+)$', n)", "regexp_extract(tag, '@.+$', 1)",
     ])
     async def test_bad_group_rejected(self, engine: SlayerQueryEngine, expr: str) -> None:
-        await _rejected(engine, "group", dimensions=["id", {"expression": expr, "name": "v"}])
+        await _rejected(engine, "group", dimensions=["id", {"field": expr, "alias": "v"}])
 
     @pytest.mark.parametrize("flags", ["'g'", "'c'", "'im'", "word"])
     async def test_only_the_i_flag(self, engine: SlayerQueryEngine, flags: str) -> None:
@@ -163,7 +163,7 @@ class TestReplacement:
     @pytest.mark.parametrize("replacement", ["\\q", "\\0", "\\3", "\\", "\\n", "\\²"])
     async def test_bad_escape_or_group_rejected(self, engine: SlayerQueryEngine, replacement: str) -> None:
         expr = f"regexp_replace(s, '(\\w+) (\\w+)', '{replacement}')"
-        await _rejected(engine, "replacement", dimensions=["id", {"expression": expr, "name": "v"}])
+        await _rejected(engine, "replacement", dimensions=["id", {"field": expr, "alias": "v"}])
 
     async def test_variable_replacement(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(lib_query("regexp_replace(s, '(\\w+) (\\w+)', {r})", filter=["id = 6"],

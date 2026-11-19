@@ -69,9 +69,9 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -81,13 +81,13 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -121,7 +121,7 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
             "filter": ["rev >= 80"],
         })
     )
@@ -129,7 +129,7 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
             "filter": ["sum(customers.revenue) >= 80"],
         })
     )
@@ -158,14 +158,14 @@ async def test_dev1445_filter_actually_applies(engine: Tuple[SlayerQueryEngine, 
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
         })
     )
     filtered = await eng.execute(
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
             "filter": ["rev >= 80"],
         })
     )
@@ -192,7 +192,7 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQuery
     query = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+        "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
         "filter": ["rev >= 80", "sum(customers.revenue) >= 80"],
     })
     # Idempotent: giving both filter forms is the same as giving one.

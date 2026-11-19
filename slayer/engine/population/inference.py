@@ -23,7 +23,7 @@ from slayer.core.errors import (
 from slayer.core.relationship_search import HopFilter, UnaddressablePair, blocking_pairs, shortest_route, unaddressable_pairs
 from slayer.core.relationship_walker import canonical_path, provably_to_one, terminal_dataset, walk
 from slayer.core.models import SlayerDataset
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.time_spine import TIME_SPINE_DATASET, reads_spine, names_spine
 from slayer.engine.population.dimension_routing import resolve_route, safe_route_reachable
 from slayer.core.syntax import (
@@ -171,10 +171,11 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
     root = query.population_name
     refs: list[str] = []
     for dim in query.dimensions or []:
-        if isinstance(dim, ComputedDimension):
-            refs.extend(_computed_dimension_refs(dim.expression, root=root))
+        ref = dim.ref
+        if dim.is_computed or ref is None:
+            refs.extend(_computed_dimension_refs(dim.field, root=root))
         else:
-            refs.append(".".join(drop_root_qualifier(dim.parts, root, quoted=dim.quoted_parts)))
+            refs.append(".".join(drop_root_qualifier(ref.parts, root, quoted=ref.quoted_parts)))
     for td in query.time_dimensions or []:
         refs.extend(_computed_dimension_refs(td.field, root=root))
     return refs
@@ -183,7 +184,7 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
 def _restriction_refs(query: SlayerQuery) -> list[str]:
     """Each query-declared INNER join, read as a field filter on its declaring dataset's key."""
     return [
-        f"{e.source_name}.{j.join_pairs[0][0]}"
+        f"{e.dataset}.{j.column_pairs[0][0]}"
         for e in query.extensions or [] for j in e.relationships or [] if j.join_type is JoinType.INNER
     ]
 
@@ -214,7 +215,7 @@ def determination_items(
 
     for ref in _query_dimension_refs(query):
         _add(ref)
-    for f in query.filter or []:
+    for f in query.filter_conditions:
         for ref in _filter_refs(f, root=query.population_name, dataset_scopes=scopes):
             _add(ref)
     for ref in _restriction_refs(query):
@@ -416,7 +417,7 @@ def _anchor_names(
     classification :func:`determination_items` applies.
     """
     refs = _query_dimension_refs(query)
-    for f in query.filter or []:
+    for f in query.filter_conditions:
         filter_refs, _ = _parsed_filter_refs(f, root=query.population_name)
         refs.extend(
             r for r in filter_refs
@@ -483,12 +484,12 @@ def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
     return query.model_copy(update={
         "dimensions": [
             d for d in query.dimensions or []
-            if not reads_spine(getattr(d, "expression", None) or getattr(d, "full_name", ""), root=root)
+            if not reads_spine(d.field, root=root)
         ] or None,
         "time_dimensions": [
             td for td in query.time_dimensions or [] if not reads_spine(td.field, root=root)
         ] or None,
-        "filter": [f for f in query.filter or [] if not _spine_only_filter(f, root=root)] or None,
+        "filter": [f for f in query.filter_conditions if not _spine_only_filter(f, root=root)] or None,
         "metrics": None,
     })
 
@@ -513,7 +514,7 @@ def _metric_anchor_names(query: SlayerQuery) -> set[str]:
     names: set[str] = set()
     for m in query.metrics or []:
         try:
-            parsed = _parse(m.expression, root=query.population_name)
+            parsed = _parse(m.metric, root=query.population_name)
         except Exception:
             continue
         names.update(ref.split(".")[0] for ref in _qualified_refs(parsed))

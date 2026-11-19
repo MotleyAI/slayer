@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -143,7 +143,7 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "metrics": [
      {
       "name": "rev",
@@ -174,7 +174,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(revenue)"
+      "metric": "sum(revenue)"
      }
     ]
    }
@@ -199,7 +199,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(revenue_sum)"
+      "metric": "max(revenue_sum)"
      }
     ]
    }
@@ -225,8 +225,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(revenue)",
-      "name": "rev"
+      "metric": "sum(revenue)",
+      "alias": "rev"
      }
     ]
    }

@@ -140,7 +140,7 @@ def test_multiline_lists_fragments_json_lines_and_comments() -> None:
         "```json\n"
         '"metrics": [\n'
         '  "count(*)",\n'
-        '  {"expression": "sum(amount) / count(*)", "name": "aov"}\n'
+        '  {"metric": "sum(amount) / count(*)", "alias": "aov"}\n'
         "]\n"
         "```\n\n"
         "```json\n"
@@ -155,15 +155,15 @@ def test_multiline_lists_fragments_json_lines_and_comments() -> None:
 def test_every_query_field_is_read() -> None:
     query = {
         "population": "orders",
-        "metrics": ["count(*)", {"expression": "sum(amount)", "name": "total"}, {"name": "revenue"}],
-        "dimensions": ["status", {"expression": "upper(status)", "name": "s"}, {"name": "status", "label": "S"}],
+        "metrics": ["count(*)", {"metric": "sum(amount)", "alias": "total"}, {"name": "revenue"}],
+        "dimensions": ["status", {"field": "upper(status)", "alias": "s"}, {"field": "status", "label": "S"}],
         "time_dimensions": ["month(order_date)", {"field": "order_date", "granularity": "week"}],
         "filter": ["amount > 10"],
         "order": [{"field": "sum(amount)", "direction": "desc"}],
         "variables": {"v": "x"},
     }
     assert mode_b_values(query) == [
-        "count(*)", "sum(amount)", "status", "upper(status)", "month(order_date)", "order_date",
+        "count(*)", "sum(amount)", "status", "upper(status)", "status", "month(order_date)", "order_date",
         "amount > 10", "sum(amount)",
     ]
 
@@ -176,7 +176,7 @@ def test_time_dimension_column_alias_is_read() -> None:
 def test_stage_lists_and_refinements() -> None:
     stages = [
         {"name": "per_customer", "population": "orders", "dimensions": ["customers.name"],
-         "metrics": [{"expression": "sum(amount)", "name": "total"}]},
+         "metrics": [{"metric": "sum(amount)", "alias": "total"}]},
         {"population": "per_customer", "metrics": ["avg(total)"], "filter": ["total > 100"]},
     ]
     call = {"query": "monthly_revenue", "refine": {"dimensions": ["region"], "filter": ["region = 'EU'"]}}
@@ -188,7 +188,7 @@ def test_datasets_keep_only_metric_expressions() -> None:
     dataset = {
         "name": "orders", "sql_table": "orders", "data_source": "db",
         "filters": ["deleted_at IS NULL"],
-        "fields": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "datatype": "DOUBLE"}],
+        "fields": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "datatype": "Float"}],
         "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
         "aggregations": [{"name": "wavg", "expression": "SUM({value} * {weight}) / SUM({weight})"}],
         "source_queries": [{"population": "raw", "filter": ["amount > 0"]}],
@@ -198,7 +198,7 @@ def test_datasets_keep_only_metric_expressions() -> None:
 
 def test_inline_extension_and_standalone_objects() -> None:
     query = {"population": "orders",
-             "extensions": [{"source_name": "orders", "fields": [{"name": "big", "sql": "amount > 100"}]}],
+             "extensions": [{"dataset": "orders", "fields": [{"name": "big", "sql": "amount > 100"}]}],
              "metrics": ["count(*)"]}
     assert mode_b_values(query) == ["count(*)"]
     assert mode_b_values({"expression": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]

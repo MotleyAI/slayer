@@ -44,7 +44,7 @@ PRE_REPAIR = 24
 #: Orders per customer name in the shop seed.
 ORDERS_BY_NAME = {"Ann": 2, "Bob": 2, "Cid": 2}
 NAME_QUERY = {"population": "orders", "dimensions": ["customers.name"],
-              "metrics": [{"expression": "count(*)", "name": "n"}]}
+              "metrics": [{"metric": "count(*)", "alias": "n"}]}
 REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(amount)"]}
 
 
@@ -74,16 +74,16 @@ def shop_ds(request, tmp_path) -> Iterator[DatasourceConfig]:
 def customers(name: str = "Customers", *, data_source: str = "test", tags: tuple[str, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name=name, sql_table="customers", data_source=data_source, access_tags=list(tags),
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
     )
 
 
 def orders(target: str = "customers", *, tags: tuple[str, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", access_tags=list(tags),
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="customer_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to=target, name="buyer", join_pairs=[["customer_id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to=target, name="buyer", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -253,7 +253,7 @@ class TestStoredUpgrade:
         model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
         [join] = model.relationships
-        assert (join.to, join.join_pairs) == ("Customers", [["customer_id", "cid"]])
+        assert (join.to, join.column_pairs) == ("Customers", [("customer_id", "cid")])
         assert {c.name: c.hidden for c in model.fields}.get("customer_id") is True
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
@@ -324,7 +324,7 @@ def _ev_doc(*, joins: list[dict]) -> dict:
 SPINE_QUERY = {
     "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                          "date_range": ["2024-01-01", "2024-03-31"]}],
-    "metrics": [{"expression": "sum(ev.amount)", "name": "s"}],
+    "metrics": [{"metric": "sum(ev.amount)", "alias": "s"}],
 }
 
 

@@ -28,7 +28,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.sql.field_expansion import collect_root_scope_joined_paths
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -246,10 +246,10 @@ async def _engine_with_filter(base_dir: str, db_path: str, *, dataset_filter: st
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         filters=[dataset_filter],
     )
@@ -276,7 +276,7 @@ class TestExecution:
                 dataset_filter="amount IN (SELECT amount FROM other_tbl)",
             )
             resp = await engine.execute(
-                SlayerQuery(population="orders", dimensions=[FieldRef(name="id")]),
+                SlayerQuery(population="orders", dimensions=[QueryDimension(field="id")]),
             )
             assert _ids(resp) == {1, 3}, resp.data
 
@@ -300,7 +300,7 @@ class TestExecution:
                 ),
             )
             query = SlayerQuery(
-                population="orders", dimensions=[FieldRef(name="id")],
+                population="orders", dimensions=[QueryDimension(field="id")],
             )
             resp = await engine.execute(query)
             assert _ids(resp) == {1, 3}, resp.data

@@ -51,7 +51,7 @@ _SPINE_DOC: dict[str, Any] = {
 _SPINE_QUERY: dict[str, Any] = {
     "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                          "date_range": ["2024-01-01", "2024-03-31"]}],
-    "metrics": [{"expression": "sum(ev.amount)", "name": "s"}],
+    "metrics": [{"metric": "sum(ev.amount)", "alias": "s"}],
 }
 _EXTENSION_DOC = query_backed_v10(name="rev_by_tier", version=_EXT_DATASET_V, stages=[{
     "version": _EXT_QUERY_V, "source_model": "orders",

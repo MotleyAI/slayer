@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     COL_WM,
     LAST_BY_ORDERED,
     LAST_BY_SHIPPED,
-    DatasetMetric,
     OK_W90,
     REGION_LAST,
     REGION_TOTAL,
@@ -83,10 +84,10 @@ class TestDedupPositive:
         dialect, engine = exec_backend
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "rband"}],
+            dimensions=["region", {"field": band, "alias": "rband"}],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
             ],
         )
         resp = await engine.execute(query)
@@ -112,10 +113,10 @@ class TestDedupPositive:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, window='1y')", name="wb"),
-                DatasetMetric(
-                    expression="sum(amount, window='1y', partition_by=region)",
-                    name="we",
+                QueryMetric(metric="sum(amount, window='1y')", alias="wb"),
+                QueryMetric(
+                    metric="sum(amount, window='1y', partition_by=region)",
+                    alias="we",
                 ),
             ],
         )
@@ -132,8 +133,8 @@ class TestDedupPositive:
         query = q(
             dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="last(amount)", name="lb"),
-                DatasetMetric(expression="last(amount, partition_by=region)", name="le"),
+                QueryMetric(metric="last(amount)", alias="lb"),
+                QueryMetric(metric="last(amount, partition_by=region)", alias="le"),
             ],
         )
         resp = await engine.execute(query)
@@ -150,11 +151,11 @@ class TestDedupPositive:
         dialect, engine = exec_backend
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "rband"}],
+            dimensions=["region", {"field": band, "alias": "rband"}],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         )
         resp = await engine.execute(query)
@@ -175,8 +176,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, window='90d')", name="w90"),
-                DatasetMetric(expression="sum(amount, window='45d')", name="w45"),
+                QueryMetric(metric="sum(amount, window='90d')", alias="w90"),
+                QueryMetric(metric="sum(amount, window='45d')", alias="w45"),
             ],
         )
         resp = await engine.execute(query)
@@ -192,8 +193,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, window='90d')", name="w"),
-                DatasetMetric(expression="sum(ok_amount, window='90d')", name="wok"),
+                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(ok_amount, window='90d')", alias="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -211,8 +212,8 @@ class TestDedupNegative:
         query = q(
             dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="last(amount)", name="lo"),
-                DatasetMetric(expression="last(amount, shipped_at)", name="ls"),
+                QueryMetric(metric="last(amount)", alias="lo"),
+                QueryMetric(metric="last(amount, shipped_at)", alias="ls"),
             ],
         )
         resp = await engine.execute(query)

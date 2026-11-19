@@ -2,13 +2,13 @@ name: orders_flat
 data_source: probe
 sql_table: orders_flat
 fields:
-  - {name: id, datatype: number, primary_key: true}
-  - {name: customer_id, datatype: number}
-  - {name: amount, datatype: number}
-  - {name: status, datatype: string}
-  - {name: order_date, datatype: date}
-  - {name: region, datatype: string}
-  - {name: city, datatype: string}
-  - {name: tier, datatype: string}
-  - {name: credit, datatype: number}
-  - {name: discount, datatype: number}
+  - {name: id, datatype: Float, primary_key: true}
+  - {name: customer_id, datatype: Float}
+  - {name: amount, datatype: Float}
+  - {name: status, datatype: String}
+  - {name: order_date, datatype: Date}
+  - {name: region, datatype: String}
+  - {name: city, datatype: String}
+  - {name: tier, datatype: String}
+  - {name: credit, datatype: Float}
+  - {name: discount, datatype: Float}

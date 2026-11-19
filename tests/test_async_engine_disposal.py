@@ -64,8 +64,8 @@ def _sqlite_engine(workspace: Path, *, rows: str) -> SlayerQueryEngine:
     asyncio.run(storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="val", sql="val", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="val", sql="val", datatype=DataType.FLOAT),
         ],
     )))
     return SlayerQueryEngine(storage=storage)
@@ -202,8 +202,8 @@ class TestAsyncEngineDisposal:
         asyncio.run(storage.save_dataset(SlayerDataset(
             name="t", data_source="lite", sql_table="t",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="v", sql="v", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
             ],
         )))
         engine = SlayerQueryEngine(storage=storage)

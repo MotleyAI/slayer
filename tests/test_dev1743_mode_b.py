@@ -65,7 +65,7 @@ class TestModeBOverDunderModels:
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "count(customer__region.*)"}],
+                "metrics": [{"metric": "count(customer__region.*)"}],
             }),
             dataset=host,
             extra_datasets=[dunder],
@@ -89,13 +89,13 @@ class TestModeBOverDunderModels:
         host = SlayerDataset(
             name="orders", data_source=DS, sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="cr_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="cr_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(to="customer__region",
-                          join_pairs=[["cr_id", "id"]]),
+                          from_columns=["cr_id"], to_columns=["id"]),
             ],
             metrics=[DatasetMetric(name="crc",
                                    expression="count(customer__region.*)")],
@@ -126,8 +126,8 @@ class TestModeBOverDunderModels:
         model = SlayerDataset(
             name="stores", data_source=DS, sql_table="stores_t",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="stores__name", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="stores__name", datatype=DataType.STRING),
             ],
         )
         sql = await _engine_generate(

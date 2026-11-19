@@ -10,8 +10,7 @@ from typing import Callable, Dict, List
 
 import pytest
 
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev2046_fixtures import m, make_exec_engine, month_td, orders_q
 
@@ -29,7 +28,7 @@ async def engine(request):
         yield e
 
 
-def _metrics(source: str, *, suffix: str = "") -> List[DatasetMetric]:
+def _metrics(source: str, *, suffix: str = "") -> List[QueryMetric]:
     """Every aggregation in ``EMPTY`` over ``source`` plus the boolean ``sum`` / ``max``, named by aggregation."""
     measures = [m(f"{agg}({source}{suffix})", agg) for agg in EMPTY]
     return measures + [m(f"sum({source} > 15{suffix})", "bsum"), m(f"max({source} > 15{suffix})", "bmax")]
@@ -48,7 +47,7 @@ LOCATIONS: Dict[str, Callable[[], object]] = {
     "cross_model": lambda: orders_q(metrics=_metrics("customers.score")),
     "stage": lambda: [
         {"name": "s1", "population": "orders", "dimensions": ["region", "status"],
-         "metrics": [{"expression": "sum(amount)", "name": "x"}]},
+         "metrics": [{"metric": "sum(amount)", "alias": "x"}]},
         {"population": "s1", "dimensions": ["region"], "metrics": _metrics("x"), "filter": WEST},
     ],
     "association": lambda: SlayerQuery.model_validate({

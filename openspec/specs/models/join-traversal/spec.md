@@ -260,7 +260,7 @@ typed spelling.
 ### Requirement: Join mutations address one edge
 Model-editing surfaces SHALL address a join by its edge reference — the target model's name when it is
 the only join from the model to that target, else the edge name — or by an exact reference
-(`to`, `name`, `join_pairs`). A reference matching several joins SHALL fail with an error
+(`to`, `name`, `from_columns`, `to_columns`). A reference matching several joins SHALL fail with an error
 listing the candidates; it MUST NOT act on the first match or on every match. A join upsert SHALL
 update the join matching its name, else its target and key pairs, else the sole join to its target;
 an unnamed upsert matching none of these whose target the model already joins SHALL be rejected,
@@ -281,7 +281,7 @@ asking for a name.
 - **THEN** that join receives the name and the other join is unchanged
 
 #### Scenario: Exact reference removes exactly one edge
-- **WHEN** `edit_dataset` removes `{to: addresses, join_pairs: [[shipping_address_id, id]]}`
+- **WHEN** `edit_dataset` removes `{to: addresses, from_columns: [shipping_address_id], to_columns: [id]}`
   from a model with two unnamed joins to `addresses`
 - **THEN** only the matching join is removed
 

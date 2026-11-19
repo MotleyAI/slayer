@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.memories.resolver import extract_entities_from_query
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.usage_reporting.features import query_features
@@ -84,13 +84,13 @@ async def storage(tmp_path: Path) -> YAMLStorage:
     await store.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
     await store.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="region", datatype=DataType.TEXT), DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="region", datatype=DataType.STRING), DatasetField(name="amount", datatype=DataType.FLOAT)],
     ))
     return store
 
 
 async def test_quoted_identifier_in_a_filter_is_tagged(storage: YAMLStorage) -> None:
-    query = SlayerQuery(population="orders", filter=['"region" = \'x\''], metrics=[DatasetMetric(expression="count(*)")])
+    query = SlayerQuery(population="orders", filter=['"region" = \'x\''], metrics=[QueryMetric(metric="count(*)")])
     result = await extract_entities_from_query(query, storage=storage)
     assert "mydb.orders.region" in result.canonical_forms

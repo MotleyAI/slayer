@@ -48,7 +48,7 @@ import sqlglot
 import sqlglot.expressions as exp
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind
 from slayer.facade.catalog import (
     CATALOG_NAME,
     FacadeCatalog,
@@ -120,14 +120,15 @@ _KNOWN_TYPE_OIDS: dict[str, int] = {
 }
 
 
-_UDT_NAME_BY_DATATYPE: dict[DataType, str] = {
-    DataType.BOOLEAN: "bool",
-    DataType.INT: "int8",
-    DataType.TEXT: "text",
-    DataType.DOUBLE: "float8",
-    DataType.DATE: "date",
-    DataType.TIMESTAMP: "timestamp",
+_UDT_NAME_BY_KIND: dict[TypeKind, str] = {
+    TypeKind.BOOLEAN: "bool",
+    TypeKind.INT: "int8",
+    TypeKind.TEXT: "text",
+    TypeKind.DOUBLE: "float8",
+    TypeKind.DATE: "date",
+    TypeKind.TIMESTAMP: "timestamp",
 }
+_UDT_NAME_BY_DATATYPE: dict[DataType, str] = {t: _UDT_NAME_BY_KIND[t.kind] for t in DataType if t.kind in _UDT_NAME_BY_KIND}
 
 
 def stable_oid(*parts: str) -> int:
@@ -250,7 +251,7 @@ def _column_specs(table: FacadeTable):
     for d in local_dimensions(table):
         yield d.name, d.data_type
     for m in local_metrics(table):
-        yield m.name, m.data_type if m.data_type is not None else DataType.TEXT
+        yield m.name, m.data_type if m.data_type is not None else DataType.STRING
 
 
 def _namespace_oid(schema: str) -> int:
@@ -273,10 +274,10 @@ def _user_schema_names(catalog: FacadeCatalog) -> list[str]:
 
 def _build_pg_namespace(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="oid", type=DataType.INT),
-        FacadeColumn(name="nspname", type=DataType.TEXT),
-        FacadeColumn(name="nspowner", type=DataType.INT),
-        FacadeColumn(name="nspacl", type=DataType.TEXT),
+        FacadeColumn(name="oid", type=DataType.INTEGER),
+        FacadeColumn(name="nspname", type=DataType.STRING),
+        FacadeColumn(name="nspowner", type=DataType.INTEGER),
+        FacadeColumn(name="nspacl", type=DataType.STRING),
     ]
     rows = [
         {"oid": _namespace_oid(name), "nspname": name,
@@ -292,33 +293,33 @@ def _build_pg_namespace(catalog: FacadeCatalog) -> CatalogRelation:
 
 def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="oid", type=DataType.INT),
-        FacadeColumn(name="relname", type=DataType.TEXT),
-        FacadeColumn(name="relnamespace", type=DataType.INT),
-        FacadeColumn(name="reltype", type=DataType.INT),
-        FacadeColumn(name="relowner", type=DataType.INT),
-        FacadeColumn(name="relkind", type=DataType.TEXT),
-        FacadeColumn(name="relnatts", type=DataType.INT),
+        FacadeColumn(name="oid", type=DataType.INTEGER),
+        FacadeColumn(name="relname", type=DataType.STRING),
+        FacadeColumn(name="relnamespace", type=DataType.INTEGER),
+        FacadeColumn(name="reltype", type=DataType.INTEGER),
+        FacadeColumn(name="relowner", type=DataType.INTEGER),
+        FacadeColumn(name="relkind", type=DataType.STRING),
+        FacadeColumn(name="relnatts", type=DataType.INTEGER),
         FacadeColumn(name="relhasindex", type=DataType.BOOLEAN),
-        FacadeColumn(name="relpersistence", type=DataType.TEXT),
-        FacadeColumn(name="relpages", type=DataType.INT),
-        FacadeColumn(name="reltuples", type=DataType.DOUBLE),
+        FacadeColumn(name="relpersistence", type=DataType.STRING),
+        FacadeColumn(name="relpages", type=DataType.INTEGER),
+        FacadeColumn(name="reltuples", type=DataType.FLOAT),
         FacadeColumn(name="relhasrules", type=DataType.BOOLEAN),
         FacadeColumn(name="relhastriggers", type=DataType.BOOLEAN),
         FacadeColumn(name="relrowsecurity", type=DataType.BOOLEAN),
         FacadeColumn(name="relispartition", type=DataType.BOOLEAN),
         # Access-method OID — points at ``pg_am.oid``. psql's ``\d`` LEFT
         # JOINs on this; ``heap`` is the only access method we advertise.
-        FacadeColumn(name="relam", type=DataType.INT),
+        FacadeColumn(name="relam", type=DataType.INTEGER),
         # psql's ``\d <table>`` reads these too. Sensible defaults: no
         # CHECK constraints, no TOAST, no forced RLS, default tablespace
         # / replica identity, not a typed table.
-        FacadeColumn(name="relchecks", type=DataType.INT),
+        FacadeColumn(name="relchecks", type=DataType.INTEGER),
         FacadeColumn(name="relforcerowsecurity", type=DataType.BOOLEAN),
-        FacadeColumn(name="reloftype", type=DataType.INT),
-        FacadeColumn(name="reltablespace", type=DataType.INT),
-        FacadeColumn(name="reltoastrelid", type=DataType.INT),
-        FacadeColumn(name="relreplident", type=DataType.TEXT),
+        FacadeColumn(name="reloftype", type=DataType.INTEGER),
+        FacadeColumn(name="reltablespace", type=DataType.INTEGER),
+        FacadeColumn(name="reltoastrelid", type=DataType.INTEGER),
+        FacadeColumn(name="relreplident", type=DataType.STRING),
     ]
     rows = []
     seen_oids: dict[int, str] = {}
@@ -348,22 +349,22 @@ def _build_pg_class(catalog: FacadeCatalog) -> CatalogRelation:
 
 def _build_pg_attribute(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="attrelid", type=DataType.INT),
-        FacadeColumn(name="attname", type=DataType.TEXT),
-        FacadeColumn(name="atttypid", type=DataType.INT),
-        FacadeColumn(name="attnum", type=DataType.INT),
-        FacadeColumn(name="attlen", type=DataType.INT),
-        FacadeColumn(name="atttypmod", type=DataType.INT),
+        FacadeColumn(name="attrelid", type=DataType.INTEGER),
+        FacadeColumn(name="attname", type=DataType.STRING),
+        FacadeColumn(name="atttypid", type=DataType.INTEGER),
+        FacadeColumn(name="attnum", type=DataType.INTEGER),
+        FacadeColumn(name="attlen", type=DataType.INTEGER),
+        FacadeColumn(name="atttypmod", type=DataType.INTEGER),
         FacadeColumn(name="attnotnull", type=DataType.BOOLEAN),
         FacadeColumn(name="atthasdef", type=DataType.BOOLEAN),
         FacadeColumn(name="attisdropped", type=DataType.BOOLEAN),
-        FacadeColumn(name="attidentity", type=DataType.TEXT),
-        FacadeColumn(name="attgenerated", type=DataType.TEXT),
+        FacadeColumn(name="attidentity", type=DataType.STRING),
+        FacadeColumn(name="attgenerated", type=DataType.STRING),
         # Collation OID — psql's ``\d <table>`` LEFT JOINs pg_collation on
         # this. Zero (== no non-default collation) is fine for all our
         # ASCII columns; the join returns no rows and the whole
         # ``attcollation`` sub-select is NULL — the exact ``\d`` fast path.
-        FacadeColumn(name="attcollation", type=DataType.INT),
+        FacadeColumn(name="attcollation", type=DataType.INTEGER),
     ]
     rows = []
     for ds, tbl in _all_tables(catalog):
@@ -384,25 +385,25 @@ def _build_pg_attribute(catalog: FacadeCatalog) -> CatalogRelation:
 
 def _build_pg_type() -> CatalogRelation:
     columns = [
-        FacadeColumn(name="oid", type=DataType.INT),
-        FacadeColumn(name="typname", type=DataType.TEXT),
-        FacadeColumn(name="typnamespace", type=DataType.INT),
-        FacadeColumn(name="typlen", type=DataType.INT),
-        FacadeColumn(name="typtype", type=DataType.TEXT),
-        FacadeColumn(name="typcategory", type=DataType.TEXT),
+        FacadeColumn(name="oid", type=DataType.INTEGER),
+        FacadeColumn(name="typname", type=DataType.STRING),
+        FacadeColumn(name="typnamespace", type=DataType.INTEGER),
+        FacadeColumn(name="typlen", type=DataType.INTEGER),
+        FacadeColumn(name="typtype", type=DataType.STRING),
+        FacadeColumn(name="typcategory", type=DataType.STRING),
         FacadeColumn(name="typisdefined", type=DataType.BOOLEAN),
-        FacadeColumn(name="typdelim", type=DataType.TEXT),
-        FacadeColumn(name="typrelid", type=DataType.INT),
-        FacadeColumn(name="typelem", type=DataType.INT),
-        FacadeColumn(name="typarray", type=DataType.INT),
+        FacadeColumn(name="typdelim", type=DataType.STRING),
+        FacadeColumn(name="typrelid", type=DataType.INTEGER),
+        FacadeColumn(name="typelem", type=DataType.INTEGER),
+        FacadeColumn(name="typarray", type=DataType.INTEGER),
         FacadeColumn(name="typnotnull", type=DataType.BOOLEAN),
-        FacadeColumn(name="typbasetype", type=DataType.INT),
-        FacadeColumn(name="typtypmod", type=DataType.INT),
+        FacadeColumn(name="typbasetype", type=DataType.INTEGER),
+        FacadeColumn(name="typtypmod", type=DataType.INTEGER),
         # Default collation OID. psql's ``\d <table>`` compares this to
         # ``pg_attribute.attcollation``; matching zero (== default
         # collation) means the ``attcollation`` sub-select returns NULL,
         # which is the correct behavior for columns using the DB default.
-        FacadeColumn(name="typcollation", type=DataType.INT),
+        FacadeColumn(name="typcollation", type=DataType.INTEGER),
     ]
     rows = []
     for oid, (typname, typlen, typcategory) in _TYPE_META.items():
@@ -420,24 +421,24 @@ def _build_pg_type() -> CatalogRelation:
 
 def _build_pg_proc() -> CatalogRelation:
     return CatalogRelation(name="pg_proc", columns=[
-        FacadeColumn(name="oid", type=DataType.INT),
-        FacadeColumn(name="proname", type=DataType.TEXT),
-        FacadeColumn(name="pronamespace", type=DataType.INT),
-        FacadeColumn(name="prorettype", type=DataType.INT),
+        FacadeColumn(name="oid", type=DataType.INTEGER),
+        FacadeColumn(name="proname", type=DataType.STRING),
+        FacadeColumn(name="pronamespace", type=DataType.INTEGER),
+        FacadeColumn(name="prorettype", type=DataType.INTEGER),
     ], rows=[])
 
 
 def _build_pg_settings() -> CatalogRelation:
     columns = [
-        FacadeColumn(name="name", type=DataType.TEXT),
-        FacadeColumn(name="setting", type=DataType.TEXT),
-        FacadeColumn(name="category", type=DataType.TEXT),
-        FacadeColumn(name="unit", type=DataType.TEXT),
-        FacadeColumn(name="source", type=DataType.TEXT),
-        FacadeColumn(name="vartype", type=DataType.TEXT),
-        FacadeColumn(name="context", type=DataType.TEXT),
-        FacadeColumn(name="min_val", type=DataType.TEXT),
-        FacadeColumn(name="max_val", type=DataType.TEXT),
+        FacadeColumn(name="name", type=DataType.STRING),
+        FacadeColumn(name="setting", type=DataType.STRING),
+        FacadeColumn(name="category", type=DataType.STRING),
+        FacadeColumn(name="unit", type=DataType.STRING),
+        FacadeColumn(name="source", type=DataType.STRING),
+        FacadeColumn(name="vartype", type=DataType.STRING),
+        FacadeColumn(name="context", type=DataType.STRING),
+        FacadeColumn(name="min_val", type=DataType.STRING),
+        FacadeColumn(name="max_val", type=DataType.STRING),
     ]
     settings = [
         ("server_version", PG_SERVER_VERSION),
@@ -460,10 +461,10 @@ def _build_pg_settings() -> CatalogRelation:
 
 def _build_pg_description(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="objoid", type=DataType.INT),
-        FacadeColumn(name="classoid", type=DataType.INT),
-        FacadeColumn(name="objsubid", type=DataType.INT),
-        FacadeColumn(name="description", type=DataType.TEXT),
+        FacadeColumn(name="objoid", type=DataType.INTEGER),
+        FacadeColumn(name="classoid", type=DataType.INTEGER),
+        FacadeColumn(name="objsubid", type=DataType.INTEGER),
+        FacadeColumn(name="description", type=DataType.STRING),
     ]
     rows: list[dict[str, Any]] = []
     for ds, tbl in _all_tables(catalog):
@@ -489,9 +490,9 @@ def _build_pg_description(catalog: FacadeCatalog) -> CatalogRelation:
 
 def _build_pg_stat_user_tables(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="schemaname", type=DataType.TEXT),
-        FacadeColumn(name="relname", type=DataType.TEXT),
-        FacadeColumn(name="n_live_tup", type=DataType.INT),
+        FacadeColumn(name="schemaname", type=DataType.STRING),
+        FacadeColumn(name="relname", type=DataType.STRING),
+        FacadeColumn(name="n_live_tup", type=DataType.INTEGER),
     ]
     rows = [{"schemaname": ds, "relname": tbl.name, "n_live_tup": None}
             for ds, tbl in _all_tables(catalog)]
@@ -500,18 +501,18 @@ def _build_pg_stat_user_tables(catalog: FacadeCatalog) -> CatalogRelation:
 
 def _build_pg_enum() -> CatalogRelation:
     return CatalogRelation(name="pg_enum", columns=[
-        FacadeColumn(name="oid", type=DataType.INT),
-        FacadeColumn(name="enumtypid", type=DataType.INT),
-        FacadeColumn(name="enumlabel", type=DataType.TEXT),
+        FacadeColumn(name="oid", type=DataType.INTEGER),
+        FacadeColumn(name="enumtypid", type=DataType.INTEGER),
+        FacadeColumn(name="enumlabel", type=DataType.STRING),
     ], rows=[])
 
 
 def _build_pg_tables(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="schemaname", type=DataType.TEXT),
-        FacadeColumn(name="tablename", type=DataType.TEXT),
-        FacadeColumn(name="tableowner", type=DataType.TEXT),
-        FacadeColumn(name="tablespace", type=DataType.TEXT),
+        FacadeColumn(name="schemaname", type=DataType.STRING),
+        FacadeColumn(name="tablename", type=DataType.STRING),
+        FacadeColumn(name="tableowner", type=DataType.STRING),
+        FacadeColumn(name="tablespace", type=DataType.STRING),
         FacadeColumn(name="hasindexes", type=DataType.BOOLEAN),
         FacadeColumn(name="hasrules", type=DataType.BOOLEAN),
         FacadeColumn(name="hastriggers", type=DataType.BOOLEAN),
@@ -533,10 +534,10 @@ def _build_pg_tables(catalog: FacadeCatalog) -> CatalogRelation:
 
 def _build_pg_views(catalog: FacadeCatalog) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="schemaname", type=DataType.TEXT),
-        FacadeColumn(name="viewname", type=DataType.TEXT),
-        FacadeColumn(name="viewowner", type=DataType.TEXT),
-        FacadeColumn(name="definition", type=DataType.TEXT),
+        FacadeColumn(name="schemaname", type=DataType.STRING),
+        FacadeColumn(name="viewname", type=DataType.STRING),
+        FacadeColumn(name="viewowner", type=DataType.STRING),
+        FacadeColumn(name="definition", type=DataType.STRING),
     ]
     # SQL-backed datasets surface here so view-aware clients
     # (pgAdmin, dbeaver view category, JDBC ``getTables`` with
@@ -558,47 +559,47 @@ def _build_pg_views(catalog: FacadeCatalog) -> CatalogRelation:
 
 def _build_pg_matviews() -> CatalogRelation:
     return CatalogRelation(name="pg_matviews", columns=[
-        FacadeColumn(name="schemaname", type=DataType.TEXT),
-        FacadeColumn(name="matviewname", type=DataType.TEXT),
-        FacadeColumn(name="matviewowner", type=DataType.TEXT),
-        FacadeColumn(name="tablespace", type=DataType.TEXT),
+        FacadeColumn(name="schemaname", type=DataType.STRING),
+        FacadeColumn(name="matviewname", type=DataType.STRING),
+        FacadeColumn(name="matviewowner", type=DataType.STRING),
+        FacadeColumn(name="tablespace", type=DataType.STRING),
         FacadeColumn(name="hasindexes", type=DataType.BOOLEAN),
         FacadeColumn(name="ispopulated", type=DataType.BOOLEAN),
-        FacadeColumn(name="definition", type=DataType.TEXT),
+        FacadeColumn(name="definition", type=DataType.STRING),
     ], rows=[])
 
 
 def _build_pg_constraint() -> CatalogRelation:
     return CatalogRelation(name="pg_constraint", columns=[
-        FacadeColumn(name="oid", type=DataType.INT),
-        FacadeColumn(name="conname", type=DataType.TEXT),
-        FacadeColumn(name="contype", type=DataType.TEXT),
-        FacadeColumn(name="conrelid", type=DataType.INT),
-        FacadeColumn(name="confrelid", type=DataType.INT),
-        FacadeColumn(name="connamespace", type=DataType.INT),
-        FacadeColumn(name="conkey", type=DataType.TEXT),
-        FacadeColumn(name="confkey", type=DataType.TEXT),
+        FacadeColumn(name="oid", type=DataType.INTEGER),
+        FacadeColumn(name="conname", type=DataType.STRING),
+        FacadeColumn(name="contype", type=DataType.STRING),
+        FacadeColumn(name="conrelid", type=DataType.INTEGER),
+        FacadeColumn(name="confrelid", type=DataType.INTEGER),
+        FacadeColumn(name="connamespace", type=DataType.INTEGER),
+        FacadeColumn(name="conkey", type=DataType.STRING),
+        FacadeColumn(name="confkey", type=DataType.STRING),
     ], rows=[])
 
 
 def _build_pg_index() -> CatalogRelation:
     return CatalogRelation(name="pg_index", columns=[
-        FacadeColumn(name="indexrelid", type=DataType.INT),
-        FacadeColumn(name="indrelid", type=DataType.INT),
-        FacadeColumn(name="indnatts", type=DataType.INT),
-        FacadeColumn(name="indnkeyatts", type=DataType.INT),
+        FacadeColumn(name="indexrelid", type=DataType.INTEGER),
+        FacadeColumn(name="indrelid", type=DataType.INTEGER),
+        FacadeColumn(name="indnatts", type=DataType.INTEGER),
+        FacadeColumn(name="indnkeyatts", type=DataType.INTEGER),
         FacadeColumn(name="indisunique", type=DataType.BOOLEAN),
         FacadeColumn(name="indisprimary", type=DataType.BOOLEAN),
-        FacadeColumn(name="indkey", type=DataType.TEXT),
+        FacadeColumn(name="indkey", type=DataType.STRING),
     ], rows=[])
 
 
 def _build_pg_attrdef() -> CatalogRelation:
     return CatalogRelation(name="pg_attrdef", columns=[
-        FacadeColumn(name="oid", type=DataType.INT),
-        FacadeColumn(name="adrelid", type=DataType.INT),
-        FacadeColumn(name="adnum", type=DataType.INT),
-        FacadeColumn(name="adbin", type=DataType.TEXT),
+        FacadeColumn(name="oid", type=DataType.INTEGER),
+        FacadeColumn(name="adrelid", type=DataType.INTEGER),
+        FacadeColumn(name="adnum", type=DataType.INTEGER),
+        FacadeColumn(name="adbin", type=DataType.STRING),
     ], rows=[])
 
 
@@ -610,10 +611,10 @@ def _build_pg_am() -> CatalogRelation:
     return CatalogRelation(
         name="pg_am",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="amname", type=DataType.TEXT),
-            FacadeColumn(name="amhandler", type=DataType.INT),
-            FacadeColumn(name="amtype", type=DataType.TEXT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="amname", type=DataType.STRING),
+            FacadeColumn(name="amhandler", type=DataType.INTEGER),
+            FacadeColumn(name="amtype", type=DataType.STRING),
         ],
         rows=[
             {"oid": PG_AM_HEAP_OID, "amname": "heap",
@@ -630,14 +631,14 @@ def _build_pg_policy() -> CatalogRelation:
     return CatalogRelation(
         name="pg_policy",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="polname", type=DataType.TEXT),
-            FacadeColumn(name="polrelid", type=DataType.INT),
-            FacadeColumn(name="polcmd", type=DataType.TEXT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="polname", type=DataType.STRING),
+            FacadeColumn(name="polrelid", type=DataType.INTEGER),
+            FacadeColumn(name="polcmd", type=DataType.STRING),
             FacadeColumn(name="polpermissive", type=DataType.BOOLEAN),
-            FacadeColumn(name="polroles", type=DataType.TEXT),
-            FacadeColumn(name="polqual", type=DataType.TEXT),
-            FacadeColumn(name="polwithcheck", type=DataType.TEXT),
+            FacadeColumn(name="polroles", type=DataType.STRING),
+            FacadeColumn(name="polqual", type=DataType.STRING),
+            FacadeColumn(name="polwithcheck", type=DataType.STRING),
         ],
         rows=[],
     )
@@ -659,24 +660,24 @@ def _build_pg_trigger() -> CatalogRelation:
     return CatalogRelation(
         name="pg_trigger",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="tgrelid", type=DataType.INT),
-            FacadeColumn(name="tgparentid", type=DataType.INT),
-            FacadeColumn(name="tgname", type=DataType.TEXT),
-            FacadeColumn(name="tgfoid", type=DataType.INT),
-            FacadeColumn(name="tgtype", type=DataType.INT),
-            FacadeColumn(name="tgenabled", type=DataType.TEXT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="tgrelid", type=DataType.INTEGER),
+            FacadeColumn(name="tgparentid", type=DataType.INTEGER),
+            FacadeColumn(name="tgname", type=DataType.STRING),
+            FacadeColumn(name="tgfoid", type=DataType.INTEGER),
+            FacadeColumn(name="tgtype", type=DataType.INTEGER),
+            FacadeColumn(name="tgenabled", type=DataType.STRING),
             FacadeColumn(name="tgisinternal", type=DataType.BOOLEAN),
-            FacadeColumn(name="tgconstrrelid", type=DataType.INT),
-            FacadeColumn(name="tgconstrindid", type=DataType.INT),
-            FacadeColumn(name="tgconstraint", type=DataType.INT),
+            FacadeColumn(name="tgconstrrelid", type=DataType.INTEGER),
+            FacadeColumn(name="tgconstrindid", type=DataType.INTEGER),
+            FacadeColumn(name="tgconstraint", type=DataType.INTEGER),
             FacadeColumn(name="tgdeferrable", type=DataType.BOOLEAN),
             FacadeColumn(name="tginitdeferred", type=DataType.BOOLEAN),
-            FacadeColumn(name="tgnargs", type=DataType.INT),
-            FacadeColumn(name="tgargs", type=DataType.TEXT),
-            FacadeColumn(name="tgqual", type=DataType.TEXT),
-            FacadeColumn(name="tgoldtable", type=DataType.TEXT),
-            FacadeColumn(name="tgnewtable", type=DataType.TEXT),
+            FacadeColumn(name="tgnargs", type=DataType.INTEGER),
+            FacadeColumn(name="tgargs", type=DataType.STRING),
+            FacadeColumn(name="tgqual", type=DataType.STRING),
+            FacadeColumn(name="tgoldtable", type=DataType.STRING),
+            FacadeColumn(name="tgnewtable", type=DataType.STRING),
         ],
         rows=[],
     )
@@ -688,9 +689,9 @@ def _build_pg_inherits() -> CatalogRelation:
     return CatalogRelation(
         name="pg_inherits",
         columns=[
-            FacadeColumn(name="inhrelid", type=DataType.INT),
-            FacadeColumn(name="inhparent", type=DataType.INT),
-            FacadeColumn(name="inhseqno", type=DataType.INT),
+            FacadeColumn(name="inhrelid", type=DataType.INTEGER),
+            FacadeColumn(name="inhparent", type=DataType.INTEGER),
+            FacadeColumn(name="inhseqno", type=DataType.INTEGER),
             FacadeColumn(name="inhdetachpending", type=DataType.BOOLEAN),
         ],
         rows=[],
@@ -703,9 +704,9 @@ def _build_pg_publication() -> CatalogRelation:
     return CatalogRelation(
         name="pg_publication",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="pubname", type=DataType.TEXT),
-            FacadeColumn(name="pubowner", type=DataType.INT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="pubname", type=DataType.STRING),
+            FacadeColumn(name="pubowner", type=DataType.INTEGER),
             FacadeColumn(name="puballtables", type=DataType.BOOLEAN),
             FacadeColumn(name="pubinsert", type=DataType.BOOLEAN),
             FacadeColumn(name="pubupdate", type=DataType.BOOLEAN),
@@ -722,9 +723,9 @@ def _build_pg_publication_rel() -> CatalogRelation:
     return CatalogRelation(
         name="pg_publication_rel",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="prpubid", type=DataType.INT),
-            FacadeColumn(name="prrelid", type=DataType.INT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="prpubid", type=DataType.INTEGER),
+            FacadeColumn(name="prrelid", type=DataType.INTEGER),
         ],
         rows=[],
     )
@@ -735,9 +736,9 @@ def _build_pg_publication_tables() -> CatalogRelation:
     return CatalogRelation(
         name="pg_publication_tables",
         columns=[
-            FacadeColumn(name="pubname", type=DataType.TEXT),
-            FacadeColumn(name="schemaname", type=DataType.TEXT),
-            FacadeColumn(name="tablename", type=DataType.TEXT),
+            FacadeColumn(name="pubname", type=DataType.STRING),
+            FacadeColumn(name="schemaname", type=DataType.STRING),
+            FacadeColumn(name="tablename", type=DataType.STRING),
         ],
         rows=[],
     )
@@ -748,14 +749,14 @@ def _build_pg_partitioned_table() -> CatalogRelation:
     return CatalogRelation(
         name="pg_partitioned_table",
         columns=[
-            FacadeColumn(name="partrelid", type=DataType.INT),
-            FacadeColumn(name="partstrat", type=DataType.TEXT),
-            FacadeColumn(name="partnatts", type=DataType.INT),
-            FacadeColumn(name="partdefid", type=DataType.INT),
-            FacadeColumn(name="partattrs", type=DataType.TEXT),
-            FacadeColumn(name="partclass", type=DataType.TEXT),
-            FacadeColumn(name="partcollation", type=DataType.TEXT),
-            FacadeColumn(name="partexprs", type=DataType.TEXT),
+            FacadeColumn(name="partrelid", type=DataType.INTEGER),
+            FacadeColumn(name="partstrat", type=DataType.STRING),
+            FacadeColumn(name="partnatts", type=DataType.INTEGER),
+            FacadeColumn(name="partdefid", type=DataType.INTEGER),
+            FacadeColumn(name="partattrs", type=DataType.STRING),
+            FacadeColumn(name="partclass", type=DataType.STRING),
+            FacadeColumn(name="partcollation", type=DataType.STRING),
+            FacadeColumn(name="partexprs", type=DataType.STRING),
         ],
         rows=[],
     )
@@ -767,14 +768,14 @@ def _build_pg_rewrite() -> CatalogRelation:
     return CatalogRelation(
         name="pg_rewrite",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="rulename", type=DataType.TEXT),
-            FacadeColumn(name="ev_class", type=DataType.INT),
-            FacadeColumn(name="ev_type", type=DataType.TEXT),
-            FacadeColumn(name="ev_enabled", type=DataType.TEXT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="rulename", type=DataType.STRING),
+            FacadeColumn(name="ev_class", type=DataType.INTEGER),
+            FacadeColumn(name="ev_type", type=DataType.STRING),
+            FacadeColumn(name="ev_enabled", type=DataType.STRING),
             FacadeColumn(name="is_instead", type=DataType.BOOLEAN),
-            FacadeColumn(name="ev_qual", type=DataType.TEXT),
-            FacadeColumn(name="ev_action", type=DataType.TEXT),
+            FacadeColumn(name="ev_qual", type=DataType.STRING),
+            FacadeColumn(name="ev_action", type=DataType.STRING),
         ],
         rows=[],
     )
@@ -785,14 +786,14 @@ def _build_pg_extension() -> CatalogRelation:
     return CatalogRelation(
         name="pg_extension",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="extname", type=DataType.TEXT),
-            FacadeColumn(name="extowner", type=DataType.INT),
-            FacadeColumn(name="extnamespace", type=DataType.INT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="extname", type=DataType.STRING),
+            FacadeColumn(name="extowner", type=DataType.INTEGER),
+            FacadeColumn(name="extnamespace", type=DataType.INTEGER),
             FacadeColumn(name="extrelocatable", type=DataType.BOOLEAN),
-            FacadeColumn(name="extversion", type=DataType.TEXT),
-            FacadeColumn(name="extconfig", type=DataType.TEXT),
-            FacadeColumn(name="extcondition", type=DataType.TEXT),
+            FacadeColumn(name="extversion", type=DataType.STRING),
+            FacadeColumn(name="extconfig", type=DataType.STRING),
+            FacadeColumn(name="extcondition", type=DataType.STRING),
         ],
         rows=[],
     )
@@ -808,12 +809,12 @@ def _build_pg_collation() -> CatalogRelation:
     return CatalogRelation(
         name="pg_collation",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="collname", type=DataType.TEXT),
-            FacadeColumn(name="collnamespace", type=DataType.INT),
-            FacadeColumn(name="collencoding", type=DataType.INT),
-            FacadeColumn(name="collcollate", type=DataType.TEXT),
-            FacadeColumn(name="collctype", type=DataType.TEXT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="collname", type=DataType.STRING),
+            FacadeColumn(name="collnamespace", type=DataType.INTEGER),
+            FacadeColumn(name="collencoding", type=DataType.INTEGER),
+            FacadeColumn(name="collcollate", type=DataType.STRING),
+            FacadeColumn(name="collctype", type=DataType.STRING),
         ],
         rows=[],
     )
@@ -827,16 +828,16 @@ def _build_pg_roles() -> CatalogRelation:
     return CatalogRelation(
         name="pg_roles",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="rolname", type=DataType.TEXT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="rolname", type=DataType.STRING),
             FacadeColumn(name="rolsuper", type=DataType.BOOLEAN),
             FacadeColumn(name="rolinherit", type=DataType.BOOLEAN),
             FacadeColumn(name="rolcreaterole", type=DataType.BOOLEAN),
             FacadeColumn(name="rolcreatedb", type=DataType.BOOLEAN),
             FacadeColumn(name="rolcanlogin", type=DataType.BOOLEAN),
             FacadeColumn(name="rolreplication", type=DataType.BOOLEAN),
-            FacadeColumn(name="rolconnlimit", type=DataType.INT),
-            FacadeColumn(name="rolvaliduntil", type=DataType.TIMESTAMP),
+            FacadeColumn(name="rolconnlimit", type=DataType.INTEGER),
+            FacadeColumn(name="rolvaliduntil", type=DataType.DATETIME),
             FacadeColumn(name="rolbypassrls", type=DataType.BOOLEAN),
         ],
         rows=[{
@@ -857,17 +858,17 @@ def _build_pg_database(catalog: FacadeCatalog, datasource: str) -> CatalogRelati
     return CatalogRelation(
         name="pg_database",
         columns=[
-            FacadeColumn(name="oid", type=DataType.INT),
-            FacadeColumn(name="datname", type=DataType.TEXT),
-            FacadeColumn(name="datdba", type=DataType.INT),
-            FacadeColumn(name="encoding", type=DataType.INT),
-            FacadeColumn(name="datcollate", type=DataType.TEXT),
-            FacadeColumn(name="datctype", type=DataType.TEXT),
+            FacadeColumn(name="oid", type=DataType.INTEGER),
+            FacadeColumn(name="datname", type=DataType.STRING),
+            FacadeColumn(name="datdba", type=DataType.INTEGER),
+            FacadeColumn(name="encoding", type=DataType.INTEGER),
+            FacadeColumn(name="datcollate", type=DataType.STRING),
+            FacadeColumn(name="datctype", type=DataType.STRING),
             FacadeColumn(name="datistemplate", type=DataType.BOOLEAN),
             FacadeColumn(name="datallowconn", type=DataType.BOOLEAN),
-            FacadeColumn(name="datconnlimit", type=DataType.INT),
-            FacadeColumn(name="dattablespace", type=DataType.INT),
-            FacadeColumn(name="datacl", type=DataType.TEXT),
+            FacadeColumn(name="datconnlimit", type=DataType.INTEGER),
+            FacadeColumn(name="dattablespace", type=DataType.INTEGER),
+            FacadeColumn(name="datacl", type=DataType.STRING),
         ],
         rows=[{
             "oid": stable_oid("database", datasource),
@@ -890,22 +891,22 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
     the ``information_schema.`` qualifier and rewrites the table name.
     """
     columns = [
-        FacadeColumn(name="table_catalog", type=DataType.TEXT),
-        FacadeColumn(name="table_schema", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="column_name", type=DataType.TEXT),
-        FacadeColumn(name="ordinal_position", type=DataType.INT),
-        FacadeColumn(name="column_default", type=DataType.TEXT),
-        FacadeColumn(name="is_nullable", type=DataType.TEXT),
-        FacadeColumn(name="data_type", type=DataType.TEXT),
-        FacadeColumn(name="udt_schema", type=DataType.TEXT),
-        FacadeColumn(name="udt_name", type=DataType.TEXT),
-        FacadeColumn(name="is_identity", type=DataType.TEXT),
-        FacadeColumn(name="is_generated", type=DataType.TEXT),
+        FacadeColumn(name="table_catalog", type=DataType.STRING),
+        FacadeColumn(name="table_schema", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="column_name", type=DataType.STRING),
+        FacadeColumn(name="ordinal_position", type=DataType.INTEGER),
+        FacadeColumn(name="column_default", type=DataType.STRING),
+        FacadeColumn(name="is_nullable", type=DataType.STRING),
+        FacadeColumn(name="data_type", type=DataType.STRING),
+        FacadeColumn(name="udt_schema", type=DataType.STRING),
+        FacadeColumn(name="udt_name", type=DataType.STRING),
+        FacadeColumn(name="is_identity", type=DataType.STRING),
+        FacadeColumn(name="is_generated", type=DataType.STRING),
         # SLayer extension columns (Q3 sub-b-ii).
-        FacadeColumn(name="column_kind", type=DataType.TEXT),
-        FacadeColumn(name="description", type=DataType.TEXT),
-        FacadeColumn(name="label", type=DataType.TEXT),
+        FacadeColumn(name="column_kind", type=DataType.STRING),
+        FacadeColumn(name="description", type=DataType.STRING),
+        FacadeColumn(name="label", type=DataType.STRING),
     ]
     rows: list[dict[str, Any]] = []
     # exclude cross-dataset entries — they leak as dotted "columns"
@@ -944,28 +945,28 @@ def _build_is_columns(catalog: FacadeCatalog, datasource: str) -> CatalogRelatio
 
 def _build_is_table_constraints() -> CatalogRelation:
     return CatalogRelation(name="_is_table_constraints", columns=[
-        FacadeColumn(name="constraint_catalog", type=DataType.TEXT),
-        FacadeColumn(name="constraint_schema", type=DataType.TEXT),
-        FacadeColumn(name="constraint_name", type=DataType.TEXT),
-        FacadeColumn(name="table_catalog", type=DataType.TEXT),
-        FacadeColumn(name="table_schema", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="constraint_type", type=DataType.TEXT),
-        FacadeColumn(name="is_deferrable", type=DataType.TEXT),
-        FacadeColumn(name="initially_deferred", type=DataType.TEXT),
+        FacadeColumn(name="constraint_catalog", type=DataType.STRING),
+        FacadeColumn(name="constraint_schema", type=DataType.STRING),
+        FacadeColumn(name="constraint_name", type=DataType.STRING),
+        FacadeColumn(name="table_catalog", type=DataType.STRING),
+        FacadeColumn(name="table_schema", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="constraint_type", type=DataType.STRING),
+        FacadeColumn(name="is_deferrable", type=DataType.STRING),
+        FacadeColumn(name="initially_deferred", type=DataType.STRING),
     ], rows=[])
 
 
 def _build_is_key_column_usage() -> CatalogRelation:
     return CatalogRelation(name="_is_key_column_usage", columns=[
-        FacadeColumn(name="constraint_catalog", type=DataType.TEXT),
-        FacadeColumn(name="constraint_schema", type=DataType.TEXT),
-        FacadeColumn(name="constraint_name", type=DataType.TEXT),
-        FacadeColumn(name="table_catalog", type=DataType.TEXT),
-        FacadeColumn(name="table_schema", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="column_name", type=DataType.TEXT),
-        FacadeColumn(name="ordinal_position", type=DataType.INT),
+        FacadeColumn(name="constraint_catalog", type=DataType.STRING),
+        FacadeColumn(name="constraint_schema", type=DataType.STRING),
+        FacadeColumn(name="constraint_name", type=DataType.STRING),
+        FacadeColumn(name="table_catalog", type=DataType.STRING),
+        FacadeColumn(name="table_schema", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="column_name", type=DataType.STRING),
+        FacadeColumn(name="ordinal_position", type=DataType.INTEGER),
     ], rows=[])
 
 
@@ -976,8 +977,8 @@ def _build_is_schemata(
     map to schemas via ``postgres_schema`` (default ``public``); multiple
     datasources sharing a schema collapse to one row."""
     columns = [
-        FacadeColumn(name="catalog_name", type=DataType.TEXT),
-        FacadeColumn(name="schema_name", type=DataType.TEXT),
+        FacadeColumn(name="catalog_name", type=DataType.STRING),
+        FacadeColumn(name="schema_name", type=DataType.STRING),
     ]
     rows = [
         {"catalog_name": datasource, "schema_name": name}
@@ -990,10 +991,10 @@ def _build_is_tables(
     catalog: FacadeCatalog, datasource: str,
 ) -> CatalogRelation:
     columns = [
-        FacadeColumn(name="table_catalog", type=DataType.TEXT),
-        FacadeColumn(name="table_schema", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="table_type", type=DataType.TEXT),
+        FacadeColumn(name="table_catalog", type=DataType.STRING),
+        FacadeColumn(name="table_schema", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="table_type", type=DataType.STRING),
     ]
     rows = [{"table_catalog": datasource, "table_schema": sch.name,
              "table_name": tbl.name, "table_type": tbl.table_type}
@@ -1008,13 +1009,13 @@ def _build_is_metrics(
     names (``DOUBLE`` / ``BIGINT`` / ``TIMESTAMP``) to match the contract
     the canned ``match_info_schema._serve_metrics`` previously emitted."""
     columns = [
-        FacadeColumn(name="catalog_name", type=DataType.TEXT),
-        FacadeColumn(name="schema_name", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="metric_name", type=DataType.TEXT),
-        FacadeColumn(name="description", type=DataType.TEXT),
-        FacadeColumn(name="data_type", type=DataType.TEXT),
-        FacadeColumn(name="label", type=DataType.TEXT),
+        FacadeColumn(name="catalog_name", type=DataType.STRING),
+        FacadeColumn(name="schema_name", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="metric_name", type=DataType.STRING),
+        FacadeColumn(name="description", type=DataType.STRING),
+        FacadeColumn(name="data_type", type=DataType.STRING),
+        FacadeColumn(name="label", type=DataType.STRING),
     ]
     rows: list[dict[str, Any]] = []
     for sch in catalog.schemas:
@@ -1039,13 +1040,13 @@ def _build_is_dimensions(
     names to match the contract the canned ``_serve_dimensions``
     previously emitted."""
     columns = [
-        FacadeColumn(name="catalog_name", type=DataType.TEXT),
-        FacadeColumn(name="schema_name", type=DataType.TEXT),
-        FacadeColumn(name="table_name", type=DataType.TEXT),
-        FacadeColumn(name="dimension_name", type=DataType.TEXT),
-        FacadeColumn(name="description", type=DataType.TEXT),
-        FacadeColumn(name="data_type", type=DataType.TEXT),
-        FacadeColumn(name="label", type=DataType.TEXT),
+        FacadeColumn(name="catalog_name", type=DataType.STRING),
+        FacadeColumn(name="schema_name", type=DataType.STRING),
+        FacadeColumn(name="table_name", type=DataType.STRING),
+        FacadeColumn(name="dimension_name", type=DataType.STRING),
+        FacadeColumn(name="description", type=DataType.STRING),
+        FacadeColumn(name="data_type", type=DataType.STRING),
+        FacadeColumn(name="label", type=DataType.STRING),
         FacadeColumn(name="is_time", type=DataType.BOOLEAN),
     ]
     rows: list[dict[str, Any]] = []
@@ -2002,27 +2003,27 @@ class _AstRewriter:
 
 _DUCKDB_TO_DATATYPE: dict[str, DataType] = {
     # ints
-    "TINYINT": DataType.INT, "SMALLINT": DataType.INT,
-    "INTEGER": DataType.INT, "BIGINT": DataType.INT, "HUGEINT": DataType.INT,
-    "UTINYINT": DataType.INT, "USMALLINT": DataType.INT,
-    "UINTEGER": DataType.INT, "UBIGINT": DataType.INT,
-    "INT1": DataType.INT, "INT2": DataType.INT, "INT4": DataType.INT,
-    "INT8": DataType.INT,
-    "BIGINT[]": DataType.TEXT,  # arrays fall back to TEXT
+    "TINYINT": DataType.INTEGER, "SMALLINT": DataType.INTEGER,
+    "INTEGER": DataType.INTEGER, "BIGINT": DataType.INTEGER, "HUGEINT": DataType.INTEGER,
+    "UTINYINT": DataType.INTEGER, "USMALLINT": DataType.INTEGER,
+    "UINTEGER": DataType.INTEGER, "UBIGINT": DataType.INTEGER,
+    "INT1": DataType.INTEGER, "INT2": DataType.INTEGER, "INT4": DataType.INTEGER,
+    "INT8": DataType.INTEGER,
+    "BIGINT[]": DataType.STRING,  # arrays fall back to TEXT
     # floats
-    "REAL": DataType.DOUBLE, "FLOAT": DataType.DOUBLE,
-    "DOUBLE": DataType.DOUBLE, "DECIMAL": DataType.DOUBLE,
-    "NUMERIC": DataType.DOUBLE, "FLOAT4": DataType.DOUBLE,
-    "FLOAT8": DataType.DOUBLE,
+    "REAL": DataType.FLOAT, "FLOAT": DataType.FLOAT,
+    "DOUBLE": DataType.FLOAT, "DECIMAL": DataType.FLOAT,
+    "NUMERIC": DataType.FLOAT, "FLOAT4": DataType.FLOAT,
+    "FLOAT8": DataType.FLOAT,
     # bool / date / timestamp / text
     "BOOLEAN": DataType.BOOLEAN, "BOOL": DataType.BOOLEAN,
     "DATE": DataType.DATE,
-    "TIMESTAMP": DataType.TIMESTAMP,
-    "TIMESTAMP_NS": DataType.TIMESTAMP, "TIMESTAMP_MS": DataType.TIMESTAMP,
-    "TIMESTAMP_S": DataType.TIMESTAMP,
-    "DATETIME": DataType.TIMESTAMP,
-    "VARCHAR": DataType.TEXT, "TEXT": DataType.TEXT, "STRING": DataType.TEXT,
-    "CHAR": DataType.TEXT, "BPCHAR": DataType.TEXT,
+    "TIMESTAMP": DataType.DATETIME,
+    "TIMESTAMP_NS": DataType.DATETIME, "TIMESTAMP_MS": DataType.DATETIME,
+    "TIMESTAMP_S": DataType.DATETIME,
+    "DATETIME": DataType.DATETIME,
+    "VARCHAR": DataType.STRING, "TEXT": DataType.STRING, "STRING": DataType.STRING,
+    "CHAR": DataType.STRING, "BPCHAR": DataType.STRING,
 }
 
 
@@ -2031,20 +2032,22 @@ def _duckdb_typename_to_datatype(typename: str) -> DataType:
     ``DataType``s. Anything unmapped falls back to ``TEXT`` so wire encoding
     has a safe path."""
     base = str(typename).split("(")[0].split("[")[0].strip().upper()
-    return _DUCKDB_TO_DATATYPE.get(base, DataType.TEXT)
+    return _DUCKDB_TO_DATATYPE.get(base, DataType.STRING)
 
 
 # --- DuckDB type mapping for table columns at creation time ----------------
 
 
-_DATATYPE_TO_DUCKDB_CREATE: dict[DataType, str] = {
-    DataType.INT: "BIGINT",
-    DataType.DOUBLE: "DOUBLE",
-    DataType.TEXT: "VARCHAR",
-    DataType.BOOLEAN: "BOOLEAN",
-    DataType.DATE: "DATE",
-    DataType.TIMESTAMP: "TIMESTAMP",
+_KIND_TO_DUCKDB_CREATE: dict[TypeKind, str] = {
+    TypeKind.INT: "BIGINT",
+    TypeKind.DOUBLE: "DOUBLE",
+    TypeKind.TEXT: "VARCHAR",
+    TypeKind.BOOLEAN: "BOOLEAN",
+    TypeKind.DATE: "DATE",
+    TypeKind.TIMESTAMP: "TIMESTAMP",
 }
+_DATATYPE_TO_DUCKDB_CREATE: dict[DataType, str] = {
+    t: _KIND_TO_DUCKDB_CREATE[t.kind] for t in DataType if t.kind in _KIND_TO_DUCKDB_CREATE}
 
 
 # --- CatalogSqlExecutor -----------------------------------------------------

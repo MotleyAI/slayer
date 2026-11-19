@@ -13,6 +13,7 @@ from typing import Any
 from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.models import reserved_granularity_names
 from slayer.core.time_points import relative_unit_word
+from slayer.core.vocabulary import extension_dataset, is_extension_object
 from slayer.storage.document_keys import DocumentKeys, keys_for, query_keys
 from slayer.storage.rank_direction_migration import rewrite_query_fields
 
@@ -200,9 +201,9 @@ def memory_source_dataset(data: dict) -> tuple[str | None, str | None]:
     if not isinstance(query, dict):
         return None, None
     source = query.get(query_keys(query, enclosing=_version_keys(entity="Memory", data=data)).population)
-    if isinstance(source, dict) and "source_name" not in source:
+    if isinstance(source, dict) and not is_extension_object(source):
         data_source = source.get("data_source")
         return (data_source if isinstance(data_source, str) else None), None
     if isinstance(source, dict):
-        source = source.get("source_name")
+        source = extension_dataset(source)
     return None, (source if isinstance(source, str) else None)

@@ -77,7 +77,7 @@ def elaborate_query(
         _check_product_hops(prebound, filter_typings=filter_typings, sides=sides)
     check_combined_partition_keys(
         prebound, filter_typings=filter_typings,
-        order_texts=[o.raw_expression or o.field.full_name for o in query.order or []],
+        order_texts=[o.raw_expression or o.field for o in query.order or []],
     )
     return ElaboratedStage(query=query, **_environment_fields(
         prebound, filter_typings=filter_typings, bundle=bundle, scope=scope,

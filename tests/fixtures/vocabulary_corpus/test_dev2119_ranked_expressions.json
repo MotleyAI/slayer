@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "accounts",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -43,8 +43,8 @@
     ],
     "metrics": [
      {
-      "expression": "last(balance, coalesce(updated_at, created_at))",
-      "name": "v"
+      "metric": "last(balance, coalesce(updated_at, created_at))",
+      "alias": "v"
      }
     ]
    }
@@ -64,8 +64,8 @@
     "population": "accounts",
     "metrics": [
      {
-      "expression": "last(spend, coalesce(orders.created_at, signup_ts))",
-      "name": "v"
+      "metric": "last(spend, coalesce(orders.created_at, signup_ts))",
+      "alias": "v"
      }
     ]
    }
@@ -85,28 +85,28 @@
     "population": "order_facts",
     "metrics": [
      {
-      "expression": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
-      "name": "v"
+      "metric": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
+      "alias": "v"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(price, weight=quantity * 2)"
    },
    "new": {
-    "expression": "weighted_avg(price, weight=quantity * 2)"
+    "metric": "weighted_avg(price, weight=quantity * 2)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(price, quantity * 2)"
    },
    "new": {
-    "expression": "weighted_avg(price, quantity * 2)"
+    "metric": "weighted_avg(price, quantity * 2)"
    }
   }
  ],

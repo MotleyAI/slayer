@@ -44,8 +44,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import DatasetMetric
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.joins import (
@@ -83,12 +82,12 @@ def _windowed_query() -> SlayerQuery:
     """Windowed measure grouped by a NULLABLE dimension + a month bucket."""
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         time_dimensions=[TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="rev_w")],
+        metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="rev_w")],
     )
 
 
@@ -96,12 +95,12 @@ def _windowed_chain_query() -> SlayerQuery:
     """The same shape against the shared orders_x chain (postgres-shaped)."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         time_dimensions=[TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="rev_w")],
+        metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="rev_w")],
     )
 
 
@@ -109,8 +108,8 @@ def _cm_shared_grain_query() -> SlayerQuery:
     """Cross-model measure grouped by a grain shared with the target."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[FieldRef(name="customers_v2.status")],
-        metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+        dimensions=[QueryDimension(field="customers_v2.status")],
+        metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
     )
 
 
@@ -315,7 +314,7 @@ class TestGrainSemantics:
         caller must keep turning that into a CROSS JOIN."""
         query = SlayerQuery(
             population="orders_x",
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         assert "CROSS JOIN _cm_" in _norm(sql), (
@@ -330,7 +329,7 @@ class TestGrainSemantics:
         """The CROSS JOIN must not multiply rows: one row, the scalar total."""
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="total")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="total")],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, f"scalar CMA must yield ONE row:\n{resp.data}"
@@ -351,10 +350,10 @@ class TestGrainSemantics:
         query = SlayerQuery(
             population="orders_x",
             dimensions=[
-                FieldRef(name="customers_v2.status"),
-                FieldRef(name="customers_v2.ltv_x2"),
+                QueryDimension(field="customers_v2.status"),
+                QueryDimension(field="customers_v2.ltv_x2"),
             ],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres"))
@@ -372,7 +371,7 @@ class TestGrainSemantics:
                 field="customers_v2.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres"))
@@ -388,8 +387,8 @@ class TestGrainSemantics:
         predicate is constructed and must not change what it means)."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.tier")],
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="spend")],
+            dimensions=[QueryDimension(field="customers.tier")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="spend")],
         )
         resp = await exec_engine.execute(query)
         by_tier = {r["orders.customers.tier"]: r["orders.spend"] for r in resp.data}

@@ -12,10 +12,11 @@ import pytest
 
 from slayer.core.errors import AmbiguousRelationshipPathError, SlayerError
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import ambiguity_datasets
 from tests._dev1841_fixtures import (
     BCAST_SPEND_CROSS,
-    DatasetMetric,
     SlayerQuery,
     bcast_q,
     cust_q,
@@ -24,10 +25,10 @@ from tests._dev1841_fixtures import (
     rows_by,
 )
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-SM = DatasetMetric(expression="sum(agents.score)", name="sm")
-SP = DatasetMetric(expression="sum(spend)", name="sp")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+SM = QueryMetric(metric="sum(agents.score)", alias="sm")
+SP = QueryMetric(metric="sum(spend)", alias="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -114,8 +115,8 @@ class TestErrorModePasses:
         _, engine = exec_backend
         resp = await engine.execute(error_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, partition_by=[])", name="total")]))
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=[])", alias="total")]))
         for row in resp.data:
             assert float(row["orders.total"]) == pytest.approx(BCAST_SPEND_CROSS)
 

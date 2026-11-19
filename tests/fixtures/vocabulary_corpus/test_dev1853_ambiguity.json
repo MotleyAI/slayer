@@ -82,8 +82,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(customers.spend)",
-      "name": "s"
+      "metric": "sum(customers.spend)",
+      "alias": "s"
      }
     ]
    }

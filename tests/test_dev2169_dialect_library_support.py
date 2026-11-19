@@ -214,7 +214,7 @@ COERCION_CASES = [
     _dim("coerce|greatest", "try_cast", "greatest(num_txt, 5)", mentions="number"),
     _dim("coerce|least", "try_cast", "least(5, num_txt)", mentions="number"),
     LibCase(case_id="coerce|measure", name="try_cast", mentions="number",
-            build=lambda: _lib(metrics=[{"expression": "sum(num_txt * 2)", "name": "t"}])),
+            build=lambda: _lib(metrics=[{"metric": "sum(num_txt * 2)", "alias": "t"}])),
     LibCase(case_id="coerce|saved-measure", name="try_cast", mentions="number",
             build=lambda: _lib(metrics=["txt_total"]), datasets=_with_saved_metric),
     LibCase(case_id="coerce|order-by", name="try_cast", mentions="number",
@@ -365,7 +365,7 @@ def _col_part(_key: object) -> Expression:
 
 
 def _cast(*, try_: bool) -> CastKey:
-    return CastKey(source=LiteralKey(value="1"), type_text="DOUBLE", data_type=DataType.DOUBLE, try_=try_)
+    return CastKey(source=LiteralKey(value="1"), type_text="DOUBLE", data_type=DataType.FLOAT, try_=try_)
 
 
 @pytest.mark.parametrize("dialect", _UNSUPPORTED, ids=lambda d: type(d).__name__)
@@ -386,8 +386,8 @@ _LIST_HOOKS: dict[str, Callable[[SqlDialect], Any]] = {
     "contains": lambda d: d.build_list_call("contains", (_X, exp.Literal.string("a"))),
     "contains_any": lambda d: d.build_list_call("contains_any", (_X, _Y)),
     "contains_all": lambda d: d.build_list_call("contains_all", (_X, _Y)),
-    "collect": lambda d: d.build_collect(_X, DataType.TEXT),
-    "list_set": lambda d: d.build_list_set(_X, DataType.TEXT),
+    "collect": lambda d: d.build_collect(_X, DataType.STRING),
+    "list_set": lambda d: d.build_list_set(_X, DataType.STRING),
     "list_key": lambda d: d.build_list_key(_X),
 }
 
@@ -409,7 +409,7 @@ def _neutral_defaults() -> dict[str, Expression]:
     out: dict[str, Expression] = {}
     for g in TimeGranularity:
         out[f"date_trunc:{g.value}"] = d.build_date_trunc(_X, g)
-        out[f"date_diff:{g.value}"] = d.build_date_diff(unit=g, start=_X, end=_Y, operand=DataType.TIMESTAMP)
+        out[f"date_diff:{g.value}"] = d.build_date_diff(unit=g, start=_X, end=_Y, operand=DataType.DATETIME)
         out[f"date_add:{g.value}"] = d.build_date_add(expr=_X, count=exp.Literal.number(2), unit=g,
                                                        operand=DataType.DATE)
     for p in DatePart:
@@ -440,7 +440,7 @@ def _contractors(**body: Any) -> SlayerQuery:
 
 
 def _count(name: str = "n") -> dict[str, str]:
-    return {"expression": "count(*)", "name": name}
+    return {"metric": "count(*)", "alias": name}
 
 
 class ListCase(BaseModel):
@@ -458,12 +458,12 @@ LIST_CASES = [
     ListCase(case_id="contains_all-list-column", mentions="contains_all",
              build=lambda: _contractors(dimensions=["id"], filter=["contains_all(skills, required)"])),
     ListCase(case_id="length", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"expression": "length(skills)", "name": "v"}])),
+             build=lambda: _contractors(dimensions=["id", {"field": "length(skills)", "alias": "v"}])),
     ListCase(case_id="array-literal", mentions="length",
-             build=lambda: _contractors(dimensions=["id", {"expression": "length(['go', 'sql'])", "name": "v"}])),
+             build=lambda: _contractors(dimensions=["id", {"field": "length(['go', 'sql'])", "alias": "v"}])),
     ListCase(case_id="element-access", mentions="skills", build=lambda: _contractors(dimensions=["skills.value"])),
     ListCase(case_id="list-child", mentions="skills",
-             build=lambda: _contractors(metrics=[{"expression": "count(skills.*)", "name": "n"}])),
+             build=lambda: _contractors(metrics=[{"metric": "count(skills.*)", "alias": "n"}])),
     ListCase(case_id="child-filter", mentions="skills",
              build=lambda: _contractors(metrics=[_count()], filter=["skills.value = 'go'"])),
     ListCase(case_id="nested-hop", mentions="skills",
@@ -473,13 +473,13 @@ LIST_CASES = [
              build=lambda: [
                  SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["id"],
                                              "filter": ["contains(skills, 'go')"]}),
-                 SlayerQuery.model_validate({"population": "s1", "metrics": [_count()]}),
+                 SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "count(*)", "alias": "n"}]}),
              ]),
     ListCase(case_id="collect", mentions="collect",
-             build=lambda: _contractors(dimensions=["team"], metrics=[{"expression": "collect(city)", "name": "c"}])),
+             build=lambda: _contractors(dimensions=["team"], metrics=[{"metric": "collect(city)", "alias": "c"}])),
     ListCase(case_id="collect-elements", mentions="collect",
              build=lambda: _contractors(dimensions=["team"],
-                                        metrics=[{"expression": "collect(skills.value)", "name": "c"}])),
+                                        metrics=[{"metric": "collect(skills.value)", "alias": "c"}])),
 ]
 
 

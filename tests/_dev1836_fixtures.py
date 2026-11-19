@@ -83,9 +83,9 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="pop", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="pop", datatype=DataType.FLOAT),
         ],
     )
 
@@ -96,9 +96,9 @@ def segments_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="segments", data_source="test", sql_table="segments",
         fields=[
-            DatasetField(name="code", datatype=DataType.TEXT),
-            DatasetField(name="label", datatype=DataType.TEXT),
-            DatasetField(name="discount", datatype=DataType.DOUBLE),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="label", datatype=DataType.STRING),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -107,24 +107,24 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="segment_code", datatype=DataType.TEXT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="segment_code", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
             # Target-local filtered column (safe; CASE-WHEN at aggregation time):
-            DatasetField(name="gold_spend", datatype=DataType.DOUBLE, sql="spend",
+            DatasetField(name="gold_spend", datatype=DataType.FLOAT, sql="spend",
                    filter="tier = 'gold'"),
             # Unsafe-input probes (only planned when referenced):
-            DatasetField(name="seg_label", datatype=DataType.TEXT, sql="segments.label"),
-            DatasetField(name="vip_spend", datatype=DataType.DOUBLE, sql="spend",
+            DatasetField(name="seg_label", datatype=DataType.STRING, sql="segments.label"),
+            DatasetField(name="vip_spend", datatype=DataType.FLOAT, sql="spend",
                    filter="segments.label = 'Alpha'"),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
             DatasetRelationship(to="segments",
-                      join_pairs=[["segment_code", "code"]]),
+                      from_columns=["segment_code"], to_columns=["code"]),
         ],
     )
 
@@ -134,15 +134,15 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -152,9 +152,9 @@ def inventory_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="inventory", data_source="test", sql_table="inventory",
         fields=[
-            DatasetField(name="wh", datatype=DataType.TEXT, primary_key=True),
-            DatasetField(name="sku", datatype=DataType.TEXT, primary_key=True),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="wh", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="sku", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
         ],
     )
 

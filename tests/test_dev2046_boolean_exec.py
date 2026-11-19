@@ -188,9 +188,9 @@ class TestComposition:
     async def test_stage_reaggregation(self, engine) -> None:
         resp = await engine.execute([
             {"name": "s1", "population": "orders", "dimensions": ["customer_id"],
-             "metrics": [{"expression": "sum(flag)", "name": "fs"}, {"expression": "max(flag)", "name": "fm"}]},
+             "metrics": [{"metric": "sum(flag)", "alias": "fs"}, {"metric": "max(flag)", "alias": "fm"}]},
             {"population": "s1",
-             "metrics": [{"expression": "sum(fs)", "name": "a"}, {"expression": "max(fm)", "name": "b"}]},
+             "metrics": [{"metric": "sum(fs)", "alias": "a"}, {"metric": "max(fm)", "alias": "b"}]},
         ])
         row = resp.data[0]
         assert row["s1.a"] == sum(FLAG_SUM_BY_CUSTOMER.values())

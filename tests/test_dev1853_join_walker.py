@@ -37,7 +37,7 @@ def _forward_pair(
     join_type: JoinType = JoinType.LEFT,
 ) -> dict[str, SlayerDataset]:
     orders = _dataset("orders", ["id", "customer_id", "status"], [
-        DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                   join_type=join_type, cardinality=cardinality),
     ])
     customers = _dataset("customers", ["id", "name"])
@@ -47,11 +47,11 @@ def _forward_pair(
 def _parallel_pair(*, named: bool) -> dict[str, SlayerDataset]:
     orders = _dataset("orders", ["id", "billing_customer_id", "shipping_customer_id"], [
         DatasetRelationship(to="customers",
-                  join_pairs=[["billing_customer_id", "id"]],
+                  from_columns=["billing_customer_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE,
                   name="billing_customer" if named else None),
         DatasetRelationship(to="customers",
-                  join_pairs=[["shipping_customer_id", "id"]],
+                  from_columns=["shipping_customer_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE,
                   name="shipping_customer" if named else None),
     ])
@@ -67,7 +67,7 @@ class TestOrientation:
         edge = edges[0]
         assert edge.source_dataset == "orders"
         assert edge.to == "customers"
-        assert edge.join_pairs == [["customer_id", "id"]]
+        assert edge.column_pairs == [("customer_id", "id")]
         assert edge.join_type == JoinType.LEFT
         assert edge.cardinality == RelationshipCardinality.MANY_TO_ONE
         assert edge.declaring_dataset == "orders"
@@ -79,7 +79,7 @@ class TestOrientation:
         edge = edges[0]
         assert edge.source_dataset == "customers"
         assert edge.to == "orders"
-        assert edge.join_pairs == [["id", "customer_id"]]
+        assert edge.column_pairs == [("id", "customer_id")]
         assert edge.cardinality == RelationshipCardinality.ONE_TO_MANY
         assert edge.declaring_dataset == "orders"
 
@@ -101,7 +101,7 @@ class TestSymmetry:
     def test_declaring_side_does_not_affect_traversal_answers(self) -> None:
         fwd = _forward_pair()
         rev_customers = _dataset("customers", ["id", "name"], [
-            DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
+            DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"],
                       cardinality=RelationshipCardinality.ONE_TO_MANY),
         ])
         rev = {"orders": _dataset("orders", ["id", "customer_id", "status"]),
@@ -109,8 +109,8 @@ class TestSymmetry:
         for source, target in (("orders", "customers"), ("customers", "orders")):
             edge_f = edges_between(source=fwd[source], target=fwd[target])[0]
             edge_r = edges_between(source=rev[source], target=rev[target])[0]
-            assert (edge_f.join_pairs, edge_f.cardinality, edge_f.join_type) == \
-                (edge_r.join_pairs, edge_r.cardinality, edge_r.join_type)
+            assert (edge_f.column_pairs, edge_f.cardinality, edge_f.join_type) == \
+                (edge_r.column_pairs, edge_r.cardinality, edge_r.join_type)
 
 
 class TestNeighbors:
@@ -168,18 +168,18 @@ class TestResolveHop:
                                   datasets_by_name=models)
         assert from_orders is not None
         assert from_orders.to == "customers"
-        assert from_orders.join_pairs == [["billing_customer_id", "id"]]
+        assert from_orders.column_pairs == [("billing_customer_id", "id")]
         from_customers = resolve_hop(current=models["customers"],
                                      token="billing_customer",
                                      datasets_by_name=models)
         assert from_customers is not None
         assert from_customers.to == "orders"
-        assert from_customers.join_pairs == [["id", "billing_customer_id"]]
+        assert from_customers.column_pairs == [("id", "billing_customer_id")]
 
     def test_edge_name_resolves_before_model_name(self) -> None:
         a = _dataset("a", ["id", "b_id", "c_id"], [
-            DatasetRelationship(to="b", join_pairs=[["b_id", "id"]], name="c"),
-            DatasetRelationship(to="c", join_pairs=[["c_id", "id"]]),
+            DatasetRelationship(to="b", from_columns=["b_id"], to_columns=["id"], name="c"),
+            DatasetRelationship(to="c", from_columns=["c_id"], to_columns=["id"]),
         ])
         models = {"a": a, "b": _dataset("b", ["id"]), "c": _dataset("c", ["id"])}
         edge = resolve_hop(current=models["a"], token="c", datasets_by_name=models)
@@ -190,11 +190,11 @@ class TestResolveHop:
 class TestWalk:
     def _chain(self) -> dict[str, SlayerDataset]:
         orders = _dataset("orders", ["id", "customer_id"], [
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
         ])
         customers = _dataset("customers", ["id", "region_id"], [
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
         ])
         return {"orders": orders, "customers": customers,
@@ -250,7 +250,7 @@ class TestModeAResolverIsBidirectional:
         models["orders"].relationships = [
             *models["orders"].relationships,
             DatasetRelationship(to="customers",
-                      join_pairs=[["customer_id", "id"]],
+                      from_columns=["customer_id"], to_columns=["id"],
                       join_type=JoinType.INNER),
         ]
         assert resolve_ref_target(

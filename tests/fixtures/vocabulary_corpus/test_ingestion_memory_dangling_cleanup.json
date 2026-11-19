@@ -2,12 +2,12 @@
  "source": "tests/test_ingestion_memory_dangling_cleanup.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   }
  ],

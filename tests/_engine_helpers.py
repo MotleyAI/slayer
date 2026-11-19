@@ -34,8 +34,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -384,17 +384,17 @@ async def orders_agg_sql(
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="completed_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="completed_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="status = 'completed'"),
         ],
         aggregations=aggregations or [],
     )
     sql = await _engine_generate(
-        query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=expression)]),
+        query=SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression)]),
         dataset=model, dialect=dialect,
     )
     return " ".join(sql.split())

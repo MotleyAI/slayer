@@ -33,10 +33,10 @@ def _ordered_query() -> SlayerQuery:
     """Leaves every field added by this release unset: ``OrderItem.nulls``, ``TimeDimension.name``."""
     return SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+        "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         "dimensions": ["status"],
         "time_dimensions": [TimeDimension(field="ordered_at", granularity="month")],
-        "order": [OrderItem.model_validate({"field": {"name": "status"}, "direction": "desc"})],
+        "order": [OrderItem.model_validate({"field": "status", "direction": "desc"})],
     })
 
 
@@ -44,10 +44,10 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=DS,
         fields=[
-            DatasetField(name="order_id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="order_id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
     )

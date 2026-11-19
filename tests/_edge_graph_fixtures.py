@@ -12,13 +12,13 @@ def edge_graph(
     """One model per node; each edge is an unannotated join declared on its source."""
     joins: dict[str, list[DatasetRelationship]] = {n: [] for n in nodes}
     for source, target, name in edges:
-        joins[source].append(DatasetRelationship(to=target, join_pairs=[["x_id", "id"]], name=name))
+        joins[source].append(DatasetRelationship(to=target, from_columns=["x_id"], to_columns=["id"], name=name))
     return {
         n: SlayerDataset(
             name=n, data_source="ds", sql_table=n,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="x_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="x_id", datatype=DataType.INTEGER),
             ],
             relationships=joins[n],
         )

@@ -102,15 +102,15 @@ def test_introspected_types_and_pk(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     cols = {c.name: c for c in orders.fields}
     assert cols["order_id"].primary_key is True
-    assert cols["amount"].datatype == DataType.DOUBLE          # REAL
-    assert cols["quantity"].datatype == DataType.INT           # INTEGER
+    assert cols["amount"].datatype == DataType.FLOAT          # REAL
+    assert cols["quantity"].datatype == DataType.INTEGER           # INTEGER
     assert orders.sql_table == "orders"
 
 
 def test_is_time_field_typed_temporal_and_default_time_dim(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     ordered_at = {c.name: c for c in orders.fields}["ordered_at"]
-    assert ordered_at.datatype in (DataType.DATE, DataType.TIMESTAMP)
+    assert ordered_at.datatype in (DataType.DATE, DataType.DATETIME)
     assert orders.default_time_dimension == "ordered_at"
 
 
@@ -170,7 +170,7 @@ def test_joins_from_relationships(shop_engine):
     ojoins = {j.to: j for j in models["orders"].relationships}
     assert set(ojoins) == {"customers", "products"}
     assert ojoins["customers"].join_type == JoinType.LEFT
-    assert ojoins["customers"].join_pairs == [["customer_id", "customer_id"]]
+    assert ojoins["customers"].column_pairs == [("customer_id", "customer_id")]
     cjoins = {j.to: j for j in models["customers"].relationships}
     assert "regions" in cjoins
 
@@ -299,7 +299,7 @@ def test_composite_key_join(shop_engine):
     result = _convert(shop_engine, doc)
     child = {m.name: m for m in result.datasets}["ckey_child"]
     join = {j.to: j for j in child.relationships}["ckey_parent"]
-    assert join.join_pairs == [["k1", "k1"], ["k2", "k2"]]
+    assert join.column_pairs == [("k1", "k1"), ("k2", "k2")]
 
 
 def test_composite_key_length_mismatch_clean_fails(shop_engine):
@@ -557,8 +557,8 @@ def test_sql_mode_source_is_live_introspected(shop_engine):
     m = {mm.name: mm for mm in result.datasets}["order_summary"]
     assert m.sql == "SELECT order_id, amount, status FROM orders"
     cols = {c.name: c for c in m.fields}
-    assert cols["amount"].datatype == DataType.DOUBLE
-    assert cols["status"].datatype == DataType.TEXT
+    assert cols["amount"].datatype == DataType.FLOAT
+    assert cols["status"].datatype == DataType.STRING
 
 
 # ─────────────────────── ai_context / meta on all kinds ─────────────────────
@@ -620,8 +620,8 @@ def test_brand_new_derived_field_type_is_probed(shop_engine):
     )
     result = _convert(shop_engine, doc, target_dialect="sqlite")
     cols = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}
-    assert cols["status_up"].datatype == DataType.TEXT
-    assert cols["line"].datatype == DataType.DOUBLE
+    assert cols["status_up"].datatype == DataType.STRING
+    assert cols["line"].datatype == DataType.FLOAT
 
 
 def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
@@ -637,7 +637,7 @@ def test_quoted_bare_field_expression_overlays_not_derived(shop_engine):
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
     status = {c.name: c for c in orders.fields}["status"]
-    assert status.datatype == DataType.TEXT
+    assert status.datatype == DataType.STRING
 
 
 def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
@@ -653,7 +653,7 @@ def test_derived_field_shadowing_physical_column_is_dropped(shop_engine):
     status_cols = [c for c in orders.fields if c.name == "status"]
     assert len(status_cols) == 1
     assert status_cols[0].is_base
-    assert (status_cols[0].physical_name, status_cols[0].datatype) == ("status", DataType.TEXT)
+    assert (status_cols[0].physical_name, status_cols[0].datatype) == ("status", DataType.STRING)
     assert _reported(result)
 
 
@@ -771,7 +771,7 @@ def test_cross_model_derived_field_inherits_target_type(shop_engine):
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {c.name: c for c in orders.fields}["seg"].datatype == DataType.TEXT
+    assert {c.name: c for c in orders.fields}["seg"].datatype == DataType.STRING
 
 
 def _two_hop_doc():
@@ -806,7 +806,7 @@ def test_two_hop_cross_model_derived_field_inherits_target_type(shop_engine):
     orders = {m.name: m for m in result.datasets}["orders"]
     cols = {c.name: c for c in orders.fields}
     assert "region_name" in cols
-    assert cols["region_name"].datatype == DataType.TEXT
+    assert cols["region_name"].datatype == DataType.STRING
 
 
 def test_two_hop_cross_model_ref_to_unknown_column_dropped(shop_engine):
@@ -1216,7 +1216,7 @@ def test_relationship_onto_expression_target_field_skipped(shop_engine):
 def test_relationship_keyed_on_renamed_field_names_the_field(shop_engine):
     result = _convert(shop_engine, _o2c_doc(key_expression="customer_id"))
     orders = _by_name(result)["orders"]
-    assert [j.join_pairs for j in orders.relationships] == [[["cust_key", "customer_id"]]]
+    assert [j.column_pairs for j in orders.relationships] == [[("cust_key", "customer_id")]]
     key = orders.get_field("cust_key")
     assert key is not None
     assert key.physical_name == "customer_id"
@@ -1262,7 +1262,7 @@ def _staff_columns(engine: sa.Engine, *, source: str, fields: list[OSIField]) ->
 def test_a_query_source_list_column_is_a_list(staff_engine):
     cols = _staff_columns(staff_engine, source="SELECT id, skills FROM staff",
                           fields=[OSIField(name="skills", expression=_expr("skills"))])
-    assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
+    assert cols["skills"] == (DataType.ARRAY, DataType.OPAQUE)
 
 
 @SELF_NAMED
@@ -1271,8 +1271,8 @@ def test_a_derived_list_field_is_a_list(staff_engine):
         OSIField(name="skill_set", expression=_expr("list_distinct(skills)")),
         OSIField(name="skills", expression=_expr("list_distinct(skills)")),
     ])
-    assert cols["skill_set"] == (DataType.ARRAY, DataType.UNKNOWN)
-    assert cols["skills"] == (DataType.ARRAY, DataType.UNKNOWN)
+    assert cols["skill_set"] == (DataType.ARRAY, DataType.OPAQUE)
+    assert cols["skills"] == (DataType.ARRAY, DataType.OPAQUE)
 
 
 def test_a_list_valued_metric_operand_materializes_as_a_list(staff_engine):
@@ -1282,7 +1282,7 @@ def test_a_list_valued_metric_operand_materializes_as_a_list(staff_engine):
                       metrics=[OSIMetric(name="sets", expression=_expr("COUNT(list_distinct(staff.skills))"))])
     staff = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["staff"]
     hidden = [(c.datatype, c.element_type) for c in staff.fields if c.hidden]
-    assert hidden == [(DataType.ARRAY, DataType.UNKNOWN)]
+    assert hidden == [(DataType.ARRAY, DataType.OPAQUE)]
 
 
 def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
@@ -1300,7 +1300,7 @@ def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
     assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
     col = assignments.get_field("staff_skills")
     assert col is not None
-    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
 
 @SELF_NAMED
@@ -1308,7 +1308,7 @@ def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine,
     monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
     cols = _staff_columns(staff_engine, source="staff",
                           fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
-    assert cols["skills"] == (DataType.ARRAY, DataType.TEXT)
+    assert cols["skills"] == (DataType.ARRAY, DataType.STRING)
 
 
 def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
@@ -1333,12 +1333,12 @@ def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
     assignments = _by_name(_convert(staff_engine, doc, target_dialect="duckdb"))["assignments"]
     col = assignments.get_field("role_skills")
     assert col is not None
-    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
 
 def test_a_cycle_of_cross_model_refs_has_no_end(monkeypatch: pytest.MonkeyPatch):
     model = SlayerDataset(name="m", sql_table="m", data_source="testds", fields=[
-        DatasetField(name=n, sql=f"x.{n}", datatype=DataType.DOUBLE) for n in ("a", "b", "c")])
+        DatasetField(name=n, sql=f"x.{n}", datatype=DataType.FLOAT) for n in ("a", "b", "c")])
     nxt = {"a": "b", "b": "c", "c": "a"}
     def _single_ref(
         self: OsiToSlayerConverter, dataset: SlayerDataset, sql: str,

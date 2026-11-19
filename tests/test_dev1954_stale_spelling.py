@@ -14,7 +14,7 @@ import pytest
 
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageField
 from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -38,21 +38,21 @@ def _with_query_backed(datasets: List[SlayerDataset]) -> List[SlayerDataset]:
     reading its column by the stale spelling over a ``regions`` join."""
     regions = next(m for m in datasets if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
-        to="region_amounts", join_pairs=[["id", "customers__region_id"]]))
+        to="region_amounts", from_columns=["id"], to_columns=["customers__region_id"]))
     regions.fields.append(DatasetField(
         name="qb_label", sql=f"region_amounts.{STALE}"))
     return [*datasets, SlayerDataset(
         name="region_amounts", data_source="test",
         source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.regions.rname"],
-            metrics=[{"expression": "sum(amount)", "name": "amt"}])])]
+            metrics=[{"metric": "sum(amount)", "alias": "amt"}])])]
 
 
 def _parallel_datasets() -> List[SlayerDataset]:
     models = dev1954_datasets()
     customers = next(m for m in models if m.name == "customers")
     customers.relationships.append(DatasetRelationship(
-        to="regions", join_pairs=[["region_id", "id"]], name="hr2"))
+        to="regions", from_columns=["region_id"], to_columns=["id"], name="hr2"))
     return models
 
 
@@ -76,12 +76,12 @@ def _ambiguous_qb_datasets() -> List[SlayerDataset]:
     models = _parallel_datasets()
     regions = next(m for m in models if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
-        to="pq", join_pairs=[["id", "customers__region_id"]]))
+        to="pq", from_columns=["id"], to_columns=["customers__region_id"]))
     regions.fields.append(DatasetField(name="amb", sql=f"pq.{STALE}"))
     return [*models, SlayerDataset(
         name="pq", data_source="test", source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.hr.rname", "customers.hr2.rname"],
-            metrics=[{"expression": "sum(amount)", "name": "amt"}])])]
+            metrics=[{"metric": "sum(amount)", "alias": "amt"}])])]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -134,7 +134,7 @@ class TestStageColumnRespellings:
     def test_one_named_hop(self) -> None:
         cols = self._schema(datasets=dev1954_datasets(), stage=_stage1(
             metrics=["max(customers.regions.pop)",
-                      {"expression": "min(customers.hr.pop)", "name": "explicit"}]))
+                      {"metric": "min(customers.hr.pop)", "alias": "explicit"}]))
         assert set(cols) == {CANON, "customers__hr__pop_max", "explicit"}
         assert set(cols[CANON].respellings) == {STALE}
         assert set(cols["customers__hr__pop_max"].respellings) == \
@@ -160,7 +160,7 @@ class TestStageColumnRespellings:
         models = dev1954_datasets()
         orders = models[0]
         orders.relationships = [
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                       name="buyer") if j.to == "customers" else j
             for j in orders.relationships]
         cols = self._schema(datasets=models, stage=_stage1(metrics=["max(customers.regions.pop)"]))
@@ -172,15 +172,15 @@ class TestStageColumnRespellings:
 
     def test_explicit_name_with_a_path_prefix_has_none(self) -> None:
         cols = self._schema(datasets=dev1954_datasets(), stage=_stage1(metrics=[
-            {"expression": "min(customers.hr.pop)", "name": "customers__hr__custom"}]))
+            {"metric": "min(customers.hr.pop)", "alias": "customers__hr__custom"}]))
         assert cols["customers__hr__custom"].respellings == ()
 
     def test_pass_through_inherits(self) -> None:
         stage1 = _stage1(metrics=["max(customers.regions.pop)"])
         stage2 = slayer_query(name="s2", population="s1", dimensions=[CANON],
                               metrics=["max(customers__hr__pop_max)",
-                                        {"expression": "min(customers__hr__pop_max)",
-                                         "name": "customers__hr__lo"}])
+                                        {"metric": "min(customers__hr__pop_max)",
+                                         "alias": "customers__hr__lo"}])
         bundle = ResolvedSourceBundle(dialect="postgres", population=dev1954_datasets()[0],
                                       referenced_datasets=dev1954_datasets()[1:])
         planned = plan_stages(queries=[stage1, stage2, slayer_query(
@@ -215,7 +215,7 @@ class TestDownstreamStageStaleReference:
 
     async def test_extension_over_the_sibling_stage(self, engine: SlayerQueryEngine) -> None:
         def ext(dim: str) -> SlayerQuery:
-            return slayer_query(population="s1", extensions=[{"source_name": "s1"}], dimensions=[dim],
+            return slayer_query(population="s1", extensions=[{"dataset": "s1"}], dimensions=[dim],
                                 metrics=["sum(amount_sum)"])
 
         stale = await engine.execute([_stage1(), ext(STALE)])
@@ -252,9 +252,9 @@ class TestDownstreamStageStaleReference:
             f"region_amounts__{STALE}", f"region_amounts__{CANON}")
 
     async def test_exact_name_wins(self, engine) -> None:
-        stage1 = _stage1(metrics=[{"expression": "sum(amount)", "name": STALE}])
+        stage1 = _stage1(metrics=[{"metric": "sum(amount)", "alias": STALE}])
         resp = await engine.execute([stage1, slayer_query(
-            population="s1", metrics=[{"expression": f"sum({STALE})", "name": "t"}])])
+            population="s1", metrics=[{"metric": f"sum({STALE})", "alias": "t"}])])
         assert resp.data[0]["s1.t"] == pytest.approx(167.0)
         assert stale_warnings(resp) == []
 
@@ -304,7 +304,7 @@ class TestQueryBackedConsumer:
         await engine.storage.save_dataset(SlayerDataset(
             name="ra2", data_source="test", source_queries=[slayer_query(
                 population="region_amounts", dimensions=[CANON],
-                metrics=[{"expression": "sum(amt)", "name": "amt2"}])]))
+                metrics=[{"metric": "sum(amt)", "alias": "amt2"}])]))
         resp = await engine.execute(slayer_query(
             population="ra2", dimensions=[STALE], metrics=["sum(amt2)"]))
         assert {r[f"ra2.{CANON}"] for r in resp.data} == {"North", "South", None}
@@ -318,8 +318,8 @@ class TestQueryBackedConsumer:
         assert model.source_queries
         dimensions = model.source_queries[0].dimensions
         assert dimensions is not None
-        assert all(isinstance(d, FieldRef) for d in dimensions)
-        dims = [d.full_name for d in dimensions if isinstance(d, FieldRef)]
+        assert all(d.ref is not None for d in dimensions)
+        dims = [d.ref.full_name for d in dimensions if d.ref is not None]
         assert dims == ["customers.region_id", "customers.regions.rname"]
 
     async def test_authored_columns_stay_exact(self, engine: SlayerQueryEngine) -> None:

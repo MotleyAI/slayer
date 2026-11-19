@@ -74,13 +74,13 @@ def _orders_dataset(metrics: list[DatasetMetric] | None = None) -> SlayerDataset
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer", sql="customer", datatype=DataType.TEXT),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="store_id", sql="store_id", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer", sql="customer", datatype=DataType.STRING),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="store_id", sql="store_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
+        relationships=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
         metrics=_habit_metrics() if metrics is None else metrics,
     )
 
@@ -91,8 +91,8 @@ def _stores_dataset() -> SlayerDataset:
         sql_table="stores",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
 

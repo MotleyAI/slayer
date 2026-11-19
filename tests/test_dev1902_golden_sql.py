@@ -14,8 +14,8 @@ from tests._golden_harness import bind_golden_tests, record_raise
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1902_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb"]
 
-_AMT = {"expression": "sum(amount)", "name": "amt"}
-_CREDIT = {"expression": "sum(credit)", "name": "cr"}
+_AMT = {"metric": "sum(amount)", "alias": "amt"}
+_CREDIT = {"metric": "sum(credit)", "alias": "cr"}
 
 
 def _cases() -> dict:
@@ -35,7 +35,7 @@ def _cases() -> dict:
         "association/renamed_pk_root": {
             "graph": {}, "source": "orders",
             "kw": {"dimensions": ["status"],
-                   "metrics": [{"expression": "sum(customers.credit)", "name": "cr"}],
+                   "metrics": [{"metric": "sum(customers.credit)", "alias": "cr"}],
                    "to_many_handling": "associate"}},
         "quoting/on_clause_mixed_case": {
             "graph": {"pk_sql": "CustPK"}, "source": "orders",

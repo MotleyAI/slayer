@@ -120,16 +120,16 @@ class TestRecommendRootModel:
         def leaf(name: str, extra: str, joins=None) -> SlayerDataset:
             return SlayerDataset(
                 name=name, data_source="test", sql_table=name,
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                         DatasetField(name=extra, datatype=DataType.TEXT)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                         DatasetField(name=extra, datatype=DataType.STRING)],
                 relationships=joins or [],
             )
         models = [
             leaf("a", "x", [DatasetRelationship(to="b",
-                                      join_pairs=[["id", "id"]])]),
+                                      from_columns=["id"], to_columns=["id"])]),
             leaf("b", "y"),
             leaf("c", "z", [DatasetRelationship(to="b",
-                                      join_pairs=[["id", "id"]])]),
+                                      from_columns=["id"], to_columns=["id"])]),
         ]
         with tempfile.TemporaryDirectory() as d:
             engine = await _engine_for(models, d)
@@ -141,7 +141,7 @@ class TestRecommendRootModel:
 class TestPeerLoadsAreConcurrent:
     async def test_peer_models_load_concurrently_not_sequentially(self) -> None:
         """The datasource peer scan gathers reads (bounded), not one-by-one."""
-        col = [DatasetField(name="id", datatype=DataType.DOUBLE)]
+        col = [DatasetField(name="id", datatype=DataType.FLOAT)]
         peers = {
             f"m{i}": SlayerDataset(
                 name=f"m{i}", sql_table=f"m{i}", data_source="db", fields=col,

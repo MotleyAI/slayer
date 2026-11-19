@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "cust_id",
-      "id"
-     ]
+    "from_columns": [
+     "cust_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,19 +77,17 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "cumsum(sum(amount))",
-      "name": "dup"
+      "metric": "cumsum(sum(amount))",
+      "alias": "dup"
      },
      {
-      "expression": "cumsum(sum(amount))",
-      "name": "dup"
+      "metric": "cumsum(sum(amount))",
+      "alias": "dup"
      }
     ],
     "time_dimensions": [
      {
-      "field": {
-       "name": "created_at"
-      },
+      "field": "created_at",
       "granularity": "month"
      }
     ]
@@ -142,11 +140,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "cust_id",
-      "id"
-     ]
+    "from_columns": [
+     "cust_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -172,13 +170,13 @@
     "dimensions": [
      "customers.region",
      {
-      "expression": "amount",
-      "name": "customers__region"
+      "field": "amount",
+      "alias": "customers__region"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }

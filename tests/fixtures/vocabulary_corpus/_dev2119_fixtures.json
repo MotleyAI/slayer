@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region",
-      "code"
-     ]
+    "from_columns": [
+     "region"
+    ],
+    "to_columns": [
+     "code"
     ]
    }
   },
@@ -76,8 +76,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }

@@ -233,14 +233,14 @@ SLayer equivalent — those collapse onto the nearest broader SLayer type:
 
 | User wrote in `CAST(... AS X)` | SLayer maps to | Wire OID advertised |
 |---|---|---|
-| `INTEGER` / `INT` (pre-existing) | `DataType.INT` | 20 (`int8`) — not 23 (`int4`) |
-| `SMALLINT` | `DataType.INT` | 20 (`int8`) — not 21 (`int2`) |
-| `TINYINT` / `MEDIUMINT` (non-Postgres widths) | `DataType.INT` | 20 (`int8`) |
-| `BIGINT` | `DataType.INT` | 20 (`int8`) ✓ exact match |
-| `DECIMAL` / `NUMERIC` | `DataType.DOUBLE` | 701 (`float8`) — not 1700 (`numeric`) |
-| `FLOAT` / `REAL` / `DOUBLE` | `DataType.DOUBLE` | 701 (`float8`) ✓ |
-| `TIMESTAMPTZ` / `TIMESTAMP WITH TIME ZONE` | `DataType.TIMESTAMP` | 1114 (`timestamp`, no TZ) — not 1184 (`timestamptz`) |
-| `TIMESTAMP` / `DATETIME` | `DataType.TIMESTAMP` | 1114 (`timestamp`) ✓ |
+| `INTEGER` / `INT` (pre-existing) | `DataType.INTEGER` | 20 (`int8`) — not 23 (`int4`) |
+| `SMALLINT` | `DataType.INTEGER` | 20 (`int8`) — not 21 (`int2`) |
+| `TINYINT` / `MEDIUMINT` (non-Postgres widths) | `DataType.INTEGER` | 20 (`int8`) |
+| `BIGINT` | `DataType.INTEGER` | 20 (`int8`) ✓ exact match |
+| `DECIMAL` / `NUMERIC` | `DataType.FLOAT` | 701 (`float8`) — not 1700 (`numeric`) |
+| `FLOAT` / `REAL` / `DOUBLE` | `DataType.FLOAT` | 701 (`float8`) ✓ |
+| `TIMESTAMPTZ` / `TIMESTAMP WITH TIME ZONE` | `DataType.DATETIME` | 1114 (`timestamp`, no TZ) — not 1184 (`timestamptz`) |
+| `TIMESTAMP` / `DATETIME` | `DataType.DATETIME` | 1114 (`timestamp`) ✓ |
 
 What this means in practice:
 

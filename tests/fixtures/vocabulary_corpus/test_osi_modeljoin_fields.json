@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "c",
-    "join_pairs": [
-     [
-      "a",
-      "b"
-     ]
+    "from_columns": [
+     "a"
+    ],
+    "to_columns": [
+     "b"
     ]
    }
   },
@@ -39,16 +39,16 @@
    },
    "new": {
     "to": "c",
-    "join_pairs": [
-     [
-      "a",
-      "b"
-     ]
-    ],
     "description": "desc",
     "meta": {
      "k": "v"
-    }
+    },
+    "from_columns": [
+     "a"
+    ],
+    "to_columns": [
+     "b"
+    ]
    }
   },
   {
@@ -64,11 +64,11 @@
    },
    "new": {
     "to": "c",
-    "join_pairs": [
-     [
-      "a",
-      "b"
-     ]
+    "from_columns": [
+     "a"
+    ],
+    "to_columns": [
+     "b"
     ]
    }
   }

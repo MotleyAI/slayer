@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import DatasetMetric, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1865_fixtures import q
 from slayer.engine.query_engine import SlayerQueryEngine
 
 RK_REGION = "orders.customers.regions.name"
@@ -23,7 +25,7 @@ class TestDuplicateOppositeDirection:
         # column must coexist, and neither leaks into the projection.
         query = q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             order=[
                 {"field": "ordered_at", "direction": "asc"},
                 {"field": "ordered_at", "direction": "desc"},
@@ -60,7 +62,7 @@ class TestOrderOnlyTrimmed:
     async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             order=[{"field": "min(amount)", "direction": "asc"}],
         ))
         assert resp.columns == ["orders.region", "orders.s"]
@@ -70,7 +72,7 @@ class TestOrderByCrossModelPartitioned:
     async def test_sorts_by_partition_value_and_stays_hidden(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             order=[{
                 "field": "sum(customers.spend, partition_by=customers.regions.name)",
                 "direction": "desc",
@@ -86,7 +88,7 @@ class TestOrderByCrossModelPartitioned:
         # ASC flips to RegS-first — value order, not region-name order.
         asc = await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="sp")],
             order=[{
                 "field": "sum(customers.spend, partition_by=customers.regions.name)",
                 "direction": "asc",

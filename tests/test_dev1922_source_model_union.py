@@ -30,11 +30,11 @@ from tests._dev1866_fixtures import make_chain_exec_engine
 from slayer.engine.query_engine import SlayerQueryEngine
 
 EXTENSION = {
-    "source_name": "orders",
+    "dataset": "orders",
     "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}],
 }
 EXTENSION_WITH_MEASURES = {
-    "source_name": "orders",
+    "dataset": "orders",
     "metrics": [{"expression": "sum(amount)", "name": "rev"}],
 }
 EXTENSION_WITH_FILTERS = {"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}
@@ -42,10 +42,10 @@ INLINE_MODEL = {
     "name": "ad_hoc",
     "sql_table": "things",
     "data_source": "ds",
-    "fields": [{"name": "x", "sql": "x", "datatype": "DOUBLE"}],
+    "fields": [{"name": "x", "sql": "x", "datatype": "Float"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
-ONE_MEASURE = [{"expression": "sum(amount)"}]
+ONE_MEASURE = [{"metric": "sum(amount)"}]
 
 
 def _leaf_types(tp) -> set:
@@ -102,7 +102,7 @@ class TestSchema:
     def test_extension_definition_is_closed_and_typed(self) -> None:
         ext = SlayerQuery.model_json_schema()["$defs"]["DatasetExtension"]
         assert ext["additionalProperties"] is False
-        assert ext["required"] == ["source_name"]
+        assert ext["required"] == ["dataset"]
         assert ext["properties"]["metrics"]["anyOf"][0]["items"] == {"$ref": "#/$defs/DatasetMetric"}
         assert ext["properties"]["relationships"]["anyOf"][0]["items"] == {"$ref": "#/$defs/DatasetRelationship"}
 
@@ -203,7 +203,7 @@ class TestTypedAtConstruction:
         assert q.population == "orders"
         (sm,) = q.extensions or []
         assert isinstance(sm, DatasetExtension)
-        assert sm.source_name == "orders"
+        assert sm.dataset == "orders"
         assert sm.relationships
         assert sm.metrics
         assert isinstance(sm.relationships[0], DatasetRelationship)
@@ -299,8 +299,8 @@ class TestStageOrdering:
             "name": "via_join",
             "population": "orders",
             "extensions": [{
-                "source_name": "orders",
-                "relationships": [{"to": "c", "join_pairs": [["id", "id"]]}],
+                "dataset": "orders",
+                "relationships": [{"to": "c", "from_columns": ["id"], "to_columns": ["id"]}],
             }],
         })
         assert isinstance((via_join.extensions or [])[0], DatasetExtension)

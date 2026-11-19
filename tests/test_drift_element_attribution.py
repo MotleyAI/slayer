@@ -35,20 +35,20 @@ INSERT INTO orders VALUES (1, 10.0, 1);
 """
 
 # Fails on SQLite for a non-drift reason: the derived column calls a function SQLite lacks.
-_DB_FAILURE = {"population": "t", "metrics": [{"expression": "sum(bad)"}]}
+_DB_FAILURE = {"population": "t", "metrics": [{"metric": "sum(bad)"}]}
 
 
-def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
+def _t(*, ts: DataType = DataType.STRING, filters: list[str] | None = None,
        metrics: list[DatasetMetric] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="t", sql_table="t", data_source="ds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="x", datatype=DataType.DOUBLE),
-            DatasetField(name="s", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="x", datatype=DataType.FLOAT),
+            DatasetField(name="s", datatype=DataType.STRING),
             DatasetField(name="ts", datatype=ts),
-            DatasetField(name="y", sql="x * 2", datatype=DataType.DOUBLE),
-            DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.DOUBLE),
+            DatasetField(name="y", sql="x * 2", datatype=DataType.FLOAT),
+            DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.FLOAT),
         ],
         filters=filters or [],
         metrics=metrics or [],
@@ -58,14 +58,14 @@ def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
 def _shop() -> list[SlayerDataset]:
     return [
         SlayerDataset(name="customers", sql_table="customers", data_source="ds", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT)]),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING)]),
         SlayerDataset(name="orders", sql_table="orders", data_source="ds", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE)],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])]),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT)],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]),
     ]
 
 
@@ -115,7 +115,7 @@ def _removes(err: SchemaDriftError, *, dataset: str, column: str) -> bool:
 
 class TestUnreadDriftLeavesTheError:
     async def test_unrelated_drifted_column(self, tmp_path: Path) -> None:
-        async with _env(tmp_path, _t(ts=DataType.INT)) as env:
+        async with _env(tmp_path, _t(ts=DataType.INTEGER)) as env:
             err = await _unwrapped(env.engine, _DB_FAILURE)
         assert "no_such_fn" in str(err).lower(), err
 
@@ -127,16 +127,16 @@ class TestUnreadDriftLeavesTheError:
 
     async def test_a_host_column_named_like_a_producer_column(self, tmp_path: Path) -> None:
         customers, orders = _shop()
-        stale = customers.model_copy(update={"fields": [*customers.fields, DatasetField(name="amount", datatype=DataType.DOUBLE)]})
+        stale = customers.model_copy(update={"fields": [*customers.fields, DatasetField(name="amount", datatype=DataType.FLOAT)]})
         async with _env(tmp_path, stale, orders) as env:
             err = await _unwrapped(env.engine, {"population": "customers", "dimensions": ["region"], "metrics": [
-                {"expression": "orders.sum(amount)", "name": "total"}, {"expression": "orders.sum(bad)", "name": "b"}]})
+                {"metric": "orders.sum(amount)", "alias": "total"}, {"metric": "orders.sum(bad)", "alias": "b"}]})
         assert "no_such_fn" in str(err).lower(), err
 
     async def test_an_uncrossed_join_losing_its_key(self, tmp_path: Path) -> None:
         async with _env(tmp_path, *_shop()) as env:
             env.live("ALTER TABLE orders DROP COLUMN customer_id")
-            err = await _unwrapped(env.engine, {"population": "orders", "metrics": [{"expression": "sum(bad)"}]})
+            err = await _unwrapped(env.engine, {"population": "orders", "metrics": [{"metric": "sum(bad)"}]})
         assert "no_such_fn" in str(err).lower(), err
 
 
@@ -144,32 +144,32 @@ class TestReadDriftWraps:
     async def test_a_read_dropped_column(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t()) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
-            err = await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
+            err = await _wrapped(env.engine, {"population": "t", "metrics": [{"metric": "sum(x)"}]})
         assert _removes(err, dataset="t", column="x"), err.to_delete
 
     async def test_a_read_dropped_column_beside_unrelated_drift(self, tmp_path: Path) -> None:
-        async with _env(tmp_path, _t(ts=DataType.INT)) as env:
+        async with _env(tmp_path, _t(ts=DataType.INTEGER)) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
-            err = await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
+            err = await _wrapped(env.engine, {"population": "t", "metrics": [{"metric": "sum(x)"}]})
         assert _removes(err, dataset="t", column="x"), err.to_delete
 
     async def test_a_column_read_through_a_derived_column(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t()) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
-            await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(y)"}]})
+            await _wrapped(env.engine, {"population": "t", "metrics": [{"metric": "sum(y)"}]})
 
     async def test_a_join_key(self, tmp_path: Path) -> None:
         async with _env(tmp_path, *_shop()) as env:
             env.live("ALTER TABLE orders DROP COLUMN customer_id")
             await _wrapped(env.engine, {"population": "orders", "dimensions": ["customers.region"],
-                                        "metrics": [{"expression": "sum(amount)"}]})
+                                        "metrics": [{"metric": "sum(amount)"}]})
 
     @pytest.mark.parametrize("formula", ["orders.sum(amount)", "sum(orders.amount)"])
     async def test_a_column_a_cross_model_producer_reads(self, tmp_path: Path, formula: str) -> None:
         async with _env(tmp_path, *_shop()) as env:
             env.live("ALTER TABLE orders DROP COLUMN amount")
             err = await _wrapped(env.engine, {"population": "customers", "dimensions": ["region"],
-                                              "metrics": [{"expression": formula, "name": "total"}]})
+                                              "metrics": [{"metric": formula, "alias": "total"}]})
         assert _removes(err, dataset="orders", column="amount"), err.to_delete
 
     async def test_a_used_model_measure(self, tmp_path: Path) -> None:
@@ -181,10 +181,10 @@ class TestReadDriftWraps:
     async def test_a_model_filter_always_counts_as_read(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t(filters=["s <> 'zzz'"])) as env:
             env.live("ALTER TABLE t DROP COLUMN s")
-            await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
+            await _wrapped(env.engine, {"population": "t", "metrics": [{"metric": "sum(x)"}]})
 
 
-_ORDERS_BAD = {"population": "orders", "metrics": [{"expression": "sum(bad)"}]}
+_ORDERS_BAD = {"population": "orders", "metrics": [{"metric": "sum(bad)"}]}
 
 
 def _instrumented_orders() -> SlayerDataset:
@@ -238,7 +238,7 @@ class TestInjectedRemovals:
     async def test_a_used_aggregation(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
             with _inject(RemoveSpec(aggregations=["wbad"])):
-                await _wrapped(env.engine, {"population": "orders", "metrics": [{"expression": "wbad(bad)"}]})
+                await _wrapped(env.engine, {"population": "orders", "metrics": [{"metric": "wbad(bad)"}]})
 
     async def test_an_unused_aggregation(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
@@ -250,11 +250,11 @@ class TestInvalidSqlModel:
     async def test_its_own_invalid_sql_drop_is_no_evidence(self, tmp_path: Path) -> None:
         broken = SlayerDataset(name="sq_broken", data_source="ds",
                              sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders", fields=[
-                                 DatasetField(name="id", datatype=DataType.TEXT, primary_key=True),
-                                 DatasetField(name="amount", datatype=DataType.DOUBLE)])
+                                 DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+                                 DatasetField(name="amount", datatype=DataType.FLOAT)])
         async with _env(tmp_path, *_shop(), broken) as env:
             entries = [e for e in await env.engine.validate_datasets(data_source="ds") if e.dataset_name == "sq_broken"]
-            err = await _unwrapped(env.engine, {"population": "sq_broken", "metrics": [{"expression": "count(*)"}]})
+            err = await _unwrapped(env.engine, {"population": "sq_broken", "metrics": [{"metric": "count(*)"}]})
         assert [(type(e), e.cause if isinstance(e, WholeDatasetDelete) else None) for e in entries] == [
             (WholeDatasetDelete, "invalid_sql")], entries
         assert "no_such_function" in str(err).lower(), err
@@ -262,11 +262,11 @@ class TestInvalidSqlModel:
 
 def _dated(*, ts: DataType, d: DataType) -> SlayerDataset:
     return SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="x", datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="x", datatype=DataType.FLOAT),
         DatasetField(name="ts", datatype=ts),
         DatasetField(name="d", datatype=d),
-        DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.DOUBLE)])
+        DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.FLOAT)])
 
 
 def _retypes(entries: list[Any]) -> list[tuple[str, DataType, DataType]]:
@@ -279,18 +279,18 @@ def _deletes(entries: list[Any], column: str) -> list[EditDatasetDelete]:
 
 class TestSqliteTemporalOverText:
     async def test_validation_reports_nothing(self, tmp_path: Path) -> None:
-        async with _env(tmp_path, _dated(ts=DataType.TIMESTAMP, d=DataType.DATE)) as env:
+        async with _env(tmp_path, _dated(ts=DataType.DATETIME, d=DataType.DATE)) as env:
             entries = await env.engine.validate_datasets(data_source="ds")
         assert entries == [], entries
 
     async def test_query_time_attribution_does_not_blame_it(self, tmp_path: Path) -> None:
-        async with _env(tmp_path, _dated(ts=DataType.TIMESTAMP, d=DataType.DATE)) as env:
+        async with _env(tmp_path, _dated(ts=DataType.DATETIME, d=DataType.DATE)) as env:
             await _unwrapped(env.engine, _DB_FAILURE)
 
     async def test_a_non_temporal_declaration_over_text_is_still_drift(self, tmp_path: Path) -> None:
-        async with _env(tmp_path, _dated(ts=DataType.INT, d=DataType.DATE)) as env:
+        async with _env(tmp_path, _dated(ts=DataType.INTEGER, d=DataType.DATE)) as env:
             entries = await env.engine.validate_datasets(data_source="ds")
-        assert _retypes(entries) == [("ts", DataType.INT, DataType.TEXT)], entries
+        assert _retypes(entries) == [("ts", DataType.INTEGER, DataType.STRING)], entries
         assert not _deletes(entries, "ts"), entries
 
 
@@ -304,12 +304,12 @@ class TestOtherDialectsKeepTheBucketRule:
             ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
             storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
             await storage.save_datasource(ds)
-            await storage.save_dataset(_dated(ts=DataType.TIMESTAMP, d=DataType.TEXT))
+            await storage.save_dataset(_dated(ts=DataType.DATETIME, d=DataType.STRING))
             engine = SlayerQueryEngine(storage=storage)
             try:
                 entries = await engine.validate_datasets(data_source="ds")
             finally:
                 engine.close()
                 engine_factory.invalidate_engine(ds)
-        assert _retypes(entries) == [("ts", DataType.TIMESTAMP, DataType.TEXT)], entries
+        assert _retypes(entries) == [("ts", DataType.DATETIME, DataType.STRING)], entries
         assert not _deletes(entries, "ts"), entries

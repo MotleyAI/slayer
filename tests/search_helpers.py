@@ -24,10 +24,10 @@ async def seed_warehouse_datasets(storage: StorageBackend) -> None:
         data_source="warehouse",
         description="Checkout orders.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount_paid", datatype=DataType.FLOAT,
                    description="Net paid in USD."),
-            DatasetField(name="status", datatype=DataType.TEXT,
+            DatasetField(name="status", datatype=DataType.STRING,
                    description="paid|refunded|cancelled."),
         ],
     ))
@@ -37,8 +37,8 @@ async def seed_warehouse_datasets(storage: StorageBackend) -> None:
         data_source="warehouse",
         description="Customer master data.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="email", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="email", datatype=DataType.STRING),
         ],
     ))
 

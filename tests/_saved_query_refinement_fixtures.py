@@ -27,7 +27,7 @@ ORDERS_ROWS = [
     (5, "c2", "US", "paid", 50.0, "2025-03-09"),
 ]
 
-REVENUE = {"expression": "sum(amount)", "name": "revenue"}
+REVENUE = {"metric": "sum(amount)", "alias": "revenue"}
 MONTH_TD = {"field": "ordered_at", "granularity": "month"}
 Q1_RANGE = ["2025-01-01", "2025-02-28"]
 
@@ -51,7 +51,7 @@ AVG_CUSTOMER_REVENUE: List[Dict[str, Any]] = [
         "dimensions": ["customer_id", "region"], "metrics": [REVENUE],
         "filter": ["status = 'paid'"],
     },
-    {"population": "per_customer", "metrics": [{"expression": "avg(revenue)", "name": "avg_revenue"}]},
+    {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]},
 ]
 REVENUE_BY_STATUS: Dict[str, Any] = {
     "population": "orders", "dimensions": ["region"], "metrics": [REVENUE],
@@ -67,11 +67,11 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.TEXT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.STRING),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="ordered_at", datatype=DataType.DATE),
         ],
     )

@@ -12,8 +12,8 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects.base import ExplainStatements, StatAgg1Name
@@ -101,7 +101,7 @@ def test_tsql_build_date_trunc_casts_non_column_to_timestamp() -> None:
 def _date_add(count: int, unit: str) -> str:
     col = exp.column("created_at")
     out = TsqlDialect().build_date_add(
-        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(count), unit=TimeGranularity(unit), operand=DataType.DATETIME,
     )
     return out.sql(dialect="tsql").upper()
 
@@ -263,8 +263,8 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
     sql = await _tsql(cumsum_chain(metrics=[
-        {"expression": "cumsum(sum(amount))", "name": "running"},
-        {"expression": "change(cumsum(sum(amount)))", "name": "d"},
+        {"metric": "cumsum(sum(amount))", "alias": "running"},
+        {"metric": "change(cumsum(sum(amount)))", "alias": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names
@@ -409,8 +409,8 @@ async def _build_tsql_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, tempf
         sql_table="orders_t",
         data_source="mssql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model)
@@ -431,8 +431,8 @@ class TestEngineTsqlDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
-                "dimensions": [FieldRef(name="status")],
+                "metrics": [{"metric": "count(*)"}],
+                "dimensions": [QueryDimension(field="status")],
             })
             resp = await engine.execute(query)
             assert resp.data == [{"orders._count": 42, "orders.status": "paid"}]
@@ -444,8 +444,8 @@ class TestEngineTsqlDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
-                "dimensions": [FieldRef(name="status")],
+                "metrics": [{"metric": "count(*)"}],
+                "dimensions": [QueryDimension(field="status")],
             })
             resp = await engine.execute(query)
             assert resp.data == []
@@ -472,8 +472,8 @@ async def _build_labeled_tsql_engine(
         sql_table="orders_t",
         data_source="mssql",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT, label="Order Status"),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING, label="Order Status"),
         ],
     )
     await storage.save_dataset(model)
@@ -486,7 +486,7 @@ async def test_tsql_attributes_survive_alias_mangling() -> None:
     """Mangled expected_columns are decoded so dimension labels survive."""
     engine, tmp, _ = await _build_labeled_tsql_engine([{"orders___status": "paid"}])
     try:
-        query = SlayerQuery(population="orders", dimensions=[FieldRef(name="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
         resp = await engine.execute(query)
         assert "orders.status" in resp.attributes.dimensions, (
             f"T-SQL attributes lost the dimension after mangling: "
@@ -502,7 +502,7 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
     explain_rows = [{"plan": "..."}]
     engine, tmp, _ = await _build_labeled_tsql_engine(explain_rows)
     try:
-        query = SlayerQuery(population="orders", dimensions=[FieldRef(name="status")])
+        query = SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])
         with patch.object(
             TsqlDialect, "decode_result_keys", autospec=True,
             side_effect=lambda self, rows, **kw: rows,
@@ -536,10 +536,10 @@ def _orders_dataset_tsql() -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -554,10 +554,10 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
             date_range=["2024-03-01", "2024-03-31"],
         )],
         metrics=[
-            DatasetMetric(expression="sum(total)"),
-            DatasetMetric(expression="change_pct(sum(total))", name="pct"),
+            QueryMetric(metric="sum(total)"),
+            QueryMetric(metric="change_pct(sum(total))", alias="pct"),
         ],
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     )
     sql = await _tsql_generate(q, _orders_dataset_tsql())
     # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
@@ -592,8 +592,8 @@ async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() 
     """ORDER BY references the SELECT alias at top level, not inside a CASE."""
     q = SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="id"), FieldRef(name="created_at")],
-        order=[OrderItem(field=FieldRef(name="id"), direction="asc")],
+        dimensions=[QueryDimension(field="id"), QueryDimension(field="created_at")],
+        order=[OrderItem(field="id", direction="asc")],
     )
     sql = await _tsql_generate(q, _orders_dataset_tsql())
     assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (

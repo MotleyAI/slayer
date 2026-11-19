@@ -31,7 +31,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
 from slayer.memories.resolver import (
     EntityResolution,
@@ -66,20 +66,20 @@ async def storage() -> AsyncIterator[StorageBackend]:
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                    DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
                     DatasetField(
                         name="customer_id",
                         sql="customer_id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                     DatasetField(
                         name="ordered_at",
                         sql="ordered_at",
-                        datatype=DataType.TIMESTAMP,
+                        datatype=DataType.DATETIME,
                     ),
                 ],
                 metrics=[
@@ -94,7 +94,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                 relationships=[
                     DatasetRelationship(
                         to="customers",
-                        join_pairs=[["customer_id", "id"]],
+                        from_columns=["customer_id"], to_columns=["id"],
                     ),
                 ],
             )
@@ -110,25 +110,25 @@ async def storage() -> AsyncIterator[StorageBackend]:
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
                     DatasetField(
                         name="region_id",
                         sql="region_id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                     DatasetField(
                         name="orders",
                         sql="orders_count",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                 ],
                 relationships=[
                     DatasetRelationship(
                         to="regions",
-                        join_pairs=[["region_id", "id"]],
+                        from_columns=["region_id"], to_columns=["id"],
                     ),
                 ],
             )
@@ -142,10 +142,10 @@ async def storage() -> AsyncIterator[StorageBackend]:
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
                 ],
             )
         )
@@ -161,10 +161,10 @@ async def storage() -> AsyncIterator[StorageBackend]:
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -178,10 +178,10 @@ async def storage() -> AsyncIterator[StorageBackend]:
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
-                    DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                    DatasetField(name="name", sql="name", datatype=DataType.STRING),
                 ],
             )
         )
@@ -197,7 +197,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
                 ],
@@ -545,7 +545,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders" in result.canonical_forms
@@ -555,8 +555,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -566,8 +566,8 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.name")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="customers.name")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.customers.name" in result.canonical_forms
@@ -581,7 +581,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.amount" in result.canonical_forms
@@ -597,7 +597,7 @@ class TestExtractEntitiesFromQuery:
                     granularity=TimeGranularity.DAY,
                 )
             ],
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.ordered_at" in result.canonical_forms
@@ -608,7 +608,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             population="orders",
             filter=["status = 'paid'", "amount > 100"],
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert "mydb.orders.status" in result.canonical_forms
@@ -620,7 +620,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             population="orders",
             filter=["status = '{status_val}'"],
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
             variables={"status_val": "paid"},
         )
         result = await extract_entities_from_query(q, storage=storage)
@@ -633,9 +633,9 @@ class TestExtractEntitiesFromQuery:
     async def test_dedup(self, storage: StorageBackend) -> None:
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="amount")],
+            dimensions=[QueryDimension(field="amount")],
             filter=["amount > 100"],
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         assert (
@@ -647,7 +647,7 @@ class TestExtractEntitiesFromQuery:
     ) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await extract_entities_from_query(q, storage=storage)
         # Pin the exact list — a regression that adds an extra entity
@@ -661,7 +661,7 @@ class TestExtractEntitiesFromQuery:
         q = SlayerQuery(
             population="orders",
             filter=["nonexistent_col > 100"],
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         with pytest.raises(EntityResolutionError):
             await extract_entities_from_query(q, storage=storage)
@@ -684,8 +684,8 @@ class TestExtractEntitiesFromQuery:
                 data_source="dev1500",
                 sql_table="customers",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="score", sql="score", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
                 ],
                 aggregations=[
                     Aggregation(name="rolling_avg", expression="AVG({value})"),
@@ -696,16 +696,16 @@ class TestExtractEntitiesFromQuery:
                 data_source="dev1500",
                 sql_table="orders",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
                 ],
                 relationships=[
-                    DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                    DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
                 ],
             ))
             q = SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="rolling_avg(customers.score)")],
+                metrics=[QueryMetric(metric="rolling_avg(customers.score)")],
             )
             result = await extract_entities_from_query(q, storage=s)
             # The joined column inside the transform surfaces as an entity
@@ -738,7 +738,7 @@ class TestResolveEntityAmbiguousModel:
                         DatasetField(
                             name="id",
                             sql="id",
-                            datatype=DataType.DOUBLE,
+                            datatype=DataType.FLOAT,
                             primary_key=True,
                         )
                     ],
@@ -753,7 +753,7 @@ class TestResolveEntityAmbiguousModel:
                         DatasetField(
                             name="id",
                             sql="id",
-                            datatype=DataType.DOUBLE,
+                            datatype=DataType.FLOAT,
                             primary_key=True,
                         )
                     ],

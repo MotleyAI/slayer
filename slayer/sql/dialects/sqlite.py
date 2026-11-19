@@ -19,7 +19,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
-from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, TEMPORAL_DATATYPES, TimeGranularity, TypeKind
 from slayer.core.json_path import JsonPath
 from slayer.core.like_pattern import LikePattern, LikeWildcard, parse_like
 from slayer.core.regex_pattern import RegexGroupRef, RegexPattern, RegexReplacement, parse_replacement
@@ -87,10 +87,10 @@ class StorageCensus(BaseModel):
         """With no text or blob stored: DOUBLE on a real or fractional value, INT when an unsaturated sample
         holds integers only, else ``None`` (saturated, or no non-NULL value)."""
         if self.n_real or self.n_non_integral:
-            return DataType.DOUBLE
+            return DataType.FLOAT
         if self.n_rows > cap or not self.n_non_null:
             return None
-        return DataType.INT
+        return DataType.INTEGER
 
 
 def _count_where(condition: Expr) -> Expression:
@@ -120,8 +120,8 @@ def census_counts(value: Expression) -> list[Expression]:
 def _census_verdict(census: StorageCensus) -> DataType:
     """A result column's type: stored text or blob, or no value, is TEXT; a saturated integer sample DOUBLE."""
     if census.n_text or census.n_blob or not census.n_non_null:
-        return DataType.TEXT
-    return census.numeric_verdict(cap=PROBE_SCAN_CAP) or DataType.DOUBLE
+        return DataType.STRING
+    return census.numeric_verdict(cap=PROBE_SCAN_CAP) or DataType.FLOAT
 
 
 def rewrite_sqlite_json_extract(node: Expression) -> Expression:
@@ -482,13 +482,13 @@ def _slayer_try_cast(text, target):
     if text is None:
         return None
     kind = DataType(target)
-    if kind is DataType.INT:
+    if kind is DataType.INTEGER:
         return _slayer_try_integer(text, _INT64_MIN, _INT64_MAX)
-    if kind is DataType.DOUBLE:
+    if kind.kind is TypeKind.DOUBLE:
         return _try_double(text)
     if kind is DataType.BOOLEAN:
         return _try_boolean(text)
-    if kind in (DataType.DATE, DataType.TIMESTAMP):
+    if kind in TEMPORAL_DATATYPES:
         return _try_temporal(text, kind)
     return text
 
@@ -886,17 +886,17 @@ class SqliteDialect(SqlDialect):
         kind, read = self._json_parts(value, path)
         from_text = (exp.EQ(this=kind.copy(), expression=lit("text")), self.build_try_cast(read.copy(), to))
         direct: list = []
-        if target is DataType.INT:
+        if target is DataType.INTEGER:
             from_text = (from_text[0], self.build_integer_try_cast(read.copy(), to, source=None))
             direct = [(exp.EQ(this=kind.copy(), expression=lit("integer")),
-                       self.build_integer_try_cast(read.copy(), to, source=DataType.INT))]
-        elif target is DataType.DOUBLE:
+                       self.build_integer_try_cast(read.copy(), to, source=DataType.INTEGER))]
+        elif target.kind is TypeKind.DOUBLE:
             direct = [(exp.In(this=kind.copy(), expressions=[lit("integer"), lit("real")]),
                        exp.Cast(this=read.copy(), to=exp.DataType.build("REAL")))]
         elif target is DataType.BOOLEAN:
             direct = [(exp.EQ(this=kind.copy(), expression=lit("true")), lit(1)),
                       (exp.EQ(this=kind.copy(), expression=lit("false")), lit(0))]
-        elif target is DataType.TEXT:
+        elif target is DataType.STRING:
             return self.build_json_value(value, path, native)
         return case((anon("JSON_VALID", value), case(*direct, from_text)))
 
@@ -919,7 +919,7 @@ class SqliteDialect(SqlDialect):
 
     def declared_cast_type(self, dt: Optional[DataType]) -> Optional[DataType]:
         """No DATE / TIMESTAMP cast: under numeric affinity it collapses a text date to its year."""
-        if dt in (DataType.DATE, DataType.TIMESTAMP):
+        if dt in TEMPORAL_DATATYPES:
             return None
         return dt
 

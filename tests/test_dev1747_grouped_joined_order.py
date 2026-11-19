@@ -42,7 +42,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
@@ -63,7 +63,7 @@ from tests._dev1747_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 
-_MEASURE = [{"expression": "sum(amount)", "name": "rev"}]
+_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
 
 
 def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list[str]:
@@ -84,10 +84,10 @@ def _grouped_order_query(*, dataset: str, name: str, direction: str) -> SlayerQu
     """Grouped by ``orders.status``, ordered by an UNPROJECTED joined column."""
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         metrics=_MEASURE,
         order=[OrderItem(
-            field=FieldRef(name=name, dataset=dataset), direction=direction,
+            field=f"{dataset}.{name}", direction=direction,
         )],
     )
 
@@ -203,10 +203,10 @@ class TestDirectionAwareWrap:
         or the two order paths mean different things by ``ASC``."""
         sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[OrderItem(
-                field=FieldRef(name="created_at"), direction="asc",
+                field="created_at", direction="asc",
             )],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], (
@@ -223,11 +223,11 @@ class TestDirectionAwareWrap:
         pass if both wraps landed on the same column, which is the bug."""
         sql = await _sql(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[
-                OrderItem(field=FieldRef(name="created_at"), direction="asc"),
-                OrderItem(field=FieldRef(name="amount"), direction="desc"),
+                OrderItem(field="created_at", direction="asc"),
+                OrderItem(field="amount", direction="desc"),
             ],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], f"\n{sql}"

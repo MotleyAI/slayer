@@ -16,8 +16,8 @@
     "population": "_dlt_loads",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -43,8 +43,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }

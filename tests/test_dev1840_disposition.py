@@ -14,9 +14,9 @@ import pytest
 from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, SemiJoinHop
+from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import (
-    DatasetMetric,
     ambiguity_datasets,
     bundle,
     dev1840_datasets,
@@ -25,10 +25,10 @@ from tests._dev1840_fixtures import (
     tq,
 )
 
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
-SM = DatasetMetric(expression="sum(agents.score)", name="sm")
-RV = DatasetMetric(expression="sum(reviews.stars)", name="rv")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
+SM = QueryMetric(metric="sum(agents.score)", alias="sm")
+RV = QueryMetric(metric="sum(reviews.stars)", alias="rv")
 
 
 def _plan(query, datasets=None):

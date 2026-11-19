@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -42,7 +42,7 @@
     ],
     "metrics": [
      {
-      "expression": "percentile(customers.revenue, p=0.5)"
+      "metric": "percentile(customers.revenue, p=0.5)"
      }
     ]
    }
@@ -70,10 +70,10 @@
     ],
     "metrics": [
      {
-      "expression": "percentile(customers.revenue, p=0.5)"
+      "metric": "percentile(customers.revenue, p=0.5)"
      },
      {
-      "expression": "percentile(customers.revenue, p=0.95)"
+      "metric": "percentile(customers.revenue, p=0.95)"
      }
     ]
    }

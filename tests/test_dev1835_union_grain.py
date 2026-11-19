@@ -19,9 +19,10 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     CITY_TOTAL,
-    DatasetMetric,
     REGION_MONTH_TOTAL,
     UNION_RK_DIM,
     UNION_RK_RANK,
@@ -54,9 +55,9 @@ class TestUnionGrainBroadcast:
         union-grain rows (diffs -70/0/-25/0/0 → 5/1/4/1/1)."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
+            dimensions=["region", {"field": UNION_WM_DIM, "alias": "ur"}],
             time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         resp = await engine.execute(query)
         got = {
@@ -80,8 +81,8 @@ class TestUnionGrainBroadcast:
         the city total per city (diffs 0/-10/0/-25/0 → 1/4/1/5/1)."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["region", "city", {"expression": UNION_RK_DIM, "name": "ur"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            dimensions=["region", "city", {"field": UNION_RK_DIM, "alias": "ur"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         resp = await engine.execute(query)
         got = {
@@ -105,8 +106,8 @@ class TestUnionGrainBroadcast:
         as windowed measures (today: the residual union-grain guard instead)."""
         _, engine = exec_backend
         query = q(
-            dimensions=["region", {"expression": UNION_WM_DIM, "name": "ur"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            dimensions=["region", {"field": UNION_WM_DIM, "alias": "ur"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await engine.execute(query)

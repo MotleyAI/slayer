@@ -11,8 +11,8 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, ComputedDimension, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
@@ -141,20 +141,20 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
             sql_table="orders",
             data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
 
-                DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="avg_amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="avg_amount", sql="amount", datatype=DataType.FLOAT),
                 # A genuine DOUBLE PRECISION expression column.
                 # ``amount`` is NUMERIC, so ``round(sum(amount), 2)`` works on
                 # Postgres natively; the non-bare DOUBLE-typed sql gets wrapped
                 # in CAST(... AS DOUBLE PRECISION), so SUM yields double and
                 # ``round(double precision, int)`` would fail without the
                 # PostgresDialect numeric-cast rewrite.
-                DatasetField(name="amount_d", sql="amount * 1.0", datatype=DataType.DOUBLE),
+                DatasetField(name="amount_d", sql="amount * 1.0", datatype=DataType.FLOAT),
             ],
         )
         customers_model = SlayerDataset(
@@ -162,9 +162,9 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
             sql_table="customers",
             data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
 
             ],
         )
@@ -190,18 +190,18 @@ async def pg_env(_pg_env_storage) -> AsyncIterator[SlayerQueryEngine]:
 @pytest.mark.integration
 class TestPostgresQueries:
     async def test_count_all(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
         result = await pg_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
 
     async def test_sum_measure(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(total)"}]})
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     async def test_avg_measure(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "avg(avg_amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "avg(avg_amount)"}]})
         result = await pg_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -209,8 +209,8 @@ class TestPostgresQueries:
     async def test_group_by_status(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
         })
         result = await pg_env.execute(query=query)
         by_status = {r["orders.status"]: r["orders._count"] for r in result.data}
@@ -221,7 +221,7 @@ class TestPostgresQueries:
     async def test_filter_equals(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status == 'completed'"],
         })
         result = await pg_env.execute(query=query)
@@ -230,7 +230,7 @@ class TestPostgresQueries:
     async def test_filter_gt(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["total > 100"],
         })
         result = await pg_env.execute(query=query)
@@ -239,9 +239,9 @@ class TestPostgresQueries:
     async def test_order_by_desc(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
-            "order": [{"field": {"name": "count"}, "direction": "desc"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
+            "order": [{"field": "count", "direction": "desc"}],
         })
         result = await pg_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
@@ -249,8 +249,8 @@ class TestPostgresQueries:
     async def test_limit(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["status"],
             "limit": 2,
         })
         result = await pg_env.execute(query=query)
@@ -259,8 +259,8 @@ class TestPostgresQueries:
     async def test_multiple_measures(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}, {"expression": "sum(total)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "count(*)"}, {"metric": "sum(total)"}],
+            "dimensions": ["status"],
         })
         result = await pg_env.execute(query=query)
         completed = next(r for r in result.data if r["orders.status"] == "completed")
@@ -271,8 +271,8 @@ class TestPostgresQueries:
         """Postgres supports DATE_TRUNC — this should work unlike SQLite."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
+            "metrics": [{"metric": "count(*)"}],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
         })
         result = await pg_env.execute(query=query)
         assert result.row_count == 3  # Jan, Feb, Mar
@@ -280,9 +280,9 @@ class TestPostgresQueries:
     async def test_time_dimension_with_date_range(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "time_dimensions": [{
-                "field": {"name": "created_at"},
+                "field": "created_at",
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
@@ -295,7 +295,7 @@ class TestPostgresQueries:
     async def test_composite_filter(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status == 'completed' or status == 'pending'"],
         })
         result = await pg_env.execute(query=query)
@@ -312,10 +312,10 @@ class TestPostgresQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="time_shift(sum(total), -1, 'month')", name="prev_month"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev_month"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await pg_env.execute(query=query)
         assert result.row_count == 1
@@ -337,10 +337,10 @@ class TestPostgresQueries:
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="consecutive_periods(sum(total) > 200)", name="positive_run"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="consecutive_periods(sum(total) > 200)", alias="positive_run"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await pg_env.execute(query=query)
         # Monthly totals: Jan=300 (>200, true), Feb=200 (==200, false),
@@ -362,10 +362,10 @@ class TestPostgresQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="change(sum(total))", name="amount_change"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="change(sum(total))", alias="amount_change"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await pg_env.execute(query=query)
         assert result.row_count == 1
@@ -381,10 +381,10 @@ class TestPostgresQueries:
                 date_range=["2024-03-01", "2024-03-31"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="change_pct(sum(total))", name="pct"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="change_pct(sum(total))", alias="pct"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await pg_env.execute(query=query)
         assert result.row_count == 1
@@ -401,11 +401,11 @@ class TestPostgresQueries:
                 date_range=["2024-02-01", "2024-02-29"],
             )],
             metrics=[
-                DatasetMetric(expression="sum(total)"),
-                DatasetMetric(expression="time_shift(sum(total), -1, 'month')", name="prev"),
-                DatasetMetric(expression="time_shift(sum(total), 1, 'month')", name="next"),
+                QueryMetric(metric="sum(total)"),
+                QueryMetric(metric="time_shift(sum(total), -1, 'month')", alias="prev"),
+                QueryMetric(metric="time_shift(sum(total), 1, 'month')", alias="next"),
             ],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await pg_env.execute(query=query)
         assert result.row_count == 1
@@ -464,23 +464,23 @@ async def pg_cross_dataset_env(postgresql):
         name="orders", sql_table="orders", data_source="testpg",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
 
-            DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )))
     run_sync(storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="testpg",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
 
-            DatasetField(name="avg_score", sql="score", datatype=DataType.DOUBLE),
+            DatasetField(name="avg_score", sql="score", datatype=DataType.FLOAT),
         ],
     )))
     async with owned_query_engine(storage=storage) as engine:
@@ -496,8 +496,8 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="avg(customers.avg_score)")],
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="avg(customers.avg_score)")],
+            order=[OrderItem(field="created_at", direction="asc")],
         )
         result = await pg_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
@@ -511,9 +511,9 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
+            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
         )
-        outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
+        outer = SlayerQuery(population="monthly", metrics=[QueryMetric(metric="count(*)")])
         result = await pg_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
@@ -524,12 +524,12 @@ class TestCrossModelAndMultistage:
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
+            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total)")],
         )
         saved = await pg_cross_dataset_env.create_dataset_from_query(query=source, name="pg_monthly")
         assert saved.source_queries is not None
         result = await pg_cross_dataset_env.execute(
-            query=SlayerQuery(population="pg_monthly", metrics=[DatasetMetric(expression="count(*)")])
+            query=SlayerQuery(population="pg_monthly", metrics=[QueryMetric(metric="count(*)")])
         )
         assert result.data[0]["pg_monthly._count"] == 3
 
@@ -537,8 +537,8 @@ class TestCrossModelAndMultistage:
         """SQL expression dimension via ModelExtension with Postgres."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", alias="tier")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         result = await pg_cross_dataset_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
@@ -677,8 +677,8 @@ class TestRollupIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
 
@@ -693,8 +693,8 @@ class TestRollupIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}, {"expression": "sum(amount)"}],
-            "dimensions": [{"name": "customers.regions.name"}],
+            "metrics": [{"metric": "count(*)"}, {"metric": "sum(amount)"}],
+            "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
 
@@ -710,8 +710,8 @@ class TestRollupIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
 
@@ -726,8 +726,8 @@ class TestRollupIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.regions.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
 
@@ -740,7 +740,7 @@ class TestRollupIngestion:
         """Query using only source-table dimensions should not include JOINs."""
         engine = pg_ingest_engine
 
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
         result = await engine.execute(query=query)
         # No joined dimensions → SQL should not have LEFT JOIN
         assert "LEFT JOIN" not in result.sql
@@ -752,8 +752,8 @@ class TestRollupIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.name"],
         })
         result = await engine.execute(query=query)
         # Should JOIN customers but NOT regions
@@ -767,8 +767,8 @@ class TestRollupIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
-            "dimensions": [{"name": "customers.regions.name"}],
+            "metrics": [{"metric": "count(*)"}],
+            "dimensions": ["customers.regions.name"],
         })
         result = await engine.execute(query=query)
         # Needs both customers (intermediate) and regions (target)
@@ -789,8 +789,8 @@ class TestRollupIngestion:
 
         # Each join has at least one join pair
         for j in orders.relationships:
-            assert len(j.join_pairs) >= 1
-            for pair in j.join_pairs:
+            assert len(j.column_pairs) >= 1
+            for pair in j.column_pairs:
                 assert len(pair) == 2  # [source_dim, target_dim]
 
     def test_regions_has_no_joins(self, pg_ingest_env: PgIngestEnv) -> None:
@@ -813,7 +813,7 @@ class TestRollupIngestion:
         assert len(loaded.relationships) == len(orders.relationships)
         for orig, loaded_j in zip(orders.relationships, loaded.relationships):
             assert orig.to == loaded_j.to
-            assert orig.join_pairs == loaded_j.join_pairs
+            assert orig.column_pairs == loaded_j.column_pairs
 
 
 @pytest.mark.integration
@@ -827,7 +827,7 @@ class TestPostgresMedianPercentile:
 
     async def test_median(self, pg_env: SlayerQueryEngine) -> None:
         # amounts = [100, 200, 50, 150, 75, 300] -> median 125
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "median(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "median(total)"}]})
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
@@ -835,8 +835,8 @@ class TestPostgresMedianPercentile:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "percentile(total, p=0.25)"},
-                {"expression": "percentile(total, p=0.75)"},
+                {"metric": "percentile(total, p=0.25)"},
+                {"metric": "percentile(total, p=0.75)"},
             ],
         )
         result = await pg_env.execute(query=query)
@@ -850,8 +850,8 @@ class TestPostgresMedianPercentile:
         # cancelled: [75]            -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "median(total)"}],
-            "dimensions": [{"name": "status"}],
+            "metrics": [{"metric": "median(total)"}],
+            "dimensions": ["status"],
         })
         result = await pg_env.execute(query=query)
         by_status = {
@@ -871,7 +871,7 @@ class TestPostgresStatAggregations:
     """
 
     async def test_stddev_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "stddev_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "stddev_samp(total)"}]})
         result = await pg_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -881,7 +881,7 @@ class TestPostgresStatAggregations:
     async def test_stddev_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "stddev_pop(total)"}],
+            "metrics": [{"metric": "stddev_pop(total)"}],
         })
         result = await pg_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -890,7 +890,7 @@ class TestPostgresStatAggregations:
         )
 
     async def test_var_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "var_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "var_samp(total)"}]})
         result = await pg_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
@@ -900,7 +900,7 @@ class TestPostgresStatAggregations:
     async def test_var_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"expression": "var_pop(total)"}],
+            metrics=[{"metric": "var_pop(total)"}],
         )
         result = await pg_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -912,7 +912,7 @@ class TestPostgresStatAggregations:
         # CORR(amount, customer_id) — uses two existing columns.
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "corr(total, other=customer_id)"}],
+            "metrics": [{"metric": "corr(total, other=customer_id)"}],
         })
         result = await pg_env.execute(query=query)
         # Compute expected via Python's statistics.correlation.
@@ -926,7 +926,7 @@ class TestPostgresStatAggregations:
     async def test_covar_samp_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "covar_samp(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_samp(total, other=customer_id)"}],
         })
         result = await pg_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -941,7 +941,7 @@ class TestPostgresStatAggregations:
     async def test_covar_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "covar_pop(total, other=customer_id)"}],
+            "metrics": [{"metric": "covar_pop(total, other=customer_id)"}],
         })
         result = await pg_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -963,7 +963,7 @@ class TestPostgresStatAggregations:
         existing = await pg_env.storage.get_dataset("orders")
         assert existing is not None
         cols = list(existing.fields) + [
-            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.DOUBLE),
+            DatasetField(name="log_amount", sql="log10(amount)", datatype=DataType.FLOAT),
         ]
         await pg_env.save_dataset(
             SlayerDataset(
@@ -975,7 +975,7 @@ class TestPostgresStatAggregations:
         )
 
         result = await pg_env.execute(
-            SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]})
+            SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]})
         )
         # max(amount) = 300, log10(300) ≈ 2.4771
         assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
@@ -983,7 +983,7 @@ class TestPostgresStatAggregations:
         )
 
         dry = await pg_env.execute(
-            SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]}),
+            SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "max(log_amount)"}]}),
             dry_run=True,
         )
         assert dry.sql is not None
@@ -1049,13 +1049,13 @@ async def planets_pg_env(postgresql):
             sql_table="planets",
             data_source="planets_pg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-                DatasetField(name="mass", sql="mass", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="mass", sql="mass", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rn",
                     sql="row_number() over (order by mass desc)",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         )
@@ -1113,9 +1113,9 @@ async def pg_derived_chain_env(postgresql):
             data_source="testpg",
             sql_table="b_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE),
-                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+                DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -1125,17 +1125,17 @@ async def pg_derived_chain_env(postgresql):
             data_source="testpg",
             sql_table="a_tbl",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
-                DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
-                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
+                DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+                DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
                 DatasetField(
                     name="ratio_using_derived",
                     sql="a_tbl.bar / b_tbl.foo_normalized",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
-            relationships=[DatasetRelationship(to="b_tbl", join_pairs=[["b_id", "id"]])],
+            relationships=[DatasetRelationship(to="b_tbl", from_columns=["b_id"], to_columns=["id"])],
         )
     )
     async with owned_query_engine(storage=storage) as engine:
@@ -1150,10 +1150,10 @@ async def test_integration_postgres_cross_model_derived_columnsql(
         SlayerQuery(
             population="a_tbl",
             dimensions=[
-                FieldRef(name="id"),
-                FieldRef(name="ratio_using_derived"),
+                QueryDimension(field="id"),
+                QueryDimension(field="ratio_using_derived"),
             ],
-            order=[OrderItem(field=FieldRef(name="id"), direction="asc")],
+            order=[OrderItem(field="id", direction="asc")],
         )
     )
     assert response.row_count == 2
@@ -1172,7 +1172,7 @@ class TestPostgresDev1576Heals:
         # SUM(amount_d) = 875.0 (double precision); /8.0 = 109.375 → round 2.
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "round(sum(amount_d) / 8.0, 2)", "name": "r"}],
+            "metrics": [{"metric": "round(sum(amount_d) / 8.0, 2)", "alias": "r"}],
         })
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.r"]) == pytest.approx(109.38)
@@ -1182,7 +1182,7 @@ class TestPostgresDev1576Heals:
     ) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "round(sum(amount_d) / 8.0)", "name": "r"}],
+            "metrics": [{"metric": "round(sum(amount_d) / 8.0)", "alias": "r"}],
         })
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.r"]) == pytest.approx(109.0)
@@ -1190,7 +1190,7 @@ class TestPostgresDev1576Heals:
     async def test_abs_over_double_executes(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "abs(sum(amount_d) - 1000.0)", "name": "a"}],
+            "metrics": [{"metric": "abs(sum(amount_d) - 1000.0)", "alias": "a"}],
         })
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.a"]) == pytest.approx(125.0)
@@ -1198,14 +1198,14 @@ class TestPostgresDev1576Heals:
     async def test_count_distinct_alias_executes(
         self, pg_env: SlayerQueryEngine,
     ) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "countd(status)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "countd(status)"}]})
         result = await pg_env.execute(query=query)
         assert result.data[0]["orders.status_count_distinct"] == 3
 
     async def test_stddev_alias_executes(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "stddev(total)"}],
+            "metrics": [{"metric": "stddev(total)"}],
         })
         result = await pg_env.execute(query=query)
         # Sample stddev of [100,200,50,150,75,300] (mean 145.83) ≈ 92.76.
@@ -1270,24 +1270,24 @@ def _pg_dev1645_storage(postgresql_proc, tmp_path_factory):
             name="clusters", sql_table="clusters", data_source="testpg",
             fields=[
                 # PK column name is mixed-case and written UNQUOTED in the model.
-                DatasetField(name="CLSTR_PIN", sql="CLSTR_PIN", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="score", sql="score", datatype=DataType.DOUBLE),
+                DatasetField(name="CLSTR_PIN", sql="CLSTR_PIN", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="score", sql="score", datatype=DataType.FLOAT),
             ],
         )
         accounts_model = SlayerDataset(
             name="accounts", sql_table="accounts", data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 # Derived boolean referencing mixed-case StateFlag UNQUOTED (the
                 # fake_account_23 repro). Fix must emit "StateFlag".
                 DatasetField(name="is_inactive", datatype=DataType.BOOLEAN,
                        sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
-                DatasetField(name="acct_form", sql="acct_form", datatype=DataType.TEXT),
-                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.INT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="acct_form", sql="acct_form", datatype=DataType.STRING),
+                DatasetField(name="clu_ref", sql="clu_ref", datatype=DataType.INTEGER),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
             ],
             # Join key CLSTR_PIN written UNQUOTED (the fake_account_15 repro).
-            relationships=[DatasetRelationship(to="clusters", join_pairs=[["clu_ref", "CLSTR_PIN"]])],
+            relationships=[DatasetRelationship(to="clusters", from_columns=["clu_ref"], to_columns=["CLSTR_PIN"])],
         )
         run_sync(storage.save_dataset(clusters_model))
         run_sync(storage.save_dataset(accounts_model))
@@ -1312,7 +1312,7 @@ class TestDev1645ValidPostgres:
         (the fake_account_23 repro) — must execute, not raise UndefinedColumn."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"expression": "count(*)", "name": "cnt"}],
+            "metrics": [{"metric": "count(*)", "alias": "cnt"}],
             "filter": ["is_inactive == True"],
         })
         result = await pg_dev1645.execute(query=query)
@@ -1325,8 +1325,8 @@ class TestDev1645ValidPostgres:
         (the fake_account_15 repro) — must execute."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "dimensions": [FieldRef(name="score", dataset="clusters")],
-            "metrics": [{"expression": "count(*)", "name": "cnt"}],
+            "dimensions": [QueryDimension(field="clusters.score")],
+            "metrics": [{"metric": "count(*)", "alias": "cnt"}],
         })
         result = await pg_dev1645.execute(query=query)
         by_score = {float(r["accounts.clusters.score"]): r["accounts.cnt"] for r in result.data}
@@ -1340,9 +1340,9 @@ class TestDev1645ValidPostgres:
         (the mental_healths_1 / organ_transplant_13 repro) — must execute."""
         query = SlayerQuery(
             population="accounts",
-            dimensions=[FieldRef(name="acct_form")],
+            dimensions=[QueryDimension(field="acct_form")],
             distinct_dimension_values=False,
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="desc")],
+            order=[OrderItem(field="created_at", direction="desc")],
         )
         result = await pg_dev1645.execute(query=query)
         assert result.row_count == 3
@@ -1360,9 +1360,9 @@ class TestDev1645ValidPostgres:
         """
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "dimensions": [FieldRef(name="acct_form")],
-            "metrics": [{"expression": "count(*)", "name": "cnt"}],
-            "order": [OrderItem(field=FieldRef(name="created_at"), direction="desc")],
+            "dimensions": [QueryDimension(field="acct_form")],
+            "metrics": [{"metric": "count(*)", "alias": "cnt"}],
+            "order": [OrderItem(field="created_at", direction="desc")],
         })
         result = await pg_dev1645.execute(query=query)
         assert [r["accounts.acct_form"] for r in result.data] == ["Human", "Bot"]
@@ -1382,11 +1382,11 @@ class TestDev1645ValidPostgres:
         """
         query = SlayerQuery(
             population="accounts",
-            dimensions=[FieldRef(name="id")],
+            dimensions=[QueryDimension(field="id")],
             distinct_dimension_values=False,
             order=[
-                OrderItem(field=FieldRef(name="score", dataset="clusters"), direction="asc"),
-                OrderItem(field=FieldRef(name="id"), direction="asc"),
+                OrderItem(field="clusters.score", direction="asc"),
+                OrderItem(field="id", direction="asc"),
             ],
         )
         result = await pg_dev1645.execute(query=query)
@@ -1453,31 +1453,31 @@ def _pg_reserved_storage(postgresql_proc, tmp_path_factory):
         merchant = SlayerDataset(
             name="merchant", sql_table='"Merchant"', data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
         grant = SlayerDataset(
             name="grant", sql_table='"Grant"', data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="namespace", sql="namespace", datatype=DataType.TEXT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="merchantId", sql="merchantId", datatype=DataType.INT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="namespace", sql="namespace", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="merchantId", sql="merchantId", datatype=DataType.INTEGER),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
             ],
-            relationships=[DatasetRelationship(to="merchant", join_pairs=[["merchantId", "id"]])],
+            relationships=[DatasetRelationship(to="merchant", from_columns=["merchantId"], to_columns=["id"])],
         )
         usage = SlayerDataset(
             name="usage", sql_table="usage", data_source="testpg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INT),
-                DatasetField(name="qty", sql="qty", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INTEGER),
+                DatasetField(name="qty", sql="qty", datatype=DataType.INTEGER),
                 # derived column referencing the reserved joined model `grant`
-                DatasetField(name="bumped", sql="grant.amount + 1", datatype=DataType.DOUBLE),
+                DatasetField(name="bumped", sql="grant.amount + 1", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="grant", join_pairs=[["grant_id", "id"]])],
+            relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"])],
         )
         run_sync(storage.save_dataset(merchant))
         run_sync(storage.save_dataset(grant))
@@ -1523,7 +1523,7 @@ class TestPostgresReservedWordModel:
         query = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "filter": ["amount > 60"],
         })
         result = await pg_reserved.execute(query=query)
@@ -1540,7 +1540,7 @@ class TestPostgresReservedWordModel:
         query = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"expression": "count_distinct(merchant.id)", "name": "order"}],
+            "metrics": [{"metric": "count_distinct(merchant.id)", "alias": "order"}],
         })
         await pg_reserved.create_dataset_from_query(
             query=query, name="grants_vm", save=True,

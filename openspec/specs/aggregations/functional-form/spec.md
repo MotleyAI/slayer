@@ -42,7 +42,7 @@ arithmetic over partitioned aggregates).
   per-row average revenue of each group
 
 #### Scenario: Cross-spelling rename and filter-form matching
-- **WHEN** a measure is declared `{"expression": "sum(revenue)", "name": "rev"}` and a filter references `SUM(revenue)` (or vice versa)
+- **WHEN** a measure is declared `{"metric": "sum(revenue)", "alias": "rev"}` and a filter references `SUM(revenue)` (or vice versa)
 - **THEN** the filter resolves to the same measure — spelling never affects matching
 
 #### Scenario: Computed dimension with a functional partitioned aggregate

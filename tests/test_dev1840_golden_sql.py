@@ -15,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests._dev1840_fixtures import (
-    DatasetMetric,
     SPEND_BAND_170,
     ambiguity_datasets,
     dev1840_datasets,
@@ -24,6 +23,7 @@ from tests._dev1840_fixtures import (
 )
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
+from slayer.core.query import QueryMetric
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1840_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
@@ -37,10 +37,10 @@ _MODEL_SETS = {
     "amb": ambiguity_datasets,
 }
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
-SM = DatasetMetric(expression="sum(agents.score)", name="sm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
+SM = QueryMetric(metric="sum(agents.score)", alias="sm")
 
 
 def _cases() -> dict:
@@ -76,7 +76,7 @@ def _cases() -> dict:
             dimensions=["customers.tier"], metrics=[CM],
             filter=["customers.last_status = 'ok'"])},
         "exists/nested_band_producer": {"models": "default", "query": q(
-            dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
             metrics=[M], filter=["channel = 'app'"])},
         "exists/declared_reverse": {"models": "rev", "query": q(
             dimensions=["customers.tier"], metrics=[CM],

@@ -199,20 +199,20 @@ class TestInfoSchemaTypeMapping:
     @pytest.mark.parametrize(
         ("data_type", "expected_type", "expected_float"),
         [
-            ("DOUBLE PRECISION", DataType.DOUBLE, True),
-            ("double precision", DataType.DOUBLE, True),
-            ("TIMESTAMP WITHOUT TIME ZONE", DataType.TIMESTAMP, False),
-            ("timestamp with time zone", DataType.TIMESTAMP, False),
+            ("DOUBLE PRECISION", DataType.FLOAT, True),
+            ("double precision", DataType.FLOAT, True),
+            ("TIMESTAMP WITHOUT TIME ZONE", DataType.DATETIME, False),
+            ("timestamp with time zone", DataType.DATETIME, False),
             # A float name containing "INT" (POINT) must NOT read as INT (Codex).
-            ("FLOATING POINT", DataType.DOUBLE, True),
+            ("FLOATING POINT", DataType.FLOAT, True),
             # INTERVAL contains "INT" but is temporal → TEXT, not INT.
-            ("INTERVAL", DataType.TEXT, False),
-            ("interval day to second", DataType.TEXT, False),
-            ("character varying", DataType.TEXT, False),
-            ("integer", DataType.INT, False),
-            ("bigint", DataType.INT, False),
-            ("numeric(10,2)", DataType.DOUBLE, True),
-            ("numeric(10,0)", DataType.INT, False),
+            ("INTERVAL", DataType.STRING, False),
+            ("interval day to second", DataType.STRING, False),
+            ("character varying", DataType.STRING, False),
+            ("integer", DataType.INTEGER, False),
+            ("bigint", DataType.INTEGER, False),
+            ("numeric(10,2)", DataType.FLOAT, True),
+            ("numeric(10,0)", DataType.INTEGER, False),
         ],
     )
     def test_multi_word_types(self, data_type, expected_type, expected_float):
@@ -284,9 +284,9 @@ class TestBaseColumnsFallback:
         engine = _columns_connection([("short_amount", "Decimal64(4)"), ("big_amount", "BIGNUMERIC")])
         by_name = {c.name: c for c in _reflect_columns(engine)}
 
-        assert by_name["short_amount"].type is DataType.DOUBLE
+        assert by_name["short_amount"].type is DataType.FLOAT
         assert by_name["short_amount"].db_type == "Decimal64(4)"
-        assert by_name["big_amount"].type is DataType.DOUBLE
+        assert by_name["big_amount"].type is DataType.FLOAT
         assert by_name["big_amount"].db_type == "BIGNUMERIC"
 
     def test_wrapped_decimals_unwrap_and_capture_db_type(self):
@@ -300,9 +300,9 @@ class TestBaseColumnsFallback:
         )
         by_name = {c.name: c for c in _reflect_columns(engine, dialect=ClickhouseDialect())}
 
-        assert by_name["amount"].type is DataType.DOUBLE
+        assert by_name["amount"].type is DataType.FLOAT
         assert by_name["amount"].db_type == "Decimal(18, 2)"
-        assert by_name["ratio"].type is DataType.DOUBLE
+        assert by_name["ratio"].type is DataType.FLOAT
         assert by_name["ratio"].db_type == "Decimal(10, 4)"
 
 
@@ -427,7 +427,7 @@ class TestGenerateJoinsDedup:
         """Two distinct FKs to the same target table should both produce joins."""
         joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("seller_id")])
         assert len(joins) == 2
-        pairs = [j.join_pairs for j in joins]
+        pairs = [[list(p) for p in j.column_pairs] for j in joins]
         assert [["buyer_id", "id"]] in pairs
         assert [["seller_id", "id"]] in pairs
 
@@ -564,7 +564,7 @@ class TestSaTypeToDataTypeIntDouble:
         sa.SmallInteger(),
     ])
     def test_integer_family_maps_to_int(self, sa_type) -> None:
-        assert _sa_type_to_data_type(sa_type) is DataType.INT
+        assert _sa_type_to_data_type(sa_type) is DataType.INTEGER
 
     @pytest.mark.parametrize("sa_type", [
         sa.Float(),
@@ -572,27 +572,27 @@ class TestSaTypeToDataTypeIntDouble:
         sa.Float(precision=53),
     ])
     def test_float_family_maps_to_double(self, sa_type) -> None:
-        assert _sa_type_to_data_type(sa_type) is DataType.DOUBLE
+        assert _sa_type_to_data_type(sa_type) is DataType.FLOAT
 
     def test_numeric_with_scale_zero_maps_to_int(self) -> None:
         # NUMERIC(10, 0) is integer-shaped — should land on INT, mirroring
         # the existing _sa_type_is_float scale-aware logic.
-        assert _sa_type_to_data_type(sa.Numeric(precision=10, scale=0)) is DataType.INT
+        assert _sa_type_to_data_type(sa.Numeric(precision=10, scale=0)) is DataType.INTEGER
 
     def test_numeric_with_positive_scale_maps_to_double(self) -> None:
-        assert _sa_type_to_data_type(sa.Numeric(precision=10, scale=2)) is DataType.DOUBLE
+        assert _sa_type_to_data_type(sa.Numeric(precision=10, scale=2)) is DataType.FLOAT
 
     def test_decimal_with_scale_zero_maps_to_int(self) -> None:
-        assert _sa_type_to_data_type(sa.DECIMAL(precision=18, scale=0)) is DataType.INT
+        assert _sa_type_to_data_type(sa.DECIMAL(precision=18, scale=0)) is DataType.INTEGER
 
     def test_decimal_with_positive_scale_maps_to_double(self) -> None:
-        assert _sa_type_to_data_type(sa.DECIMAL(precision=18, scale=4)) is DataType.DOUBLE
+        assert _sa_type_to_data_type(sa.DECIMAL(precision=18, scale=4)) is DataType.FLOAT
 
     def test_varchar_maps_to_text(self) -> None:
-        assert _sa_type_to_data_type(sa.VARCHAR(255)) is DataType.TEXT
+        assert _sa_type_to_data_type(sa.VARCHAR(255)) is DataType.STRING
 
     def test_text_maps_to_text(self) -> None:
-        assert _sa_type_to_data_type(sa.Text()) is DataType.TEXT
+        assert _sa_type_to_data_type(sa.Text()) is DataType.STRING
 
     def test_boolean_maps_to_boolean(self) -> None:
         assert _sa_type_to_data_type(sa.Boolean()) is DataType.BOOLEAN
@@ -601,39 +601,39 @@ class TestSaTypeToDataTypeIntDouble:
         assert _sa_type_to_data_type(sa.Date()) is DataType.DATE
 
     def test_timestamp_maps_to_timestamp(self) -> None:
-        assert _sa_type_to_data_type(sa.TIMESTAMP()) is DataType.TIMESTAMP
+        assert _sa_type_to_data_type(sa.TIMESTAMP()) is DataType.DATETIME
 
     def test_datetime_maps_to_timestamp(self) -> None:
-        assert _sa_type_to_data_type(sa.DateTime()) is DataType.TIMESTAMP
+        assert _sa_type_to_data_type(sa.DateTime()) is DataType.DATETIME
 
     # --- T-SQL (SQL Server) specific types ---
 
     def test_tsql_tinyint_maps_to_int(self) -> None:
-        assert _sa_type_to_data_type(TINYINT()) is DataType.INT
+        assert _sa_type_to_data_type(TINYINT()) is DataType.INTEGER
 
     def test_tsql_datetime2_maps_to_timestamp(self) -> None:
-        assert _sa_type_to_data_type(DATETIME2()) is DataType.TIMESTAMP
+        assert _sa_type_to_data_type(DATETIME2()) is DataType.DATETIME
 
     def test_tsql_smalldatetime_maps_to_timestamp(self) -> None:
-        assert _sa_type_to_data_type(SMALLDATETIME()) is DataType.TIMESTAMP
+        assert _sa_type_to_data_type(SMALLDATETIME()) is DataType.DATETIME
 
     def test_tsql_datetimeoffset_maps_to_timestamp(self) -> None:
-        assert _sa_type_to_data_type(DATETIMEOFFSET()) is DataType.TIMESTAMP
+        assert _sa_type_to_data_type(DATETIMEOFFSET()) is DataType.DATETIME
 
     def test_tsql_nvarchar_maps_to_text(self) -> None:
-        assert _sa_type_to_data_type(NVARCHAR()) is DataType.TEXT
+        assert _sa_type_to_data_type(NVARCHAR()) is DataType.STRING
 
     def test_tsql_nchar_maps_to_text(self) -> None:
-        assert _sa_type_to_data_type(NCHAR()) is DataType.TEXT
+        assert _sa_type_to_data_type(NCHAR()) is DataType.STRING
 
     def test_tsql_ntext_maps_to_text(self) -> None:
-        assert _sa_type_to_data_type(NTEXT()) is DataType.TEXT
+        assert _sa_type_to_data_type(NTEXT()) is DataType.STRING
 
     def test_tsql_money_maps_to_double(self) -> None:
-        assert _sa_type_to_data_type(MONEY()) is DataType.DOUBLE
+        assert _sa_type_to_data_type(MONEY()) is DataType.FLOAT
 
     def test_tsql_smallmoney_maps_to_double(self) -> None:
-        assert _sa_type_to_data_type(SMALLMONEY()) is DataType.DOUBLE
+        assert _sa_type_to_data_type(SMALLMONEY()) is DataType.FLOAT
 
     def test_tsql_bit_maps_to_boolean(self) -> None:
         assert _sa_type_to_data_type(BIT()) is DataType.BOOLEAN
@@ -642,8 +642,8 @@ class TestSaTypeToDataTypeIntDouble:
         # mssql.TIMESTAMP is SQL Server's rowversion (8-byte binary counter),
         # not a temporal type. Its class name is "TIMESTAMP", same as
         # sa.TIMESTAMP, so without the isinstance guard it would incorrectly
-        # land on DataType.TIMESTAMP.
-        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
+        # land on DataType.DATETIME.
+        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.STRING
 
 
 _UUID_JSONB_TYPES = [
@@ -667,7 +667,7 @@ class TestSaTypeToDataTypeUuidJsonb:
     @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
     def test_maps_to_text(self, sa_type) -> None:
         mapped = _sa_type_to_data_type(sa_type)
-        assert mapped is DataType.TEXT
+        assert mapped is DataType.STRING
         assert mapped.is_opaque is False
 
     @pytest.mark.parametrize("sa_type", _UUID_JSONB_TYPES, ids=_UUID_JSONB_IDS)
@@ -684,7 +684,7 @@ class TestUnmappedTypeBecomesOpaque:
     working as TEXT."""
 
     def test_non_comparable_sa_type_maps_to_unknown(self) -> None:
-        assert _sa_type_to_data_type(PG_JSON()) is DataType.UNKNOWN
+        assert _sa_type_to_data_type(PG_JSON()) is DataType.OPAQUE
         assert _sa_type_to_data_type(PG_JSON()).is_opaque is True
 
     @pytest.mark.parametrize(
@@ -698,15 +698,15 @@ class TestUnmappedTypeBecomesOpaque:
         """Regression: these are groupable/joinable and must not be marked
         opaque — doing so would tell an agent a usable column is unusable."""
         mapped = _sa_type_to_data_type(sa_type)
-        assert mapped is DataType.TEXT
+        assert mapped is DataType.STRING
         assert mapped.is_opaque is False
 
     def test_mapped_sa_type_unaffected(self) -> None:
-        assert _sa_type_to_data_type(sa.VARCHAR(32)) is DataType.TEXT
+        assert _sa_type_to_data_type(sa.VARCHAR(32)) is DataType.STRING
 
     def test_mssql_rowversion_special_case_still_text(self) -> None:
         # The explicit isinstance guard must survive the UNKNOWN fallback.
-        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.TEXT
+        assert _sa_type_to_data_type(MSSQL_TIMESTAMP()) is DataType.STRING
 
     async def test_ingest_retains_db_type_when_logical_type_loses_information(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -724,21 +724,21 @@ class TestUnmappedTypeBecomesOpaque:
             by_name = {c.name: c for c in model.fields}
 
             # Opaque: explicit UNKNOWN + raw DB type retained.
-            assert by_name["payload"].datatype is DataType.UNKNOWN
+            assert by_name["payload"].datatype is DataType.OPAQUE
             assert by_name["payload"].db_type == "JSON"
 
             # Exact NUMERIC is represented by logical DOUBLE, so retain the
             # physical type needed to avoid lossy inferred aggregate casts.
-            assert by_name["amount"].datatype is DataType.DOUBLE
+            assert by_name["amount"].datatype is DataType.DECIMAL
             assert by_name["amount"].db_type == "NUMERIC(18, 2)"
 
             # Fully represented mapped types carry no db_type.
-            assert by_name["name"].datatype is DataType.TEXT
+            assert by_name["name"].datatype is DataType.STRING
             assert by_name["name"].db_type is None
-            assert by_name["id"].datatype is DataType.INT
+            assert by_name["id"].datatype is DataType.INTEGER
             assert by_name["id"].db_type is None
             # bytea/BLOB is comparable — it must NOT be marked opaque.
-            assert by_name["blob_col"].datatype is DataType.TEXT
+            assert by_name["blob_col"].datatype is DataType.STRING
             assert by_name["blob_col"].db_type is None
 
 
@@ -759,11 +759,11 @@ class TestSqliteIngestionRoundTrip:
             async with _client(ds) as client:
                 schema = await _live_schema_for_datasource(client=client, datasource=ds)
             cols = schema["t"].columns
-            assert cols["id"] is DataType.INT
-            assert cols["q"] is DataType.INT
-            assert cols["amt"] is DataType.DOUBLE
-            assert cols["n"] is DataType.TEXT
-            assert cols["ts"] is DataType.TIMESTAMP
+            assert cols["id"] is DataType.INTEGER
+            assert cols["q"] is DataType.INTEGER
+            assert cols["amt"] is DataType.FLOAT
+            assert cols["n"] is DataType.STRING
+            assert cols["ts"] is DataType.DATETIME
             assert cols["d"] is DataType.DATE
             assert cols["b"] is DataType.BOOLEAN
 
@@ -809,7 +809,7 @@ class TestSqliteIngestionProbe:
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "sensordata")
             col = next(c for c in model.fields if c.name == "tempstabidx")
-            assert col.datatype is DataType.DOUBLE
+            assert col.datatype is DataType.FLOAT
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
@@ -828,7 +828,7 @@ class TestSqliteIngestionProbe:
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.fields if c.name == "qty")
-            assert col.datatype is DataType.INT
+            assert col.datatype is DataType.INTEGER
             assert col.format is not None
             assert col.format.type is NumberFormatType.INTEGER
 
@@ -847,7 +847,7 @@ class TestSqliteIngestionProbe:
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.fields if c.name == "status")
-            assert col.datatype is DataType.TEXT
+            assert col.datatype is DataType.STRING
             assert col.format is None
 
     async def test_widens_int_to_double_on_coercible_text_storage(self) -> None:
@@ -865,7 +865,7 @@ class TestSqliteIngestionProbe:
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.fields if c.name == "v")
-            assert col.datatype is DataType.DOUBLE
+            assert col.datatype is DataType.FLOAT
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
@@ -926,7 +926,7 @@ class TestSqliteIngestionProbe:
                         )
             model = next(m for m in models if m.name == "t")
             col = next(c for c in model.fields if c.name == "qty")
-            assert col.datatype is DataType.INT
+            assert col.datatype is DataType.INTEGER
             warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
             assert any("probe" in r.getMessage().lower() for r in warnings)
 
@@ -942,7 +942,7 @@ class TestSqliteIngestionProbe:
 
             def _capture(*, client, table, column, schema=None):
                 seen_columns.append(column)
-                return DataType.INT
+                return DataType.INTEGER
 
             with patch(
                 "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
@@ -950,8 +950,8 @@ class TestSqliteIngestionProbe:
             ):
                 # Mixed bag: one base column (no '.') and one dotted alias.
                 columns = [
-                    IntrospectedColumn(name="qty", type=DataType.INT),
-                    IntrospectedColumn(name="customers.region_id", type=DataType.INT),
+                    IntrospectedColumn(name="qty", type=DataType.INTEGER),
+                    IntrospectedColumn(name="customers.region_id", type=DataType.INTEGER),
                 ]
                 await _sqlite_probe_integer_columns(
                     client=client,
@@ -995,7 +995,7 @@ class TestSqliteIngestionProbe:
             measurements = next(m for m in models if m.name == "measurements")
             weight_col = next(c for c in measurements.fields if c.name == "weight")
             # FK target's own model carries the probed type.
-            assert weight_col.datatype is DataType.DOUBLE
+            assert weight_col.datatype is DataType.FLOAT
 
 
 class TestCountColumnRenameInJoinKeys:
@@ -1023,7 +1023,7 @@ class TestCountColumnRenameInJoinKeys:
         assert col is not None
         assert col.sql == "_count"
         (join,) = children.relationships
-        assert join.join_pairs == [["count_col", "id"]]
+        assert join.column_pairs == [("count_col", "id")]
 
     async def test_target_key_named_count(self) -> None:
         models = await self._ingest([
@@ -1032,4 +1032,4 @@ class TestCountColumnRenameInJoinKeys:
             "tally INTEGER REFERENCES tallies(_count))",
         ])
         (join,) = models["events"].relationships
-        assert join.join_pairs == [["tally", "count_col"]]
+        assert join.column_pairs == [("tally", "count_col")]

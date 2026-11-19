@@ -140,8 +140,8 @@ def disconnected_dataset_datasets() -> List[SlayerDataset]:
     models.append(SlayerDataset(
         name="promos", data_source="test", sql_table="promos",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="discount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
         ]))
     return models
 
@@ -154,52 +154,52 @@ def event_less_datasets(
     declares it INNER, so an event-less region contributes no product row;
     ``derived_events`` adds one derived event column per Mode-A fragment shape."""
     events_join = DatasetRelationship(
-        to="region_events", join_pairs=[["id", "region_id"]],
+        to="region_events", from_columns=["id"], to_columns=["region_id"],
         cardinality=RelationshipCardinality.ONE_TO_MANY,
         join_type=JoinType.INNER if inner_events else JoinType.LEFT,
     )
     regions = SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="pop", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="pop", datatype=DataType.FLOAT),
         ],
         relationships=[events_join],
     )
     event_columns = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="region_id", datatype=DataType.INT),
-        DatasetField(name="value", datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region_id", datatype=DataType.INTEGER),
+        DatasetField(name="value", datatype=DataType.FLOAT),
     ]
     event_joins: List[DatasetRelationship] = []
     extra_models: List[SlayerDataset] = []
     if derived_events:
         # A to-one LEFT hop for a Column.filter to cross: the filter's OR leg
         # holds when event_kinds is absent, so the masked value stays non-NULL.
-        event_columns.append(DatasetField(name="kind_id", datatype=DataType.INT))
+        event_columns.append(DatasetField(name="kind_id", datatype=DataType.INTEGER))
         event_joins.append(
-            DatasetRelationship(to="event_kinds", join_pairs=[["kind_id", "id"]]))
+            DatasetRelationship(to="event_kinds", from_columns=["kind_id"], to_columns=["id"]))
         extra_models.append(SlayerDataset(
             name="event_kinds", data_source="test", sql_table="event_kinds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         ))
         event_columns.append(DatasetField(
-            name="value_if_kind", datatype=DataType.DOUBLE, sql="value",
+            name="value_if_kind", datatype=DataType.FLOAT, sql="value",
             filter="event_kinds.label = 'x' OR value >= 0"))
     if derived_events:
         event_columns += [
-            DatasetField(name="value_bare", datatype=DataType.DOUBLE, sql="value"),
-            DatasetField(name="value_x2", datatype=DataType.DOUBLE, sql="value * 2"),
-            DatasetField(name="value_x2_x2", datatype=DataType.DOUBLE, sql="value_x2 * 2"),
-            DatasetField(name="value_or_zero", datatype=DataType.DOUBLE,
+            DatasetField(name="value_bare", datatype=DataType.FLOAT, sql="value"),
+            DatasetField(name="value_x2", datatype=DataType.FLOAT, sql="value * 2"),
+            DatasetField(name="value_x2_x2", datatype=DataType.FLOAT, sql="value_x2 * 2"),
+            DatasetField(name="value_or_zero", datatype=DataType.FLOAT,
                    sql="COALESCE(value, 0)"),
-            DatasetField(name="value_or_zero_x2", datatype=DataType.DOUBLE,
+            DatasetField(name="value_or_zero_x2", datatype=DataType.FLOAT,
                    sql="value_or_zero * 2"),
-            DatasetField(name="one", datatype=DataType.INT, sql="1"),
+            DatasetField(name="one", datatype=DataType.INTEGER, sql="1"),
             DatasetField(name="in_empty", datatype=DataType.BOOLEAN, sql="value IN ()"),
             DatasetField(name="col_in_list", datatype=DataType.BOOLEAN,
                    sql="value IN (30, 50)"),
@@ -215,12 +215,12 @@ def event_less_datasets(
     customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     return [customers, regions, region_events, *extra_models]
 

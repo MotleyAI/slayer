@@ -18,10 +18,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "min(status)"
+      "metric": "min(status)"
      },
      {
-      "expression": "max(status)"
+      "metric": "max(status)"
      }
     ]
    }
@@ -43,10 +43,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(status)"
+      "metric": "count(status)"
      },
      {
-      "expression": "count_distinct(status)"
+      "metric": "count_distinct(status)"
      }
     ]
    }
@@ -68,10 +68,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      },
      {
-      "expression": "avg(amount)"
+      "metric": "avg(amount)"
      }
     ]
    }
@@ -90,7 +90,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(id)"
+      "metric": "sum(id)"
      }
     ]
    }
@@ -109,7 +109,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(id)"
+      "metric": "count(id)"
      }
     ]
    }

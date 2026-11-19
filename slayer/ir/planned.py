@@ -143,10 +143,12 @@ class ValueSlot(BaseModel):
 
     @property
     def cast_type(self) -> Optional[DataType]:
-        """Return only casts that preserve the inferred database value."""
-        if self.type is DataType.ARRAY or not self.type_is_explicit and (
+        """Return only casts that preserve the inferred database value; a declared Decimal keeps an exact value."""
+        if self.type is DataType.ARRAY or (self.type is DataType.DECIMAL and self.preserve_native_type):
+            return None
+        if not self.type_is_explicit and (
             self.preserve_native_type
-            or (self.type == DataType.INT and self.phase != Phase.ROW)
+            or (self.type == DataType.INTEGER and self.phase != Phase.ROW)
         ):
             return None
         return self.type

@@ -20,7 +20,7 @@ from slayer.core.models import DatasetField
 ])
 def test_a_statement_is_rejected_naming_the_column(sql: str) -> None:
     with pytest.raises(ValidationError, match="leaky"):
-        DatasetField(name="leaky", sql=sql, datatype=DataType.DOUBLE)
+        DatasetField(name="leaky", sql=sql, datatype=DataType.FLOAT)
 
 
 @pytest.mark.parametrize("sql", [
@@ -30,4 +30,4 @@ def test_a_statement_is_rejected_naming_the_column(sql: str) -> None:
     "(SELECT max(x) FROM t)",
 ])
 def test_an_expression_is_accepted(sql: str) -> None:
-    assert DatasetField(name="c", sql=sql, datatype=DataType.DOUBLE).sql == sql
+    assert DatasetField(name="c", sql=sql, datatype=DataType.FLOAT).sql == sql

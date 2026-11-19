@@ -81,14 +81,14 @@ class TestBounds:
             await ids_with_range(engine, ["2025-01-01 10:00:00", None], column="d", granularity="day")
 
     async def test_monthly_buckets_with_open_upper(self, engine) -> None:
-        got = await monthly(engine, metrics=[{"expression": "sum(amount)", "name": "s"}], date_range=["2026-06", None])
+        got = await monthly(engine, metrics=[{"metric": "sum(amount)", "alias": "s"}], date_range=["2026-06", None])
         assert set(got) == {t.strftime("%Y-%m") for t in map(ev_dt, EV_TS) if t >= D(2026, 6, 1)}
 
 
 class TestStages:
     async def test_multi_stage_model_accepts_one_sided_range(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "daily", "metrics": [{"expression": "sum(rev)", "name": "r"}],
+            "population": "daily", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
             "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
         }))
         assert sum(r["daily.r"] for r in resp.data) == pytest.approx(
@@ -99,10 +99,10 @@ class TestStages:
         inner = {
             "name": "m", "population": "ev",
             "time_dimensions": [{"field": "ts", "granularity": "month"}],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"expression": "sum(rev)", "name": "r"}],
+            "population": "m", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
             "time_dimensions": [{"field": "ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
@@ -116,10 +116,10 @@ class TestStages:
         inner = {
             "name": "m", "population": "ev",
             "time_dimensions": [{"field": "ts", "granularity": "month"}],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"expression": "sum(rev)", "name": "r"}],
+            "population": "m", "metrics": [{"metric": "sum(rev)", "alias": "r"}],
             "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": "2025-Q1"}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])

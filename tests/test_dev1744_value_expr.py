@@ -61,10 +61,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
@@ -100,9 +99,9 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
         ],
     )
 
@@ -111,11 +110,11 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -123,14 +122,14 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="label", sql="label", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="net", sql="amount - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="label", sql="label", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="net", sql="amount - 1", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -1039,12 +1038,12 @@ async def _e2e_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQueryE
             # first/last needs a resolvable ranking time column.
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="disc", datatype=DataType.DOUBLE),
-                DatasetField(name="qty", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="disc", datatype=DataType.FLOAT),
+                DatasetField(name="qty", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
             # Exercises the formula-template dispatch mechanism through the
             # registry — a CUSTOM aggregation, not a builtin.
@@ -1069,8 +1068,8 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="count(*)")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="count(*)")],
                 filter=["ifnull(disc, 0) > 1"],
             )
         )
@@ -1084,8 +1083,8 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="ifnull(sum(amount), 0)", name="m")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="ifnull(sum(amount), 0)", alias="m")],
             )
         )
         by_status = {r["orders.status"]: r["orders.m"] for r in resp.data}
@@ -1097,9 +1096,9 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    DatasetMetric(expression="sum(amount) - sum(qty)", name="d"),
+                    QueryMetric(metric="sum(amount) - sum(qty)", alias="d"),
                 ],
             )
         )
@@ -1115,8 +1114,8 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum_sq(amount)", name="ss")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum_sq(amount)", alias="ss")],
             )
         )
         by_status = {r["orders.status"]: r["orders.ss"] for r in resp.data}
@@ -1127,8 +1126,8 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum(qty)", name="q")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(qty)", alias="q")],
                 filter=["sum(qty) > 5"],
             )
         )
@@ -1144,8 +1143,8 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="last(amount)", name="la")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="last(amount)", alias="la")],
             )
         )
         by_status = {r["orders.status"]: r["orders.la"] for r in resp.data}
@@ -1157,9 +1156,9 @@ class TestMigratedCallSitesEndToEnd:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    DatasetMetric(expression="ifnull(last(amount), 0)", name="la"),
+                    QueryMetric(metric="ifnull(last(amount), 0)", alias="la"),
                 ],
             )
         )
@@ -1210,8 +1209,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
             SlayerDataset(
                 name="regions", sql_table="regions", data_source="prod",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="tier", datatype=DataType.TEXT),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="tier", datatype=DataType.STRING),
                 ],
             )
         )
@@ -1220,24 +1219,24 @@ class TestOuterWrapperAndShiftedCteFamilies:
                 name="orders", sql_table="orders", data_source="prod",
                 default_time_dimension="created_at",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="region_id", datatype=DataType.INT),
-                    DatasetField(name="status", datatype=DataType.TEXT),
-                    DatasetField(name="amount", datatype=DataType.DOUBLE),
-                    DatasetField(name="disc", datatype=DataType.DOUBLE),
-                    DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="region_id", datatype=DataType.INTEGER),
+                    DatasetField(name="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="disc", datatype=DataType.FLOAT),
+                    DatasetField(name="created_at", datatype=DataType.DATETIME),
                     # Join-crossing Column.filter => filtered-local
                     # isolation => the outer combined-SELECT wrapper (R4).
                     DatasetField(
                         name="gold_amount", sql="amount",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         filter="regions.tier = 'gold'",
                     ),
                 ],
                 relationships=[
                     DatasetRelationship(
                         to="regions",
-                        join_pairs=[["region_id", "id"]],
+                        from_columns=["region_id"], to_columns=["id"],
                     ),
                 ],
             )
@@ -1255,8 +1254,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum(gold_amount)", name="g")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
                 filter=["sum(gold_amount) > 100"],
             )
         )
@@ -1271,8 +1270,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum(gold_amount)", name="g")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
                 filter=["ifnull(sum(gold_amount), 0) > 100"],
             )
         )
@@ -1297,8 +1296,8 @@ class TestOuterWrapperAndShiftedCteFamilies:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum(gold_amount)", name="g")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(gold_amount)", alias="g")],
                 filter=["ifnull(sum(gold_amount), 0) > 100"],
             ),
             dry_run=True,
@@ -1325,10 +1324,10 @@ class TestOuterWrapperAndShiftedCteFamilies:
                     ),
                 ],
                 metrics=[
-                    DatasetMetric(expression="sum(amount)", name="amt"),
-                    DatasetMetric(
-                        expression="time_shift(sum(amount), -1, 'month')",
-                        name="prev",
+                    QueryMetric(metric="sum(amount)", alias="amt"),
+                    QueryMetric(
+                        metric="time_shift(sum(amount), -1, 'month')",
+                        alias="prev",
                     ),
                 ],
                 filter=["status = 'new'"],
@@ -1808,7 +1807,7 @@ class TestNewlyAdmittedScalars:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="count(*)", name="n")],
+                metrics=[QueryMetric(metric="count(*)", alias="n")],
                 filter=[predicate],
             ),
         )
@@ -1884,8 +1883,8 @@ class TestArityIsRejectedAtBindTime:
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
             filter=[predicate],
         )
 
@@ -1905,8 +1904,8 @@ class TestArityIsRejectedAtBindTime:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="count(*)", name="n")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="count(*)", alias="n")],
                 filter=["round(amount, 2) > 1"],
             ),
             dry_run=True,
@@ -2002,8 +2001,8 @@ class TestIifDirectRender:
     def _query(predicate: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
             filter=[predicate],
         )
 
@@ -2024,8 +2023,8 @@ class TestIifDirectRender:
         resp = await e2e.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="count(*)", name="n")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="count(*)", alias="n")],
                 filter=["status in ('new', 'missing')"],
             )
         )

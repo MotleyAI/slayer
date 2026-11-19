@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "shipments",
-    "join_pairs": [
-     [
-      "id",
-      "order_ref"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "order_ref"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "ups_orders",
-    "join_pairs": [
-     [
-      "order_id",
-      "id"
-     ]
+    "from_columns": [
+     "order_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

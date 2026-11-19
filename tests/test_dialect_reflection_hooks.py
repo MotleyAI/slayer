@@ -161,7 +161,7 @@ class TestCatalogQueryEmission:
         assert order is not None
         assert "ordinal_position" in order.sql().lower()
         assert cols == [ReflectedColumn(
-            name="id", type=DataType.INT, is_float=False, db_type=None, comment=None, type_name="INTEGER",
+            name="id", type=DataType.INTEGER, is_float=False, db_type=None, comment=None, type_name="INTEGER",
         )]
 
     def test_base_columns_query_without_catalog_has_no_catalog_predicate(self) -> None:
@@ -373,14 +373,14 @@ class TestDuckdbColumns:
                 table="typed", schema="main", catalog="keys",
             )
         assert [(c.name, c.type, c.is_float, c.db_type, c.comment) for c in cols] == [
-            ("id", DataType.INT, False, None, None),
-            ("amount", DataType.DOUBLE, True, "DECIMAL(12,2)", None),
-            ("label", DataType.TEXT, False, None, "main label"),
-            ("ts", DataType.TIMESTAMP, False, None, None),
-            ("d", DataType.DOUBLE, True, None, None),
+            ("id", DataType.INTEGER, False, None, None),
+            ("amount", DataType.FLOAT, True, "DECIMAL(12,2)", None),
+            ("label", DataType.STRING, False, None, "main label"),
+            ("ts", DataType.DATETIME, False, None, None),
+            ("d", DataType.FLOAT, True, None, None),
             ("day", DataType.DATE, False, None, None),
             ("flag", DataType.BOOLEAN, False, None, None),
-            ("big", DataType.INT, False, None, None),
+            ("big", DataType.INTEGER, False, None, None),
         ]
 
     def test_attached_twin_columns_are_scoped_out(self, duck_paths) -> None:

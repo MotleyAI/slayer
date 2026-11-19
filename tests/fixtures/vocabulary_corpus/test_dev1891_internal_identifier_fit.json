@@ -113,11 +113,11 @@
    },
    "new": {
     "to": "dims",
-    "join_pairs": [
-     [
-      "dim_id",
-      "id"
-     ]
+    "from_columns": [
+     "dim_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

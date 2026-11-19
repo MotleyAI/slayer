@@ -25,7 +25,7 @@ from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
 SAVED = "by_status"
-CM = {"expression": "sum(customers.spend)", "name": "cm"}
+CM = {"metric": "sum(customers.spend)", "alias": "cm"}
 CLEAN = {"population": "orders", "metrics": ["count(*)"]}
 CROSS = {"population": "orders", "dimensions": ["status"], "metrics": [CM]}
 
@@ -80,7 +80,7 @@ def mcp_payload(text: str) -> dict[str, Any]:
 
 def saved_stage() -> SlayerQuery:
     return SlayerQuery.model_validate(
-        {"population": "orders", "dimensions": ["status"], "metrics": [{"expression": "count(*)", "name": "n"}]},
+        {"population": "orders", "dimensions": ["status"], "metrics": [{"metric": "count(*)", "alias": "n"}]},
     )
 
 

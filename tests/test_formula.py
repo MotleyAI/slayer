@@ -6,7 +6,7 @@ import warnings
 import pytest
 
 from slayer.core.models import Aggregation
-from slayer.core.query import _FUNCSTYLE_PENDING, OrderItem
+from slayer.core.query import OrderItem
 from slayer.core.syntax import AggCall, BoolOp, Cmp, Literal, Ref, ScalarCall, parse_expr
 
 
@@ -109,27 +109,27 @@ class TestOrderColumnNormalization:
         # The author's functional spelling is preserved — the item
         # carries a placeholder + raw_formula, resolved at binding.
         item = OrderItem(field="sum(revenue)", direction="desc")
-        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.ref is None
         assert item.raw_expression == "sum(revenue)"
 
     def test_funcstyle_count_star(self) -> None:
         item = OrderItem(field="count(*)", direction="desc")
-        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.ref is None
         assert item.raw_expression == "count(*)"
 
     def test_plain_name_unchanged(self) -> None:
         item = OrderItem(field="revenue_sum", direction="desc")
-        assert item.field.name == "revenue_sum"
+        assert item.field == "revenue_sum"
         assert item.raw_expression is None
 
     def test_parameterized_agg_preserved(self) -> None:
         item = OrderItem.model_validate({"field": "last(revenue, ordered_at)", "direction": "desc"})
-        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.ref is None
         assert item.raw_expression == "last(revenue, ordered_at)"
 
     def test_weighted_avg_args_preserved(self) -> None:
         item = OrderItem.model_validate({"field": "weighted_avg(price, weight=qty)", "direction": "asc"})
-        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.ref is None
         assert item.raw_expression == "weighted_avg(price, weight=qty)"
 
 

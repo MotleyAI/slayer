@@ -46,79 +46,79 @@ def _cases() -> dict:
         # Failing composite class — measure position (recorded as raises today).
         "fc/change_plus_sum": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"change({CM}) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": f"change({CM}) + sum(amount)", "alias": "c"}]),
         "fc/change_plus_count": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"change({CM}) + count(*)", "name": "c"}]),
+            metrics=[{"metric": f"change({CM}) + count(*)", "alias": "c"}]),
         "fc/change_plus_max": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"change({CM}) + max(amount)", "name": "c"}]),
+            metrics=[{"metric": f"change({CM}) + max(amount)", "alias": "c"}]),
         "fc/time_shift_plus_sum": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"time_shift({CM}, -1) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": f"time_shift({CM}, -1) + sum(amount)", "alias": "c"}]),
         "fc/cumsum_plus_sum": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"cumsum({CM}) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": f"cumsum({CM}) + sum(amount)", "alias": "c"}]),
         "fc/change_wscaled_plus_sum": _orders(
-            metrics=[{"expression": "change(wscaled_sum(amount)) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": "change(wscaled_sum(amount)) + sum(amount)", "alias": "c"}]),
         "fc/iif_over_change": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"iif(change({CM}) > 0, {CM}, sum(amount))", "name": "c"}]),
+            metrics=[{"metric": f"iif(change({CM}) > 0, {CM}, sum(amount))", "alias": "c"}]),
         "fc/change_plus_sum_by_status": _orders(
             to_many_handling="broadcast",
             dimensions=["status"],
-            metrics=[{"expression": f"change({CM}) + sum(amount)", "name": "c"}]),
+            metrics=[{"metric": f"change({CM}) + sum(amount)", "alias": "c"}]),
         # The issue's named single-transform shapes (already render).
         "named/change_wscaled": _orders(
-            metrics=[{"expression": "change(wscaled_sum(amount))", "name": "d"}]),
+            metrics=[{"metric": "change(wscaled_sum(amount))", "alias": "d"}]),
         "named/change_pct_wscaled": _orders(
-            metrics=[{"expression": "change_pct(wscaled_sum(amount))", "name": "d"}]),
+            metrics=[{"metric": "change_pct(wscaled_sum(amount))", "alias": "d"}]),
         "named/change_cm": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"change({CM})", "name": "d"}]),
+            metrics=[{"metric": f"change({CM})", "alias": "d"}]),
         "named/change_pct_cm": _orders(
             to_many_handling="broadcast",
-            metrics=[{"expression": f"change_pct({CM})", "name": "d"}]),
+            metrics=[{"metric": f"change_pct({CM})", "alias": "d"}]),
         # Composite in filter / order positions (post-wrapper path; placement).
         "pos/filter_composite": _orders(
             to_many_handling="broadcast",
             dimensions=["status"],
             filter=[f"change({CM}) + sum(amount) > 0"],
-            metrics=[{"expression": "sum(amount)", "name": "a"}]),
+            metrics=[{"metric": "sum(amount)", "alias": "a"}]),
         "pos/order_composite": _orders(
             to_many_handling="broadcast",
             dimensions=["status"],
-            metrics=[{"expression": "sum(amount)", "name": "a"}],
+            metrics=[{"metric": "sum(amount)", "alias": "a"}],
             order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}]),
         # Filter placement by mask typing: row mask (base WHERE) vs measure mask
         # (HAVING) — the already-legal placements the stage rule must preserve.
         "pos/row_mask": _orders(
             dimensions=["status"], filter=["status = 'ok'"],
-            metrics=[{"expression": "sum(amount)", "name": "a"}]),
+            metrics=[{"metric": "sum(amount)", "alias": "a"}]),
         "pos/measure_mask": _orders(
             dimensions=["status"], filter=["sum(amount) > 10"],
-            metrics=[{"expression": "sum(amount)", "name": "a"}]),
+            metrics=[{"metric": "sum(amount)", "alias": "a"}]),
         # Windowed-value filter (a ranked cross-model value) — D5 places it at the
         # combined outer WHERE; the "with transform" variant is pos/filter_composite.
         "pos/windowed_value_filter": _orders(
             to_many_handling="broadcast",
             dimensions=["status"],
             filter=["last(customers.spend, customers.signup_at) > 50"],
-            metrics=[{"expression": "sum(amount)", "name": "a"}]),
+            metrics=[{"metric": "sum(amount)", "alias": "a"}]),
         # Transform over a composite over a transform (D10 alternation class).
         "alt/last_over_change": _orders(
-            metrics=[{"expression": "last(change(sum(amount)))", "name": "t"}]),
+            metrics=[{"metric": "last(change(sum(amount)))", "alias": "t"}]),
         "alt/last_over_change_filtered": _orders(
             dimensions=["status"],
-            metrics=[{"expression": "change(sum(amount))", "name": "ch"}],
+            metrics=[{"metric": "change(sum(amount))", "alias": "ch"}],
             filter=["last(change(sum(amount))) < 0"]),
         "alt/last_over_change_cumsum": _orders(
-            metrics=[{"expression": "last(change(cumsum(sum(amount))))", "name": "t"}]),
+            metrics=[{"metric": "last(change(cumsum(sum(amount))))", "alias": "t"}]),
         # Derived composites at two different levels — pins the one fused
         # trailing composite step (D8/D10) byte-for-byte.
         "alt/two_level_composites": _orders(
-            metrics=[{"expression": "change(sum(amount))", "name": "ch1"},
-                      {"expression": "change(cumsum(sum(amount)))", "name": "ch2"}]),
+            metrics=[{"metric": "change(sum(amount))", "alias": "ch1"},
+                      {"metric": "change(cumsum(sum(amount)))", "alias": "ch2"}]),
     }
 
 

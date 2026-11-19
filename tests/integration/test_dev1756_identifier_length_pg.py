@@ -14,7 +14,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
@@ -89,38 +89,38 @@ def _chain_storage(postgresql_proc, tmp_path_factory):
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxConsumer", sql_table="consumers", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-                DatasetField(name="email", sql="email", datatype=DataType.TEXT),
-                DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="email", sql="email", datatype=DataType.STRING),
+                DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.FLOAT),
             ],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxCustomer", sql_table="customers", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="SandboxConsumer", join_pairs=[["consumer_id", "id"]])],
+            relationships=[DatasetRelationship(to="SandboxConsumer", from_columns=["consumer_id"], to_columns=["id"])],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxSubscription", sql_table="subscriptions", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="SandboxCustomer", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="SandboxCustomer", from_columns=["customer_id"], to_columns=["id"])],
         )))
         run_sync(storage.save_dataset(SlayerDataset(
             name="SandboxInvoiceV2", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.DOUBLE),
-                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(
-                to="SandboxSubscription", join_pairs=[["subscription_id", "id"]],
+                to="SandboxSubscription", from_columns=["subscription_id"], to_columns=["id"],
             )],
         )))
         yield storage
@@ -155,10 +155,10 @@ class TestPostgresIdentifierLength:
     async def test_collapse_with_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """Two over-limit siblings + ORDER BY outer wrap; raised AmbiguousColumnError before the fix."""
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-                FieldRef(name=f"{DEEP}.name"),
-                FieldRef(name=f"{DEEP}.email"),
-                FieldRef(name="status"),
-            ], "metrics": [{"expression": "sum(totalAmount)"}, {"expression": "count(*)"}], "order": [OrderItem.model_validate({
+                QueryDimension(field=f"{DEEP}.name"),
+                QueryDimension(field=f"{DEEP}.email"),
+                QueryDimension(field="status"),
+            ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], "order": [OrderItem.model_validate({
                 "field": "avg(totalAmount)",
                 "direction": "desc",
             })], "limit": 10})
@@ -177,9 +177,9 @@ class TestPostgresIdentifierLength:
     async def test_collapse_without_outer_wrap(self, chain_env: SlayerQueryEngine) -> None:
         """No outer wrap: the two siblings would silently collapse into one result key."""
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-                FieldRef(name=f"{DEEP}.name"),
-                FieldRef(name=f"{DEEP}.email"),
-            ], "metrics": [{"expression": "count(*)"}]})
+                QueryDimension(field=f"{DEEP}.name"),
+                QueryDimension(field=f"{DEEP}.email"),
+            ], "metrics": [{"metric": "count(*)"}]})
         result = await chain_env.execute(query=query)
         assert result.data
         names = {row[LONG_NAME] for row in result.data}
@@ -191,8 +191,8 @@ class TestPostgresIdentifierLength:
         """One over-limit alias, no sibling: Postgres keys the row by the truncated name and it vanishes."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"expression": "sum(totalAmount)"}],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
+            "metrics": [{"metric": "sum(totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
         assert result.data
@@ -206,8 +206,8 @@ class TestPostgresIdentifierLength:
         """Pin the aggregate; a wrong-column fitted alias would still be present."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"expression": "sum(totalAmount)"}],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
+            "metrics": [{"metric": "sum(totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
         totals = {row[LONG_EMAIL]: float(row["SandboxInvoiceV2.totalAmount_sum"]) for row in result.data}
@@ -217,8 +217,8 @@ class TestPostgresIdentifierLength:
         """Response exposes canonical keys while the emitted SQL carries the fitted form."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.name"), FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"expression": "count(*)"}],
+            "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=f"{DEEP}.email")],
+            "metrics": [{"metric": "count(*)"}],
         })
         result = await chain_env.execute(query=query)
         assert set(result.data[0]) >= {LONG_NAME, LONG_EMAIL}
@@ -228,8 +228,8 @@ class TestPostgresIdentifierLength:
         """A cache hit returns canonical keys too, proving decode runs before storage."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"expression": "count(*)"}],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
+            "metrics": [{"metric": "count(*)"}],
         })
         first = await chain_env.execute(query=query, cache=True)
         second = await chain_env.execute(query=query, cache=True)
@@ -241,8 +241,8 @@ class TestPostgresIdentifierLength:
         """Surface 3: the `_cm_` cross-model CTE name also crosses 63 bytes on this chain."""
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name="status")],
-            "metrics": [{"expression": f"sum({DEEP}.lifetimeValue)"}],
+            "dimensions": [QueryDimension(field="status")],
+            "metrics": [{"metric": f"sum({DEEP}.lifetimeValue)"}],
         })
         result = await chain_env.execute(query=query)
         assert "_cm_" in cast(str, result.sql), "no cross-model CTE generated; test is vacuous"
@@ -257,13 +257,13 @@ class TestPostgresIdentifierLength:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"expression": "sum(totalAmount)"}],
+            "dimensions": [QueryDimension(field=f"{DEEP}.email")],
+            "metrics": [{"metric": "sum(totalAmount)"}],
         })
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": [FieldRef(name="SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
-            "metrics": [{"expression": "sum(totalAmount_sum)"}],
+            "dimensions": [QueryDimension(field="SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
+            "metrics": [{"metric": "sum(totalAmount_sum)"}],
         })
         result = await chain_env.execute(query=[stage1, stage2])
         assert result.data

@@ -16,8 +16,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "max(date_diff('day', created_at, current_date()))",
-      "name": "m"
+      "metric": "max(date_diff('day', created_at, current_date()))",
+      "alias": "m"
      }
     ]
    }
@@ -48,8 +48,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "filter": [
@@ -93,8 +93,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }

@@ -102,7 +102,7 @@ def query(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str) -> Dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 # --------------------------------------------------------------------------- #
@@ -113,8 +113,8 @@ def regions_dataset(*, aggregations: Sequence[Aggregation] = ()) -> SlayerDatase
         name="regions", data_source="test", sql_table="regions",
         aggregations=list(aggregations),
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -125,12 +125,12 @@ def customers_dataset(*, aggregations: Sequence[Aggregation] = ()) -> SlayerData
         default_time_dimension="signup_date",
         aggregations=list(aggregations),
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
             DatasetField(name="signup_date", datatype=DataType.DATE),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -140,13 +140,13 @@ def orders_dataset(*, aggregations: Sequence[Aggregation] = ()) -> SlayerDataset
         default_time_dimension="order_date",
         aggregations=list(aggregations),
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
             DatasetField(name="order_date", datatype=DataType.DATE),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 

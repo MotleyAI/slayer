@@ -24,16 +24,17 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1837_fixtures import (
     BAND35,
-    DatasetMetric,
     dev1837_models,
     gen,
     month_td,
     q,
 )
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 
 #: The lifted windowed/ranked arm — kept only as the no-residue scan needle
 #: (tests/test_dev1835_guards.py imports it).
@@ -102,8 +103,8 @@ class TestLiftedDirection:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression=formula, name="x"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric=formula, alias="x"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -115,9 +116,9 @@ class TestLiftedDirection:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -134,8 +135,8 @@ class TestRemainingArmsExactMessages:
             dimensions=["region", BAND],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -145,8 +146,8 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="last(amount)", name="l"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="last(amount)", alias="l"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -158,8 +159,8 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(customers.spend)", name="cm"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm"),
             ],
         ))
         assert "__regroup__" not in sql, sql
@@ -191,7 +192,7 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
@@ -200,7 +201,7 @@ class TestCteBodyArms:
         planned = plan_query(query=q(
             dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
             ],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
@@ -228,8 +229,8 @@ class TestStalePlannerRefsRepointed:
             "THEN 1 ELSE 0 END"
         )
         query = q(
-            dimensions=["region", {"expression": cband, "name": "cband"}],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            dimensions=["region", {"field": cband, "alias": "cband"}],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

@@ -22,7 +22,7 @@ SUFFIXES = (".yaml",)
 def _dataset(tag: str) -> SlayerDataset:
     return SlayerDataset(
         name="m", sql_table="m", data_source="ds", access_tags=[tag],
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 

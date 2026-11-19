@@ -10,8 +10,6 @@ import pytest
 from slayer.core.errors import SlayerError, TimeSpineError, VariableError
 from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.core.query import (
-    ORDER_PLACEHOLDER_NAMES,
-    ComputedDimension,
     OrderItem,
     SlayerQuery,
     extract_placeholder_names,
@@ -44,11 +42,11 @@ SPINE_MONTHS = [{"field": "time_spine.timestamp", "granularity": "month",
 # A Mode-B surface holding the boolean text ``t``.
 SURFACES: dict[str, Callable[[str], dict[str, Any]]] = {
     "filter": lambda t: {"filter": [t], "metrics": ["count(*)"]},
-    "measure": lambda t: {"metrics": [{"expression": f"sum(iif({t}, amount, 0))", "name": "m"}]},
+    "measure": lambda t: {"metrics": [{"metric": f"sum(iif({t}, amount, 0))", "alias": "m"}]},
     "computed-dimension": lambda t: {
-        "dimensions": [{"expression": f"iif({t}, 'y', 'n')", "name": "flag"}], "metrics": ["count(*)"]},
+        "dimensions": [{"field": f"iif({t}, 'y', 'n')", "alias": "flag"}], "metrics": ["count(*)"]},
     "time-dimension": lambda t: {
-        "time_dimensions": [{"field": f"iif({t}, created_at, shipped_at)", "granularity": "month", "name": "d"}],
+        "time_dimensions": [{"field": f"iif({t}, created_at, shipped_at)", "granularity": "month", "alias": "d"}],
         "metrics": ["count(*)"]},
     "order": lambda t: {"dimensions": ["note"], "metrics": ["count(*)"], "order": [{"field": f"iif({t}, 0, 1)"}]},
 }
@@ -69,7 +67,7 @@ async def test_a_literal_naming_the_root_filters_on_its_text(engine: SlayerQuery
 
 
 async def test_a_literal_naming_the_root_inside_a_measure(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(metrics=[{"expression": "sum(iif(note = 'see orders.x', amount, 0))", "name": "m"}]))
+    resp = await engine.execute(_orders(metrics=[{"metric": "sum(iif(note = 'see orders.x', amount, 0))", "alias": "m"}]))
     assert float(resp.data[0]["orders.m"]) == 10.0
 
 
@@ -86,7 +84,7 @@ async def test_a_literal_naming_the_root_inside_an_order_expression(engine: Slay
 QUOTED_ROOT_SURFACES = {
     "filter": {"filter": ['"orders.x" = 1'], "metrics": ["count(*)"]},
     "measure": {"metrics": ['sum("orders.x")']},
-    "computed-dimension": {"dimensions": [{"expression": '"orders.x" + 1', "name": "q"}], "metrics": ["count(*)"]},
+    "computed-dimension": {"dimensions": [{"field": '"orders.x" + 1', "alias": "q"}], "metrics": ["count(*)"]},
     "order": {"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": '"orders.x" + 1'}]},
 }
 
@@ -115,7 +113,7 @@ async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngin
 
 
 MAIN_TIME = {"time_dimensions": ["date_trunc('month', created_at)", "date_trunc('month', shipped_at)"],
-             "metrics": [{"expression": "change(count(*))", "name": "c"}]}
+             "metrics": [{"metric": "change(count(*))", "alias": "c"}]}
 
 
 async def test_a_quoted_main_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
@@ -135,9 +133,9 @@ async def test_a_quoted_main_time_dimension_naming_the_root_is_one_identifier(en
 # --------------------------------------------------------------------------- #
 SPINE_LITERAL = {
     "filter": {"filter": ["note = 'time_spine.x'"]},
-    "computed-dimension": {"dimensions": [{"expression": "iif(note = 'time_spine.x', 'y', 'n')", "name": "flag"}]},
+    "computed-dimension": {"dimensions": [{"field": "iif(note = 'time_spine.x', 'y', 'n')", "alias": "flag"}]},
     "time-dimension": {"time_dimensions": [
-        _month(), {"field": "iif(note = 'time_spine.x', created_at, shipped_at)", "granularity": "year", "name": "y"},
+        _month(), {"field": "iif(note = 'time_spine.x', created_at, shipped_at)", "granularity": "year", "alias": "y"},
     ]},
 }
 
@@ -188,10 +186,10 @@ def spliced(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 SPLICE_LITERAL: dict[str, Callable[[str], dict[str, Any]]] = {
     "filter": lambda lit: {"metrics": ["count(orders.id)"], "filter": [f"orders.note <> '{lit}'"]},
-    "measure": lambda lit: {"metrics": [{"expression": f"sum(iif(orders.note = '{lit}', 1, 0))", "name": "m"}]},
+    "measure": lambda lit: {"metrics": [{"metric": f"sum(iif(orders.note = '{lit}', 1, 0))", "alias": "m"}]},
     "computed-dimension": lambda lit: {
         "metrics": ["count(orders.id)"],
-        "dimensions": [{"expression": f"iif(orders.note = '{lit}', 'y', 'n')", "name": "flag"}]},
+        "dimensions": [{"field": f"iif(orders.note = '{lit}', 'y', 'n')", "alias": "flag"}]},
 }
 
 
@@ -312,20 +310,20 @@ def test_saved_measure_formula_demand(formula: str, required: list[str]) -> None
 # --------------------------------------------------------------------------- #
 # Parity pins: order coercion
 # --------------------------------------------------------------------------- #
-ORDER_PINS: dict[str, tuple[Optional[str], str, Optional[str]]] = {
-    "status": (None, "status", None),
-    "customers.name": ("customers", "name", None),
-    "orders.status": ("orders", "status", None),
-    "sum(revenue)": (None, "_funcstyle_pending", "sum(revenue)"),
-    "my_agg(price)": (None, "_funcstyle_pending", "my_agg(price)"),
-    "month(created_at)": (None, "_funcstyle_pending", "month(created_at)"),
-    "count(*)": (None, "_funcstyle_pending", "count(*)"),
-    "sum(orders.amount)": (None, "_funcstyle_pending", "sum(orders.amount)"),
-    'sum("amount")': (None, "_funcstyle_pending", 'sum("amount")'),
-    "change(sum(revenue))": (None, "_funcstyle_pending", "change(sum(revenue))"),
-    "rev / cnt": (None, "_expr_pending", "rev / cnt"),
-    "amount::int": (None, "_expr_pending", "amount::int"),
-    "orders.amount + 1": (None, "_expr_pending", "orders.amount + 1"),
+ORDER_PINS: dict[str, tuple[Optional[str], Optional[str]]] = {
+    "status": ("status", None),
+    "customers.name": ("customers.name", None),
+    "orders.status": ("orders.status", None),
+    "sum(revenue)": (None, "sum(revenue)"),
+    "my_agg(price)": (None, "my_agg(price)"),
+    "month(created_at)": (None, "month(created_at)"),
+    "count(*)": (None, "count(*)"),
+    "sum(orders.amount)": (None, "sum(orders.amount)"),
+    'sum("amount")': (None, 'sum("amount")'),
+    "change(sum(revenue))": (None, "change(sum(revenue))"),
+    "rev / cnt": (None, "rev / cnt"),
+    "amount::int": (None, "amount::int"),
+    "orders.amount + 1": (None, "orders.amount + 1"),
 }
 
 ORDER_LITERALS = [
@@ -337,15 +335,14 @@ ORDER_LITERALS = [
 @pytest.mark.parametrize("entry", sorted(ORDER_PINS))
 def test_order_coercion_pin(entry: str) -> None:
     column = OrderItem.model_validate({"field": entry})
-    coerced = (column.field.dataset, column.field.name, column.raw_expression)
+    coerced = (column.ref.full_name if column.ref else None, column.raw_expression)
     assert coerced == ORDER_PINS[entry]
 
 
 @pytest.mark.parametrize("entry", ORDER_LITERALS)
 def test_an_order_literal_is_one_whole_expression(entry: str) -> None:
     column = OrderItem.model_validate({"field": entry})
-    assert column.field.dataset is None
-    assert column.field.name in ORDER_PLACEHOLDER_NAMES
+    assert column.ref is None
     assert column.raw_expression == entry
 
 
@@ -403,7 +400,7 @@ def test_functional_time_dimension_refusal_pin(entry: str) -> None:
 def test_a_non_granularity_call_stays_a_dimension() -> None:
     query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(status)"]})
     assert not query.time_dimensions
-    assert [d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)] == ["upper(status)"]
+    assert [d.field for d in query.dimensions or [] if d.ref is None] == ["upper(status)"]
 
 
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:

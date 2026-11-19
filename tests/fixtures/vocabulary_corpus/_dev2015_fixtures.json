@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "orders",
-    "join_pairs": [
-     [
-      "order_id",
-      "id"
-     ]
+    "from_columns": [
+     "order_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "orders",
-    "join_pairs": [
-     [
-      "order_id",
-      "id"
-     ]
+    "from_columns": [
+     "order_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "returns",
-    "join_pairs": [
-     [
-      "return_id",
-      "id"
-     ]
+    "from_columns": [
+     "return_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -112,8 +112,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -126,7 +126,7 @@
    },
    "new": {
     "name": "order_date",
-    "datatype": "DATE"
+    "datatype": "Date"
    }
   }
  ],

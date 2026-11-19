@@ -50,8 +50,8 @@
    "new": {
     "dimensions": [
      {
-      "expression": "lower(status)",
-      "name": "ls"
+      "field": "lower(status)",
+      "alias": "ls"
      }
     ],
     "filter": [
@@ -72,11 +72,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

@@ -40,12 +40,12 @@ class TestEdgeReference:
 class TestResolveJoinRef:
     def test_exact_reference_picks_one_of_two_unnamed_joins(self) -> None:
         orders = orders_with(*unnamed_pair())
-        ref = RelationshipEdgeRef(to="addresses", join_pairs=SHIPPING_PAIRS)
+        ref = RelationshipEdgeRef(to="addresses", from_columns=[p[0] for p in SHIPPING_PAIRS], to_columns=[p[1] for p in SHIPPING_PAIRS])
         assert resolve_relationship_ref(dataset=orders, ref=ref) == orders.relationships[1]
 
     def test_named_reference_requires_the_name(self) -> None:
         orders = orders_with(*unnamed_pair())
-        ref = RelationshipEdgeRef(to="addresses", name="shipping_address", join_pairs=SHIPPING_PAIRS)
+        ref = RelationshipEdgeRef(to="addresses", name="shipping_address", from_columns=[p[0] for p in SHIPPING_PAIRS], to_columns=[p[1] for p in SHIPPING_PAIRS])
         with pytest.raises(ValueError):
             resolve_relationship_ref(dataset=orders, ref=ref)
 
@@ -63,7 +63,7 @@ class TestResolveJoinRef:
 
     def test_exact_reference_matching_two_declarations_fails(self) -> None:
         orders = orders_with(join_to(BILLING_PAIRS), join_to(BILLING_PAIRS))
-        ref = RelationshipEdgeRef(to="addresses", join_pairs=BILLING_PAIRS)
+        ref = RelationshipEdgeRef(to="addresses", from_columns=[p[0] for p in BILLING_PAIRS], to_columns=[p[1] for p in BILLING_PAIRS])
         with pytest.raises(ValueError, match="billing_address_id"):
             resolve_relationship_ref(dataset=orders, ref=ref)
 
@@ -93,7 +93,7 @@ class TestEngineRemovalByExactReference:
         async with dataset_store(addresses_dataset(), orders_with(*unnamed_pair())) as storage:
             engine = SlayerQueryEngine(storage=storage)
             try:
-                ref = RelationshipEdgeRef(to="addresses", join_pairs=SHIPPING_PAIRS)
+                ref = RelationshipEdgeRef(to="addresses", from_columns=[p[0] for p in SHIPPING_PAIRS], to_columns=[p[1] for p in SHIPPING_PAIRS])
                 await engine.edit_dataset_remove(dataset_name="orders", data_source=DS, remove_relationship_edges=[ref])
             finally:
                 await engine.aclose()

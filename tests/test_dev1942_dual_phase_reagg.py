@@ -31,8 +31,9 @@ from slayer.ir.planned import StageKind
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import (
-    DatasetMetric,
     cust_q,
     dev1832_datasets,
     gen,
@@ -112,8 +113,8 @@ def _monthly_bundle() -> ResolvedSourceBundle:
 def _dual_phase_query():
     return monthly_q(
         dimensions=["region"],
-        metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
-                  DatasetMetric(expression=HANDWRITTEN_MIN, name="b")],
+        metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
+                  QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
         time_dimensions=month_td())
 
 
@@ -132,7 +133,7 @@ class TestDualPhaseExecution:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=HANDWRITTEN_MIN, name="b")],
+            metrics=[QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             filter=[f"{REAGG_STANDALONE} > 5"],
             time_dimensions=month_td()))
         assert {r["monthly.region"] for r in resp.data} == {"North"}
@@ -143,8 +144,8 @@ class TestDualPhaseExecution:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
-                      DatasetMetric(expression=HANDWRITTEN_MIN, name="b")],
+            metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
+                      QueryMetric(metric=HANDWRITTEN_MIN, alias="b")],
             order=[{"field": REAGG_STANDALONE, "direction": "desc"}],
             time_dimensions=month_td()))
         regions = [r["monthly.region"] for r in resp.data]
@@ -158,13 +159,13 @@ class TestDualPhaseExecution:
         _, engine = exec_backend
         alone = await engine.execute(monthly_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="cumsum(sum(amount))", name="c")],
+            metrics=[QueryMetric(metric="cumsum(sum(amount))", alias="c")],
             time_dimensions=month_td()))
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
-                      DatasetMetric(expression=HANDWRITTEN_MIN, name="b"),
-                      DatasetMetric(expression="cumsum(sum(amount))", name="c")],
+            metrics=[QueryMetric(metric=REAGG_STANDALONE, alias="a"),
+                      QueryMetric(metric=HANDWRITTEN_MIN, alias="b"),
+                      QueryMetric(metric="cumsum(sum(amount))", alias="c")],
             time_dimensions=month_td()))
         assert _region_month(resp, "a") == pytest.approx(A_BY_REGION_MONTH)
         assert _region_month(resp, "b") == pytest.approx(B_BY_REGION_MONTH)
@@ -222,7 +223,7 @@ class TestPopulationRestriction:
         _, engine = exec_backend
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
-            metrics=[DatasetMetric(expression=POP_MIXED, name="m")],
+            metrics=[QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]))
         got = _by_tier(resp, "m")
         assert got == pytest.approx(POP_MIXED_BY_TIER)
@@ -233,7 +234,7 @@ class TestPopulationRestriction:
     async def test_mixed_constituent_sql_has_exists_and_no_orders_join(self) -> None:
         sql = await gen(cust_q(
             dimensions=["tier"],
-            metrics=[DatasetMetric(expression=POP_MIXED, name="m")],
+            metrics=[QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]), dialect="duckdb")
         # Every producer carries the population semi-join; none joins orders.
         for name in _cm_ctes(sql):
@@ -244,8 +245,8 @@ class TestPopulationRestriction:
         _, engine = exec_backend
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
-            metrics=[DatasetMetric(expression=POP_AVG, name="a"),
-                      DatasetMetric(expression=POP_MIXED, name="m")],
+            metrics=[QueryMetric(metric=POP_AVG, alias="a"),
+                      QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]))
         assert _by_tier(resp, "a") == pytest.approx(POP_AVG_BY_TIER)
         assert _by_tier(resp, "m") == pytest.approx(POP_MIXED_BY_TIER)
@@ -253,8 +254,8 @@ class TestPopulationRestriction:
         assert named == {"a", "m"}
         sql = await gen(cust_q(
             dimensions=["tier"],
-            metrics=[DatasetMetric(expression=POP_AVG, name="a"),
-                      DatasetMetric(expression=POP_MIXED, name="m")],
+            metrics=[QueryMetric(metric=POP_AVG, alias="a"),
+                      QueryMetric(metric=POP_MIXED, alias="m")],
             filter=[_OK]), dialect="duckdb")
         assert len([c for c in _cm_ctes(sql) if "avg" in c]) == 1  # avg producer, once
 
@@ -264,7 +265,7 @@ class TestPopulationRestriction:
         _, engine = exec_backend
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
-            metrics=[DatasetMetric(expression=POP_MIN, name="mn")],
+            metrics=[QueryMetric(metric=POP_MIN, alias="mn")],
             filter=[_OR_MIX]))
         assert _by_tier(resp, "mn") == pytest.approx(POP_MIN_OR_MIX_BY_TIER)
         pushed = pushed_filter_infos(resp)
@@ -278,7 +279,7 @@ class TestPopulationRestriction:
         # conjunct would leave a producer without its EXISTS).
         sql = await gen(cust_q(
             dimensions=["tier"],
-            metrics=[DatasetMetric(expression=POP_MIN, name="mn")],
+            metrics=[QueryMetric(metric=POP_MIN, alias="mn")],
             filter=[_OR_MIX]), dialect="duckdb")
         ctes = _cm_ctes(sql)
         assert len(ctes) == 2, ctes

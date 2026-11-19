@@ -28,7 +28,7 @@ class TestComputedDimensionPosition:
     async def test_expression_key_equals_named_computed_dimension(self, engine: SlayerQueryEngine) -> None:
         expr = await engine.execute(q(dimensions=["region", "upper(city)"],
                                       metrics=[m("sum(amount, partition_by=upper(city))")]))
-        named = await engine.execute(q(dimensions=["region", {"expression": "upper(city)", "name": "ucity"}],
+        named = await engine.execute(q(dimensions=["region", {"field": "upper(city)", "alias": "ucity"}],
                                        metrics=[m("sum(amount, partition_by=ucity)")]))
         assert _dims(expr, "region", "upper_city") == UPPER_CITY, expr.sql
         assert _dims(named, "region", "ucity") == UPPER_CITY
@@ -100,7 +100,7 @@ class TestAggregateBearingKey:
         assert "ModelExtension" not in msg
 
     async def test_key_equal_to_computed_dimension_executes_as_it(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["region", {"expression": BAND, "name": "band"}],
+        resp = await engine.execute(q(dimensions=["region", {"field": BAND, "alias": "band"}],
                                       metrics=[m(f"sum(amount, partition_by={BAND})")]))
         assert _dims(resp, "region", "band") == BAND_TOTALS, resp.sql
 

@@ -47,7 +47,7 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
     ))
     await yaml_storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="warehouse",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
 
     refresh_calls: list = []

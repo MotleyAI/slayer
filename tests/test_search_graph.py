@@ -67,16 +67,16 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 data_source="shop",
                 description="Order transactions",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(
                         name="amount",
                         sql="amount",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         label="Order amount",
                         description="Net order value in USD",
                     ),
-                    DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                    DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+                    DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                    DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
                 ],
                 metrics=[
                     DatasetMetric(
@@ -95,7 +95,7 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 relationships=[
                     DatasetRelationship(
                         to="customers",
-                        join_pairs=[["customer_id", "id"]],
+                        from_columns=["customer_id"], to_columns=["id"],
                     )
                 ],
             )
@@ -108,9 +108,9 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 data_source="shop",
                 description="Customer master data",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="email", sql="email", datatype=DataType.TEXT),
-                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="email", sql="email", datatype=DataType.STRING),
+                    DatasetField(name="region", sql="region", datatype=DataType.STRING),
                 ],
             )
         )
@@ -122,9 +122,9 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 data_source="analytics",
                 description="Clickstream events",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                     DatasetField(
-                        name="event_type", sql="event_type", datatype=DataType.TEXT
+                        name="event_type", sql="event_type", datatype=DataType.STRING
                     ),
                 ],
             )
@@ -167,8 +167,8 @@ async def shop_only_storage() -> AsyncIterator[YAMLStorage]:
                 sql_table="orders",
                 data_source="shop",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -253,7 +253,7 @@ async def test_sqlite_storage_fingerprint_changes_after_write() -> None:
                 name="m",
                 sql_table="m",
                 data_source="ds",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             )
         )
         fp_before = await storage.graph_fingerprint()
@@ -366,11 +366,11 @@ async def test_memory_node_learning_property(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_column_node_data_type_property(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:DatasetField {data_type: 'DOUBLE'}) RETURN c.id AS id",
+        "MATCH (c:DatasetField {data_type: 'Float'}) RETURN c.id AS id",
         rich_storage,
     )
     assert "shop.orders.amount" in ids
-    assert "shop.orders.status" not in ids  # TEXT, not DOUBLE
+    assert "shop.orders.status" not in ids  # String, not Float
 
 
 @pytest.mark.skipif(not is_available(), reason="ladybug not installed")
@@ -405,7 +405,7 @@ async def descriptions_storage() -> AsyncIterator[YAMLStorage]:
         ))
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         ))
         await storage.save_memory(
             learning="orders body",
@@ -534,7 +534,7 @@ async def test_mentions_memory_to_measure(rich_storage: YAMLStorage) -> None:
                 name="orders",
                 sql_table="orders",
                 data_source="ds",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
                 metrics=[DatasetMetric(name="rev", expression="sum(id)")],
             )
         )
@@ -698,8 +698,8 @@ async def test_hidden_column_excluded_from_graph() -> None:
                 sql_table="orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="internal_flag", datatype=DataType.TEXT, hidden=True),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="internal_flag", datatype=DataType.STRING, hidden=True),
                 ],
             )
         )
@@ -724,7 +724,7 @@ async def test_hidden_model_excluded_from_graph() -> None:
                 name="visible",
                 sql_table="visible",
                 data_source="ds",
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             )
         )
         await storage.save_dataset(
@@ -733,7 +733,7 @@ async def test_hidden_model_excluded_from_graph() -> None:
                 sql_table="hidden_table",
                 data_source="ds",
                 hidden=True,
-                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
             )
         )
         clear_cache()
@@ -800,7 +800,7 @@ async def test_two_storage_paths_use_independent_caches() -> None:
                     name="m",
                     sql_table="m",
                     data_source=ds_name,
-                    fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                    fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
                 )
             )
         clear_cache()

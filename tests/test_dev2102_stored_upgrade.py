@@ -50,8 +50,8 @@ def _assert_upgraded(query: SlayerQuery | None) -> None:
     assert query.population == "orders"
     (extension,) = query.extensions or []
     assert isinstance(extension, DatasetExtension)
-    assert extension.source_name == "orders"
-    assert [(j.to, j.join_pairs) for j in extension.relationships or []] == [("customers", [["customer_id", "id"]])]
+    assert extension.dataset == "orders"
+    assert [(j.to, j.column_pairs) for j in extension.relationships or []] == [("customers", [("customer_id", "id")])]
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +108,7 @@ class TestStoredModels:
         assert model is not None
         _assert_upgraded((model.source_queries or [None])[0])
         resp = await run(storage, {"population": "rev2_q", "dimensions": ["customers__region"],
-                                   "metrics": [{"expression": "sum(rev2)", "name": "t"}]})
+                                   "metrics": [{"metric": "sum(rev2)", "alias": "t"}]})
         assert by_dimension(resp, dim_suffix="customers__region") == RECORDED
 
     async def test_a_saved_query_run_by_name_returns_its_rows(self, tmp_path, shop_ds) -> None:
@@ -131,7 +131,7 @@ class TestStoredModels:
         [stage] = (await raw_doc(storage, "rev2_q"))["source_queries"]
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
         assert stage["population"] == "orders"
-        assert [e["source_name"] for e in stage["extensions"]] == ["orders"]
+        assert [e["dataset"] for e in stage["extensions"]] == ["orders"]
         assert await storage.get_dataset("rev2_q", data_source=DS) == model
 
     def test_a_current_version_model_holding_a_stored_stage(self) -> None:

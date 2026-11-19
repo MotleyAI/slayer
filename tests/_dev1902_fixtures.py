@@ -52,44 +52,44 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", sql="region_pk", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="region_pk", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
 
 def customers_dataset(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerDataset:
     """``rename_pk=False`` spells the PK by its physical name (``customer_pk``)."""
-    pk = (DatasetField(name="id", sql=pk_sql, datatype=DataType.INT, primary_key=True)
+    pk = (DatasetField(name="id", sql=pk_sql, datatype=DataType.INTEGER, primary_key=True)
           if rename_pk else
-          DatasetField(name="customer_pk", datatype=DataType.INT, primary_key=True))
+          DatasetField(name="customer_pk", datatype=DataType.INTEGER, primary_key=True))
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
             pk,
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="region_id", sql="region_fk", datatype=DataType.INT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="credit", datatype=DataType.DOUBLE),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", sql="region_fk", datatype=DataType.INTEGER),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="credit", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
 def orders_dataset(*, rename_fk: bool = True, target_key: str = "id") -> SlayerDataset:
     """``rename_fk=False`` spells the FK by its physical name (``cust_fk``)."""
-    fk = (DatasetField(name="customer_id", sql="cust_fk", datatype=DataType.INT)
-          if rename_fk else DatasetField(name="cust_fk", datatype=DataType.INT))
+    fk = (DatasetField(name="customer_id", sql="cust_fk", datatype=DataType.INTEGER)
+          if rename_fk else DatasetField(name="cust_fk", datatype=DataType.INTEGER))
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="order_pk", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", sql="order_pk", datatype=DataType.INTEGER, primary_key=True),
             fk,
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(to="customers",
-                         join_pairs=[[fk.name, target_key]])],
+                         from_columns=[fk.name], to_columns=[target_key])],
     )
 
 

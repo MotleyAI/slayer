@@ -39,7 +39,7 @@ def _qb(name: str, *stages: Any) -> SlayerDataset:
 
 def _joined(dataset: SlayerDataset, *targets: "tuple[str, List[List[str]]]") -> SlayerDataset:
     return dataset.model_copy(update={"relationships": [
-        *dataset.relationships, *(DatasetRelationship(to=t, join_pairs=p) for t, p in targets)]})
+        *dataset.relationships, *(DatasetRelationship(to=t, from_columns=[a for a, _ in p], to_columns=[b for _, b in p]) for t, p in targets)]})
 
 
 STATUS_REV = _qb("status_rev", query(
@@ -112,7 +112,7 @@ class TestStoredJoinReads:
     async def test_a_derived_column_definition(self, dialect) -> None:
         clients = clients_dataset()
         clients = clients.model_copy(update={"fields": [
-            *clients.fields, DatasetField(name="top2", sql="cust_rev.top * 2", datatype=DataType.DOUBLE)]})
+            *clients.fields, DatasetField(name="top2", sql="cust_rev.top * 2", datatype=DataType.FLOAT)]})
         models = [orders_dataset(), customers_dataset(), clients, cust_rev_dataset()]
         async with dev1966_engine(dialect, datasets=models) as e:
             resp = await e.execute(query(population="clients", dimensions=["id", "top2"]))
@@ -161,9 +161,9 @@ def _floored() -> SlayerDataset:
     return SlayerDataset(
         name="floored", data_source="test", query_variables={"floor": 0},
         sql="SELECT id, customer_id, amount FROM orders WHERE amount >= {floor}",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="customer_id", datatype=DataType.INT),
-                 DatasetField(name="amount", datatype=DataType.DOUBLE)])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)])
 
 
 FLOORED_REV = _qb("floored_rev", query(
@@ -198,8 +198,8 @@ class TestModeAVariables:
                   _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
         s1 = query(name="s1", population="wrap_a", dimensions=["customer_id"], metrics=[m("sum(r)", "a")])
         s2 = query(name="s2", population="wrap_b", dimensions=["customer_id"], metrics=[m("sum(r)", "b")])
-        root = query(population="s1", extensions=[{"source_name": "s1", "relationships": [
-            {"to": "s2", "join_pairs": [["customer_id", "customer_id"]]}]}],
+        root = query(population="s1", extensions=[{"dataset": "s1", "relationships": [
+            {"to": "s2", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}]}],
             dimensions=["customer_id", "a", "s2.b"])
         async with dev1966_engine("sqlite", datasets=models) as e:
             with pytest.raises(ValueError, match="floored_rev"):

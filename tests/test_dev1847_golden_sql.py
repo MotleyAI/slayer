@@ -21,30 +21,30 @@ def _cases() -> dict:
     return {
         "reagg/avg_by_region": {
             "kw": {"dimensions": ["region"],
-                   "metrics": [{"expression": f"avg({INNER_CR})", "name": "acr"}]}},
+                   "metrics": [{"metric": f"avg({INNER_CR})", "alias": "acr"}]}},
         "reagg/count_by_region": {
             "kw": {"dimensions": ["region"],
-                   "metrics": [{"expression": f"count({INNER_CR})", "name": "nc"}]}},
+                   "metrics": [{"metric": f"count({INNER_CR})", "alias": "nc"}]}},
         "reagg/degenerate": {
             "kw": {"dimensions": ["region"],
-                   "metrics": [{"expression": "avg(sum(amount))", "name": "d"}]}},
+                   "metrics": [{"metric": "avg(sum(amount))", "alias": "d"}]}},
         "reagg/broadcast_city": {
             "kw": {"dimensions": ["region"], "to_many_handling": "broadcast",
-                   "metrics": [{"expression": "avg(sum(amount, partition_by=city))",
-                                 "name": "acc"}]}},
+                   "metrics": [{"metric": "avg(sum(amount, partition_by=city))",
+                                 "alias": "acc"}]}},
         "reagg/associate_city": {
             "kw": {"dimensions": ["region"], "to_many_handling": "associate",
-                   "metrics": [{"expression": "avg(sum(amount, partition_by=city))",
-                                 "name": "acc"}]}},
+                   "metrics": [{"metric": "avg(sum(amount, partition_by=city))",
+                                 "alias": "acc"}]}},
         "reagg/explicit_grain": {
             "kw": {"dimensions": ["region", "product"],
-                   "metrics": [{"expression": f"avg({INNER_CR}, partition_by=region)",
-                                 "name": "acr"}]}},
+                   "metrics": [{"metric": f"avg({INNER_CR}, partition_by=region)",
+                                 "alias": "acr"}]}},
         "reagg/depth3": {
             "kw": {"dimensions": ["product"],
-                   "metrics": [{"expression":
+                   "metrics": [{"metric":
                                  f"max(avg({INNER_CRP}, partition_by=[region, product]))",
-                                 "name": "d3"}]}},
+                                 "alias": "d3"}]}},
     }
 
 

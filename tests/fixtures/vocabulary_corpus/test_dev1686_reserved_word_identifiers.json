@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "merchant",
-    "join_pairs": [
-     [
-      "merchantId",
-      "id"
-     ]
+    "from_columns": [
+     "merchantId"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -147,7 +147,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount)"
+      "metric": "last(amount)"
      }
     ]
    }
@@ -226,7 +226,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(big)"
+      "metric": "sum(big)"
      }
     ]
    }
@@ -254,7 +254,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "filter": [
@@ -292,11 +292,11 @@
    },
    "new": {
     "to": "grant",
-    "join_pairs": [
-     [
-      "grant_id",
-      "id"
-     ]
+    "from_columns": [
+     "grant_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -368,7 +368,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount)"
+      "metric": "last(amount)"
      }
     ]
    }
@@ -386,11 +386,11 @@
    },
    "new": {
     "to": "grant",
-    "join_pairs": [
-     [
-      "grant_id",
-      "id"
-     ]
+    "from_columns": [
+     "grant_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

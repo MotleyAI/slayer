@@ -16,8 +16,8 @@
     "population": "fin",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -36,7 +36,7 @@
     "population": "hr",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -55,7 +55,7 @@
     "population": "hr_summary",
     "metrics": [
      {
-      "expression": "sum(total)"
+      "metric": "sum(total)"
      }
     ]
    }
@@ -74,7 +74,7 @@
     "population": "pay",
     "metrics": [
      {
-      "expression": "sum(gross)"
+      "metric": "sum(gross)"
      }
     ]
    }
@@ -99,7 +99,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -118,7 +118,7 @@
     "population": "fin",
     "metrics": [
      {
-      "expression": "sum(hr.salary)"
+      "metric": "sum(hr.salary)"
      }
     ]
    }
@@ -140,7 +140,7 @@
     "population": "fin",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "filter": [
@@ -176,15 +176,15 @@
     "population": "fin",
     "extensions": [
      {
-      "source_name": "fin",
+      "dataset": "fin",
       "relationships": [
        {
         "to": "hr",
-        "join_pairs": [
-         [
-          "staff_id",
-          "id"
-         ]
+        "from_columns": [
+         "staff_id"
+        ],
+        "to_columns": [
+         "id"
         ]
        }
       ]
@@ -215,7 +215,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -240,7 +240,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }

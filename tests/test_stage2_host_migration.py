@@ -23,8 +23,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.sql.scope_check import assert_scope_closed
 from tests._engine_helpers import _engine_generate
 
@@ -63,8 +63,8 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
         ],
     )
 
@@ -73,11 +73,11 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -85,10 +85,10 @@ def _warehouses() -> SlayerDataset:
     return SlayerDataset(
         name="warehouses", sql_table="warehouses", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -107,22 +107,22 @@ class TestJoinOrderParity:
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.DOUBLE),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="warehouse_id", sql="warehouse_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(name="wh_pop", sql="warehouses.regions.population",
-                       datatype=DataType.DOUBLE),
+                       datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-                DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+                DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.region_id")],    # joined dim
-            metrics=[DatasetMetric(expression="sum(wh_pop)")],         # derived source (warehouses)
+            dimensions=[QueryDimension(field="customers.region_id")],    # joined dim
+            metrics=[QueryMetric(metric="sum(wh_pop)")],         # derived source (warehouses)
             filter=["customers.regions.population > 100"],        # WHERE (customers→regions)
         )
         sql = await _engine_generate(
@@ -153,17 +153,17 @@ class TestPlaceholderLimitOne:
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["amount > 100"],
         )
         sql = await _engine_generate(
@@ -185,25 +185,25 @@ class TestPlaceholderLimitOne:
         shippers = SlayerDataset(
             name="shippers", sql_table="shippers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="code", sql="code", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="code", sql="code", datatype=DataType.STRING),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="shipper_id", sql="shipper_id", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="shipper_id", sql="shipper_id", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-                DatasetRelationship(to="shippers", join_pairs=[["shipper_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+                DatasetRelationship(to="shippers", from_columns=["shipper_id"], to_columns=["id"]),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["shippers.code = 'X'"],
         )
         sql = await _engine_generate(
@@ -243,21 +243,21 @@ class TestTypedJoinKeyMixedCaseQuoted:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="CustId", sql="CustId", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+                DatasetField(name="CustId", sql="CustId", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
             ],
         )
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="cust_ref", sql="cust_ref", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="cust_ref", sql="cust_ref", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["cust_ref", "CustId"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["cust_ref"], to_columns=["CustId"])],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="balance", dataset="customers")],
+            dimensions=[QueryDimension(field="customers.balance")],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(

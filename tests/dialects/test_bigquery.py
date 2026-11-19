@@ -14,8 +14,8 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.errors import ExplainUnsupportedError
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
 from slayer.sql.dialects import (
@@ -277,8 +277,8 @@ def _minimal_orders_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     )
 
@@ -287,7 +287,7 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
     """``SQLGenerator.generate()`` dispatches to the dialect's ``rewrite_emitted_sql``."""
     query = SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
     )
     with patch.object(
         PostgresDialect,
@@ -317,8 +317,8 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
             sql_table="orders_t",
             data_source="pg",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         )
         await storage.save_dataset(model)
@@ -334,7 +334,7 @@ async def test_engine_dispatches_through_decode_result_keys_hook() -> None:
         ) as spy:
             await engine.execute(SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
             ))
         assert spy.called, (
             "SlayerQueryEngine.execute() must dispatch through the active "
@@ -374,8 +374,8 @@ async def _build_bigquery_engine(rows: list[dict]) -> tuple[SlayerQueryEngine, t
         sql_table="proj.dataset.orders_t",
         data_source="bq",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model)
@@ -399,7 +399,7 @@ class TestEngineDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(query)
@@ -414,7 +414,7 @@ class TestEngineDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(query)
@@ -511,8 +511,8 @@ async def _build_labeled_bigquery_engine(
         sql_table="proj.dataset.orders_t",
         data_source="bq",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT, label="Order Status"),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING, label="Order Status"),
         ],
     )
     await storage.save_dataset(model)
@@ -549,7 +549,7 @@ class _EchoTypesClient(DelegatingSqlClient):
     async def get_result_column_types(self, sql: str) -> dict[str, ResultColumnType]:
         with emitted_reparse_law.as_database():
             probed = cast(exp.Select, sqlglot.parse_one(sql, dialect="bigquery").args["from_"].this.this)
-        return {name: ResultColumnType(type=DataType.DOUBLE) for name in probed.named_selects}
+        return {name: ResultColumnType(type=DataType.FLOAT) for name in probed.named_selects}
 
 
 async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> None:
@@ -564,8 +564,8 @@ async def test_get_result_column_types_decodes_bigquery_mangled_probe_keys() -> 
             sql_table="proj.dataset.orders_t",
             data_source="bq",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         await storage.save_dataset(model)
@@ -588,7 +588,7 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
             data_source="bq",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "dimensions": ["status"],
             })],
         )
@@ -859,10 +859,10 @@ async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
         data_source="bq",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
         ],
     )
     query = SlayerQuery(
@@ -870,7 +870,7 @@ async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
         time_dimensions=[
             TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
         ],
-        metrics=[DatasetMetric(expression="sum(revenue) / sum(quantity)", name="aov")],
+        metrics=[QueryMetric(metric="sum(revenue) / sum(quantity)", alias="aov")],
         order=[OrderItem(field="created_at", direction="desc")],
         limit=6,
     )

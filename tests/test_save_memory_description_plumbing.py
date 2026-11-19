@@ -44,7 +44,7 @@ async def storage() -> AsyncIterator[StorageBackend]:
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
                 DatasetField(name="id", sql="id", primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         ))
         yield s
@@ -64,7 +64,7 @@ def yaml_storage() -> Generator[YAMLStorage, None, None]:
             name="orders", sql_table="orders", data_source="mydb",
             fields=[
                 DatasetField(name="id", sql="id", primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )))
         yield s

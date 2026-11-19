@@ -21,7 +21,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -43,7 +43,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
@@ -73,7 +73,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "time_dimensions": [
@@ -98,7 +98,7 @@
     "population": "monthly",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -130,7 +130,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "order": [
@@ -184,12 +184,12 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "m"
+      "metric": "sum(amount)",
+      "alias": "m"
      },
      {
-      "expression": "sum(customers.spend)",
-      "name": "cm"
+      "metric": "sum(customers.spend)",
+      "alias": "cm"
      }
     ]
    }
@@ -214,7 +214,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -245,7 +245,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -264,7 +264,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -283,7 +283,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -302,7 +302,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -327,7 +327,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -420,8 +420,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "revenue"
+      "metric": "count(*)",
+      "alias": "revenue"
      }
     ]
    }

@@ -77,7 +77,7 @@ class TestUnknownCalleeAtBinding:
 
     async def test_non_temporal_argument_is_a_time_dimension_type_error(self, engine) -> None:
         query = _q(dimensions=["date_trunc('fiscal_year', upper(id))"])
-        with pytest.raises(TimeDimensionFieldError, match="TEXT"):
+        with pytest.raises(TimeDimensionFieldError, match="String"):
             await engine.execute(query, dry_run=True)
 
     def test_bare_column_string_still_rejected_at_construction(self) -> None:

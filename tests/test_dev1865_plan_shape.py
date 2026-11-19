@@ -12,10 +12,12 @@ from __future__ import annotations
 from slayer.ir.planned import OrderEntry, PlannedQuery, RegroupAttachPlan
 from slayer.engine.plan import plan_query
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import DatasetMetric as _CM
 from tests._dev1840_fixtures import bundle as _dev1840_bundle
 from tests._dev1840_fixtures import q as _dev1840_q
-from tests._dev1865_fixtures import DatasetMetric, plan, q
+from tests._dev1865_fixtures import plan, q
 
 _DEV1840_CM = _CM(expression="sum(customers.spend)", name="cm")
 
@@ -43,7 +45,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filter=["sum(amount) > 100", "status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         assert hasattr(planned, "masks"), "PlannedQuery must carry typed mask entries"
         masks = planned.masks
@@ -59,7 +61,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filter=["sum(amount) > 100", "status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         assert hasattr(planned, "masks")
         slots = _slots_by_id(planned)
@@ -72,7 +74,7 @@ class TestMaskEntries:
         query = q(
             dimensions=["region"],
             filter=["sum(amount) > 100", "status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         first, second = plan(query), plan(query)
         assert hasattr(first, "masks")
@@ -82,7 +84,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filter=["status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         assert hasattr(planned, "masks")
         (mask,) = planned.masks

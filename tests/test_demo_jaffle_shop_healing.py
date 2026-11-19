@@ -318,8 +318,8 @@ class TestDemoMoneyIsExact:
             sql_table="orders",
             data_source=jaffle_shop.DEMO_NAME,
             fields=[
-                DatasetField(name="order_total", datatype=DataType.DOUBLE),
-                DatasetField(name="subtotal", datatype=DataType.DOUBLE, db_type="NUMERIC(18,4)"),
+                DatasetField(name="order_total", datatype=DataType.FLOAT),
+                DatasetField(name="subtotal", datatype=DataType.FLOAT, db_type="NUMERIC(18,4)"),
             ],
         )
         jaffle_shop.apply_demo_enrichment(model)

@@ -94,9 +94,9 @@ SLayer handles all of these inline in a single query:
 ```json
 "metrics": [
   "sum(revenue)",
-  {"expression": "sum(revenue) / count(*)", "name": "aov"},
-  {"expression": "cumsum(sum(revenue))", "name": "running"},
-  {"expression": "change_pct(sum(revenue))", "name": "growth"}
+  {"metric": "sum(revenue) / count(*)", "alias": "aov"},
+  {"metric": "cumsum(sum(revenue))", "alias": "running"},
+  {"metric": "change_pct(sum(revenue))", "alias": "growth"}
 ]
 ```
 
@@ -106,7 +106,7 @@ dbt filters require `{{ Dimension('entity__name') }}` syntax with entity resolut
 
 ### Explicit Relationships (Predictable)
 
-dbt's entity-based implicit join resolution is powerful but opaque — you must understand the entity graph to predict which tables will be joined. SLayer's explicit `join_pairs` are visible in the dataset definition.
+dbt's entity-based implicit join resolution is powerful but opaque — you must understand the entity graph to predict which tables will be joined. SLayer's explicit `from_columns` and `to_columns` are visible in the dataset definition.
 
 ### Query-as-Dataset (Multi-Stage Without New Concepts)
 

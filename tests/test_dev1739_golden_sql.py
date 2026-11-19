@@ -32,66 +32,66 @@ def _cases() -> dict:
         "local/single_key": _q(
             dimensions=["region", "city"],
             metrics=[
-                {"expression": "sum(amount)", "name": "city_rev"},
-                {"expression": "sum(amount, partition_by=region)", "name": "region_rev"},
+                {"metric": "sum(amount)", "alias": "city_rev"},
+                {"metric": "sum(amount, partition_by=region)", "alias": "region_rev"},
             ],
         ),
         "local/grand_total": _q(
             dimensions=["region", "city"],
-            metrics=[{"expression": "sum(amount, partition_by=[])", "name": "g"}],
+            metrics=[{"metric": "sum(amount, partition_by=[])", "alias": "g"}],
         ),
         "local/multi_key": _q(
             dimensions=["region", "channel", "city"],
             metrics=[
-                {"expression": "sum(amount, partition_by=[region, channel])", "name": "rc"},
+                {"metric": "sum(amount, partition_by=[region, channel])", "alias": "rc"},
             ],
         ),
         "local/share_composite": _q(
             dimensions=["region", "city"],
             metrics=[
-                {"expression": "sum(amount) / sum(amount, partition_by=region)", "name": "sh"},
+                {"metric": "sum(amount) / sum(amount, partition_by=region)", "alias": "sh"},
             ],
         ),
         "local/filtered": _q(
             dimensions=["region", "city"],
-            metrics=[{"expression": "sum(ok_amount, partition_by=region)", "name": "o"}],
+            metrics=[{"metric": "sum(ok_amount, partition_by=region)", "alias": "o"}],
         ),
         "local/star_count": _q(
             dimensions=["region", "city"],
-            metrics=[{"expression": "count(*, partition_by=region)", "name": "n"}],
+            metrics=[{"metric": "count(*, partition_by=region)", "alias": "n"}],
         ),
         "local/time_dim": _q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[{"expression": "sum(amount, partition_by=ordered_at)", "name": "m"}],
+            metrics=[{"metric": "sum(amount, partition_by=ordered_at)", "alias": "m"}],
         ),
         "local/full_grain_degenerate": _q(
             dimensions=["region", "city"],
             metrics=[
-                {"expression": "sum(amount, partition_by=[region, city])", "name": "d"},
+                {"metric": "sum(amount, partition_by=[region, city])", "alias": "d"},
             ],
         ),
         "cross_model/grand_total": _q(
             dimensions=["customers.tier"],
             metrics=[
-                {"expression": "sum(customers.spend, partition_by=[])", "name": "t"},
+                {"metric": "sum(customers.spend, partition_by=[])", "alias": "t"},
             ],
         ),
         "cross_model/rerooted": _q(
             dimensions=["customers.regions.name"],
             metrics=[
-                {"expression": "sum(customers.spend, partition_by=[])", "name": "t"},
+                {"metric": "sum(customers.spend, partition_by=[])", "alias": "t"},
             ],
         ),
         "cross_model/rerooted_partition_key": _q(
             dimensions=["customers.regions.name", "customers.tier"],
             metrics=[
-                {"expression": "sum(customers.spend, partition_by=customers.regions.name)",
-                 "name": "rt"},
+                {"metric": "sum(customers.spend, partition_by=customers.regions.name)",
+                 "alias": "rt"},
             ],
         ),
         "guard/non_dimension": _q(
             dimensions=["region"],
-            metrics=[{"expression": "sum(amount, partition_by=city)", "name": "x"}],
+            metrics=[{"metric": "sum(amount, partition_by=city)", "alias": "x"}],
         ),
         # guard/first, guard/last, guard/nested_transform, guard/in_filter,
         # guard/window_plus_partition removed — these LOCAL shapes are lifted;
@@ -102,7 +102,7 @@ def _cases() -> dict:
             to_many_handling="broadcast",
             dimensions=["region", "customers.tier"],
             metrics=[
-                {"expression": "sum(customers.spend, partition_by=region)", "name": "x"},
+                {"metric": "sum(customers.spend, partition_by=region)", "alias": "x"},
             ],
         ),
     }

@@ -44,8 +44,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "tot"
+      "metric": "sum(amount)",
+      "alias": "tot"
      }
     ]
    }

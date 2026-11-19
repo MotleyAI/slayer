@@ -4533,9 +4533,9 @@ def _host_membership(
     if not target_path or not _restricted_dataset(host_dataset, bundle=bundle):
         return []
     chain = follow(root=host_dataset, path=target_path[:1], datasets_by_name=datasets_by_name)
-    if not chain or not chain[0].join_pairs or chain[0].lateral is not None:
+    if not chain or not chain[0].column_pairs or chain[0].lateral is not None:
         return []  # a product hop associates every row; a list child reads its parent's dataset
-    witness = FieldKey(leaf=chain[0].join_pairs[0][0])
+    witness = FieldKey(leaf=chain[0].column_pairs[0][0])
     return [(bound_filter_from_key(ArithmeticKey(op=_IS_NOT, operands=(witness, LiteralKey(value=None)))), None)]
 
 

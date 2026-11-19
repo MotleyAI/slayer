@@ -28,7 +28,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 
@@ -48,26 +48,26 @@ def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="city", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="discount", datatype=DataType.DOUBLE),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.INT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="order_date", datatype=DataType.DATE),
-            DatasetField(name="created_txt", datatype=DataType.TEXT),
-            DatasetField(name="code", datatype=DataType.TEXT),
-            DatasetField(name="customer_name", datatype=DataType.TEXT),
-            DatasetField(name="note", datatype=DataType.TEXT),
-            DatasetField(name="path", datatype=DataType.TEXT),
-            DatasetField(name="order total", sql="order_total", datatype=DataType.DOUBLE),
-            DatasetField(name="payload", datatype=DataType.TEXT),
+            DatasetField(name="created_txt", datatype=DataType.STRING),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="customer_name", datatype=DataType.STRING),
+            DatasetField(name="note", datatype=DataType.STRING),
+            DatasetField(name="path", datatype=DataType.STRING),
+            DatasetField(name="order total", sql="order_total", datatype=DataType.FLOAT),
+            DatasetField(name="payload", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         aggregations=[
             Aggregation(name="wsum", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="quantity")]),
@@ -82,10 +82,10 @@ def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="Region", datatype=DataType.TEXT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="Region", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
         ],
         aggregations=[Aggregation(name="rows", expression="COUNT(*)")],
     )
@@ -96,11 +96,11 @@ def balances_dataset(*, data_source: str = "test") -> SlayerDataset:
         name="balances", sql_table="balances", data_source=data_source,
         default_time_dimension="updated_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
-            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
@@ -296,8 +296,8 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
@@ -400,7 +400,7 @@ async def check_server_forms(engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["id"], filter=[pred]))
         assert ids(resp) == expected, (pred, resp.sql)
     for expr, values in VALUES:
-        resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "x"}]))
+        resp = await engine.execute(q(dimensions=["id", {"field": expr, "alias": "x"}]))
         got = {int(k): (v if v is None or isinstance(v, str) else float(v)) for k, v in by_key(resp, "id", "x").items()}
         want = {k: (v if v is None or isinstance(v, str) else float(v)) for k, v in values.items()}
         assert got == want, (expr, resp.sql)
@@ -409,7 +409,7 @@ async def check_server_forms(engine: SlayerQueryEngine) -> None:
 
 async def check_try_cast(engine: SlayerQueryEngine, *, nulls_invalid: bool = True) -> None:
     """``TRY_CAST(code AS INT)``: 12 / NULL / NULL / 7 / NULL; ``nulls_invalid=False`` expects the database's error."""
-    query = q(dimensions=["id", {"expression": "TRY_CAST(code AS INT)", "name": "x"}])
+    query = q(dimensions=["id", {"field": "TRY_CAST(code AS INT)", "alias": "x"}])
     if not nulls_invalid:
         sql = (await engine.execute(query, dry_run=True)).sql or ""
         assert "PG_INPUT_IS_VALID" not in sql.upper(), sql
@@ -428,7 +428,7 @@ async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
     assert num(single(resp)) == pytest.approx(3.6), resp.sql
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "balances", "dimensions": ["customer_id"],
-        "metrics": [{"expression": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
+        "metrics": [{"metric": "last(balance, updated_at) FILTER (WHERE status = 'active')", "alias": "v"}],
     }))
     assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 

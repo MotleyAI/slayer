@@ -22,8 +22,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -43,8 +43,8 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "total"
+      "metric": "sum(rev)",
+      "alias": "total"
      }
     ]
    }
@@ -72,8 +72,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }

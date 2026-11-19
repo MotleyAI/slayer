@@ -20,7 +20,7 @@ def _dataset() -> SlayerDataset:
         sql="SELECT '{d_from}' AS d FROM t WHERE 1=1 "
             "AND {? brand IN ({brand}) ?} AND {? mkt IN ({market}) ?}",
         data_source="ds",
-        fields=[DatasetField(name="d", sql="d", datatype=DataType.TIMESTAMP)],
+        fields=[DatasetField(name="d", sql="d", datatype=DataType.DATETIME)],
     )
 
 
@@ -41,7 +41,7 @@ def test_skeleton_render_lists_variables_line():
 def test_skeleton_render_omits_variables_line_when_none():
     plain = SlayerDataset(
         name="m", sql_table="t", data_source="ds",
-        fields=[DatasetField(name="a", sql="a", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="a", sql="a", datatype=DataType.STRING)],
     )
     out = render_dataset_skeleton(dataset=plain)
     assert "Variables:" not in out
@@ -59,7 +59,7 @@ def test_variables_are_derived_not_persisted_no_schema_bump():
 def _metric_dataset(**kw) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
+        fields=[DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT)],
         metrics=[DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         **kw,
     )

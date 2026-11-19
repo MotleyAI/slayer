@@ -29,33 +29,33 @@ from slayer.storage.yaml_storage import YAMLStorage
 async def _seed(s: YAMLStorage) -> None:
     await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
 
-    def col(n, t=DataType.TEXT, pk=False):
+    def col(n, t=DataType.STRING, pk=False):
         return DatasetField(name=n, sql=n, datatype=t, primary_key=pk)
 
     await s.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
         fields=[
-            col("id", DataType.INT, pk=True), col("status"),
-            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
-            DatasetField(name="product_id", datatype=DataType.INT, hidden=True),
+            col("id", DataType.INTEGER, pk=True), col("status"),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
+            DatasetField(name="product_id", datatype=DataType.INTEGER, hidden=True),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], join_type=JoinType.LEFT),
-            DatasetRelationship(to="products", join_pairs=[["product_id", "id"]], join_type=JoinType.LEFT),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], join_type=JoinType.LEFT),
+            DatasetRelationship(to="products", from_columns=["product_id"], to_columns=["id"], join_type=JoinType.LEFT),
         ],
     ))
     await s.save_dataset(SlayerDataset(
         name="customers", data_source="mydb", sql_table="customers",
-        fields=[col("id", DataType.INT, pk=True), col("name")],
+        fields=[col("id", DataType.INTEGER, pk=True), col("name")],
     ))
     await s.save_dataset(SlayerDataset(
         name="products", data_source="mydb", sql_table="products",
-        fields=[col("id", DataType.INT, pk=True), col("category")],
+        fields=[col("id", DataType.INTEGER, pk=True), col("category")],
     ))
     # Disconnected model for the no-root rendering path.
     await s.save_dataset(SlayerDataset(
         name="tickets", data_source="mydb", sql_table="tickets",
-        fields=[col("id", DataType.INT, pk=True), col("subject")],
+        fields=[col("id", DataType.INTEGER, pk=True), col("subject")],
     ))
 
 
@@ -117,8 +117,8 @@ class TestMcpTool:
                 await s.save_dataset(SlayerDataset(
                     name="orders", data_source=ds, sql_table="orders",
                     fields=[
-                        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                        DatasetField(name="status", sql="status", datatype=DataType.STRING),
                     ],
                 ))
             mcp = create_mcp_server(storage=s)

@@ -66,8 +66,8 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
 @pytest.mark.parametrize("part", EXTRACTIONS)
 async def test_extraction_equals_its_date_part_twin(pg: tuple[SlayerQueryEngine, DatasourceConfig], part: str) -> None:
     engine, _ = pg
-    alias = await engine.execute(q(dimensions=["id", {"expression": f"{part}(created_at)", "name": "x"}]))
-    twin = await engine.execute(q(dimensions=["id", {"expression": f"date_part('{part}', created_at)", "name": "x"}]))
+    alias = await engine.execute(q(dimensions=["id", {"field": f"{part}(created_at)", "alias": "x"}]))
+    twin = await engine.execute(q(dimensions=["id", {"field": f"date_part('{part}', created_at)", "alias": "x"}]))
     assert alias.columns == twin.columns
     assert alias.sql == twin.sql
     assert sorted_rows(alias) == sorted_rows(twin)

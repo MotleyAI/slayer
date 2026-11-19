@@ -38,7 +38,7 @@ def _probe(sql: str) -> TypeProbe:
 
 
 def _numeric_x(types: dict[str, ResultColumnType]) -> bool:
-    return list(types) == ["x"] and types["x"].type in (DataType.INT, DataType.DOUBLE)
+    return list(types) == ["x"] and types["x"].type in (DataType.INTEGER, DataType.FLOAT)
 
 
 def _skipped(record: list[warnings.WarningMessage]) -> list[StatementTimeoutSkippedWarning]:

@@ -19,9 +19,10 @@ from slayer.core.errors import (
     BroadcastGrainWarning,
 )
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
-    DatasetMetric,
     SlayerQuery,
     assoc_q,
     associated_warnings,
@@ -32,7 +33,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 #: SLayer's own to-many warnings — scope past incidental (e.g. 3.14) warnings.
 _SLAYER_TO_MANY_WARNINGS = (
@@ -100,8 +101,8 @@ class TestAssociatedWarning:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, partition_by=status)", name="cm")]))
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=status)", alias="cm")]))
         assert associated_warnings(resp) == []
         by = status_key(resp)
         for status, spend in ASSOC_SPEND_BY_STATUS.items():

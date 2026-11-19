@@ -64,18 +64,18 @@ def _orders() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.DOUBLE),
-            DatasetField(name="col1", datatype=DataType.DOUBLE),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
-            DatasetField(name="cohort", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="col1", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="cohort", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -85,8 +85,8 @@ def _customers() -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
 

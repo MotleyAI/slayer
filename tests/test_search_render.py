@@ -52,23 +52,23 @@ def _make_orders_dataset() -> SlayerDataset:
         fields=[
             DatasetField(
                 name="id",
-                datatype=DataType.INT,
+                datatype=DataType.INTEGER,
                 primary_key=True,
                 description="Primary key.",
             ),
             DatasetField(
                 name="amount",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 description="Net amount in USD.",
                 sampled="0.0 .. 9999.99",
             ),
             DatasetField(
                 name="status",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
                 description="paid|refunded|cancelled.",
                 sampled="paid, refunded, cancelled",
             ),
-            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
         ],
         metrics=[
             DatasetMetric(
@@ -91,7 +91,7 @@ def _make_orders_dataset() -> SlayerDataset:
         relationships=[
             DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
             ),
         ],
         filters=["status != 'cancelled'"],
@@ -191,7 +191,7 @@ def test_column_text_includes_per_field_metadata() -> None:
     m = _make_orders_dataset()
     col = m.get_field("amount")
     text = render_field_text(dataset=m, field=col)
-    assert "DOUBLE" in text
+    assert "Float" in text
     assert "Net amount in USD" in text
 
 
@@ -521,7 +521,7 @@ def test_non_ascii_identifiers_pass_through() -> None:
         name="café",
         sql_table="café_table",
         data_source="warehouse",
-        fields=[DatasetField(name="café_id", datatype=DataType.INT)],
+        fields=[DatasetField(name="café_id", datatype=DataType.INTEGER)],
     )
     text = render_dataset_text(dataset=m)
     assert "café" in text
@@ -533,7 +533,7 @@ def test_long_column_sql_block_included() -> None:
         name="big",
         sql_table="big_table",
         data_source="warehouse",
-        fields=[DatasetField(name="cat", sql=long_sql, datatype=DataType.TEXT)],
+        fields=[DatasetField(name="cat", sql=long_sql, datatype=DataType.STRING)],
     )
     col = m.get_field("cat")
     text = render_field_text(dataset=m, field=col)

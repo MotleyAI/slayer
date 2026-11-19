@@ -15,18 +15,18 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
@@ -43,7 +43,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(total)"
+      "metric": "sum(total)"
      }
     ]
    }
@@ -62,7 +62,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "avg(avg_amount)"
+      "metric": "avg(avg_amount)"
      }
     ]
    }
@@ -86,13 +86,11 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
-     {
-      "name": "status"
-     }
+     "status"
     ]
    }
   },
@@ -113,7 +111,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -138,7 +136,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -173,19 +171,15 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
-     {
-      "name": "status"
-     }
+     "status"
     ],
     "order": [
      {
-      "field": {
-       "name": "count"
-      },
+      "field": "count",
       "direction": "desc"
      }
     ]
@@ -211,13 +205,11 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
-     {
-      "name": "status"
-     }
+     "status"
     ],
     "limit": 2
    }
@@ -244,16 +236,14 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      },
      {
-      "expression": "sum(total)"
+      "metric": "sum(total)"
      }
     ],
     "dimensions": [
-     {
-      "name": "status"
-     }
+     "status"
     ]
    }
   },
@@ -279,14 +269,12 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "time_dimensions": [
      {
-      "field": {
-       "name": "created_at"
-      },
+      "field": "created_at",
       "granularity": "month"
      }
     ]
@@ -318,14 +306,12 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "time_dimensions": [
      {
-      "field": {
-       "name": "created_at"
-      },
+      "field": "created_at",
       "granularity": "month",
       "date_range": [
        "2024-01-01",
@@ -352,7 +338,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -361,12 +347,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(total)"
    },
    "new": {
-    "expression": "sum(total)"
+    "metric": "sum(total)"
    }
   },
   {
@@ -381,12 +367,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(total)"
    },
    "new": {
-    "expression": "sum(total)"
+    "metric": "sum(total)"
    }
   },
   {
@@ -401,12 +387,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(total)"
    },
    "new": {
-    "expression": "sum(total)"
+    "metric": "sum(total)"
    }
   },
   {
@@ -421,12 +407,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(total)"
    },
    "new": {
-    "expression": "sum(total)"
+    "metric": "sum(total)"
    }
   },
   {
@@ -452,12 +438,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(total)"
    },
    "new": {
-    "expression": "sum(total)"
+    "metric": "sum(total)"
    }
   },
   {
@@ -490,13 +476,11 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
-     {
-      "name": "customers.name"
-     }
+     "customers.name"
     ]
    }
   },
@@ -522,16 +506,14 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      },
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
-     {
-      "name": "customers.regions.name"
-     }
+     "customers.regions.name"
     ]
    }
   },
@@ -549,7 +531,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "median(total)"
+      "metric": "median(total)"
      }
     ]
    }
@@ -571,10 +553,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "percentile(total, p=0.25)"
+      "metric": "percentile(total, p=0.25)"
      },
      {
-      "expression": "percentile(total, p=0.75)"
+      "metric": "percentile(total, p=0.75)"
      }
     ]
    }
@@ -598,13 +580,11 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "median(total)"
+      "metric": "median(total)"
      }
     ],
     "dimensions": [
-     {
-      "name": "status"
-     }
+     "status"
     ]
    }
   },
@@ -622,7 +602,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "stddev_samp(total)"
+      "metric": "stddev_samp(total)"
      }
     ]
    }
@@ -641,7 +621,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "var_pop(total)"
+      "metric": "var_pop(total)"
      }
     ]
    }
@@ -660,7 +640,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "corr(total, other=customer_id)"
+      "metric": "corr(total, other=customer_id)"
      }
     ]
    }
@@ -679,7 +659,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "covar_samp(total, other=customer_id)"
+      "metric": "covar_samp(total, other=customer_id)"
      }
     ]
    }
@@ -698,7 +678,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "covar_pop(total, other=customer_id)"
+      "metric": "covar_pop(total, other=customer_id)"
      }
     ]
    }
@@ -717,7 +697,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "max(log_amount)"
+      "metric": "max(log_amount)"
      }
     ]
    }
@@ -736,7 +716,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "max(log_amount)"
+      "metric": "max(log_amount)"
      }
     ]
    }
@@ -775,11 +755,11 @@
    },
    "new": {
     "to": "b_tbl",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -796,11 +776,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -817,75 +797,75 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(region_payment, orders.created_at)"
    },
    "new": {
-    "expression": "last(region_payment, orders.created_at)"
+    "metric": "last(region_payment, orders.created_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "first(region_payment, orders.created_at)"
    },
    "new": {
-    "expression": "first(region_payment, orders.created_at)"
+    "metric": "first(region_payment, orders.created_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(cust_balance, orders.created_at)"
    },
    "new": {
-    "expression": "last(cust_balance, orders.created_at)"
+    "metric": "last(cust_balance, orders.created_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(region_payment, orders.created_at)"
    },
    "new": {
-    "expression": "last(region_payment, orders.created_at)"
+    "metric": "last(region_payment, orders.created_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(region_payment, orders.created_at)"
    },
    "new": {
-    "expression": "last(region_payment, orders.created_at)"
+    "metric": "last(region_payment, orders.created_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(region_payment, orders.created_at)"
    },
    "new": {
-    "expression": "last(region_payment, orders.created_at)"
+    "metric": "last(region_payment, orders.created_at)"
    }
   },
   {
@@ -901,21 +881,21 @@
    },
    "new": {
     "to": "line_items",
-    "join_pairs": [
-     [
-      "id",
-      "order_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "order_id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
@@ -930,30 +910,30 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(li_qty)"
    },
    "new": {
-    "expression": "sum(li_qty)"
+    "metric": "sum(li_qty)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(amount, orders.created_at)"
    },
    "new": {
-    "expression": "last(amount, orders.created_at)"
+    "metric": "last(amount, orders.created_at)"
    }
   },
   {
@@ -968,21 +948,21 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "weighted_avg(amount, weight=li_qty)"
    },
    "new": {
-    "expression": "weighted_avg(amount, weight=li_qty)"
+    "metric": "weighted_avg(amount, weight=li_qty)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
@@ -1009,48 +989,48 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.balance)"
    },
    "new": {
-    "expression": "sum(customers.balance)"
+    "metric": "sum(customers.balance)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.balance)"
    },
    "new": {
-    "expression": "sum(customers.balance)"
+    "metric": "sum(customers.balance)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.balance)"
    },
    "new": {
-    "expression": "sum(customers.balance)"
+    "metric": "sum(customers.balance)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.balance)"
    },
    "new": {
-    "expression": "sum(customers.balance)"
+    "metric": "sum(customers.balance)"
    }
   },
   {
@@ -1066,11 +1046,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -1087,48 +1067,48 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers.lifetime_value)"
+    "metric": "sum(customers.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers.lifetime_value)"
+    "metric": "sum(customers.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers.lifetime_value)"
+    "metric": "sum(customers.lifetime_value)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers.lifetime_value, customers.signup_at)"
    },
    "new": {
-    "expression": "last(customers.lifetime_value, customers.signup_at)"
+    "metric": "last(customers.lifetime_value, customers.signup_at)"
    }
   },
   {

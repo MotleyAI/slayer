@@ -38,19 +38,9 @@ An extension entry whose `data` is not a JSON object (a list, a scalar, or an ob
 
 A current-spec dataset exposes **exactly its declared fields**: a field renaming a source column (`order_id: o_orderkey`) hides `o_orderkey`, and source columns no field declares are not on the dataset. Field expressions may still read any source column, and every column they read must exist in the live source. A dataset with no fields imports with no visible fields and a warning. Older wrapped documents keep every introspected column and overlay their fields on top. When a dataset's query source outputs a label more than once (`SELECT o.id, c.id, …`), every field reading that label is dropped with a report as ambiguous. A field reading a source column whose name another field holds, or transforming the source column of its own name (`status: UPPER(status)`), is dropped with a report (an older wrapped document keeps the source column).
 
-A field's type is the type the database reports; a field's declared `datatype` is used only when the database cannot report one, then the type of a source column the field shares its name with (DOUBLE when none exists), and a disagreement adds an informational report entry. This deviates from the spec's consumer guidance on purpose, since `DatasetField.datatype` drives SQL casts against the real database. The declared value is kept in `meta["osi_datatype"]`.
+A field's declared `datatype` is kept as written, whatever the database reports, and a disagreement adds an informational report entry; a field without one takes the type the database reports (`Float` when it reports none). SLayer's datatypes are Ossie's names, so a metric's declared `datatype` is kept as written too.
 
-| `datatype` | SLayer type |
-|---|---|
-| `String` | TEXT |
-| `Integer` | INT |
-| `Decimal`, `Float` | DOUBLE |
-| `Boolean` | BOOLEAN |
-| `Date` | DATE |
-| `DateTime`, `DateTimeTz` | TIMESTAMP |
-| `Time`, `Opaque` | UNKNOWN |
-
-A field is a time dimension when `dimension.is_time` is `true`, or when `is_time` is unset and its `datatype` is `Date`, `Time`, `DateTime` or `DateTimeTz` (an explicit `is_time: false` wins). The role never changes the field's type: it is recorded as `meta["osi_is_time"]`, and only a DATE or TIMESTAMP time-dimension field can become the dataset's `default_time_dimension`.
+A field is a time dimension when `dimension.is_time` is `true`, or when `is_time` is unset and its `datatype` is `Date`, `Time`, `DateTime` or `DateTimeTz` (an explicit `is_time: false` wins). The role never changes the field's type: it is recorded as `meta["osi_is_time"]`, and only a `Date`, `DateTime` or `DateTimeTz` time-dimension field can become the dataset's `default_time_dimension`.
 
 ### Keys and Relationships
 

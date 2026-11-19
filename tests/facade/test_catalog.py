@@ -63,10 +63,10 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
     model = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
@@ -102,8 +102,8 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
 
 
 def test_hidden_model_excluded() -> None:
-    visible = _dataset(name="orders", columns=[DatasetField(name="x", datatype=DataType.INT)])
-    hidden = _dataset(name="ghost", hidden=True, columns=[DatasetField(name="x", datatype=DataType.INT)])
+    visible = _dataset(name="orders", columns=[DatasetField(name="x", datatype=DataType.INTEGER)])
+    hidden = _dataset(name="ghost", hidden=True, columns=[DatasetField(name="x", datatype=DataType.INTEGER)])
     cat = build_catalog(datasets_by_datasource={"ds1": [visible, hidden]})
     table_names = {t.name for t in cat.schemas[0].tables}
     assert table_names == {"orders"}
@@ -113,8 +113,8 @@ def test_hidden_column_excluded() -> None:
     model = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="public", datatype=DataType.INT),
-            DatasetField(name="secret", datatype=DataType.INT, hidden=True),
+            DatasetField(name="public", datatype=DataType.INTEGER),
+            DatasetField(name="secret", datatype=DataType.INTEGER, hidden=True),
         ],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
@@ -132,7 +132,7 @@ def test_row_count_collision_renames_to_underscore(caplog) -> None:
         name="orders",
         columns=[
             # User has a literal column named row_count — synthetic must rename.
-            DatasetField(name="row_count", datatype=DataType.INT),
+            DatasetField(name="row_count", datatype=DataType.INTEGER),
         ],
     )
     with caplog.at_level(logging.WARNING):
@@ -149,7 +149,7 @@ def test_row_count_collision_renames_to_underscore(caplog) -> None:
 
 
 def test_row_count_collision_warning_has_no_colon_spelling(caplog) -> None:
-    model = _dataset(name="orders", columns=[DatasetField(name="row_count", datatype=DataType.INT)])
+    model = _dataset(name="orders", columns=[DatasetField(name="row_count", datatype=DataType.INTEGER)])
     with caplog.at_level(logging.WARNING):
         build_catalog(datasets_by_datasource={"ds1": [model]})
     messages = [r.getMessage() for r in caplog.records if "renaming the synthetic" in r.getMessage()]
@@ -158,18 +158,18 @@ def test_row_count_collision_warning_has_no_colon_spelling(caplog) -> None:
 
 
 def test_saved_model_measure_emitted_with_declared_type() -> None:
-    measure = DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.DOUBLE,
+    measure = DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.FLOAT,
                             label="AOV", description="Avg order value")
     model = _dataset(
         name="orders",
-        columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
+        columns=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
         metrics=[measure],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
     aov = next(m for m in table.metrics if m.name == "aov")
     assert aov.metric_expression == "aov"
-    assert aov.data_type == DataType.DOUBLE
+    assert aov.data_type == DataType.FLOAT
     assert aov.label == "AOV"
     assert aov.description == "Avg order value"
 
@@ -178,7 +178,7 @@ def test_saved_model_measure_without_type_carries_none() -> None:
     measure = DatasetMetric(name="aov", expression="sum(revenue) / count(*)")
     model = _dataset(
         name="orders",
-        columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
+        columns=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
         metrics=[measure],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
@@ -198,7 +198,7 @@ def test_custom_aggregation_with_params_skipped() -> None:
     )
     model = _dataset(
         name="orders",
-        columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
+        columns=[DatasetField(name="revenue", datatype=DataType.FLOAT)],
         aggregations=[cheap_agg, parametric],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
@@ -214,7 +214,7 @@ def test_explicit_allowed_aggregations_intersection() -> None:
         columns=[
             DatasetField(
                 name="revenue",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 allowed_aggregations=["sum", "avg"],  # narrow whitelist
             ),
         ],
@@ -228,14 +228,14 @@ def test_explicit_allowed_aggregations_intersection() -> None:
 def test_single_hop_join_expansion() -> None:
     orders = _dataset(
         name="orders",
-        columns=[DatasetField(name="customer_id", datatype=DataType.INT)],
-        joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        columns=[DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        joins=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     customers = _dataset(
         name="customers",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, customers]})
@@ -255,35 +255,35 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="warehouse_id", datatype=DataType.INT),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
         ],
         joins=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
     )
     customers = _dataset(
         name="customers",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        joins=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     warehouses = _dataset(
         name="warehouses",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        joins=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     regions = _dataset(
         name="regions",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     cat = build_catalog(
@@ -302,18 +302,18 @@ def test_reverse_hop_dimensions_enumerated() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         joins=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]])],
+            to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     customers = _dataset(
         name="customers",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, customers]})
@@ -329,23 +329,23 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
         ],
         joins=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
-            DatasetRelationship(to="items", join_pairs=[["id", "order_id"]],
+            DatasetRelationship(to="items", from_columns=["id"], to_columns=["order_id"],
                       cardinality=RelationshipCardinality.ONE_TO_MANY),
-            DatasetRelationship(to="receipts", join_pairs=[["id", "order_id"]],
+            DatasetRelationship(to="receipts", from_columns=["id"], to_columns=["order_id"],
                       cardinality=RelationshipCardinality.ONE_TO_ONE),
-            DatasetRelationship(to="notes", join_pairs=[["id", "order_id"]]),
+            DatasetRelationship(to="notes", from_columns=["id"], to_columns=["order_id"]),
         ],
     )
     others = [
         _dataset(name=n, columns=[
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="tag", datatype=DataType.TEXT),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="tag", datatype=DataType.STRING),
         ])
         for n in ("customers", "items", "receipts", "notes")
     ]
@@ -381,13 +381,13 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
 
 
 def test_bfs_depth_limit_truncates() -> None:
-    a = _dataset(name="a", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
-                joins=[DatasetRelationship(to="b", join_pairs=[["id", "id"]])])
-    b = _dataset(name="b", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
-                joins=[DatasetRelationship(to="c", join_pairs=[["id", "id"]])])
-    c = _dataset(name="c", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
-                joins=[DatasetRelationship(to="d", join_pairs=[["id", "id"]])])
-    d = _dataset(name="d", columns=[DatasetField(name="leaf", datatype=DataType.TEXT)])
+    a = _dataset(name="a", columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                joins=[DatasetRelationship(to="b", from_columns=["id"], to_columns=["id"])])
+    b = _dataset(name="b", columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                joins=[DatasetRelationship(to="c", from_columns=["id"], to_columns=["id"])])
+    c = _dataset(name="c", columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                joins=[DatasetRelationship(to="d", from_columns=["id"], to_columns=["id"])])
+    d = _dataset(name="d", columns=[DatasetField(name="leaf", datatype=DataType.STRING)])
     cat = build_catalog(
         datasets_by_datasource={"ds1": [a, b, c, d]},
         bfs_depth=2,
@@ -406,8 +406,8 @@ def test_table_type_view_for_sql_backed_model() -> None:
         data_source="ds1",
         sql="SELECT 1 AS id, 'a' AS label",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT),
-            DatasetField(name="label", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER),
+            DatasetField(name="label", datatype=DataType.STRING),
         ],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [view_model]})
@@ -420,8 +420,8 @@ def test_default_bfs_depth_constant_is_three() -> None:
 
 
 def test_multiple_datasources_keep_disjoint_schemas() -> None:
-    m1 = _dataset(name="t", data_source="dsA", columns=[DatasetField(name="x", datatype=DataType.INT)])
-    m2 = _dataset(name="t", data_source="dsB", columns=[DatasetField(name="x", datatype=DataType.INT)])
+    m1 = _dataset(name="t", data_source="dsA", columns=[DatasetField(name="x", datatype=DataType.INTEGER)])
+    m2 = _dataset(name="t", data_source="dsB", columns=[DatasetField(name="x", datatype=DataType.INTEGER)])
     cat = build_catalog(datasets_by_datasource={"dsA": [m1], "dsB": [m2]})
     schemas = {s.name: s for s in cat.schemas}
     assert set(schemas) == {"dsA", "dsB"}
@@ -439,9 +439,9 @@ def test_no_time_dimension_drops_first_last_aggregations() -> None:
     no_time = _dataset(
         name="products",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="price", datatype=DataType.FLOAT),
         ],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [no_time]})
@@ -463,9 +463,9 @@ def test_default_time_dimension_keeps_first_last_aggregations() -> None:
     with_default = SlayerDataset(
         name="orders", data_source="ds1", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         default_time_dimension="ordered_at",
     )
@@ -480,9 +480,9 @@ def test_metric_data_type_for_aggregations_uses_coarse_inference() -> None:
     model = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             DatasetField(name="flag", datatype=DataType.BOOLEAN),
         ],
     )
@@ -490,14 +490,14 @@ def test_metric_data_type_for_aggregations_uses_coarse_inference() -> None:
     table = _find_table(cat, schema="ds1", table="orders")
     by_name = {m.name: m for m in table.metrics}
     # COUNT-family → INT regardless of column type.
-    assert by_name["revenue_count"].data_type == DataType.INT
-    assert by_name["status_count_distinct"].data_type == DataType.INT
+    assert by_name["revenue_count"].data_type == DataType.INTEGER
+    assert by_name["status_count_distinct"].data_type == DataType.INTEGER
     # SUM of DOUBLE → DOUBLE.
-    assert by_name["revenue_sum"].data_type == DataType.DOUBLE
+    assert by_name["revenue_sum"].data_type == DataType.FLOAT
     # SUM of BOOLEAN → INT (boolean SUM is integer in every supported dialect).
-    assert by_name["flag_sum"].data_type == DataType.INT
+    assert by_name["flag_sum"].data_type == DataType.INTEGER
     # AVG of any numeric → DOUBLE.
-    assert by_name["revenue_avg"].data_type == DataType.DOUBLE
+    assert by_name["revenue_avg"].data_type == DataType.FLOAT
     # MIN/MAX preserve column type.
-    assert by_name["ordered_at_max"].data_type == DataType.TIMESTAMP
-    assert by_name["status_min"].data_type == DataType.TEXT
+    assert by_name["ordered_at_max"].data_type == DataType.DATETIME
+    assert by_name["status_min"].data_type == DataType.STRING

@@ -48,15 +48,15 @@ def _physical_pairs(*, edge: OrientedRelationship, source: SlayerDataset, target
 def _orders(*columns: DatasetField, pairs: list[list[str]], target: str = "customers") -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), *columns],
-        relationships=[DatasetRelationship(to=target, join_pairs=pairs)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *columns],
+        relationships=[DatasetRelationship(to=target, from_columns=[p[0] for p in pairs], to_columns=[p[1] for p in pairs])],
     )
 
 
 def _customers(*columns: DatasetField) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        fields=list(columns) or [DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=list(columns) or [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 
@@ -103,7 +103,7 @@ class TestSourceSideAtConstruction:
     def test_renamed_source_key_is_accepted(self):
         model = _orders(DatasetField(name="customer_id", sql="cust_fk"),
                         pairs=[["customer_id", "id"]])
-        assert model.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert model.relationships[0].column_pairs == [("customer_id", "id")]
 
     def test_quoted_base_source_key_is_accepted(self):
         _orders(DatasetField(name="customer_id", sql='"CustFK"'), pairs=[["customer_id", "id"]])
@@ -136,7 +136,7 @@ class TestSourceSideAtConstruction:
 
     def test_dotted_key_entry_rejected(self):
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            DatasetRelationship(to="customers", join_pairs=[["customers.id", "id"]])
+            DatasetRelationship(to="customers", from_columns=["customers.id"], to_columns=["id"])
 
     @pytest.mark.parametrize("pair", [
         ["cust:id", "id"], ["customer_id", "c:id"],
@@ -144,26 +144,26 @@ class TestSourceSideAtConstruction:
     ])
     def test_other_column_name_rules_apply(self, pair):
         with pytest.raises(ValueError, match="must not"):
-            DatasetRelationship(to="customers", join_pairs=[pair])
+            DatasetRelationship(to="customers", from_columns=[pair[0]], to_columns=[pair[1]])
 
     def test_dotted_target_entry_rejected(self):
         with pytest.raises(ValueError, match=r"must not contain '\.'"):
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "c.id"]])
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["c.id"])
 
     def test_model_validate_path_rejects_too(self):
         with pytest.raises(ValueError, match="key 'customer_id'"):
             SlayerDataset.model_validate({
                 "name": "orders", "data_source": "test", "sql_table": "orders",
-                "fields": [{"name": "id", "datatype": "INT", "primary_key": True}],
+                "fields": [{"name": "id", "datatype": "Integer", "primary_key": True}],
                 "relationships": [{"to": "customers",
-                           "join_pairs": [["customer_id", "id"]]}],
+                           "from_columns": ["customer_id"], "to_columns": ["id"]}],
             })
 
 
 class TestExtensionOverlay:
     def test_extension_join_with_undeclared_key_rejected(self):
-        ext = DatasetExtension(source_name="orders", relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])])
+        ext = DatasetExtension(dataset="orders", relationships=[
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])])
         base = orders_dataset()
         with pytest.raises(ValueError, match="relationship orders → regions key 'region_id'"):
             apply_extension_overlay(base, ext)
@@ -177,9 +177,9 @@ class TestExtensionOverlay:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "extensions": [DatasetExtension(source_name="orders", relationships=[
-                    DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])])],
-                "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+                "extensions": [DatasetExtension(dataset="orders", relationships=[
+                    DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])])],
+                "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
                 "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):
                 await engine.execute(query, dry_run=True)
@@ -191,7 +191,7 @@ class TestTargetSide:
             storage = SQLiteStorage(db_path=os.path.join(d, "store.db"))
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
             await storage.save_dataset(_customers(
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="code", sql="UPPER(code_raw)")))
             engine = SlayerQueryEngine(storage=storage)
             orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
@@ -260,15 +260,15 @@ class TestPhysicalJoinPairs:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
             await storage.save_dataset(_customers(
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="name")), _validate=False)
             await storage.save_dataset(_orders(
-                DatasetField(name="customer_id"), DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="customer_id"), DatasetField(name="amount", datatype=DataType.FLOAT),
                 pairs=[["customer_id", "cust_key"]]), _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["customers.name"],
-                "metrics": [{"expression": "sum(amount)", "name": "amt"}]})
+                "metrics": [{"metric": "sum(amount)", "alias": "amt"}]})
             with pytest.raises(RelationshipKeyError, match="'cust_key'"):
                 await engine.execute(query, dry_run=True)
 
@@ -276,12 +276,12 @@ class TestPhysicalJoinPairs:
 def _parties(*key: DatasetField) -> SlayerDataset:
     return SlayerDataset(
         name="parties", data_source="test", sql_table="parties",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), *key],
-        relationships=[DatasetRelationship(to="entities", join_pairs=[[key[0].name, "code"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), *key],
+        relationships=[DatasetRelationship(to="entities", from_columns=[key[0].name], to_columns=["code"])],
     )
 
 
-_LIVE = LiveTable(columns={"id": DataType.INT, "legalEntityType": DataType.TEXT})
+_LIVE = LiveTable(columns={"id": DataType.INTEGER, "legalEntityType": DataType.STRING})
 
 
 class TestDriftAndRefinement:
@@ -311,17 +311,17 @@ class TestDriftAndRefinement:
         """A dropped local key (PK or not) takes its join with it."""
         orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="cust_id", datatype=DataType.INT)],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[[key, "id"]])],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="cust_id", datatype=DataType.INTEGER)],
+            relationships=[DatasetRelationship(to="customers", from_columns=[key], to_columns=["id"])],
         )
         customers = SlayerDataset(
             name="customers", data_source="test", sql_table="customers",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         )
-        live = LiveTable(columns={c: DataType.INT for c in ("id", "cust_id") if c != key})
+        live = LiveTable(columns={c: DataType.INTEGER for c in ("id", "cust_id") if c != key})
         diffs = {m.name: diff_sql_table_dataset(
-            dataset=m, live_table=live if m is orders else LiveTable(columns={"id": DataType.INT}),
+            dataset=m, live_table=live if m is orders else LiveTable(columns={"id": DataType.INTEGER}),
             available_datasets_in_ds={"orders", "customers"}) for m in (orders, customers)}
         entries = compute_datasource_drops(
             datasets=[orders, customers], sql_table_diffs=diffs, sql_diffs={})
@@ -338,7 +338,7 @@ class TestDriftAndRefinement:
                 conn.executemany("INSERT INTO items VALUES (?, ?)", [(1, 10), (2, 20)])
             doc = {
                 "name": "items", "sql_table": "items", "data_source": "live",
-                "fields": [{"name": "quantity", "sql": '"qty"', "datatype": "DOUBLE"}],
+                "fields": [{"name": "quantity", "sql": '"qty"', "datatype": "Float"}],
             }
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
             client = SlayerSQLClient(datasource=ds)
@@ -348,7 +348,7 @@ class TestDriftAndRefinement:
                 client.close()
                 engine_factory.invalidate_engine(ds)
             assert changed is True
-            assert doc["fields"][0]["datatype"] == "INT"
+            assert doc["fields"][0]["datatype"] == "Integer"
 
     def test_detection_profiles_renamed_base_keys(self):
         assert _detection_skip_reason(
@@ -356,7 +356,7 @@ class TestDriftAndRefinement:
             src_cols=["customer_id"], tgt_cols=["id"]) is None
 
     def test_detection_skips_non_base_target_key(self):
-        target = _customers(DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        target = _customers(DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                             DatasetField(name="code", sql="UPPER(code_raw)"))
         orders = _orders(DatasetField(name="customer_code"), pairs=[["customer_code", "code"]])
         note = _detection_skip_reason(

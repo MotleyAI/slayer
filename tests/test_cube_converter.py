@@ -47,7 +47,7 @@ def test_cube_becomes_table_backed_model():
     assert orders.data_source == DS
     assert orders.description == "Customer orders"
     assert column(orders, "id").primary_key is True
-    assert column(orders, "id").datatype == DataType.DOUBLE
+    assert column(orders, "id").datatype == DataType.FLOAT
 
 
 def test_public_false_dimension_is_hidden():
@@ -111,7 +111,7 @@ def test_sum_measure_splits_column_and_modelmeasure_with_currency_format():
     assert m.expression.startswith("sum(")
     assert m.label == "Total Revenue"
     col = _metric_field(orders, "total_revenue")
-    assert col.datatype == DataType.DOUBLE
+    assert col.datatype == DataType.FLOAT
     assert col.format is not None
     assert col.format.type == NumberFormatType.CURRENCY
 
@@ -205,10 +205,10 @@ def test_unbounded_rolling_window_falls_back_and_reports():
 # ── 4.3 dimensions ─────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("cube_type,expected", [
-    ("string", DataType.TEXT),
-    ("number", DataType.DOUBLE),
+    ("string", DataType.STRING),
+    ("number", DataType.FLOAT),
     ("boolean", DataType.BOOLEAN),
-    ("time", DataType.TIMESTAMP),
+    ("time", DataType.DATETIME),
 ])
 def test_dimension_type_mapping(cube_type, expected):
     project = CubeProject(cubes=[CubeCube(
@@ -293,7 +293,7 @@ def test_custom_granularities_emit_base_column_and_report():
                                                   "offset": "3 months"}])],
     )])
     models, report = convert(project)
-    assert column(models["orders"], "created_at").datatype == DataType.TIMESTAMP
+    assert column(models["orders"], "created_at").datatype == DataType.DATETIME
     assert any(i.category == CubeIssueCategory.GRANULARITY_UNMAPPED for i in report.issues)
 
 
@@ -313,7 +313,7 @@ def test_join_becomes_left_modeljoin_with_pairs():
     joins = models["orders"].relationships
     assert len(joins) == 1
     assert joins[0].to == "customers"
-    assert joins[0].join_pairs == [["customer_id", "id"]]
+    assert joins[0].column_pairs == [("customer_id", "id")]
     assert joins[0].join_type == JoinType.LEFT
 
 
@@ -410,8 +410,8 @@ def test_simple_aggregation_passthrough(agg):
 
 
 @pytest.mark.parametrize("cube_type,expected", [
-    ("string", DataType.TEXT),
-    ("time", DataType.TIMESTAMP),
+    ("string", DataType.STRING),
+    ("time", DataType.DATETIME),
     ("boolean", DataType.BOOLEAN),
 ])
 def test_calculated_measure_result_type_is_set(cube_type, expected):
@@ -464,7 +464,7 @@ def test_join_member_resolves_to_physical_column():
                                            type="number", primary_key=True)]),
     ])
     models, _ = convert(project)
-    assert models["orders"].relationships[0].join_pairs == [["customer_id", "id"]]
+    assert models["orders"].relationships[0].column_pairs == [("customer_id", "id")]
     pk = column(models["customers"], "id")
     assert pk is not None
     assert pk.sql == "cust_pk"
@@ -573,7 +573,7 @@ def test_join_operand_naming_no_member_synthesises_hidden_column():
                                            primary_key=True)]),
     ])
     models, _ = convert(project)
-    assert models["orders"].relationships[0].join_pairs == [["customer_id", "legacy_id"]]
+    assert models["orders"].relationships[0].column_pairs == [("customer_id", "legacy_id")]
     for model, key in ((models["orders"], "customer_id"), (models["customers"], "legacy_id")):
         col = column(model, key)
         assert col is not None

@@ -12,9 +12,10 @@ import pytest
 
 from slayer.core.errors import SlayerError
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
-    DatasetMetric,
     TimeDimension,
     TimeGranularity,
     assoc_q,
@@ -30,7 +31,7 @@ from tests._dev1892_fixtures import (
     ASSOC_WSUM_BY_STATUS,
 )
 
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 #: Must name the association concept — a generic ranked/time-dimension rejection
 #: (which would fire before association eligibility) must NOT satisfy it.
 _COMBO = re.compile(r"associat|attribut|distinct.entity|combination", re.IGNORECASE)
@@ -72,7 +73,7 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            metrics=[DatasetMetric(expression="last(customers.spend)", name="lastspend")])
+            metrics=[QueryMetric(metric="last(customers.spend)", alias="lastspend")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -83,8 +84,8 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, window='90d')", name="win")])
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, window='90d')", alias="win")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -103,7 +104,7 @@ class TestMissingUniqueKey:
 class TestUnsafeInputInAssociate:
     """Input safety is mode-invariant: a crossing-hop input rejected on the broadcast/error path is rejected before association too."""
 
-    VIP = DatasetMetric(expression="sum(customers.vip_spend)", name="vip")
+    VIP = QueryMetric(metric="sum(customers.vip_spend)", alias="vip")
 
     async def test_crossing_input_rejected_in_associate(self, exec_backend_crossing):
         _, engine = exec_backend_crossing
@@ -121,9 +122,9 @@ class TestColumnReferenceParameter:
     """A column-reference parameter is picked once per distinct entity: the explicit
     weight and the definition default both execute."""
 
-    WAVG = DatasetMetric(
-        expression="weighted_avg(customers.spend, weight=customers.spend)", name="wavg")
-    WSUM = DatasetMetric(expression="wsum(customers.spend)", name="wsum")
+    WAVG = QueryMetric(
+        metric="weighted_avg(customers.spend, weight=customers.spend)", alias="wavg")
+    WSUM = QueryMetric(metric="wsum(customers.spend)", alias="wsum")
 
     async def test_explicit_column_param_executes(self, exec_backend):
         _, engine = exec_backend

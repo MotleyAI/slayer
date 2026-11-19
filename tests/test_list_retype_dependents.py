@@ -43,7 +43,7 @@ LIVE = (
 )
 TAGS = "contractors.tags"
 NT = DatasetMetric(name="nt", expression="max(tags)")
-FIRST_TAG = DatasetField(name="first_tag", sql="upper(tags)", datatype=DataType.TEXT)
+FIRST_TAG = DatasetField(name="first_tag", sql="upper(tags)", datatype=DataType.STRING)
 BY_TAG = {"population": "contractors", "metrics": ["count(*)"], "filter": ["tags = 'go'"]}
 
 Key = tuple[str, str, str]
@@ -52,27 +52,27 @@ Key = tuple[str, str, str]
 def contractors(*, columns: tuple[DatasetField, ...] = (), metrics: tuple[DatasetMetric, ...] = (NT,),
                 filters: tuple[str, ...] = ()) -> SlayerDataset:
     return SlayerDataset(name="contractors", sql_table="contractors", data_source="ds", filters=list(filters), fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT),
-        DatasetField(name="tags", datatype=DataType.TEXT), *columns], metrics=list(metrics))
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING),
+        DatasetField(name="tags", datatype=DataType.STRING), *columns], metrics=list(metrics))
 
 
 def orders(*, columns: tuple[DatasetField, ...] = (), metrics: tuple[DatasetMetric, ...] = ()) -> SlayerDataset:
     return SlayerDataset(name="orders", sql_table="orders", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="contractor_id", datatype=DataType.INT),
-        DatasetField(name="amount", datatype=DataType.DOUBLE), *columns], metrics=list(metrics),
-        relationships=[DatasetRelationship(to="contractors", join_pairs=[["contractor_id", "id"]])])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="contractor_id", datatype=DataType.INTEGER),
+        DatasetField(name="amount", datatype=DataType.FLOAT), *columns], metrics=list(metrics),
+        relationships=[DatasetRelationship(to="contractors", from_columns=["contractor_id"], to_columns=["id"])])
 
 
 def notes() -> SlayerDataset:
     return SlayerDataset(name="notes", sql_table="notes", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="tags", datatype=DataType.TEXT)],
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="tags", datatype=DataType.STRING)],
         metrics=[DatasetMetric(name="nn", expression="max(tags)")])
 
 
 def skills(*, metrics: tuple[DatasetMetric, ...]) -> SlayerDataset:
     return SlayerDataset(name="skills", sql_table="skills", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="langs", datatype=DataType.TEXT),
-        DatasetField(name="tools", datatype=DataType.TEXT)], metrics=list(metrics))
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="langs", datatype=DataType.STRING),
+        DatasetField(name="tools", datatype=DataType.STRING)], metrics=list(metrics))
 
 
 async def _seed(base: str, *, datasets: tuple[SlayerDataset, ...],
@@ -154,7 +154,7 @@ class TestReported:
         async with _env(contractors(), saved={"by_tag": BY_TAG}) as env:
             result = await env.reingest()
             tags = await env.field("contractors", "tags")
-        assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
         broken = _by_key(result)
         for key in (("contractors", "metric", "nt"), ("by_tag", "saved_query", "by_tag")):
             assert key in broken, broken
@@ -249,7 +249,7 @@ class TestNotReported:
     @pytest.mark.parametrize("marker", ["notes", "label"])
     async def test_a_name_mention_that_is_no_reference_is_not_checked(self, monkeypatch: pytest.MonkeyPatch,
                                                                      marker: str) -> None:
-        label = DatasetField(name="label", sql="'tags'", datatype=DataType.TEXT)
+        label = DatasetField(name="label", sql="'tags'", datatype=DataType.STRING)
         _refuse_planning(monkeypatch, marker)
         async with _env(contractors(), orders(columns=(label,)), notes()) as env:
             result = await env.reingest()

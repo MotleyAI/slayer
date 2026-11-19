@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 
 _CANNOT_NAME = re.compile(r"can(?:'|no)t name")
 
@@ -18,7 +18,8 @@ def build(**kw: Any) -> SlayerQuery:
 
 def test_string_dimension_with_placeholder() -> None:
     q = build(dimensions=["amount * {k}"])
-    assert q.dimensions == [ComputedDimension(expression="amount * {k}", name="amount_k")]
+    assert q.dimensions == [QueryDimension(field="amount * {k}")]
+    assert [d.name for d in q.dimensions or []] == ["amount_k"]
 
 
 def test_order_expression_with_placeholder() -> None:

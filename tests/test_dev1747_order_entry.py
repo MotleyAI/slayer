@@ -21,7 +21,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity
 from slayer.ir.planned import OrderEntry
 from slayer.engine.plan import plan_query
@@ -33,7 +33,7 @@ from slayer.core.keys import AggregateKey
 from slayer.core.keys import FieldKey
 from slayer.core.keys import Phase
 
-_MEASURE = [{"expression": "sum(amount)", "name": "rev"}]
+_MEASURE = [{"metric": "sum(amount)", "alias": "rev"}]
 
 
 def _plan(query: SlayerQuery):
@@ -99,18 +99,18 @@ class TestScopeClassification:
     def test_projected_dimension_is_host_base(self) -> None:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
-            order=[OrderItem(field=FieldRef(name="status"), direction="asc")],
+            order=[OrderItem(field="status", direction="asc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE
 
     def test_projected_measure_is_host_base(self) -> None:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
-            order=[OrderItem(field=FieldRef(name="rev"), direction="desc")],
+            order=[OrderItem(field="rev", direction="desc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE
 
@@ -119,21 +119,21 @@ class TestScopeClassification:
         the distinction the ``bare_ids`` set encodes at render time today."""
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         ))
         assert entry.scope is OrderScope.HOST_BASE_HIDDEN
 
     def test_cross_model_aggregate_is_cross_model_cte(self) -> None:
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                {"expression": "sum(amount)", "name": "rev"},
-                {"expression": "sum(customers.spend)", "name": "cs"},
+                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
-            order=[OrderItem(field=FieldRef(name="cs"), direction="desc")],
+            order=[OrderItem(field="cs", direction="desc")],
         ))
         assert entry.scope is OrderScope.CROSS_DATASET_CTE
 
@@ -145,14 +145,14 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(field=FieldRef(name="w"), direction="desc")]}))
+            )], "metrics": [{"metric": "sum(amount, window='90d')", "alias": "w"}], "order": [OrderItem(field="w", direction="desc")]}))
         assert entry.scope is OrderScope.CROSS_DATASET_CTE
 
     def test_transform_measure_is_transform_step(self) -> None:
         entry = _sole_scoped(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="asc")]}))
+            )], "metrics": [{"metric": "cumsum(sum(amount))", "alias": "cs"}], "order": [OrderItem(field="cs", direction="asc")]}))
         assert entry.scope is OrderScope.TRANSFORM_STEP
 
     def test_composite_over_a_cross_model_operand_is_outer_composite(self) -> None:
@@ -166,9 +166,9 @@ class TestScopeClassification:
         ``_resolve_combined_order_term``'s precedence chain gets wrong."""
         entry = _sole_scoped(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [FieldRef(name="status")],
-            "metrics": [{"expression": "sum(customers.spend) + sum(amount)", "name": "mix"}],
-            "order": [OrderItem(field=FieldRef(name="mix"), direction="desc")],
+            "dimensions": [QueryDimension(field="status")],
+            "metrics": [{"metric": "sum(customers.spend) + sum(amount)", "alias": "mix"}],
+            "order": [OrderItem(field="mix", direction="desc")],
         }))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
 
@@ -178,7 +178,7 @@ class TestScopeClassification:
         silently substitute a plain aggregate for the cross-model one."""
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[OrderItem.model_validate({"field": "sum(customers.spend) + sum(amount)", "direction": "desc"})],
         ))
@@ -189,10 +189,10 @@ class TestScopeClassification:
         CTE-qualified — not as a bare ``_base`` alias."""
         entry = _sole_scoped(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[OrderItem(
-                field=FieldRef(name="name", dataset="customers.regions"),
+                field="customers.regions.name",
                 direction="asc",
             )],
         ))
@@ -207,9 +207,9 @@ class TestPhaseAndDirection:
 
         entry = _sole_entry(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
-            order=[OrderItem(field=FieldRef(name="status"), direction="asc")],
+            order=[OrderItem(field="status", direction="asc")],
         ))
         assert entry.phase is Phase.ROW
 
@@ -217,21 +217,21 @@ class TestPhaseAndDirection:
 
         entry = _sole_entry(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
-            order=[OrderItem(field=FieldRef(name="rev"), direction="desc")],
+            order=[OrderItem(field="rev", direction="desc")],
         ))
         assert entry.phase is Phase.AGGREGATE
 
     def test_multiple_entries_keep_their_own_scope_and_direction(self) -> None:
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[
-                OrderItem(field=FieldRef(name="status"), direction="asc"),
-                OrderItem(field=FieldRef(name="rev"), direction="desc"),
-                OrderItem(field=FieldRef(name="created_at"), direction="asc"),
+                OrderItem(field="status", direction="asc"),
+                OrderItem(field="rev", direction="desc"),
+                OrderItem(field="created_at", direction="asc"),
             ],
         ))
         assert [e.direction for e in plan.order] == ["asc", "desc", "asc"]
@@ -248,10 +248,10 @@ class TestDirectionAwareWrapIsPlanned:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[OrderItem(
-                field=FieldRef(name="created_at"), direction=direction,
+                field="created_at", direction=direction,
             )],
         ))
         return [
@@ -271,11 +271,11 @@ class TestDirectionAwareWrapIsPlanned:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[
-                OrderItem(field=FieldRef(name="created_at"), direction="asc"),
-                OrderItem(field=FieldRef(name="created_at"), direction="desc"),
+                OrderItem(field="created_at", direction="asc"),
+                OrderItem(field="created_at", direction="desc"),
             ],
         ))
         aggs = sorted(
@@ -294,10 +294,10 @@ class TestHostGrainMarker:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
             order=[OrderItem(
-                field=FieldRef(name="name", dataset="customers.regions"),
+                field="customers.regions.name",
                 direction="asc",
             )],
         ))
@@ -313,9 +313,9 @@ class TestHostGrainMarker:
 
         plan = _plan(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=_MEASURE,
-            order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+            order=[OrderItem(field="created_at", direction="asc")],
         ))
         wraps = [
             s.key for s in plan.aggregate_slots
@@ -342,7 +342,7 @@ class TestHostGrainMarker:
 # ---------------------------------------------------------------------------
 _GROUPED_HEAD = {
     "population": "orders",
-    "dimensions": [FieldRef(name="status")],
+    "dimensions": [QueryDimension(field="status")],
 }
 
 #: ``locus="host"`` + non-empty ``source.path`` — the NEW branch. Today the
@@ -351,7 +351,7 @@ _GROUPED_HEAD = {
 _HOST_GRAIN_WITH_PATH = SlayerQuery(
     **_GROUPED_HEAD, metrics=_MEASURE,
     order=[OrderItem(
-        field=FieldRef(name="name", dataset="customers.regions"), direction="asc",
+        field="customers.regions.name", direction="asc",
     )],
 )
 
@@ -359,8 +359,8 @@ _HOST_GRAIN_WITH_PATH = SlayerQuery(
 _TARGET_GRAIN_WITH_PATH = SlayerQuery(
     **_GROUPED_HEAD,
     metrics=[
-        {"expression": "sum(amount)", "name": "rev"},
-        {"expression": "sum(customers.spend)", "name": "cs"},
+        {"metric": "sum(amount)", "alias": "rev"},
+        {"metric": "sum(customers.spend)", "alias": "cs"},
     ],
 )
 
@@ -368,7 +368,7 @@ _TARGET_GRAIN_WITH_PATH = SlayerQuery(
 #: works. Included so the matrix proves D2 does not disturb it.
 _HOST_GRAIN_CROSSING_INPUT = SlayerQuery(
     **_GROUPED_HEAD, metrics=_MEASURE,
-    order=[OrderItem(field=FieldRef(name="cust_region"), direction="asc")],
+    order=[OrderItem(field="cust_region", direction="asc")],
 )
 
 

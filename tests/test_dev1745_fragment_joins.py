@@ -32,7 +32,7 @@ from slayer.core.models import (
     DatasetRelationship,
     SlayerDataset,
 )
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import parse_expr
@@ -53,8 +53,8 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
     )
 
@@ -63,11 +63,11 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         aggregations=[
             Aggregation(
                 name="wscaled_sum", expression="SUM({value} * {w})",
@@ -81,13 +81,13 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
@@ -99,13 +99,13 @@ def _orders_local_agg() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
         aggregations=[
             Aggregation(
@@ -186,9 +186,9 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[ComputedDimension(expression="status", name="status")],
+                dimensions=[QueryDimension(field="status", alias="status")],
                 metrics=[{
-                    "expression": "wscaled_sum(customers.spend)", "name": "m0",
+                    "metric": "wscaled_sum(customers.spend)", "alias": "m0",
                 }],
             ),
             dataset=_orders(),
@@ -208,10 +208,10 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[ComputedDimension(expression="status", name="status")],
+                dimensions=[QueryDimension(field="status", alias="status")],
                 metrics=[
-                    {"expression": "wscaled_sum(customers.spend)", "name": "m0"},
-                    {"expression": "sum(amount)", "name": "m1"},
+                    {"metric": "wscaled_sum(customers.spend)", "alias": "m0"},
+                    {"metric": "sum(amount)", "alias": "m1"},
                 ],
             ),
             dataset=_orders(),
@@ -234,8 +234,8 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"expression": "status", "name": "status"}],
-                "metrics": [{"expression": "wscaled_sum(amount)", "name": "m0"}],
+                "dimensions": [{"field": "status", "alias": "status"}],
+                "metrics": [{"metric": "wscaled_sum(amount)", "alias": "m0"}],
             }),
             dataset=_orders_local_agg(),
         )
@@ -246,10 +246,10 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[ComputedDimension(expression="status", name="status")],
+                dimensions=[QueryDimension(field="status", alias="status")],
                 metrics=[{
-                    "expression": "wscaled_sum(amount, w='customers.regions.weight')",
-                    "name": "m0",
+                    "metric": "wscaled_sum(amount, w='customers.regions.weight')",
+                    "alias": "m0",
                 }],
             ),
             dataset=_orders_local_agg(),
@@ -264,8 +264,8 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
     sql = await _sql(
         SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "status", "name": "status"}],
-            "metrics": [{"expression": "wscaled_sum(customers.spend)", "name": "m0"}],
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "wscaled_sum(customers.spend)", "alias": "m0"}],
         }),
         dataset=_orders(), dialect="duckdb",
     )

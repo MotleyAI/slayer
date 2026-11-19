@@ -25,8 +25,8 @@ from __future__ import annotations
 import re
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _engine_generate
 
@@ -35,12 +35,12 @@ async def _gen(expression: str) -> str:
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="t",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amt", sql="amount", datatype=DataType.DOUBLE, filter="region = 'US'"),
-            DatasetField(name="cust", sql="customer_id", datatype=DataType.INT, filter="region = 'US'"),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amt", sql="amount", datatype=DataType.FLOAT, filter="region = 'US'"),
+            DatasetField(name="cust", sql="customer_id", datatype=DataType.INTEGER, filter="region = 'US'"),
         ],
     )
-    q = SlayerQuery(population="orders", metrics=[DatasetMetric(expression=expression)])
+    q = SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression)])
     return await _engine_generate(query=q, dataset=model, dialect="postgres")
 
 

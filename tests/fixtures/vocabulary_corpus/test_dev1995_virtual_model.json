@@ -68,8 +68,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(spend)",
-      "name": "c"
+      "metric": "sum(spend)",
+      "alias": "c"
      }
     ]
    }

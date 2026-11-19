@@ -21,10 +21,9 @@ from slayer.core.models import (
     AggregationParam,
     DatasetField,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -56,9 +55,9 @@ def customers_dataset(*, keyed: bool = False, unique: bool = False) -> SlayerDat
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=keyed, unique=unique),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=keyed, unique=unique),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
         ],
         aggregations=[
             Aggregation(name="wsum", expression="SUM({value} * {weight})",
@@ -71,12 +70,12 @@ def orders_dataset(*, cardinality: RelationshipCardinality | None = None) -> Sla
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                          cardinality=cardinality)],
     )
 
@@ -140,8 +139,8 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def metric(expression: str, name: str) -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def metric(expression: str, name: str) -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def cells(resp: SlayerResponse, dim: str, value: str) -> dict:

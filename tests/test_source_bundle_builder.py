@@ -35,9 +35,9 @@ def _regions() -> SlayerDataset:
         data_source="prod",
         sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="population", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.INTEGER),
         ],
     )
 
@@ -48,12 +48,12 @@ def _customers(*, query_variables: dict | None = None) -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         query_variables=query_variables or {},
     )
 
@@ -64,10 +64,10 @@ def _warehouses() -> SlayerDataset:
         data_source="prod",
         sql_table="warehouses",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -77,15 +77,15 @@ def _orders(*, query_variables: dict | None = None) -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="warehouse_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
         query_variables=query_variables or {},
     )
@@ -96,7 +96,7 @@ def _audit() -> SlayerDataset:
         name="audit",
         data_source="prod",
         sql_table="audit",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 
@@ -107,9 +107,9 @@ def _bare() -> SlayerDataset:
         data_source="prod",
         sql_table="bare",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="audit_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="audit_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
@@ -145,7 +145,7 @@ class TestSourceModelShapes:
     async def test_model_extension_overlay(self, tmp_path):
         storage = await _storage(tmp_path, _regions(), _customers(), _orders())
         ext = DatasetExtension(
-            source_name="orders",
+            dataset="orders",
             metrics=[DatasetMetric(name="discount", expression="sum(amount)")],
             relationships=[],
         )
@@ -162,7 +162,7 @@ class TestSourceModelShapes:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "extensions": [{
-                "source_name": "orders",
+                "dataset": "orders",
                 "metrics": [{"name": "discount", "expression": "sum(amount)"}],
             }],
         })
@@ -297,7 +297,7 @@ class TestMultiStage:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
         root = SlayerQuery(population="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -315,7 +315,7 @@ class TestMultiStage:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
         root = SlayerQuery(population="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -332,7 +332,7 @@ class TestMultiStage:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
         root = SlayerQuery(population="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -352,8 +352,8 @@ class TestMultiStage:
             name="aux",
             population="bare",
             extensions=[DatasetExtension(
-                source_name="bare",
-                relationships=[DatasetRelationship(to="audit", join_pairs=[["audit_id", "id"]])],
+                dataset="bare",
+                relationships=[DatasetRelationship(to="audit", from_columns=["audit_id"], to_columns=["id"])],
             )],
             dimensions=["status"],
         )
@@ -407,14 +407,14 @@ class TestStorageReadEconomy:
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
-        root = SlayerQuery.model_validate({"population": "stage_a", "metrics": [{"expression": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "stage_a", "metrics": [{"metric": "count(*)"}]})
         await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage,
             named_queries={"stage_a": stage_a, "stage_b": stage_b},

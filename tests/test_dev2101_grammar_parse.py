@@ -23,12 +23,12 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="prod", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.DOUBLE),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
         aggregations=[Aggregation(
             name="wsum", expression="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="1")],

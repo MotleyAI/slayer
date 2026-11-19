@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customer__region",
-    "join_pairs": [
-     [
-      "cr_id",
-      "id"
-     ]
+    "from_columns": [
+     "cr_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -42,7 +42,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -60,11 +60,11 @@
    },
    "new": {
     "to": "household_entity_record_north",
-    "join_pairs": [
-     [
-      "north_id",
-      "id"
-     ]
+    "from_columns": [
+     "north_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -81,11 +81,11 @@
    },
    "new": {
     "to": "household_entity_record_south",
-    "join_pairs": [
-     [
-      "south_id",
-      "id"
-     ]
+    "from_columns": [
+     "south_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -102,11 +102,11 @@
    },
    "new": {
     "to": "consumer_entity_record",
-    "join_pairs": [
-     [
-      "consumer_id",
-      "id"
-     ]
+    "from_columns": [
+     "consumer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -123,11 +123,11 @@
    },
    "new": {
     "to": "customer_entity_record",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

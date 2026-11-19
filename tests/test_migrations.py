@@ -317,7 +317,7 @@ def test_model_v1_to_v2_dimensions_only() -> None:
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.fields] == ["status", "id"]
-    assert m.fields[0].datatype.value == "TEXT"
+    assert m.fields[0].datatype.value == "String"
     assert m.fields[1].primary_key is True
     assert m.metrics == []
 
@@ -337,7 +337,7 @@ def test_model_v1_to_v2_measures_only() -> None:
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.fields] == ["revenue", "high_value"]
-    assert all(c.datatype.value == "DOUBLE" for c in m.fields)
+    assert all(c.datatype.value == "Float" for c in m.fields)
     assert all(c.primary_key is False for c in m.fields)
     assert m.fields[1].filter == "amount > 100"
     assert m.fields[1].allowed_aggregations == ["sum"]
@@ -381,7 +381,7 @@ def test_model_v1_to_v2_legacy_type_alias() -> None:
     })
     col = m.fields[0]
     assert col.name == "revenue"
-    assert col.datatype.value == "DOUBLE"  # default after stripping legacy `type: sum`
+    assert col.datatype.value == "Float"  # default after stripping legacy `type: sum`
     assert col.allowed_aggregations == ["sum"]
 
 
@@ -454,8 +454,8 @@ def test_query_v1_to_v2_fields_renamed() -> None:
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     assert q.metrics is not None
-    assert q.metrics[0].expression == "sum(revenue)"
-    assert q.metrics[0].name == "rev"
+    assert q.metrics[0].metric == "sum(revenue)"
+    assert q.metrics[0].alias == "rev"
 
 
 def test_query_v1_to_v2_both_fields_and_measures_raises() -> None:
@@ -483,7 +483,7 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
     assert q["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
     assert q["population"] == "orders"
     (sm,) = q["extensions"]
-    assert sm["source_name"] == "orders"
+    assert sm["dataset"] == "orders"
     assert [c["name"] for c in sm["columns"]] == ["region", "revenue"]
     assert sm["metrics"] == []
 
@@ -532,8 +532,8 @@ def test_model_v1_to_v2_source_queries_nested_rename() -> None:
     # renamed to 'measures' and version bumped to current.
     assert isinstance(inner, SlayerQuery)
     assert inner.metrics is not None
-    assert inner.metrics[0].expression == "sum(revenue)"
-    assert inner.metrics[0].name == "rev"
+    assert inner.metrics[0].metric == "sum(revenue)"
+    assert inner.metrics[0].alias == "rev"
     assert inner.version == mig.CURRENT_VERSIONS["SlayerQuery"]
 
 
@@ -580,8 +580,8 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
     inner = m.source_queries[0]
     assert isinstance(inner, SlayerQuery)
     assert inner.metrics is not None
-    assert inner.metrics[0].expression == "sum(revenue)"
-    assert inner.metrics[0].name == "rev"
+    assert inner.metrics[0].metric == "sum(revenue)"
+    assert inner.metrics[0].alias == "rev"
 
 
 async def test_v1_yaml_round_trip_to_v2() -> None:
@@ -812,8 +812,8 @@ async def _build_engine_with_orders(tmpdir: str):
         sql_table="public.orders",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     ))
     return SlayerQueryEngine(storage=storage)
@@ -822,7 +822,7 @@ async def _build_engine_with_orders(tmpdir: str):
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "count(*)"}]})
         result = await engine.execute(query=q, dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
@@ -832,7 +832,7 @@ async def test_engine_dry_run_kwarg_dict_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
-            query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"metric": "count(*)"}]},
             dry_run=True,
         )
         assert result.data == []
@@ -845,7 +845,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
             query=[
-                {"population": "orders", "metrics": [{"expression": "count(*)"}]},
+                {"population": "orders", "metrics": [{"metric": "count(*)"}]},
             ],
             dry_run=True,
         )
@@ -930,7 +930,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
         })
-        assert d["fields"][0]["datatype"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "Float"
 
     def test_integer_renames_to_int(self) -> None:
         # v4 never shipped INTEGER but we accept lenient input on the path.
@@ -939,7 +939,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "qty", "sql": "qty", "type": "integer"}],
         })
-        assert d["fields"][0]["datatype"] == "INT"
+        assert d["fields"][0]["datatype"] == "Integer"
 
     def test_time_renames_to_timestamp(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -947,7 +947,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "ts", "sql": "ts", "type": "time"}],
         })
-        assert d["fields"][0]["datatype"] == "TIMESTAMP"
+        assert d["fields"][0]["datatype"] == "DateTime"
 
     def test_date_renames_to_date(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -955,7 +955,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "d", "sql": "d", "type": "date"}],
         })
-        assert d["fields"][0]["datatype"] == "DATE"
+        assert d["fields"][0]["datatype"] == "Date"
 
     def test_boolean_renames_to_boolean(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -963,7 +963,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "flag", "sql": "flag", "type": "boolean"}],
         })
-        assert d["fields"][0]["datatype"] == "BOOLEAN"
+        assert d["fields"][0]["datatype"] == "Boolean"
 
     @pytest.mark.parametrize("pseudo", ["count", "count_distinct", "sum", "avg", "min", "max", "last"])
     def test_pseudo_types_stripped(self, pseudo: str) -> None:
@@ -1008,9 +1008,9 @@ class TestV4ToV5DictMigration:
                 {"name": "ts", "sql": "ts", "type": "time"},
             ],
         })
-        assert m.fields[0].datatype.name == "TEXT"
-        assert m.fields[1].datatype.name == "DOUBLE"
-        assert m.fields[2].datatype.name == "TIMESTAMP"
+        assert m.fields[0].datatype.name == "STRING"
+        assert m.fields[1].datatype.name == "FLOAT"
+        assert m.fields[2].datatype.name == "DATETIME"
 
     def test_v5_dict_passes_through_v4_to_v5_step_unchanged(self) -> None:
         """The v4→v5 step is a no-op for v5 input (called directly; the orchestrator never would)."""

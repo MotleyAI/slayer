@@ -25,10 +25,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.search.service import SearchService
@@ -96,25 +95,25 @@ def _make_datasets() -> list[SlayerDataset]:
                 "and tax detail."
             ),
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
-                    name="customer_id", datatype=DataType.INT,
+                    name="customer_id", datatype=DataType.INTEGER,
                     description="FK to customers.id, NULL for anonymous.",
                 ),
                 DatasetField(
-                    name="amount_paid", datatype=DataType.DOUBLE,
+                    name="amount_paid", datatype=DataType.FLOAT,
                     description="Net paid in cents.",
                 ),
                 DatasetField(
-                    name="status", datatype=DataType.TEXT,
+                    name="status", datatype=DataType.STRING,
                     description="paid|refunded|cancelled|abandoned.",
                 ),
                 DatasetField(
-                    name="shipped_at", datatype=DataType.TIMESTAMP,
+                    name="shipped_at", datatype=DataType.DATETIME,
                     description="When the order shipped from warehouse.",
                 ),
                 DatasetField(
-                    name="discount_code", datatype=DataType.TEXT,
+                    name="discount_code", datatype=DataType.STRING,
                     description="Optional promotional discount code.",
                 ),
             ],
@@ -125,13 +124,13 @@ def _make_datasets() -> list[SlayerDataset]:
             data_source="warehouse",
             description="Customer master data.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(
-                    name="email", datatype=DataType.TEXT,
+                    name="email", datatype=DataType.STRING,
                     description="Customer email; NULL for anonymous.",
                 ),
                 DatasetField(
-                    name="customer_tier", datatype=DataType.TEXT,
+                    name="customer_tier", datatype=DataType.STRING,
                     description="Tier: gold|silver|standard.",
                 ),
             ],
@@ -142,8 +141,8 @@ def _make_datasets() -> list[SlayerDataset]:
             data_source="warehouse",
             description="Physical warehouses for fulfilment.",
             fields=[
-                DatasetField(name="code", datatype=DataType.TEXT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="code", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -195,7 +194,7 @@ async def _seed_invariance_corpus(storage: StorageBackend) -> None:
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="sum(amount_paid)")],
+                metrics=[QueryMetric(metric="sum(amount_paid)")],
             ),
         )
 

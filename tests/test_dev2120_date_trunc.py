@@ -75,7 +75,7 @@ class TestPositions:
         assert trunc.sql == explicit.sql
 
     async def test_aggregation_source(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_q(metrics=[{"expression": "max(date_trunc('month', ts))", "name": "v"}]))
+        resp = await engine.execute(_q(metrics=[{"metric": "max(date_trunc('month', ts))", "alias": "v"}]))
         assert str(resp.data[0]["lib.v"])[:10] == "2025-06-01"
 
     async def test_arithmetic(self, engine: SlayerQueryEngine) -> None:

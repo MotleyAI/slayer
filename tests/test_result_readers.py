@@ -78,7 +78,7 @@ def test_an_untyped_cursor_column_holding_lists_is_a_list() -> None:
     result = _Result(["l", "n"], [None, None], [(["go", "sql"], 1)])
     types = _types_from_cursor(result, dialect=get_dialect("sqlite"))
     assert types["l"].type is DataType.ARRAY
-    assert types["n"].type is DataType.DOUBLE
+    assert types["n"].type is DataType.FLOAT
 
 
 @pytest.mark.parametrize("name", ["NUMERIC[]", "DECIMAL(10,2)[]", "ARRAY(DECIMAL(10,2))", "Array(Decimal(9,2))"])
@@ -87,5 +87,5 @@ def test_a_numeric_list_is_not_exact_numeric(name: str) -> None:
 
 
 def test_a_numeric_list_column_is_cast_like_any_list() -> None:
-    col = DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.DOUBLE, db_type="NUMERIC[]")
+    col = DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.FLOAT, db_type="NUMERIC[]")
     assert not keeps_native_type(col=col, dialect=get_dialect("postgres"))

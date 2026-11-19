@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "A",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "C",
-    "join_pairs": [
-     [
-      "c_id",
-      "id"
-     ]
+    "from_columns": [
+     "c_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -98,11 +98,11 @@
    },
    "new": {
     "to": "B",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

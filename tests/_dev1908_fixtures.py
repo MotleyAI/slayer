@@ -68,9 +68,9 @@ def countries_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="countries", data_source="test", sql_table="countries",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="gdp", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="gdp", datatype=DataType.FLOAT),
         ],
         aggregations=[
             # Single cancel: regions is one hop back on the path.
@@ -112,9 +112,9 @@ def dev1908_datasets() -> List[SlayerDataset]:
     models = dev1900_datasets()
 
     regions = _by_name(models, "regions")
-    regions.fields.append(DatasetField(name="country_id", datatype=DataType.INT))
+    regions.fields.append(DatasetField(name="country_id", datatype=DataType.INTEGER))
     regions.relationships.append(DatasetRelationship(
-        to="countries", join_pairs=[["country_id", "id"]],
+        to="countries", from_columns=["country_id"], to_columns=["id"],
         cardinality=RelationshipCardinality.MANY_TO_ONE))
     # Cancel then forward from a regions-declared default: customers.plans.fee.
     regions.aggregations.append(Aggregation(
@@ -132,8 +132,8 @@ def dev1908_datasets() -> List[SlayerDataset]:
         params=[AggregationParam(name="weight", sql="regions.pop")]))
 
     orders = _by_name(models, "orders")
-    orders.fields.append(DatasetField(name="ship_region_id", datatype=DataType.INT))
-    orders.fields.append(DatasetField(name="cost", datatype=DataType.DOUBLE, sql="amount * 2"))
+    orders.fields.append(DatasetField(name="ship_region_id", datatype=DataType.INTEGER))
+    orders.fields.append(DatasetField(name="cost", datatype=DataType.FLOAT, sql="amount * 2"))
     orders.aggregations.extend([
         # Owner at the root consumes its own name once (degenerate cancel-to-self).
         Aggregation(name="wself", expression="SUM({value} * {weight})",
@@ -223,8 +223,8 @@ def signup_month_td() -> List[TimeDimension]:
 
 def ship_region_extension() -> DatasetExtension:
     """orders inline-extended with a named ``ship_region`` join to regions."""
-    return DatasetExtension(source_name="orders", relationships=[
-        DatasetRelationship(to="regions", join_pairs=[["ship_region_id", "id"]],
+    return DatasetExtension(dataset="orders", relationships=[
+        DatasetRelationship(to="regions", from_columns=["ship_region_id"], to_columns=["id"],
                   name="ship_region", cardinality=RelationshipCardinality.MANY_TO_ONE)])
 
 

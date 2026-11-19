@@ -32,23 +32,23 @@ def _demo_catalog():
         data_source="jaffle",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE, description="revenue cents"),
-            DatasetField(name="status", datatype=DataType.TEXT, label="Status"),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.FLOAT, description="revenue cents"),
+            DatasetField(name="status", datatype=DataType.STRING, label="Status"),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         metrics=[
-            DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.DOUBLE),
+            DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])],
     )
     customers = SlayerDataset(
         name="customers",
         data_source="jaffle",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
     return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
@@ -232,4 +232,4 @@ def test_metrics_batch_data_type_column_is_text() -> None:
     batch = match_info_schema(parsed=_parse("SELECT * FROM INFORMATION_SCHEMA.METRICS"), catalog=cat)
     assert isinstance(batch, RowBatch)
     by_col = {c.name: c.type for c in batch.columns}
-    assert by_col["data_type"] == DataType.TEXT
+    assert by_col["data_type"] == DataType.STRING

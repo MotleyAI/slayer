@@ -22,8 +22,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -97,8 +97,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(ev.amount)",
-      "name": "s"
+      "metric": "sum(ev.amount)",
+      "alias": "s"
      }
     ]
    }

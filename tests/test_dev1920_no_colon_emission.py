@@ -50,21 +50,21 @@ def _catalog() -> FacadeCatalog:
     orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        metrics=[DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.DOUBLE)],
+        metrics=[DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.FLOAT)],
         relationships=[DatasetRelationship.model_validate({
             "to": "customers",
-            "join_pairs": [["customer_id", "id"]],
+            "from_columns": ["customer_id"], "to_columns": ["id"],
             "cardinality": "many_to_one",
         })],
     )
     customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="region", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="region", datatype=DataType.STRING)],
     )
     return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
 
@@ -79,19 +79,19 @@ def _stores_catalog(*, configured: bool) -> FacadeCatalog:
     orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]], join_type=JoinType.LEFT)]
+        relationships=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"], join_type=JoinType.LEFT)]
         if configured else [],
     )
     stores = SlayerDataset(
         name="stores", data_source="jaffle", sql_table="stores",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="tax_rate", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="tax_rate", datatype=DataType.FLOAT),
         ],
     )
     return build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})
@@ -127,7 +127,7 @@ class TestFacade:
     def test_aggregates_and_having(self) -> None:
         result = _translated(
             "SELECT status, COUNT(*), SUM(revenue) FROM orders GROUP BY status HAVING SUM(revenue) > 1000")
-        assert [m.expression for m in result.query.metrics or []] == ["count(*)", "sum(revenue)"]
+        assert [m.metric for m in result.query.metrics or []] == ["count(*)", "sum(revenue)"]
         assert result.query.filter == ["sum(revenue) > 1000"]
         assert dict(result.field_name_mapping) == {
             "orders.status": "status", "orders.row_count": "row_count", "orders.revenue_sum": "revenue_sum"}
@@ -140,7 +140,7 @@ class TestFacade:
         ("SELECT revenue_sum FROM orders", "sum(revenue)"),
     ])
     def test_projected_metric(self, sql: str, formula: str) -> None:
-        assert [m.expression for m in _translated(sql).query.metrics or []] == [formula]
+        assert [m.metric for m in _translated(sql).query.metrics or []] == [formula]
 
     @pytest.mark.parametrize(("sql", "filters"), [
         ("SELECT status FROM orders WHERE revenue_sum > 1000", ["sum(revenue) > 1000"]),
@@ -152,8 +152,8 @@ class TestFacade:
 
     def test_order_by_aggregate(self) -> None:
         result = _translated("SELECT status, SUM(revenue) FROM orders GROUP BY status ORDER BY SUM(revenue) DESC")
-        assert [(o.field.name, o.raw_expression) for o in result.query.order or []] == [("revenue_sum", None)]
-        assert [m.expression for m in result.query.metrics or []] == ["sum(revenue)"]
+        assert [(o.field, o.raw_expression) for o in result.query.order or []] == [("revenue_sum", None)]
+        assert [m.metric for m in result.query.metrics or []] == ["sum(revenue)"]
 
     @pytest.mark.parametrize("configured", [True, False], ids=["configured-join", "dynamic-join"])
     @pytest.mark.parametrize(("metric", "filter_"), [

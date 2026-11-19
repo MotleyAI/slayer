@@ -114,7 +114,7 @@ def main():
         metrics=[
             COUNT_METRIC,
             QUANTITY_SUM_METRIC,
-            {"expression": "sum(quantity) / count(*)", "name": "avg_qty"},
+            {"metric": "sum(quantity) / count(*)", "alias": "avg_qty"},
         ],
         order=[{"field": "created_at", "direction": "asc"}],
     ))
@@ -128,7 +128,7 @@ def main():
         time_dimensions=[{"field": "created_at", "granularity": "month"}],
         metrics=[
             COUNT_METRIC,
-            {"expression": "cumsum(count(*))", "name": "cumulative"},
+            {"metric": "cumsum(count(*))", "alias": "cumulative"},
         ],
         order=[{"field": "created_at", "direction": "asc"}],
     ))
@@ -142,8 +142,8 @@ def main():
         time_dimensions=[{"field": "created_at", "granularity": "month"}],
         metrics=[
             COUNT_METRIC,
-            {"expression": "time_shift(count(*), -1)", "name": "prev_month"},
-            {"expression": "change(count(*))", "name": "mom_change"},
+            {"metric": "time_shift(count(*), -1)", "alias": "prev_month"},
+            {"metric": "change(count(*))", "alias": "mom_change"},
         ],
         order=[{"field": "created_at", "direction": "asc"}],
     ))
@@ -157,7 +157,7 @@ def main():
     result = engine.execute_sync(query=SlayerQuery(
         population="orders",
         dimensions=["customers.name"],
-        metrics=[COUNT_METRIC, {"expression": "rank(count(*), direction='desc')", "name": "rk"}],
+        metrics=[COUNT_METRIC, {"metric": "rank(count(*), direction='desc')", "alias": "rk"}],
         order=[{"field": "count", "direction": "desc"}],
     ))
     for row in result.data:
@@ -170,7 +170,7 @@ def main():
         metrics=[
             COUNT_METRIC,
             QUANTITY_SUM_METRIC,
-            {"expression": "sum(quantity) / count(*)", "name": "avg_qty"},
+            {"metric": "sum(quantity) / count(*)", "alias": "avg_qty"},
         ],
         order=[{"field": "count", "direction": "desc"}],
     ))
@@ -183,8 +183,8 @@ def main():
         time_dimensions=[{"field": "created_at", "granularity": "month"}],
         metrics=[
             COUNT_METRIC,
-            {"expression": "cumsum(count(*))", "name": "running_total"},
-            {"expression": "change(count(*))", "name": "mom_change"},
+            {"metric": "cumsum(count(*))", "alias": "running_total"},
+            {"metric": "change(count(*))", "alias": "mom_change"},
         ],
         order=[{"field": "created_at", "direction": "asc"}],
     ))
@@ -199,7 +199,7 @@ def main():
         time_dimensions=[{"field": "created_at", "granularity": "month"}],
         metrics=[
             COUNT_METRIC,
-            {"expression": "last(count(*))", "name": "latest_month"},
+            {"metric": "last(count(*))", "alias": "latest_month"},
         ],
         order=[{"field": "created_at", "direction": "asc"}],
     ))

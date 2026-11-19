@@ -20,7 +20,7 @@
     "population": "RrDrivers",
     "metrics": [
      {
-      "expression": "count"
+      "metric": "count"
      }
     ],
     "variables": {

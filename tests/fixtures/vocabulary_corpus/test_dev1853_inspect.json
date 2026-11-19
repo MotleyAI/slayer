@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "billing_customer_id",
-      "id"
-     ]
+    "name": "billing",
+    "from_columns": [
+     "billing_customer_id"
     ],
-    "name": "billing"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -38,13 +38,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "shipping_customer_id",
-      "id"
-     ]
+    "name": "shipping",
+    "from_columns": [
+     "shipping_customer_id"
     ],
-    "name": "shipping"
+    "to_columns": [
+     "id"
+    ]
    }
   }
  ],

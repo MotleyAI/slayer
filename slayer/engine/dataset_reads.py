@@ -230,7 +230,7 @@ class _Reads:
     def extension_fields(self, query: SlayerQuery, *, scope: QueryScope) -> None:
         """What each of ``query``'s extension metrics reads, over the dataset it extends."""
         for extension in query.extensions or []:
-            extended = scope.datasets.get(extension.source_name)
+            extended = scope.datasets.get(extension.dataset)
             if extended is None:
                 continue
             for name in [m.name for m in extension.metrics or [] if m.name]:

@@ -97,14 +97,14 @@ def _q(name: str, dialect: str) -> str:
 
 def _grant_dataset(*, with_join: bool = False, extra_cols=()) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="namespace", sql="namespace", datatype=DataType.TEXT),
-        DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="merchantId", sql="merchantId", datatype=DataType.INT),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="namespace", sql="namespace", datatype=DataType.STRING),
+        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+        DatasetField(name="merchantId", sql="merchantId", datatype=DataType.INTEGER),
         *extra_cols,
     ]
-    joins = [DatasetRelationship(to="merchant", join_pairs=[["merchantId", "id"]])] if with_join else []
+    joins = [DatasetRelationship(to="merchant", from_columns=["merchantId"], to_columns=["id"])] if with_join else []
     return SlayerDataset(
         name="grant", sql_table='"Grant"', data_source="api",
         default_time_dimension="created_at", fields=cols, relationships=joins,
@@ -115,8 +115,8 @@ def _merchant_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="merchant", sql_table='"Merchant"', data_source="api",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
 
@@ -236,8 +236,8 @@ class TestReservedAliasQuoting:
         model = SlayerDataset(
             name=name, sql_table=f'"{name.capitalize()}"', data_source="api",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="label", sql="label", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="label", sql="label", datatype=DataType.STRING),
             ],
         )
         q = SlayerQuery.model_validate({"population": name, "dimensions": ["label"], "metrics": ["count(*)"]})
@@ -251,8 +251,8 @@ class TestReservedAliasQuoting:
         model = SlayerDataset(
             name="Order", sql_table='"Order"', data_source="api",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="label", sql="label", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="label", sql="label", datatype=DataType.STRING),
             ],
         )
         q = SlayerQuery.model_validate({"population": "Order", "dimensions": ["label"], "metrics": ["count(*)"]})
@@ -267,8 +267,8 @@ class TestReservedAliasQuoting:
         model = SlayerDataset(
             name="orders", sql_table="orders", data_source="api",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         q = SlayerQuery.model_validate({"population": "orders", "dimensions": ["revenue"], "metrics": ["count(*)"]})
@@ -282,8 +282,8 @@ class TestReservedAliasQuoting:
         model = SlayerDataset(
             name="events", sql_table="events", data_source="api",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="order", sql="order", datatype=DataType.TEXT),  # reserved column
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="order", sql="order", datatype=DataType.STRING),  # reserved column
             ],
         )
         q = SlayerQuery.model_validate({"population": "events", "dimensions": ["order"], "metrics": ["count(*)"]})
@@ -322,7 +322,7 @@ class TestReservedStringReparsePaths:
         q = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"expression": "last(amount)"}],
+            "metrics": [{"metric": "last(amount)"}],
         })
         sql = _norm(await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()]))
         assert 'FROM "Grant" AS "grant"' in sql, sql
@@ -358,7 +358,7 @@ class TestReservedStringReparsePaths:
         q = SlayerQuery.model_validate({
             "population": "grant",
             "time_dimensions": [TimeDimension(field="created_at", granularity="month")],
-            "metrics": [{"expression": "change(sum(amount))"}],
+            "metrics": [{"metric": "change(sum(amount))"}],
             "filter": ["amount > 0"],
         })
         sql = await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()])
@@ -381,12 +381,12 @@ class TestReservedStringReparsePaths:
         qualifier inside the CASE WHEN must be quoted."""
         install_reserved_keywords(SQLGLOT_NAMES)
         model = _grant_dataset(
-            extra_cols=(DatasetField(name="big", sql="amount", datatype=DataType.DOUBLE, filter="amount > 100"),),
+            extra_cols=(DatasetField(name="big", sql="amount", datatype=DataType.FLOAT, filter="amount > 100"),),
         )
         q = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"expression": "sum(big)"}],
+            "metrics": [{"metric": "sum(big)"}],
         })
         sql = _norm(await _gen(q, model))
         assert 'CASE WHEN "grant".amount > 100' in sql, sql
@@ -397,7 +397,7 @@ class TestReservedStringReparsePaths:
         q = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "filter": ["sum(amount) > 100"],
         })
         sql = _norm(await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()]))
@@ -426,23 +426,23 @@ def _orders_joined_to_grant() -> tuple[SlayerDataset, SlayerDataset]:
     grant = SlayerDataset(
         name="grant", sql_table='"Grant"', data_source="api",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
         default_time_dimension="created_at",
     )
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="api",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
         default_time_dimension="created_at",
-        relationships=[DatasetRelationship(to="grant", join_pairs=[["grant_id", "id"]])],
+        relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"])],
     )
     return orders, grant
 
@@ -481,7 +481,7 @@ class TestReservedJoinedFromNonReservedRoot:
         q = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["grant.status"],
-            "metrics": [{"expression": "last(amount)"}],
+            "metrics": [{"metric": "last(amount)"}],
         })
         sql = _norm(await _gen(q, orders, extra_datasets=[grant]))
         # the reserved join alias appears quoted in the ranked subquery's join
@@ -560,18 +560,18 @@ def _orders_derived_grant_datasets() -> tuple[SlayerDataset, SlayerDataset]:
     grant = SlayerDataset(
         name="grant", sql_table='"Grant"', data_source="api",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="api",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INT),
-            DatasetField(name="bumped", sql="grant.amount + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="grant_id", sql="grant_id", datatype=DataType.INTEGER),
+            DatasetField(name="bumped", sql="grant.amount + 1", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="grant", join_pairs=[["grant_id", "id"]])],
+        relationships=[DatasetRelationship(to="grant", from_columns=["grant_id"], to_columns=["id"])],
     )
     return orders, grant
 
@@ -616,7 +616,7 @@ class TestReservedInComputedPaths:
         orders = orders.model_copy(update={
             "fields": [c.model_copy(update={"sql": f"{word}.amount + 1"}) if c.name == "bumped" else c
                         for c in orders.fields],
-            "relationships": [DatasetRelationship(to=word, join_pairs=[["grant_id", "id"]])],
+            "relationships": [DatasetRelationship(to=word, from_columns=["grant_id"], to_columns=["id"])],
         })
         q = _bumped_query()
         sql = _norm(await _gen(q, orders, extra_datasets=[target], dialect=dialect))

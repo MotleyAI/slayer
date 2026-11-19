@@ -79,13 +79,13 @@ def spine_tables(*, orders_rows: Optional[list[tuple]] = None, date_type: str = 
 
 
 def _to_customers() -> DatasetRelationship:
-    return DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])
+    return DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])
 
 
 def customers_dataset(*, signed_up_at: bool = False) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="region", datatype=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region", datatype=DataType.STRING),
     ]
     if signed_up_at:
         columns.append(DatasetField(name="signed_up_at", datatype=DataType.DATE))
@@ -97,10 +97,10 @@ def orders_dataset(*, date_type: DataType = DataType.DATE, extra_joins: Iterable
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="order_date",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="order_date", datatype=date_type),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         relationships=[_to_customers(), *extra_joins],
         filters=filters or [],
@@ -114,10 +114,10 @@ def returns_dataset(*, default_time_dimension: Optional[str] = None,
         name="returns", sql_table="returns", data_source="test",
         default_time_dimension=default_time_dimension,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="return_date", datatype=DataType.DATE),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         relationships=[_to_customers(), *extra_joins],
     )
@@ -127,11 +127,11 @@ def order_items_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="order_items", sql_table="order_items", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="orders", join_pairs=[["order_id", "id"]])],
+        relationships=[DatasetRelationship(to="orders", from_columns=["order_id"], to_columns=["id"])],
     )
 
 
@@ -140,8 +140,8 @@ def shipments_two_dates_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
             DatasetField(name="created_at", datatype=DataType.DATE),
             DatasetField(name="delivered_at", datatype=DataType.DATE),
         ],
@@ -153,14 +153,14 @@ def shipments_two_parents_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="return_id", datatype=DataType.INT),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="return_id", datatype=DataType.INTEGER),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="orders", join_pairs=[["order_id", "id"]]),
-            DatasetRelationship(to="returns", join_pairs=[["return_id", "id"]]),
+            DatasetRelationship(to="orders", from_columns=["order_id"], to_columns=["id"]),
+            DatasetRelationship(to="returns", from_columns=["return_id"], to_columns=["id"]),
         ],
     )
 
@@ -173,7 +173,7 @@ def calendar_dataset() -> SlayerDataset:
 
 
 def _to_calendar(column: str) -> DatasetRelationship:
-    return DatasetRelationship(to="calendar", join_pairs=[[column, "date"]])
+    return DatasetRelationship(to="calendar", from_columns=[column], to_columns=["date"])
 
 
 def monthly_dataset() -> SlayerDataset:
@@ -183,7 +183,7 @@ def monthly_dataset() -> SlayerDataset:
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [{"field": "order_date", "granularity": "month"}],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })],
     )
 
@@ -258,15 +258,15 @@ EVENTS = TableSpec(
 
 
 def cg_orders_dataset(*, order_date_granularity: Optional[str] = None) -> SlayerDataset:
-    column: dict[str, Any] = {"name": "order_date", "datatype": "DATE"}
+    column: dict[str, Any] = {"name": "order_date", "datatype": "Date"}
     if order_date_granularity is not None:
         column["granularity"] = order_date_granularity
     return SlayerDataset.model_validate({
         "name": "orders", "sql_table": "orders", "data_source": "test", "default_time_dimension": "order_date",
         "fields": [
-            {"name": "id", "datatype": "INT", "primary_key": True},
+            {"name": "id", "datatype": "Integer", "primary_key": True},
             column,
-            {"name": "amount", "datatype": "DOUBLE"},
+            {"name": "amount", "datatype": "Float"},
         ],
     })
 
@@ -275,11 +275,11 @@ def events_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="events", sql_table="events", data_source="test", default_time_dimension="ts",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="series", datatype=DataType.TEXT),
-            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="series", datatype=DataType.STRING),
+            DatasetField(name="ts", datatype=DataType.DATETIME),
             DatasetField(name="d", datatype=DataType.DATE),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -291,7 +291,7 @@ def bucketed_dataset(*, name: str, source: str, column: str, granularity: str) -
         "source_queries": [{
             "population": source,
             "time_dimensions": [{"field": column, "granularity": granularity}],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         }],
     })
 
@@ -343,7 +343,7 @@ def spine_td(*, granularity: str = "month", date_range: Any = JAN_JUN) -> dict[s
 
 
 def m(expression: str, name: str) -> dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 TWO_FACTS = [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r"), m("count(orders.id)", "n")]

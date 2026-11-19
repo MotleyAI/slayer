@@ -3,7 +3,7 @@ import pydantic
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from tests import _dev1883_fixtures as fx
 
 GRANULARITIES = [g.value for g in TimeGranularity]
@@ -15,7 +15,7 @@ class TestDimensionsRewrite:
         q = fx.q(
             population="orders",
             dimensions=[f"date_trunc('{gran}', created_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         assert not q.dimensions, q.dimensions
         assert q.time_dimensions == [
@@ -26,7 +26,7 @@ class TestDimensionsRewrite:
         q = fx.q(
             population="orders",
             dimensions=["DATE_TRUNC('MONTH', created_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         assert q.time_dimensions is not None
         assert q.time_dimensions[0].granularity == TimeGranularity.MONTH
@@ -35,7 +35,7 @@ class TestDimensionsRewrite:
         q = fx.q(
             population="orders",
             dimensions=["DATE_TRUNC('MONTH', customers.created_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="customers.created_at", granularity="month")
@@ -45,9 +45,9 @@ class TestDimensionsRewrite:
         q = fx.q(
             population="orders",
             dimensions=["status", "date_trunc('month', created_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
-        assert q.dimensions == [FieldRef(name="status")]
+        assert q.dimensions == [QueryDimension(field="status")]
         assert q.time_dimensions == [
             fx.td(field="created_at", granularity="month")
         ]
@@ -57,7 +57,7 @@ class TestDimensionsRewrite:
             population="orders",
             time_dimensions=[{"field": "updated_at", "granularity": "day"}],
             dimensions=["date_trunc('month', created_at)", "date_trunc('week', shipped_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="updated_at", granularity="day"),
@@ -69,10 +69,10 @@ class TestDimensionsRewrite:
         q = fx.q(
             population="orders",
             dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         dump = q.model_dump()
-        assert not dump["dimensions"]
+        assert not dump.get("dimensions")
         assert [
             (td["field"], td["granularity"])
             for td in dump["time_dimensions"]
@@ -82,12 +82,12 @@ class TestDimensionsRewrite:
         functional = fx.q(
             population="orders",
             dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         explicit = fx.q(
             population="orders",
             time_dimensions=[{"field": "created_at", "granularity": "month"}],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         assert functional.model_dump() == explicit.model_dump()
 
@@ -110,7 +110,7 @@ class TestTimeDimensionsStringEntries:
         q = fx.q(
             population="orders",
             time_dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="created_at", granularity="month")
@@ -123,7 +123,7 @@ class TestTimeDimensionsStringEntries:
                 {"field": "updated_at", "granularity": "day"},
                 "date_trunc('month', created_at)",
             ],
-            metrics=[{"expression": "count(*)"}],
+            metrics=[{"metric": "count(*)"}],
         )
         assert q.time_dimensions == [
             fx.td(field="updated_at", granularity="day"),
@@ -139,7 +139,7 @@ class TestTimeDimensionsStringEntries:
                 population="orders",
                 dimensions=["date_trunc('month', created_at)"],
                 time_dimensions=bad,
-                metrics=[{"expression": "count(*)"}],
+                metrics=[{"metric": "count(*)"}],
             )
 
     def test_bare_column_string_rejected_with_remedy(self) -> None:
@@ -147,7 +147,7 @@ class TestTimeDimensionsStringEntries:
             fx.q(
                 population="orders",
                 time_dimensions=["created_at"],
-                metrics=[{"expression": "count(*)"}],
+                metrics=[{"metric": "count(*)"}],
             )
         msg = str(ei.value)
         assert "created_at" in msg

@@ -27,9 +27,9 @@ DDL = (
 def _dataset(name: str, *others: str, filters: Sequence[str] = (), extra: Sequence[DatasetField] = ()) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql_table=name,
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="flag", datatype=DataType.INT),
-                 *(DatasetField(name=f"{o}_id", datatype=DataType.INT) for o in others), *extra],
-        relationships=[DatasetRelationship(to=o, name=f"{name}_to_{o}", join_pairs=[[f"{o}_id", "id"]]) for o in others],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="flag", datatype=DataType.INTEGER),
+                 *(DatasetField(name=f"{o}_id", datatype=DataType.INTEGER) for o in others), *extra],
+        relationships=[DatasetRelationship(to=o, name=f"{name}_to_{o}", from_columns=[f"{o}_id"], to_columns=["id"]) for o in others],
         filters=list(filters),
     )
 
@@ -78,7 +78,7 @@ class TestSaveRefusesCycles:
 
     async def test_cycle_through_a_derived_column(self, engine, door):
         await _save(engine, _dataset("a", "b", filters=["a_to_b.flag = 1"]), door=door)
-        b = _dataset("b", "a", "c", filters=["a_flag = 1"], extra=[DatasetField(name="a_flag", datatype=DataType.INT, sql="b_to_a.flag")])
+        b = _dataset("b", "a", "c", filters=["a_flag = 1"], extra=[DatasetField(name="a_flag", datatype=DataType.INTEGER, sql="b_to_a.flag")])
         with pytest.raises(DatasetFilterCycleError):
             await _save(engine, b, door=door)
         assert await _stored_filters(engine, "b") == []

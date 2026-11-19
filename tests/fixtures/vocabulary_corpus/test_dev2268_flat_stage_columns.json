@@ -27,11 +27,11 @@
    "new": {
     "to": "m2",
     "name": "a",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

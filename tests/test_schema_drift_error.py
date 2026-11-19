@@ -86,8 +86,8 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="customers",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -97,16 +97,16 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
             sql_table="orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(
-                    name="customer_id", sql="customer_id", datatype=DataType.DOUBLE
+                    name="customer_id", sql="customer_id", datatype=DataType.FLOAT
                 ),
             ],
             relationships=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 ),
             ],
         )
@@ -130,7 +130,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -155,15 +155,15 @@ class TestSchemaDriftErrorWrap:
             sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         await engine.storage.save_dataset(broken_model)
 
         q = SlayerQuery.model_validate({
             "population": "broken",
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
         })
         # Original SQLAlchemy/DBAPI error should bubble up — NOT
         # SchemaDriftError. Assert on the original error class so a
@@ -183,8 +183,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -206,7 +206,7 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT NO_SUCH_FUNCTION(1) AS x",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="x", sql="x", datatype=DataType.DOUBLE, primary_key=True),
+                    DatasetField(name="x", sql="x", datatype=DataType.FLOAT, primary_key=True),
                 ],
             )
         )
@@ -227,8 +227,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -237,7 +237,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_view",
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -260,8 +260,8 @@ class TestSchemaDriftErrorWrap:
                 ),
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -270,7 +270,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_by_batch",
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -291,8 +291,8 @@ class TestSchemaDriftErrorWrap:
                 ),
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -301,7 +301,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_cte",
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -317,8 +317,8 @@ class TestSchemaDriftErrorWrap:
                 sql="SELECT id, amount FROM orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )
@@ -327,7 +327,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_view",
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -348,7 +348,7 @@ class TestSchemaDriftErrorWrap:
         with patch.object(engine, "_validate_read_set", side_effect=_boom):
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)", "name": "total"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "total"}],
             })
             # The original DBAPI error should bubble up — NOT SchemaDriftError
             # and NOT the RuntimeError from the failing attribution.
@@ -371,7 +371,7 @@ class TestHealthyPathNoOverhead:
         ) as scoped:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)", "name": "total"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "total"}],
             })
             resp = await engine.execute(q)
             assert resp.data is not None
@@ -390,7 +390,7 @@ class TestModelsTouchedComputation:
 
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
             "dimensions": ["customers.region"],
         })
         with pytest.raises(SchemaDriftError) as exc:
@@ -427,7 +427,7 @@ class TestIntrospectionUnavailable:
             ds = self._ds_with_one_table(tmpdir)
             model = SlayerDataset(
                 name="t", sql_table="t", data_source="live",
-                fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+                fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
             )
             async with _client(ds) as client:
                 with patch(

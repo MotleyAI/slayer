@@ -207,13 +207,13 @@ class TestDemoEnrichment:
             sql_table="orders",
             data_source="jaffle_shop",
             fields=[
-                DatasetField(name="id", datatype=DataType.TEXT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.STRING),
                 DatasetField(name="ordered_at", datatype=DataType.DATE),
-                DatasetField(name="store_id", datatype=DataType.TEXT),
-                DatasetField(name="subtotal", datatype=DataType.DOUBLE),
-                DatasetField(name="tax_paid", datatype=DataType.DOUBLE),
-                DatasetField(name="order_total", datatype=DataType.DOUBLE),
+                DatasetField(name="store_id", datatype=DataType.STRING),
+                DatasetField(name="subtotal", datatype=DataType.FLOAT),
+                DatasetField(name="tax_paid", datatype=DataType.FLOAT),
+                DatasetField(name="order_total", datatype=DataType.FLOAT),
             ],
         )
 
@@ -320,7 +320,7 @@ class TestDemoEnrichment:
                         name=table,
                         sql_table=table,
                         data_source="jaffle_shop",
-                        fields=[DatasetField(name="id", datatype=DataType.TEXT, primary_key=True)],
+                        fields=[DatasetField(name="id", datatype=DataType.STRING, primary_key=True)],
                     )
                 )
             )

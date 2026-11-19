@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "ag",
-    "join_pairs": [
-     [
-      "opened_by",
-      "id"
-     ]
+    "name": "opener",
+    "from_columns": [
+     "opened_by"
     ],
-    "name": "opener"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -38,13 +38,13 @@
    },
    "new": {
     "to": "ag",
-    "join_pairs": [
-     [
-      "closed_by",
-      "id"
-     ]
+    "name": "closer",
+    "from_columns": [
+     "closed_by"
     ],
-    "name": "closer"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {

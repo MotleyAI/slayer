@@ -15,7 +15,6 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
 from slayer.core.policy import (
@@ -24,7 +23,7 @@ from slayer.core.policy import (
     JoinFilterRuleset,
     SessionPolicy,
 )
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
@@ -109,10 +108,10 @@ async def rls_storage(tmp_path):
             sql_table="customers",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.TEXT),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.STRING),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
+                DatasetField(name="region", sql="region", datatype=DataType.STRING),
             ],
         )
     )
@@ -122,12 +121,12 @@ async def rls_storage(tmp_path):
             sql_table="orders",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.TEXT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.STRING),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
     )
     await storage.save_dataset(
@@ -136,8 +135,8 @@ async def rls_storage(tmp_path):
             sql_table="exchange_rates",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="day", sql="day", datatype=DataType.TEXT),
-                DatasetField(name="rate", sql="rate", datatype=DataType.DOUBLE),
+                DatasetField(name="day", sql="day", datatype=DataType.STRING),
+                DatasetField(name="rate", sql="rate", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -156,7 +155,7 @@ def _org_policy(org=ORG_A, **kw):
 async def test_no_policy_sees_all_orgs(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage)
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 3
 
@@ -164,7 +163,7 @@ async def test_no_policy_sees_all_orgs(rls_storage):
 async def test_policy_scopes_count_to_org(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 2  # only orgA's two orders
 
@@ -172,7 +171,7 @@ async def test_policy_scopes_count_to_org(rls_storage):
 async def test_policy_scopes_sum_to_org(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_B))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])
     )
     assert resp.data[0]["orders.amount_sum"] == pytest.approx(999.0)  # only orgB
 
@@ -185,8 +184,8 @@ async def test_join_scoped_both_sides(rls_storage):
     resp = await engine.execute(
         SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="count(*)")],
-            dimensions=[FieldRef(name="customers.region")],
+            metrics=[QueryMetric(metric="count(*)")],
+            dimensions=[QueryDimension(field="customers.region")],
         )
     )
     regions = {row["orders.customers.region"] for row in resp.data}
@@ -201,7 +200,7 @@ async def test_block_fails_on_columnless_table(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     q = SlayerQuery(
         population="exchange_rates",
-        metrics=[DatasetMetric(expression="count(*)")],
+        metrics=[QueryMetric(metric="count(*)")],
     )
     with pytest.raises(ForcedFilterError) as exc:
         await engine.execute(q)
@@ -216,7 +215,7 @@ async def test_pass_allows_columnless_table(rls_storage):
     resp = await engine.execute(
         SlayerQuery(
             population="exchange_rates",
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
     )
     assert resp.data[0]["exchange_rates._count"] == 2  # unfiltered, both rows
@@ -243,7 +242,7 @@ async def test_profiling_sample_values_org_scoped(rls_storage: StorageBackend):
 async def test_dry_run_sql_contains_wraps(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")]),
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")]),
         dry_run=True,
     )
     flat = resp.sql.replace("\n", " ")
@@ -258,7 +257,7 @@ async def test_dry_run_sql_contains_wraps(rls_storage):
 async def test_explain_sql_contains_wraps(rls_storage):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")]),
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")]),
         explain=True,
     )
     # explain returns the rewritten SQL it planned, so the wrap is visible
@@ -301,7 +300,7 @@ async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch: p
     monkeypatch.setattr(SqliteDialect, "reflect_columns", flaky)
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     query = SlayerQuery(
-        population="orders", metrics=[DatasetMetric(expression="count(*)")]
+        population="orders", metrics=[QueryMetric(metric="count(*)")]
     )
 
     with pytest.raises(ForcedFilterError):
@@ -328,7 +327,7 @@ async def test_column_presence_is_cached(rls_storage, monkeypatch: pytest.Monkey
     monkeypatch.setattr(SqliteDialect, "reflect_columns", counting)
 
     query = SlayerQuery(
-        population="orders", metrics=[DatasetMetric(expression="count(*)")]
+        population="orders", metrics=[QueryMetric(metric="count(*)")]
     )
     await engine.execute(query)
     after_first = calls["n"]
@@ -410,9 +409,9 @@ async def rls_join_storage(tmp_path):
             sql_table="customers",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.TEXT),
-                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="organization_uuid", sql="organization_uuid", datatype=DataType.STRING),
+                DatasetField(name="name", sql="name", datatype=DataType.STRING),
             ],
         )
     )
@@ -423,9 +422,9 @@ async def rls_join_storage(tmp_path):
             sql_table="orders",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -435,9 +434,9 @@ async def rls_join_storage(tmp_path):
             sql_table="line_items",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="order_id", sql="order_id", datatype=DataType.INT),
-                DatasetField(name="qty", sql="qty", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="order_id", sql="order_id", datatype=DataType.INTEGER),
+                DatasetField(name="qty", sql="qty", datatype=DataType.INTEGER),
             ],
         )
     )
@@ -447,8 +446,8 @@ async def rls_join_storage(tmp_path):
             sql_table="exchange_rates",
             data_source="rls_sqlite",
             fields=[
-                DatasetField(name="day", sql="day", datatype=DataType.TEXT),
-                DatasetField(name="rate", sql="rate", datatype=DataType.DOUBLE),
+                DatasetField(name="day", sql="day", datatype=DataType.STRING),
+                DatasetField(name="rate", sql="rate", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -482,7 +481,7 @@ async def test_single_hop_join_scopes_orders(rls_join_storage):
     """orders lacks the tenant column but is scoped via the explicit join."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 1  # only order 10 (orgA)
 
@@ -490,7 +489,7 @@ async def test_single_hop_join_scopes_orders(rls_join_storage):
 async def test_single_hop_join_scopes_sum(rls_join_storage):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_B))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])
     )
     assert resp.data[0]["orders.amount_sum"] == pytest.approx(999.0)  # orgB's order 11
 
@@ -499,7 +498,7 @@ async def test_multihop_join_scopes_line_items(rls_join_storage):
     """line_items reaches the tenant column via line_items -> orders -> customers."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="line_items", metrics=[DatasetMetric(expression="count(*)")])
+        SlayerQuery(population="line_items", metrics=[QueryMetric(metric="count(*)")])
     )
     assert resp.data[0]["line_items._count"] == 1  # only item 100 (orgA)
 
@@ -509,7 +508,7 @@ async def test_columnless_target_scoped_via_join(rls_join_storage):
     the correlated EXISTS rather than failing closed."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")])
     )
     assert resp.data[0]["orders._count"] == 1  # no ForcedFilterError raised
 
@@ -518,7 +517,7 @@ async def test_anchor_directly_scoped(rls_join_storage):
     """customers is the anchor -> filtered directly by organization_uuid."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="customers", metrics=[DatasetMetric(expression="count(*)")])
+        SlayerQuery(population="customers", metrics=[QueryMetric(metric="count(*)")])
     )
     assert resp.data[0]["customers._count"] == 1  # only orgA's customer
 
@@ -529,7 +528,7 @@ async def test_unlisted_table_fails_closed(rls_join_storage):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     query = SlayerQuery(
         population="exchange_rates",
-        metrics=[DatasetMetric(expression="count(*)")],
+        metrics=[QueryMetric(metric="count(*)")],
     )
     with pytest.raises(ForcedFilterError) as exc:
         await engine.execute(query)
@@ -544,7 +543,7 @@ async def test_whitelisted_table_passes_through(rls_join_storage):
     )
     resp = await engine.execute(
         SlayerQuery(
-            population="exchange_rates", metrics=[DatasetMetric(expression="count(*)")]
+            population="exchange_rates", metrics=[QueryMetric(metric="count(*)")]
         )
     )
     assert resp.data[0]["exchange_rates._count"] == 2  # both rows, unfiltered
@@ -553,7 +552,7 @@ async def test_whitelisted_table_passes_through(rls_join_storage):
 async def test_dry_run_shows_exists_wrap(rls_join_storage):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     resp = await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")]),
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")]),
         dry_run=True,
     )
     flat = resp.sql.replace("\n", " ")
@@ -577,7 +576,7 @@ async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch: pyte
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     probes = _record_profile_probes(monkeypatch)
     await engine.execute(
-        SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])
+        SlayerQuery(population="orders", metrics=[QueryMetric(metric="count(*)")])
     )
     assert probes == []
 

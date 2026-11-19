@@ -183,7 +183,7 @@ class TestFilteredHelpers:
         ])])
         model = datasets_of(result)["orders"]
         summed, counted = source_column(model, "paid_sum"), source_column(model, "paid_n")
-        assert (summed.datatype, counted.datatype) == (DataType.DOUBLE, DataType.TEXT)
+        assert (summed.datatype, counted.datatype) == (DataType.FLOAT, DataType.STRING)
         assert summed.name != counted.name
 
 
@@ -359,7 +359,7 @@ class TestJoinKeys:
         result = import_cube([cube(dimensions=[dim("cust", "{CUBE}.customer_id", type="number")],
                                    joins=[self.JOIN]), CUSTOMERS])
         (join,) = datasets_of(result)["orders"].relationships
-        assert join.join_pairs == [["cust", "id"]]
+        assert join.column_pairs == [("cust", "id")]
 
 
 # ── FILTER_PARAMS ─────────────────────────────────────────────────────────
@@ -421,25 +421,25 @@ class TestTyping:
     async def test_list_measure_source_typed_from_the_database(self, db: Path) -> None:
         result = import_cube([cube(metrics=[meas("tag_cnt", "count", "{CUBE}.tags")])], db=db)
         col = source_column(datasets_of(result)["orders"], "tag_cnt")
-        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
         assert await _metric(result, db, "tag_cnt") == 2
 
     def test_base_list_from_reflection_and_probed_list_unknown(self, db: Path) -> None:
         result = import_cube([cube(dimensions=[dim("tags", "{CUBE}.tags"),
                                                dim("tags_sorted", "list_sort({CUBE}.tags)")])], db=db)
         model = datasets_of(result)["orders"]
-        assert (column(model, "tags").datatype, column(model, "tags").element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (column(model, "tags").datatype, column(model, "tags").element_type) == (DataType.ARRAY, DataType.STRING)
         probed = column(model, "tags_sorted")
-        assert (probed.datatype, probed.element_type) == (DataType.ARRAY, DataType.UNKNOWN)
+        assert (probed.datatype, probed.element_type) == (DataType.ARRAY, DataType.OPAQUE)
 
     def test_sql_mode_source_is_probed(self, db: Path) -> None:
         result = import_cube([cube(sql="SELECT * FROM orders", dimensions=[dim("tags", "{CUBE}.tags")])], db=db)
         col = column(datasets_of(result)["orders"], "tags")
-        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
     def test_offline_count_source(self) -> None:
         result = import_cube([cube(metrics=[meas("tag_cnt", "count", "{CUBE}.tags")])])
-        assert source_column(datasets_of(result)["orders"], "tag_cnt").datatype == DataType.TEXT
+        assert source_column(datasets_of(result)["orders"], "tag_cnt").datatype == DataType.STRING
         notes = typing_notes(i.message for i in result.report.issues if i.severity == "info")
         assert len(notes) == 1, result.report.issues
 
@@ -474,7 +474,7 @@ class TestTyping:
     def test_offline_max_over_a_declared_dimension_imports(self) -> None:
         result = import_cube([cube(dimensions=[dim("created_at", "{CUBE}.created_at", type="time")],
                                    metrics=[meas("latest", "max", "{CUBE}.created_at")])])
-        assert source_column(datasets_of(result)["orders"], "latest").datatype == DataType.TIMESTAMP
+        assert source_column(datasets_of(result)["orders"], "latest").datatype == DataType.DATETIME
 
     @pytest.mark.parametrize("agg", ["count_distinct", "min", "max", "sum", "avg"])
     def test_aggregation_refused_over_a_list_is_dropped(self, db: Path, agg: str) -> None:
@@ -511,7 +511,7 @@ class TestCli:
             engine_factory.invalidate_engine(DatasourceConfig(name=DS, type="duckdb", database=str(db)))
         assert code == 0
         col = column(stored_dataset(store, "orders"), "tags")
-        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
         assert typing_notes(i["message"] for i in cube_report_messages(store)) == []
 
     def test_offline_imports_name_why_types_were_not_checked(self, tmp_path: Path) -> None:

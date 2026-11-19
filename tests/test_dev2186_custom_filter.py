@@ -177,8 +177,8 @@ class TestWindow:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "customers",
             "time_dimensions": [{"field": "orders.created_at", "granularity": "month"}],
-            "metrics": [{"expression": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
-                          "name": "v"}],
+            "metrics": [{"metric": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
+                          "alias": "v"}],
         }))
         got = {str(r["customers.orders.created_at"])[:7]: num(r["customers.v"]) for r in resp.data}
         assert got == {"2024-01": None, "2024-02": 2, "2024-03": 3}
@@ -249,7 +249,7 @@ class TestCrossModelAndStage:
     async def test_cross_model_source(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "customers", "dimensions": ["name"],
-            "metrics": [{"expression": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')", "name": "v"}],
+            "metrics": [{"metric": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')", "alias": "v"}],
         }))
         assert {k: num(v) for k, v in by_key(resp, "name", dataset="customers").items()} == {"A": 2, "B": 1, "C": None}
         assert not resp.warnings
@@ -265,7 +265,7 @@ class TestCrossModelAndStage:
 
     async def test_non_final_stage(self, engine: SlayerQueryEngine) -> None:
         stage = q(name="s", dimensions=["region"], metrics=[m(ROWS_PAID, "pr")])
-        final = SlayerQuery.model_validate({"population": "s", "metrics": [{"expression": "sum(pr)", "name": "v"}]})
+        final = SlayerQuery.model_validate({"population": "s", "metrics": [{"metric": "sum(pr)", "alias": "v"}]})
         resp = await engine.execute([stage, final])
         assert num(single(resp, dataset="s")) == 3
 

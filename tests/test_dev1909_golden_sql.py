@@ -27,37 +27,37 @@ def _cases() -> dict:
         # over the population. Today: the DEV-1900 guard raises. After: EXISTS base.
         "fanning_inline/structural": {
             "source": "customers", "mode": None,
-            "kw": {"metrics": [{"expression": "sum(spend)", "name": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
                    "filter": [_OK]}},
         "fanning_inline/derived": {
             "source": "orders", "mode": None,
-            "kw": {"metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "kw": {"metrics": [{"metric": "sum(amount)", "alias": "amt"}],
                    "filter": ["customers.regions.bad_pop > 0"]}},
         "fanning_inline/count": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "metrics": [{"expression": "count(*)", "name": "n"}],
+                   "metrics": [{"metric": "count(*)", "alias": "n"}],
                    "filter": [_OK]}},
         "fanning_inline/two_branch": {
             "source": "customers", "mode": None,
-            "kw": {"metrics": [{"expression": "sum(spend)", "name": "sp"}],
+            "kw": {"metrics": [{"metric": "sum(spend)", "alias": "sp"}],
                    "filter": [_OK, "regions.region_events.value >= 50"]}},
         # producer/* — host-rooted regroup producers that fan silently today; after
         # the change each carries the semi-join and drops the fanning join.
         "producer/partitioned": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "metrics": [{"expression": "sum(spend, partition_by=tier)", "name": "pt"}],
+                   "metrics": [{"metric": "sum(spend, partition_by=tier)", "alias": "pt"}],
                    "filter": [_OK]}},
         "producer/windowed": {
             "source": "customers", "mode": None,
             "kw": {"time_dimensions": [
                 {"field": "signup_at", "granularity": "month"}],
-                   "metrics": [{"expression": "sum(spend, window='1y')", "name": "w"}],
+                   "metrics": [{"metric": "sum(spend, window='1y')", "alias": "w"}],
                    "filter": [_OK]}},
         "producer/producer_only": {
             "source": "customers", "mode": None,
-            "kw": {"metrics": [{"expression": "sum(orders.amount)", "name": "oa"}],
+            "kw": {"metrics": [{"metric": "sum(orders.amount)", "alias": "oa"}],
                    "filter": [_OK]}},
         # dims_only/* — no aggregate; the host base fans today, carries the EXISTS after.
         "dims_only/fanning": {
@@ -69,13 +69,13 @@ def _cases() -> dict:
             "source": "customers", "mode": None,
             "kw": {"time_dimensions": [
                 {"field": "orders.ordered_at", "granularity": "month"}],
-                   "metrics": [{"expression": "sum(spend, window='1y')", "name": "w"}],
+                   "metrics": [{"metric": "sum(spend, window='1y')", "alias": "w"}],
                    "filter": [_OK]}},
         # positive/* — a provably to-one filter; plain row restriction, byte-identical
         # SQL through the change.
         "positive/to_one_filter": {
             "source": "orders", "mode": None,
-            "kw": {"metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "kw": {"metrics": [{"metric": "sum(amount)", "alias": "amt"}],
                    "filter": ["customers.tier = 'gold'"]}},
     }
 

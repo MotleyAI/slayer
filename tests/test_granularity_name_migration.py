@@ -175,7 +175,7 @@ class TestLeft:
         assert other is not None
         assert [m.expression for m in other.metrics] == ["count_distinct(left(status, 1))"]
         mem_query = await _memory_query(store.storage, "m_other")
-        assert [getattr(d, "expression", None) for d in mem_query.dimensions or []] == ["left(status, 1)"]
+        assert [d.field for d in mem_query.dimensions or []] == ["left(status, 1)"]
         resp = await run(store.storage, {"population": "other_events", "metrics": ["initials"]})
         assert [int(v) for v in resp.data[0].values()] == [2]
         by_initial = {r["other_events.initial"]: float(r["other_events.s"]) for r in (await run(store.storage, mem_query)).data}

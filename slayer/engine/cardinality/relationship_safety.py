@@ -166,7 +166,7 @@ def _key_findings(
     errors = [
         relationship_key_error(dataset=dataset.name, target=relationship.to, key=key,
                        side=side.name, fields=side.fields)
-        for pair in relationship.join_pairs
+        for pair in relationship.column_pairs
         for key, side in zip(pair, (dataset, target))
     ]
     return [
@@ -499,7 +499,7 @@ def lower_axis_hops(
         if not chain or chain[-1].to != TIME_SPINE_DATASET or is_product_edge(chain[-1]):
             continue
         owner = universe.get(chain[-1].source_dataset)
-        axis = chain[-1].join_pairs[0][0]
+        axis = chain[-1].column_pairs[0][0]
         mapping[r] = (
             field_default_key(path=r.path[:-1], leaf=axis, base=owner)
             if owner is not None else FieldKey(path=r.path[:-1], leaf=axis)
@@ -616,7 +616,7 @@ def shared_relationship_key_reroot(
     root_dataset = datasets_by_name.get(edge.to) if edge is not None else None
     if edge is None or root_dataset is None:
         return None
-    for src, tgt in edge.join_pairs:
+    for src, tgt in edge.column_pairs:
         if src == leaf:
             return field_default_key(path=(), leaf=tgt, base=root_dataset)
     return None
@@ -798,8 +798,8 @@ def _hop_pins(
     is provably to-one."""
     to_one = provably_to_one(edge=edge, target_dataset=tgt)
     src_leaves = _grain_leaves(grain=grain, at=path[:i])
-    fk_seed = to_one and bool(edge.join_pairs) and all(
-        src in src_leaves for src, _ in edge.join_pairs)
+    fk_seed = to_one and bool(edge.column_pairs) and all(
+        src in src_leaves for src, _ in edge.column_pairs)
     return (
         _entity_seeded(grain=grain, dataset=tgt, at=path[: i + 1])
         or fk_seed

@@ -23,10 +23,9 @@ from slayer.core.models import (
     AggregationParam,
     DatasetField,
     DatasourceConfig,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -73,13 +72,13 @@ async def exec_qdouble(request):
     models = dev1832_datasets()
     sales = next(m for m in models if m.name == "sales")
     sales.fields.append(
-        DatasetField(name="q_double", datatype=DataType.DOUBLE, sql="q_amount * 2"))
+        DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
     async for engine in make_exec_engine(request, datasets=models):
         yield engine
 
 
-def _metric(expression: str, name: str = "m") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def _metric(metric: str, alias: str = "m") -> QueryMetric:
+    return QueryMetric(metric=metric, alias=alias)
 
 
 async def _save_validated(dataset: SlayerDataset) -> None:
@@ -110,11 +109,11 @@ def _tsales_dataset() -> SlayerDataset:
         name="tsales", sql_table="tsales", data_source="test",
         default_time_dimension="ts",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="product", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
-            DatasetField(name="q_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="product", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="ts", datatype=DataType.DATETIME),
+            DatasetField(name="q_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="product = 'Q'"),
         ])
 
@@ -157,11 +156,11 @@ class TestSingleColumnUnchanged:
         # A filtered column with no sql (or sql == name) wraps exactly one CASE WHEN.
         model = _tsales_dataset()
         model.fields.append(
-            DatasetField(name="amt", datatype=DataType.DOUBLE, filter="product = 'Q'"))
+            DatasetField(name="amt", datatype=DataType.FLOAT, filter="product = 'Q'"))
         query = {
             "measure": SlayerQuery(population="tsales", metrics=[_metric("sum(amt)")]),
             "dimension": SlayerQuery(
-                population="tsales", dimensions=[FieldRef(name="amt")],
+                population="tsales", dimensions=[QueryDimension(field="amt")],
                 metrics=[_metric("count(id)")]),
             "filter": SlayerQuery(
                 population="tsales", metrics=[_metric("count(id)")], filter=["amt > 0"]),
@@ -232,7 +231,7 @@ class TestFilteredColumnPositions:
     async def test_order_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
             dimensions=["q_amount"], metrics=[_metric("sum(amount)")],
-            order=[OrderItem(field=FieldRef(name="q_amount"), direction="asc")])
+            order=[OrderItem(field="q_amount", direction="asc")])
         resp = await exec_backend.execute(query)
         ordered = [row["sales.q_amount"] for row in resp.data]
         # Only the masked Q amounts are cells, in ascending order; non-Q rows
@@ -296,7 +295,7 @@ class TestFilteredLeafOnJoinedModel:
         models = dev1832_datasets()
         cust = next(m for m in models if m.name == "customers")
         cust.fields.append(
-            DatasetField(name="bad_pop_w", datatype=DataType.DOUBLE, filter="regions.bad_pop > 0"))
+            DatasetField(name="bad_pop_w", datatype=DataType.FLOAT, filter="regions.bad_pop > 0"))
         cust.aggregations.append(Aggregation(
             name="wsum_badw", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="bad_pop_w")]))
@@ -320,7 +319,7 @@ class TestHostLocalFilterReachability:
         models = dev1832_datasets()
         orders = next(m for m in models if m.name == "orders")
         orders.fields.append(DatasetField(
-            name="probe", datatype=DataType.DOUBLE, sql=sql, filter=filter_))
+            name="probe", datatype=DataType.FLOAT, sql=sql, filter=filter_))
         b = ResolvedSourceBundle(
             dialect="sqlite",
             population=orders,
@@ -363,7 +362,7 @@ class TestDerivedOverFiltered:
     async def test_derived_column_expands_wrapped_value_sql(self) -> None:
         model = sales_dataset()
         model.fields.append(
-            DatasetField(name="q_double", datatype=DataType.DOUBLE, sql="q_amount * 2"))
+            DatasetField(name="q_double", datatype=DataType.FLOAT, sql="q_amount * 2"))
         sql = await gen(sales_q(metrics=[_metric("sum(q_double)")]), datasets=[model])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
@@ -382,7 +381,7 @@ class TestVariableSubstitution:
     async def test_variables_substitute_into_sql_and_filter(self) -> None:
         model = sales_dataset()
         model.fields.append(DatasetField(
-            name="vcol", datatype=DataType.DOUBLE, sql="amount * {mult}",
+            name="vcol", datatype=DataType.FLOAT, sql="amount * {mult}",
             filter="product = '{prod}'"))
         sql = await gen(
             sales_q(metrics=[_metric("sum(vcol)")], variables={"mult": 2, "prod": "Q"}),
@@ -402,10 +401,10 @@ class TestCycleAndPathValidation:
         await _save_validated(SlayerDataset(
             name="fcyc", sql_table="sales", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="product", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE, filter="product = 'Q'"),
-                DatasetField(name="der", datatype=DataType.DOUBLE, sql="amount",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="product", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT, filter="product = 'Q'"),
+                DatasetField(name="der", datatype=DataType.FLOAT, sql="amount",
                        filter="product = 'Q'"),
             ]))
 
@@ -415,11 +414,11 @@ class TestCycleAndPathValidation:
         await _save_validated(SlayerDataset(
             name="fedge", sql_table="sales", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="product", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="der1", datatype=DataType.DOUBLE, sql="amount"),
-                DatasetField(name="der2", datatype=DataType.DOUBLE, sql="amount",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="product", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="der1", datatype=DataType.FLOAT, sql="amount"),
+                DatasetField(name="der2", datatype=DataType.FLOAT, sql="amount",
                        filter="der1 > 0"),
             ]))
 
@@ -427,9 +426,9 @@ class TestCycleAndPathValidation:
         model = SlayerDataset(
             name="floop", sql_table="sales", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="loop", datatype=DataType.DOUBLE, sql="amount",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="loop", datatype=DataType.FLOAT, sql="amount",
                        filter="loop > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
@@ -442,8 +441,8 @@ class TestCycleAndPathValidation:
         await _save_validated(SlayerDataset(
             name="fself", sql_table="sales", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="val", datatype=DataType.DOUBLE, sql="val",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="val", datatype=DataType.FLOAT, sql="val",
                        filter="val > 0"),
             ]))
 
@@ -454,8 +453,8 @@ class TestCycleAndPathValidation:
         model = SlayerDataset(
             name="fself", sql_table="fself", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="val", datatype=DataType.DOUBLE, sql="val", filter="val > 0"),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="val", datatype=DataType.FLOAT, sql="val", filter="val > 0"),
             ])
         sql = await gen(
             SlayerQuery(population="fself", metrics=[_metric("sum(val)")]),
@@ -471,9 +470,9 @@ class TestCycleAndPathValidation:
         model = SlayerDataset(
             name="cyc", sql_table="cyc", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="x", datatype=DataType.DOUBLE, sql="x", filter="y > 0"),
-                DatasetField(name="y", datatype=DataType.DOUBLE, sql="x")])
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="x", datatype=DataType.FLOAT, sql="x", filter="y > 0"),
+                DatasetField(name="y", datatype=DataType.FLOAT, sql="x")])
         x_col = model.get_field("x")
         assert x_col is not None
         with pytest.raises(DatasetFieldCycleError):
@@ -486,11 +485,11 @@ class TestCycleAndPathValidation:
         model = SlayerDataset(
             name="fmutual", sql_table="sales", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="der_a", datatype=DataType.DOUBLE, sql="amount",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="der_a", datatype=DataType.FLOAT, sql="amount",
                        filter="der_b > 0"),
-                DatasetField(name="der_b", datatype=DataType.DOUBLE, sql="amount",
+                DatasetField(name="der_b", datatype=DataType.FLOAT, sql="amount",
                        filter="der_a > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
@@ -500,9 +499,9 @@ class TestCycleAndPathValidation:
         model = SlayerDataset(
             name="fbad", sql_table="sales", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="bad", datatype=DataType.DOUBLE, sql="amount",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="bad", datatype=DataType.FLOAT, sql="amount",
                        filter="ghost.col = 1"),
             ])
         with pytest.raises(ValueError) as ei:
@@ -515,8 +514,8 @@ class TestCycleAndPathValidation:
         host = SlayerDataset(
             name="host", data_source="test", sql_table="host",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="masked", datatype=DataType.DOUBLE, sql="id",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="masked", datatype=DataType.FLOAT, sql="id",
                        filter="peer.flag = 1")])
         col = host.get_field("masked")
         assert col is not None
@@ -531,8 +530,8 @@ class TestCycleAndPathValidation:
         host = SlayerDataset(
             name="host", data_source="test", sql_table="host",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="masked", datatype=DataType.DOUBLE, sql="id",
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="masked", datatype=DataType.FLOAT, sql="id",
                        filter="peer.flag = 1")])
         col = host.get_field("masked")
         assert col is not None

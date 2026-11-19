@@ -114,7 +114,7 @@ def query(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str = "v") -> Dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 MONTH_TD = {"field": "account_snapshots.snapshot_date", "granularity": "month"}
@@ -124,8 +124,8 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -135,13 +135,13 @@ def snapshots_dataset() -> SlayerDataset:
         name="account_snapshots", data_source="test", sql_table="account_snapshots",
         default_time_dimension="snapshot_date",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="account_id", datatype=DataType.INT),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="account_id", datatype=DataType.INTEGER),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="snapshot_date", datatype=DataType.DATE),
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                          cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 

@@ -58,11 +58,11 @@
    },
    "new": {
     "to": "stores",
-    "join_pairs": [
-     [
-      "store_id",
-      "id"
-     ]
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

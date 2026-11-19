@@ -86,18 +86,18 @@ def _payloads(dataset: SlayerDataset, *, extra_dimensions: list[str], empty_filt
 
 
 def _datasets() -> list[SlayerDataset]:
-    to_active = DatasetRelationship(to="active_orders", join_pairs=[["id", "customer_id"]],
+    to_active = DatasetRelationship(to="active_orders", from_columns=["id"], to_columns=["customer_id"],
                           cardinality=RelationshipCardinality.ONE_TO_MANY)
-    visitor = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], name="visitor",
+    visitor = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"], name="visitor",
                         join_type=JoinType.INNER, cardinality=None)
-    to_profile = DatasetRelationship(to="customer_profiles", join_pairs=[["id", "id"]],
+    to_profile = DatasetRelationship(to="customer_profiles", from_columns=["id"], to_columns=["id"],
                            cardinality=RelationshipCardinality.ONE_TO_ONE)
     profiles = SlayerDataset(name="customer_profiles", sql_table="customers", data_source=DATASOURCE,
-                           fields=[col("id", DataType.INT, "c_custkey", primary_key=True),
-                                    col("email", DataType.TEXT)],
+                           fields=[col("id", DataType.INTEGER, "c_custkey", primary_key=True),
+                                    col("email", DataType.STRING)],
                            metrics=[slayer_metric("n_profiles", "count(*)")])
     rich = rich_orders()
-    rich.fields.append(col("LegalType", DataType.TEXT, '"LegalType"'))
+    rich.fields.append(col("LegalType", DataType.STRING, '"LegalType"'))
     rich.metrics += [slayer_metric("n_types", "count_distinct(LegalType)"),
                       slayer_metric("approx", "count_distinct_approx(customer_id)")]
     return [
@@ -107,7 +107,7 @@ def _datasets() -> list[SlayerDataset]:
             slayer_metric("n_emails", "count_distinct(customer_profiles.email)")]),
         profiles,
         rich,
-        orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.TIMESTAMP)], joins=[],
+        orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.DATETIME)], joins=[],
                filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_MEASURES, hidden=True),
         visits(relationships=[visitor], metrics=[slayer_metric("n_visits", "count(*)")], access_tags=["ops"]),
         monthly_revenue(),
@@ -146,7 +146,7 @@ def _masked_orders() -> SlayerDataset:
         name="masked_orders", joins=[],
         columns=[*(c for c in orders_columns() if c.name in keep),
                  col("m_amount", sql="amount", filter="status = 'completed'"),
-                 col("m_qty", DataType.INT, sql="quantity", filter="region = 'US'"),
+                 col("m_qty", DataType.INTEGER, sql="quantity", filter="region = 'US'"),
                  col("m_paid", DataType.BOOLEAN, sql="is_paid", filter="status <> 'test'")],
         metrics=[slayer_metric("n", "count(*)"), slayer_metric("s", "sum(m_amount)"), slayer_metric("c", "count(m_amount)"),
                   slayer_metric("cd", "count_distinct(m_amount)"), slayer_metric("a", "avg(m_amount)"),
@@ -183,7 +183,7 @@ def _metric_shape(dataset: SlayerDataset) -> dict[str, tuple]:
 
 
 def _join_shape(dataset: SlayerDataset) -> set[tuple]:
-    return {(j.to, tuple(map(tuple, j.join_pairs)), j.join_type, j.cardinality, j.name)
+    return {(j.to, tuple(map(tuple, j.column_pairs)), j.join_type, j.cardinality, j.name)
             for j in dataset.relationships}
 
 

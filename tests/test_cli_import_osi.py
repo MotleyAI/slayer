@@ -152,7 +152,7 @@ def test_current_spec_document_imports_end_to_end(duck_store, capsys) -> None:
     assert orders is not None
     assert {c.name for c in orders.fields if not c.hidden} == {
         "order_id", "customer_id", "amount", "quantity", "status", "ordered_on", "tip_or_zero"}
-    assert [j.join_pairs for j in orders.relationships] == [[["customer_id", "id"]]]
+    assert [j.column_pairs for j in orders.relationships] == [[("customer_id", "id")]]
 
     rows = run_sync(_rows(store, db, {"population": "orders",
                                       "metrics": ["total_amount", "completed_amount", "order_count"]}))

@@ -45,12 +45,12 @@ from slayer.core.syntax import (
 def _ext_datasets() -> dict[str, SlayerDataset]:
     """The stage source and the extension joins' target, as the runtime loads them."""
     orders = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="customer_id", datatype=DataType.INT),
-        DatasetField(name="b_id", datatype=DataType.INT), DatasetField(name="s_id", datatype=DataType.INT)])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="customer_id", datatype=DataType.INTEGER),
+        DatasetField(name="b_id", datatype=DataType.INTEGER), DatasetField(name="s_id", datatype=DataType.INTEGER)])
     customers = SlayerDataset(name="customers", data_source="ds", sql_table="customers", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="name", datatype=DataType.TEXT)])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", datatype=DataType.STRING)])
     return {"orders": orders, "customers": customers}
 
 def _stage_scope(stage: SlayerQuery, datasets_by_name: dict) -> QueryScope:
@@ -65,16 +65,16 @@ class TestStageGraphBidirectional:
         orders = SlayerDataset(
             name="orders", data_source="ds", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]])],
+                             from_columns=["customer_id"], to_columns=["id"])],
         )
         customers = SlayerDataset(
             name="customers", data_source="ds", sql_table="customers",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         models = {"orders": orders, "customers": customers}
         graph = _stage_scope(SlayerQuery(population="customers"), models)
@@ -85,9 +85,9 @@ class TestStageGraphBidirectional:
         ) == "amount"
 
     def test_named_extension_hop_attributes_by_name(self) -> None:
-        stage = SlayerQuery(population="orders", extensions=[DatasetExtension(source_name="orders", relationships=[
+        stage = SlayerQuery(population="orders", extensions=[DatasetExtension(dataset="orders", relationships=[
             DatasetRelationship(to="customers",
-                      join_pairs=[["customer_id", "id"]], name="buyer"),
+                      from_columns=["customer_id"], to_columns=["id"], name="buyer"),
         ])])
         graph = _stage_scope(stage, _ext_datasets())
         assert _attribute_ref_to_base(
@@ -95,11 +95,11 @@ class TestStageGraphBidirectional:
         ) == "name"
 
     def test_parallel_extension_targets_unaddressable_by_bare_name(self) -> None:
-        stage = SlayerQuery(population="orders", extensions=[DatasetExtension(source_name="orders", relationships=[
+        stage = SlayerQuery(population="orders", extensions=[DatasetExtension(dataset="orders", relationships=[
             DatasetRelationship(to="customers",
-                      join_pairs=[["b_id", "id"]], name="buyer"),
+                      from_columns=["b_id"], to_columns=["id"], name="buyer"),
             DatasetRelationship(to="customers",
-                      join_pairs=[["s_id", "id"]], name="seller"),
+                      from_columns=["s_id"], to_columns=["id"], name="seller"),
         ])])
         graph = _stage_scope(stage, _ext_datasets())
         assert _attribute_ref_to_base(
@@ -111,10 +111,10 @@ class TestStageGraphBidirectional:
         ) is None
 
     def test_extension_repeating_a_stored_join_is_that_stored_edge(self) -> None:
-        join = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])
+        join = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])
         models = _ext_datasets()
         models["orders"] = models["orders"].model_copy(update={"relationships": [join]})
-        graph = _stage_scope(SlayerQuery(population="orders", extensions=[DatasetExtension(source_name="orders", relationships=[join])]), models)
+        graph = _stage_scope(SlayerQuery(population="orders", extensions=[DatasetExtension(dataset="orders", relationships=[join])]), models)
         assert _attribute_ref_to_base(
             ref="customers.name", base_name="customers", scope=graph,
         ) == "name"

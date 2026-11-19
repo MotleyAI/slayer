@@ -96,11 +96,11 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
                 DatasetField(
                     name="id",
                     sql="id",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     primary_key=True,
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
             metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
         )
@@ -114,10 +114,10 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
                 DatasetField(
                     name="id",
                     sql="id",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     primary_key=True,
                 ),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -153,7 +153,7 @@ class TestPostMemories:
                 "learning": "Revenue by status",
                 "linked_entities": {
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                 },
             },
         )

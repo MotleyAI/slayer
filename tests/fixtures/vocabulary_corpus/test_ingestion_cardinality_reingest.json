@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "a__b",
-    "join_pairs": [
-     [
-      "x",
-      "id"
-     ]
+    "from_columns": [
+     "x"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "a___b",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

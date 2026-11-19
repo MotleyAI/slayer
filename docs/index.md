@@ -25,8 +25,8 @@ Given the demo's `orders` [dataset](concepts/models.md), with an `order_total` f
   "population": "orders",
   "metrics": [
     "sum(order_total)",
-    {"expression": "change_pct(sum(order_total))", "name": "mom_growth"},
-    {"expression": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "name": "yoy_growth"},
+    {"metric": "change_pct(sum(order_total))", "alias": "mom_growth"},
+    {"metric": "sum(order_total) / time_shift(sum(order_total), -1, 'year') - 1", "alias": "yoy_growth"},
     "last(stores.name, stores.opened_at)"
   ],
   "dimensions": ["stores.regions.name"],

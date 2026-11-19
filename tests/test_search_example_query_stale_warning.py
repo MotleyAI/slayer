@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
@@ -28,7 +27,7 @@ class TestExampleQueryStaleWarning:
         # then remove the referenced column so the query is now stale.
         attached = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         seed = await storage.save_memory(
             learning="paid revenue",
@@ -59,7 +58,7 @@ class TestExampleQueryStaleWarning:
         eq = next(e for e in example_queries if e.id == str(seed.id))
         assert eq.query.population == "orders"
         assert eq.query.metrics is not None
-        assert eq.query.metrics[0].expression == "sum(amount)"
+        assert eq.query.metrics[0].metric == "sum(amount)"
         # And a warning naming the memory must be present.
         memory_warnings = [
             w for w in resp.warnings if "memory:" in w and "stale" in w.lower()

@@ -2,21 +2,21 @@
  "source": "tests/dialects/test_dev1879_alias_battery.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(logo_churn) / sum(logo_bop)"
    },
    "new": {
-    "expression": "sum(logo_churn) / sum(logo_bop)"
+    "metric": "sum(logo_churn) / sum(logo_bop)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "time_shift(sum(cmrr_eop), -1, 'year')"
    },
    "new": {
-    "expression": "time_shift(sum(cmrr_eop), -1, 'year')"
+    "metric": "time_shift(sum(cmrr_eop), -1, 'year')"
    }
   }
  ],

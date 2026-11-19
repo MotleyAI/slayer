@@ -14,8 +14,9 @@ from sqlglot import exp
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import (
-    DatasetMetric,
     RENT_APP,
     RENT_APP_GOLD_SAMEROW,
     RENT_APP_GOLD_SPLIT_DEFECT,
@@ -68,9 +69,9 @@ async def exec_backend_rev(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+RM = QueryMetric(metric="sum(stores.rent)", alias="rm")
 
 
 async def _dry_has_exists_and_closes(engine, query, dialect) -> None:
@@ -314,10 +315,10 @@ class TestProducerKinds:
         query = q(
             dimensions=["customers.tier"],
             metrics=[
-                DatasetMetric(expression="first(customers.spend, customers.signup_at)",
-                             name="f"),
-                DatasetMetric(expression="last(customers.spend, customers.signup_at)",
-                             name="l"),
+                QueryMetric(metric="first(customers.spend, customers.signup_at)",
+                             alias="f"),
+                QueryMetric(metric="last(customers.spend, customers.signup_at)",
+                             alias="l"),
             ],
             filter=["channel = 'app'"],
         )
@@ -339,8 +340,8 @@ class TestProducerKinds:
         _, engine = exec_backend
         resp = await engine.execute(q(
             time_dimensions=signup_month_td(),
-            metrics=[DatasetMetric(expression="sum(customers.spend, window='1y')",
-                                   name="w")],
+            metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
+                                   alias="w")],
             filter=["channel = 'app'"],
         ))
         got = {month_key(r["orders.customers.signup_at"]): r["orders.w"]
@@ -357,8 +358,8 @@ class TestProducerKinds:
         dialect, engine = exec_backend
         dry = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
-            metrics=[DatasetMetric(expression="sum(customers.spend, window='1y')",
-                                   name="w")],
+            metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
+                                   alias="w")],
             filter=["channel = 'app'"],
         ), dry_run=True)
         tree = sqlglot.parse_one(sql=dry.sql, read=dialect)
@@ -379,8 +380,8 @@ class TestProducerKinds:
         _, engine = exec_backend
         resp = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
-            metrics=[DatasetMetric(expression="sum(customers.spend, window='1y')",
-                                   name="w")],
+            metrics=[QueryMetric(metric="sum(customers.spend, window='1y')",
+                                   alias="w")],
             filter=["status = 'new'"],
         ))
         got = {month_key(r["orders.customers.signup_at"]): r["orders.w"]
@@ -394,7 +395,7 @@ class TestProducerKinds:
         dimension) — the app population flips gold to 'lo' (160 ≤ 170)."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
             metrics=[M],
             filter=["channel = 'app'"],
         )

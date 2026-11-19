@@ -1,17 +1,17 @@
 # models/join-keys Specification
 
 ## Purpose
-Defines the spelling contract of a join's key columns: how `join_pairs` name columns, which columns may serve as keys, where the physical spelling is applied, how stored spellings are canonicalised on load, and what the importers emit.
+Defines the spelling contract of a join's key columns: how `from_columns` / `to_columns` name columns, which columns may serve as keys, where the physical spelling is applied, how stored spellings are canonicalised on load, and what the importers emit.
 
 ## Requirements
 
 ### Requirement: Join keys name model columns
 
-Each entry of a join's `join_pairs` SHALL name a column of the model on its side by that column's `name` — never by its physical `sql` spelling — and SHALL obey the column-name rules (no `.` or `:`, no reserved prefix). Each named column MUST be a base column: its `sql` is unset or a single identifier (optionally double-quoted), and it carries no `filter`. A model whose join names an undeclared, expression-valued, or filtered source-side column SHALL be rejected when the model is constructed, with an error naming the model, the join target, the column and the remedy; the same check SHALL apply to joins added by a query-level model extension. A join whose target-side key is not a declared base column of the target model SHALL be rejected at save time with a typed error, and model validation SHALL report such a join on an already-stored model with the remedy.
+Each entry of a join's `from_columns` and `to_columns` SHALL name a column of the model on its side by that column's `name` — never by its physical `sql` spelling — and SHALL obey the column-name rules (no `.` or `:`, no reserved prefix). Each named column MUST be a base column: its `sql` is unset or a single identifier (optionally double-quoted), and it carries no `filter`. A model whose join names an undeclared, expression-valued, or filtered source-side column SHALL be rejected when the model is constructed, with an error naming the model, the join target, the column and the remedy; the same check SHALL apply to joins added by a query-level model extension. A join whose target-side key is not a declared base column of the target model SHALL be rejected at save time with a typed error, and model validation SHALL report such a join on an already-stored model with the remedy.
 
 #### Scenario: A renamed source key is written by its column name
 
-- **WHEN** a model declares `DatasetField(name="region_id", sql="region_fk")` and a join with `join_pairs: [["region_id", "id"]]`
+- **WHEN** a model declares `DatasetField(name="region_id", sql="region_fk")` and a join with `from_columns: ["region_id"]` and `to_columns: ["id"]`
 - **THEN** the model saves, and queries crossing the join execute against the physical column `region_fk`
 
 #### Scenario: An undeclared source key is rejected at construction
@@ -31,7 +31,7 @@ Each entry of a join's `join_pairs` SHALL name a column of the model on its side
 
 #### Scenario: A dotted key entry is rejected
 
-- **WHEN** a join is constructed with a `join_pairs` entry containing `.`
+- **WHEN** a join is constructed with a `from_columns` or `to_columns` entry containing `.`
 - **THEN** construction fails with the column-name rule error
 
 #### Scenario: An expression target key is rejected at save time
@@ -60,7 +60,7 @@ Join-graph reasoning — provable arity, grain determination, the entity and for
 
 #### Scenario: A renamed target primary key proves the hop and executes
 
-- **WHEN** `customers` declares `DatasetField(name="id", sql="customer_pk", primary_key=True)` and `orders` joins it with `join_pairs: [["customer_id", "id"]]` and no cardinality declaration
+- **WHEN** `customers` declares `DatasetField(name="id", sql="customer_pk", primary_key=True)` and `orders` joins it with `from_columns: ["customer_id"]` and `to_columns: ["id"]` and no cardinality declaration
 - **THEN** the hop is provably many-to-one, the dimension keeps exact attributed values with no broadcast warning, and the query executes with the hand-computed values
 
 #### Scenario: Renames on both sides across two hops execute
@@ -158,7 +158,7 @@ Schema drift and type refinement SHALL treat a column whose `sql` is a double-qu
 
 ### Requirement: Importers emit logical key names
 
-Every importer SHALL emit `join_pairs` in column-`name` spelling naming declared base columns on both sides. The Cube importer SHALL keep join keys as member names, SHALL synthesise a hidden base column for an ON operand that names no member of its cube (on the cube's model and on any view facade carrying the join), and SHALL drop a join, with a conversion-report warning, when an ON operand names a member whose `sql` is not a base column. The dbt importer SHALL synthesise a hidden base column for a foreign entity that no dimension of the model covers, and SHALL skip, with a warning, a join whose entity `expr` is not a single identifier. The OSI importer SHALL check both sides of a relationship against the contract before adding it and SHALL skip a violating relationship with its existing warning. Auto-ingestion SHALL apply its column renaming to join keys so a generated join always names the generated column.
+Every importer SHALL emit `from_columns` / `to_columns` in column-`name` spelling naming declared base columns on both sides. The Cube importer SHALL keep join keys as member names, SHALL synthesise a hidden base column for an ON operand that names no member of its cube (on the cube's model and on any view facade carrying the join), and SHALL drop a join, with a conversion-report warning, when an ON operand names a member whose `sql` is not a base column. The dbt importer SHALL synthesise a hidden base column for a foreign entity that no dimension of the model covers, and SHALL skip, with a warning, a join whose entity `expr` is not a single identifier. The OSI importer SHALL check both sides of a relationship against the contract before adding it and SHALL skip a violating relationship with its existing warning. Auto-ingestion SHALL apply its column renaming to join keys so a generated join always names the generated column.
 
 #### Scenario: Cube join keys are member names
 

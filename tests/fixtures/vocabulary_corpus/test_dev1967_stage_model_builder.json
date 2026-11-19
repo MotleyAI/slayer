@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "s1",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "s1",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -60,15 +60,13 @@
    },
    "new": {
     "to": "s1",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ],
-     [
-      "tier",
-      "tier"
-     ]
+    "from_columns": [
+     "customer_id",
+     "tier"
+    ],
+    "to_columns": [
+     "id",
+     "tier"
     ]
    }
   }

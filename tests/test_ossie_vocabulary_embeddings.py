@@ -1,5 +1,5 @@
 """A pre-rename embeddings sidecar's row kinds become ``dataset`` / ``field`` / ``metric`` in place, in both
-backends and across reopens, with nothing re-embedded and no content hash changed.
+backends and across reopens; only a row whose text changed (a field naming its datatype) is re-embedded.
 
 The pre-2.0 spellings below are deliberate: keep this file out of the vocabulary respelling pass.
 
@@ -119,7 +119,7 @@ class TestSidecarKinds:
         assert sorted((r.canonical_id, r.entity_kind) for r in listed) == sorted(
             (cid, NEW_KIND[kind]) for cid, kind, _ in PRE_RENAME_ROWS)
 
-    async def test_nothing_is_re_embedded(
+    async def test_only_rows_whose_text_changed_are_re_embedded(
         self, backend: str, tmp_path: Path, counting_embed: _CountingEmbed,
     ) -> None:
         await pre_rename_store(backend=backend, base=tmp_path)
@@ -129,8 +129,13 @@ class TestSidecarKinds:
             dataset = await storage.get_dataset(name, data_source=DS)
             assert dataset is not None
             assert await retriever.refresh_dataset_subtree(dataset) == []
-        assert counting_embed.texts == []
-        assert raw_rows(backend=backend, base=tmp_path) == expected_rows()
+        fields = {cid for cid, kind, _ in PRE_RENAME_ROWS if kind == "column"}
+        assert sorted(t.split("\n", 1)[0].removeprefix("Column: ") for t in counting_embed.texts) == sorted(fields)
+        assert all("\nType: " in t for t in counting_embed.texts)
+        rows = raw_rows(backend=backend, base=tmp_path)
+        assert {cid: row for cid, row in rows.items() if cid not in fields} == {
+            cid: row for cid, row in expected_rows().items() if cid not in fields}
+        assert all(rows[cid][0] == "field" and rows[cid][1] != expected_rows()[cid][1] for cid in fields)
 
 
 class TestEmbeddingDocument:

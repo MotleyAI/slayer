@@ -26,7 +26,7 @@ async def saved_totals_engine(request):
 async def test_saved_query_backed_join_filters_population(saved_totals_engine):
     response = await saved_totals_engine.execute(_query(
         population="customer_totals",
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
         filter=["customers.tier = 'gold'"],
     ))
     assert response.data == [{"customer_totals.total": 120.0}]
@@ -36,7 +36,7 @@ async def test_saved_query_backed_join_traverses_multihop_for_aggregate(saved_to
     response = await saved_totals_engine.execute(_query(
         population="customer_totals",
         dimensions=["customers.regions.name"],
-        metrics=[{"expression": "sum(customers.credit)", "name": "credit"}],
+        metrics=[{"metric": "sum(customers.credit)", "alias": "credit"}],
     ))
     assert cells(response, dim_suffix="regions.name", metric="credit") == {
         "North": 300.0,
@@ -49,11 +49,11 @@ async def test_repeating_saved_join_in_extension_is_still_usable(saved_totals_en
     response = await saved_totals_engine.execute(_query(
         population="customer_totals",
         extensions=[{
-            "source_name": "customer_totals",
+            "dataset": "customer_totals",
             "relationships": [join.model_dump() for join in model.relationships],
         }],
         dimensions=["customers.name"],
-        metrics=[{"expression": "sum(amt)", "name": "total"}],
+        metrics=[{"metric": "sum(amt)", "alias": "total"}],
     ))
     assert cells(response, dim_suffix="customers.name", metric="total") == {
         "Ann": 30.0,
@@ -65,10 +65,10 @@ async def test_repeating_saved_join_in_extension_is_still_usable(saved_totals_en
 async def test_repeating_stored_join_in_table_model_extension_is_that_edge(saved_totals_engine):
     response = await saved_totals_engine.execute(_query(
         population="orders",
-        extensions=[{"source_name": "orders", "relationships": [
+        extensions=[{"dataset": "orders", "relationships": [
             orders_dataset().relationships[0].model_copy(update={"description": "repeated"}).model_dump()]}],
         dimensions=["customers.name"],
-        metrics=[{"expression": "sum(amount)", "name": "total"}],
+        metrics=[{"metric": "sum(amount)", "alias": "total"}],
     ))
     assert cells(response, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
 
@@ -76,10 +76,10 @@ async def test_repeating_stored_join_in_table_model_extension_is_that_edge(saved
 async def test_extension_join_differing_from_stored_one_stays_a_parallel_edge(saved_totals_engine):
     query = _query(
         population="orders",
-        extensions=[{"source_name": "orders", "relationships": [
-            {"to": "customers", "join_pairs": [["id", "id"]]}]}],
+        extensions=[{"dataset": "orders", "relationships": [
+            {"to": "customers", "from_columns": ["id"], "to_columns": ["id"]}]}],
         dimensions=["customers.name"],
-        metrics=[{"expression": "sum(amount)", "name": "total"}],
+        metrics=[{"metric": "sum(amount)", "alias": "total"}],
     )
     with pytest.raises(AmbiguousRelationshipPathError):
         await saved_totals_engine.execute(query)

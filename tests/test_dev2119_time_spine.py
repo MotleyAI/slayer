@@ -47,14 +47,14 @@ def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="order_date",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="order_date", datatype=DataType.DATE),
             DatasetField(name="shipped_at", datatype=DataType.DATE),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(name="eff", datatype=DataType.DATE, sql="COALESCE(shipped_at, order_date)"),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 

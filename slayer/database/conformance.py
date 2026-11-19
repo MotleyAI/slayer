@@ -16,8 +16,8 @@ _ORDERS, _CUSTOMERS, _PAID, _TOTALS = "conf_orders", "conf_customers", "conf_pai
 _MISSING = "conf_no_such_table"
 
 _EXPECTED_ORDER_COLUMNS = [
-    ("id", DataType.INT), ("customer_id", DataType.INT), ("amount", DataType.DOUBLE),
-    ("placed_at", DataType.TIMESTAMP), ("note", DataType.TEXT),
+    ("id", DataType.INTEGER), ("customer_id", DataType.INTEGER), ("amount", DataType.FLOAT),
+    ("placed_at", DataType.DATETIME), ("note", DataType.STRING),
 ]
 
 
@@ -127,7 +127,7 @@ def _checks(client: SqlClient, caps: Capabilities) -> list[tuple[str, bool, Call
 
     async def get_result_column_types() -> None:
         types = await client.get_result_column_types("SELECT id, name FROM conf_customers")
-        _expect({k: t.type for k, t in types.items()} == {"id": DataType.INT, "name": DataType.TEXT}, f"types {types!r}")
+        _expect({k: t.type for k, t in types.items()} == {"id": DataType.INTEGER, "name": DataType.STRING}, f"types {types!r}")
         _expect(
             all(t.db_type is None or (isinstance(t.db_type, str) and t.db_type) for t in types.values()),
             f"type names {types!r}",

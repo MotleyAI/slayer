@@ -31,18 +31,18 @@ def _graph(*, named_event: bool = False) -> dict[str, SlayerDataset]:
     """orders → customers → regions; regions → region_events (1:N, reverse to-one)
     and regions → countries (m:1, reverse fans); orders → stores (sibling)."""
     orders = _m("orders", ["id", "customer_id", "store_id"], [
-        DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE),
-        DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]],
+        DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     regions = _m("regions", ["id", "pop", "country_id"], [
-        DatasetRelationship(to="region_events", join_pairs=[["id", "region_id"]],
+        DatasetRelationship(to="region_events", from_columns=["id"], to_columns=["region_id"],
                   cardinality=RelationshipCardinality.ONE_TO_MANY,
                   name="evt" if named_event else None),
-        DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]],
+        DatasetRelationship(to="countries", from_columns=["country_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     return {m.name: m for m in (orders, customers, regions,
                                 _m("region_events", ["id", "region_id", "value"]),

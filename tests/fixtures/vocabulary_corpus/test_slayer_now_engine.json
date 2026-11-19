@@ -35,8 +35,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "count(ev.id)",
-      "name": "n"
+      "metric": "count(ev.id)",
+      "alias": "n"
      }
     ],
     "time_dimensions": [

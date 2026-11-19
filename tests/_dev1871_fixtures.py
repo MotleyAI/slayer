@@ -37,20 +37,20 @@ def lit_datasets() -> list[SlayerDataset]:
     plants = SlayerDataset(
         name="plants", data_source=DS_LIT, sql_table="plants",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="code", datatype=DataType.INT),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.INTEGER),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     hub = SlayerDataset(
         name="hub", data_source=DS_LIT, sql_table="hub",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="plant_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="plant_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
-                to="plants", join_pairs=[["plant_id", "id"]],
+                to="plants", from_columns=["plant_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -58,20 +58,20 @@ def lit_datasets() -> list[SlayerDataset]:
     stores = SlayerDataset(
         name="stores", data_source=DS_LIT, sql_table="stores",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="kind", datatype=DataType.TEXT),
-            DatasetField(name="plant_ref", datatype=DataType.INT),
-            DatasetField(name="hub_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="kind", datatype=DataType.STRING),
+            DatasetField(name="plant_ref", datatype=DataType.INTEGER),
+            DatasetField(name="hub_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             # Direct edge: undeclared cardinality into a non-unique column —
             # resolvable literally, never provably to-one.
             DatasetRelationship(
-                to="plants", join_pairs=[["plant_ref", "code"]],
+                to="plants", from_columns=["plant_ref"], to_columns=["code"],
                 cardinality=None,
             ),
             DatasetRelationship(
-                to="hub", join_pairs=[["hub_id", "id"]],
+                to="hub", from_columns=["hub_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -84,20 +84,20 @@ def fanroute_datasets() -> list[SlayerDataset]:
     office = SlayerDataset(
         name="office", data_source=DS_FANROUTE, sql_table="office",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
     firm = SlayerDataset(
         name="firm", data_source=DS_FANROUTE, sql_table="firm",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="title", datatype=DataType.TEXT),
-            DatasetField(name="office_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="title", datatype=DataType.STRING),
+            DatasetField(name="office_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
-                to="office", join_pairs=[["office_id", "id"]],
+                to="office", from_columns=["office_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -105,13 +105,13 @@ def fanroute_datasets() -> list[SlayerDataset]:
     desks = SlayerDataset(
         name="desks", data_source=DS_FANROUTE, sql_table="desks",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="office_ref", datatype=DataType.INT),
-            DatasetField(name="id_tag", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="office_ref", datatype=DataType.INTEGER),
+            DatasetField(name="id_tag", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(
-                to="office", join_pairs=[["office_ref", "id"]],
+                to="office", from_columns=["office_ref"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -132,19 +132,19 @@ def tworoutes_datasets() -> list[SlayerDataset]:
     city = SlayerDataset(
         name="city", data_source=DS_TWOROUTES, sql_table="city",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     cust = SlayerDataset(
         name="cust", data_source=DS_TWOROUTES, sql_table="cust",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="city_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="city_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
-                to="city", join_pairs=[["city_id", "id"]],
+                to="city", from_columns=["city_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -152,12 +152,12 @@ def tworoutes_datasets() -> list[SlayerDataset]:
     store = SlayerDataset(
         name="store", data_source=DS_TWOROUTES, sql_table="store",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="city_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="city_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
-                to="city", join_pairs=[["city_id", "id"]],
+                to="city", from_columns=["city_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -165,18 +165,18 @@ def tworoutes_datasets() -> list[SlayerDataset]:
     sale = SlayerDataset(
         name="sale", data_source=DS_TWOROUTES, sql_table="sale",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="code", datatype=DataType.TEXT),
-            DatasetField(name="cust_id", datatype=DataType.INT),
-            DatasetField(name="store_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="cust_id", datatype=DataType.INTEGER),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
-                to="cust", join_pairs=[["cust_id", "id"]],
+                to="cust", from_columns=["cust_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
             DatasetRelationship(
-                to="store", join_pairs=[["store_id", "id"]],
+                to="store", from_columns=["store_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],

@@ -27,11 +27,11 @@ from tests._deprecated_input_helpers import deprecated_in, deprecations, recorde
 from tests._model_access_fixtures import ACCESS_PARAMS, DS, AccessStore, access_store, mcp_text, must_get
 
 STRICT_WORD = re.compile(r"(?<![\w])strict(?![\w])")
-PUB_COUNT = {"population": "pub", "metrics": [{"expression": "count(*)", "name": "v"}]}
-ROOTLESS = {"dimensions": ["pub.label"], "metrics": [{"expression": "count(pub.id)", "name": "n"}]}
-STAGE = {"name": "s", "population": "pub", "dimensions": ["label"], "metrics": [{"expression": "count(*)", "name": "n"}]}
-ON_STAGE = {"population": "s", "metrics": [{"expression": "sum(n)", "name": "total"}]}
-HR_READER = {"population": "hr", "metrics": [{"expression": "sum(salary)", "name": "v"}]}
+PUB_COUNT = {"population": "pub", "metrics": [{"metric": "count(*)", "alias": "v"}]}
+ROOTLESS = {"dimensions": ["pub.label"], "metrics": [{"metric": "count(pub.id)", "alias": "n"}]}
+STAGE = {"name": "s", "population": "pub", "dimensions": ["label"], "metrics": [{"metric": "count(*)", "alias": "n"}]}
+ON_STAGE = {"population": "s", "metrics": [{"metric": "sum(n)", "alias": "total"}]}
+HR_READER = {"population": "hr", "metrics": [{"metric": "sum(salary)", "alias": "v"}]}
 
 #: (source_queries, deprecated_input warnings the save reports)
 SAVED_QUERIES = {

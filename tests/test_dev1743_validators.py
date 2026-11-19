@@ -55,7 +55,7 @@ class TestDotAndColonStillRejected:
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_column_name_rejected(self, bad: str) -> None:
         with pytest.raises(ValueError):
-            DatasetField(name=bad, datatype=DataType.TEXT)
+            DatasetField(name=bad, datatype=DataType.STRING)
 
     @pytest.mark.parametrize("bad", ["a.b", "a:b"])
     def test_dotted_or_coloned_measure_name_rejected(self, bad: str) -> None:
@@ -73,7 +73,7 @@ class TestDotAndColonStillRejected:
 # --------------------------------------------------------------------------- #
 class TestFlatColumnNamesUnchanged:
     def test_flat_column_name_still_allowed(self) -> None:
-        col = DatasetField(name="stores__name", datatype=DataType.TEXT)
+        col = DatasetField(name="stores__name", datatype=DataType.STRING)
         assert col.name == "stores__name"
 
 
@@ -91,7 +91,7 @@ class TestSlayerPrefixReservedOnNames:
 
     def test_column_name_reserved(self) -> None:
         with pytest.raises(ValueError):
-            DatasetField(name="__slayer_agg_0__", datatype=DataType.TEXT)
+            DatasetField(name="__slayer_agg_0__", datatype=DataType.STRING)
 
     def test_measure_name_reserved(self) -> None:
         with pytest.raises(ValueError):
@@ -148,7 +148,7 @@ class TestDunderNameRoundTripsStorage:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(datasource())
             m = SlayerDataset(name="a__b", data_source="test", sql_table="a_b",
-                            fields=[DatasetField(name="id", datatype=DataType.INT,
+                            fields=[DatasetField(name="id", datatype=DataType.INTEGER,
                                             primary_key=True)])
             await storage.save_dataset(m)
             loaded = await storage.get_dataset("a__b", data_source="test")
@@ -161,7 +161,7 @@ class TestDunderNameRoundTripsStorage:
             storage = SQLiteStorage(db_path=f"{d}/s.db")
             await storage.save_datasource(datasource())
             m = SlayerDataset(name="a__b", data_source="test", sql_table="a_b",
-                            fields=[DatasetField(name="id", datatype=DataType.INT,
+                            fields=[DatasetField(name="id", datatype=DataType.INTEGER,
                                             primary_key=True)])
             await storage.save_dataset(m)
             loaded = await storage.get_dataset("a__b", data_source="test")

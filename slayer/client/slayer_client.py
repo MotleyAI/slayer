@@ -22,7 +22,8 @@ from slayer.core.format import NumberFormat
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import PopulationRecommendation
 from slayer.core.vocabulary import method_twin
-from slayer.core.warnings import DeprecatedInputWarning
+from slayer.core.models import SlayerDataset
+from slayer.core.warnings import DeprecatedInputWarning, SlayerWarning
 from slayer.engine.query_engine import (
     ClientFactory,
     FieldMetadata,
@@ -324,6 +325,11 @@ class SlayerClient:
         return await self._request(method="GET", path=f"/datasets/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def create_dataset(self, dataset: dict[str, Any]) -> dict[str, Any]:
+        if self._engine is not None:
+            validated = SlayerDataset.model_validate(dataset)
+            notes: list[SlayerWarning] = []
+            await self._engine.save_dataset(validated, warnings_out=notes)
+            return {"status": "created", "name": validated.name, "warnings": [n.model_dump(mode="json") for n in notes]}
         return await self._request(method="POST", path="/datasets", json=dataset)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def list_datasources(self) -> list[str]:

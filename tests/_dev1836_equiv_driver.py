@@ -48,9 +48,9 @@ MODULES = {
 }
 
 _SQLITE_TYPE = {
-    DataType.INT: "INTEGER", DataType.DOUBLE: "REAL", DataType.BOOLEAN: "INTEGER",
-    DataType.TEXT: "TEXT", DataType.DATE: "TEXT", DataType.TIMESTAMP: "TEXT",
-    DataType.UNKNOWN: "TEXT",
+    DataType.INTEGER: "INTEGER", DataType.FLOAT: "REAL", DataType.BOOLEAN: "INTEGER",
+    DataType.STRING: "TEXT", DataType.DATE: "TEXT", DataType.DATETIME: "TEXT",
+    DataType.OPAQUE: "TEXT",
 }
 
 
@@ -70,13 +70,13 @@ def _physical_columns(dataset: SlayerDataset) -> list[DatasetField]:
 
 
 def _rand_value(dtype, rng: random.Random):
-    if dtype == DataType.INT:
+    if dtype == DataType.INTEGER:
         return rng.randint(0, 50)
-    if dtype in (DataType.DOUBLE,):
+    if dtype in (DataType.FLOAT,):
         return round(rng.uniform(0, 100), 2)
     if dtype == DataType.BOOLEAN:
         return rng.choice([0, 1])
-    if dtype in (DataType.DATE, DataType.TIMESTAMP):
+    if dtype in (DataType.DATE, DataType.DATETIME):
         m = rng.randint(1, 3)
         d = rng.randint(1, 28)
         return f"2024-{m:02d}-{d:02d}" + ("" if dtype == DataType.DATE else " 00:00:00")
@@ -118,7 +118,7 @@ def seed_sqlite(datasets: list[SlayerDataset], db_path: str, *, seed: int = 2024
             # FK columns: source-side join cols sample from the target's target-col values.
             fk: dict[str, list] = {}
             for j in m.relationships:
-                for src_col, tgt_col in j.join_pairs:
+                for src_col, tgt_col in j.column_pairs:
                     vals = pk_values.get(j.to, {}).get(tgt_col)
                     if vals and src_col in colnames:
                         fk[src_col] = vals
@@ -130,7 +130,7 @@ def seed_sqlite(datasets: list[SlayerDataset], db_path: str, *, seed: int = 2024
                         # repetition -> fan-out; plus an occasional orphan NULL.
                         row[c.name] = rng.choice(fk[c.name] + fk[c.name] + [None])
                     elif c.primary_key or c.unique:
-                        row[c.name] = (i + 1) if c.datatype == DataType.INT else f"{c.name[:3]}{i + 1}"
+                        row[c.name] = (i + 1) if c.datatype == DataType.INTEGER else f"{c.name[:3]}{i + 1}"
                     else:
                         row[c.name] = _rand_value(c.datatype, rng)
                 rows.append(row)

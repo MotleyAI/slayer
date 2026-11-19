@@ -225,12 +225,12 @@ A bucket `date_trunc(unit, expr)` — `unit` a granularity per `queries/date-fun
 
 #### Scenario: Granularity call inside a measure and a computed dimension
 
-- **WHEN** a query has the measure `count_distinct(date_trunc('month', created_at))` and the computed dimension `{"expression": "date_trunc('year', created_at)", "name": "y"}`
+- **WHEN** a query has the measure `count_distinct(date_trunc('month', created_at))` and the computed dimension `{"field": "date_trunc('year', created_at)", "alias": "y"}`
 - **THEN** the measure counts distinct months and the dimension groups by year bucket, by executed values on SQLite and DuckDB
 
 #### Scenario: Granularity call over an expression
 
-- **WHEN** a filter is `date_trunc('month', coalesce(shipped_at, created_at)) >= '2024-03-15'` and a computed dimension is `{"expression": "date_trunc('year', CAST(created_txt AS DATE))", "name": "y"}`
+- **WHEN** a filter is `date_trunc('month', coalesce(shipped_at, created_at)) >= '2024-03-15'` and a computed dimension is `{"field": "date_trunc('year', CAST(created_txt AS DATE))", "alias": "y"}`
 - **THEN** the filter matches exactly the rows whose coalesced timestamp is at or after 2024-04-01 and the dimension groups by the year of the cast value, by executed values on SQLite and DuckDB
 
 #### Scenario: Wrong-shape granularity call in a filter

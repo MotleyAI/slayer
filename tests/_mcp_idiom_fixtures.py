@@ -129,29 +129,29 @@ def idiom_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
             name="orders", sql_table="orders", data_source=data_source,
             default_time_dimension="order_date",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
                 DatasetField(name="order_date", datatype=DataType.DATE),
-                DatasetField(name="amount", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name="customers", sql_table="customers", data_source=data_source,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
-                DatasetField(name="region_id", datatype=DataType.INT),
-                DatasetField(name="credit", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="credit", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name="regions", sql_table="regions", data_source=data_source,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -238,11 +238,11 @@ def _child_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
         return SlayerDataset(
             name=name, sql_table=name, data_source=data_source,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
     return [
@@ -251,24 +251,24 @@ def _child_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
         SlayerDataset(
             name="customers", sql_table="customers", data_source=data_source,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
-                DatasetField(name="region_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name="regions", sql_table="regions", data_source=data_source,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         ),
         SlayerDataset(
             name="events", sql_table="events", data_source=data_source,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="kind", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="kind", datatype=DataType.STRING),
             ],
         ),
     ]
@@ -311,11 +311,11 @@ def _items_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="items", sql_table="items", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="code", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", datatype=DataType.STRING),
             DatasetField(name="flag", datatype=DataType.BOOLEAN),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.STRING),
         ],
     )
 

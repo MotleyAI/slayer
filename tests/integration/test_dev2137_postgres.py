@@ -52,4 +52,4 @@ async def test_lists(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
 async def test_ingested_list_columns(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     (model,) = await pg[0].ingest(pg[1], include_tables=["contractors"])
     typed = {c.name: (c.datatype, c.element_type) for c in model.fields if c.name in ("skills", "scores")}
-    assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}
+    assert typed == {"skills": (DataType.ARRAY, DataType.STRING), "scores": (DataType.ARRAY, DataType.INTEGER)}

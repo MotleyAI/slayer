@@ -377,7 +377,7 @@ async def test_rest_query_reports_install_hint(monkeypatch: pytest.MonkeyPatch, 
     await storage.save_dataset(
         SlayerDataset(
             name="orders", data_source="postgres_ds", sql_table="orders",
-            fields=[DatasetField(name="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER)],
         ),
         _validate=False,
     )

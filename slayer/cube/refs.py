@@ -156,7 +156,7 @@ class JoinSide(BaseModel):
 def _operand_ref(operand: str) -> tuple[str, JoinSide] | None:
     """One side of an equality as ``(qualifier, side)``: ``{cube}.col`` physical, ``{cube.member}`` a member.
 
-    ``None`` for anything else (function calls, arithmetic, literals) — those can't go in ``join_pairs``.
+    ``None`` for anything else (function calls, arithmetic, literals) — those can't be relationship keys.
     """
     operand = operand.strip()
     m = _OPERAND_BRACE_DOT.match(operand)
@@ -209,5 +209,5 @@ def _equality_pair(part: str, *, source_cube: str, target_cube: str) -> tuple[Jo
 
 
 def is_bare_identifier(sql: str) -> bool:
-    """True if ``sql`` is a single bare column identifier (usable in join_pairs)."""
+    """True if ``sql`` is a single bare column identifier (usable as a relationship key)."""
     return bool(IDENTIFIER_RE.match(sql.strip()))

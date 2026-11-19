@@ -60,9 +60,9 @@ async def _env(dataset: SlayerDataset) -> AsyncGenerator[tuple[SlayerQueryEngine
 
 def _players(scores: DatasetField) -> SlayerDataset:
     return SlayerDataset(name="players", sql_table="players", data_source="ds", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="team", datatype=DataType.TEXT),
-        DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="team", datatype=DataType.STRING),
+        DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.FLOAT),
         scores])
 
 
@@ -77,7 +77,7 @@ def _findings(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 STALE_TYPES = [t for t in DataType if t is not DataType.ARRAY]
-assert DataType.UNKNOWN in STALE_TYPES
+assert DataType.OPAQUE in STALE_TYPES
 
 
 class TestValidation:
@@ -94,18 +94,18 @@ class TestValidation:
 
 class TestQueryTime:
     async def test_a_refused_query_carries_the_finding(self) -> None:
-        async with _env(_players(DatasetField(name="scores", datatype=DataType.DOUBLE))) as (engine, _):
+        async with _env(_players(DatasetField(name="scores", datatype=DataType.FLOAT))) as (engine, _):
             with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"population": "players", "metrics": [{"expression": "sum(scores)", "name": "s"}]})
+                await engine.execute({"population": "players", "metrics": [{"metric": "sum(scores)", "alias": "s"}]})
         err = info.value
         assert not any(_deletes_scores(e.model_dump(mode="json")) for e in err.to_delete), err.to_delete
         assert "scores" in str(err), str(err)
         assert "ingest" in str(err).lower(), str(err)
 
     async def test_an_unread_stale_column_leaves_the_error(self) -> None:
-        async with _env(_players(DatasetField(name="scores", datatype=DataType.DOUBLE))) as (engine, _):
+        async with _env(_players(DatasetField(name="scores", datatype=DataType.FLOAT))) as (engine, _):
             with pytest.raises(SQLAlchemyError) as info:
-                await engine.execute({"population": "players", "metrics": [{"expression": "sum(bad)"}]})
+                await engine.execute({"population": "players", "metrics": [{"metric": "sum(bad)"}]})
         assert not isinstance(info.value, SchemaDriftError), info.value
 
 
@@ -119,12 +119,12 @@ class TestReingest:
         assert loaded is not None
         scores = loaded.get_field("scores")
         assert scores is not None
-        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.INT)
+        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.INTEGER)
         assert (scores.description, scores.label) == ("Points per game", "Scores")
 
     @pytest.mark.parametrize("mine", [
-        DatasetField(name="scores", datatype=DataType.TIMESTAMP, granularity="month"),
-        DatasetField(name="scores", datatype=DataType.DOUBLE, format=NumberFormat(type=NumberFormatType.FLOAT)),
+        DatasetField(name="scores", datatype=DataType.DATETIME, granularity="month"),
+        DatasetField(name="scores", datatype=DataType.FLOAT, format=NumberFormat(type=NumberFormatType.FLOAT)),
     ], ids=["granularity", "format"])
     async def test_re_ingest_drops_scalar_only_fields(self, mine: DatasetField) -> None:
         async with _env(_players(mine)) as (engine, ds):
@@ -136,7 +136,7 @@ class TestReingest:
         assert (scores.datatype, scores.granularity, scores.format) == (DataType.ARRAY, None, None)
 
     async def test_re_ingest_keeps_only_count(self) -> None:
-        mine = DatasetField(name="scores", datatype=DataType.DOUBLE, allowed_aggregations=["sum", "avg", "count"])
+        mine = DatasetField(name="scores", datatype=DataType.FLOAT, allowed_aggregations=["sum", "avg", "count"])
         async with _env(_players(mine)) as (engine, ds):
             await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_dataset("players", data_source="ds")
@@ -146,23 +146,23 @@ class TestReingest:
         assert (scores.datatype, scores.allowed_aggregations) == (DataType.ARRAY, ["count"])
 
     async def test_a_derived_column_named_like_a_live_list_untouched(self) -> None:
-        derived = DatasetField(name="scores", sql="CAST(id AS DOUBLE)", datatype=DataType.DOUBLE)
+        derived = DatasetField(name="scores", sql="CAST(id AS DOUBLE)", datatype=DataType.FLOAT)
         async with _env(_players(derived)) as (engine, ds):
             await engine.ingest_idempotent(ds, include_tables=["players"])
             loaded = await engine.storage.get_dataset("players", data_source="ds")
         assert loaded is not None
         scores = loaded.get_field("scores")
         assert scores is not None
-        assert scores.datatype is DataType.DOUBLE
+        assert scores.datatype is DataType.FLOAT
 
     async def test_re_typing_field_effects_converge(self) -> None:
         """Twice re-ingested: kept fields survive, scalar-only fields drop, the second run changes nothing."""
-        seen = DatasetField(name="seen", datatype=DataType.TIMESTAMP, granularity="month",
+        seen = DatasetField(name="seen", datatype=DataType.DATETIME, granularity="month",
                       format=NumberFormat(type=NumberFormatType.INTEGER), description="Sightings",
                       label="Seen", meta={"owner": "ops"}, hidden=True, sql="seen", unique=True,
                       allowed_aggregations=["min", "max", "count"])
         events = SlayerDataset(name="events", sql_table="events", data_source="ds",
-                             fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), seen])
+                             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), seen])
         async with _env(events) as (engine, ds):
             await engine.ingest_idempotent(ds, include_tables=["events"])
             first = await engine.storage.get_dataset("events", data_source="ds")
@@ -173,7 +173,7 @@ class TestReingest:
         first_seen, key = first.get_field("seen"), first.get_field("id")
         assert first_seen is not None
         assert key is not None
-        assert (first_seen.datatype, first_seen.element_type) == (DataType.ARRAY, DataType.TIMESTAMP)
+        assert (first_seen.datatype, first_seen.element_type) == (DataType.ARRAY, DataType.DATETIME)
         assert (first_seen.granularity, first_seen.format) == (None, None)
         assert first_seen.allowed_aggregations == ["count"]
         assert (first_seen.description, first_seen.label, first_seen.meta, first_seen.hidden) == (
@@ -207,17 +207,17 @@ class TestSqlMode:
     async def test_a_by_name_union_aligns_branches_by_name(self) -> None:
         sql = "SELECT id, scores FROM players UNION ALL BY NAME SELECT scores, id FROM players"
         async with _env(stale_sql_dataset(sql=sql, column="scores", data_source="ds")) as (engine, ds):
-            await check_reingest_retypes(engine, datasource=ds, table="players", column="scores", element=DataType.INT)
+            await check_reingest_retypes(engine, datasource=ds, table="players", column="scores", element=DataType.INTEGER)
             loaded = await engine.storage.get_dataset(MODEL, data_source="ds")
         assert loaded is not None
         key = loaded.get_field("id")
         assert key is not None
-        assert key.datatype is DataType.INT
+        assert key.datatype is DataType.INTEGER
 
     async def test_a_by_name_union_types_a_column_only_a_later_branch_has(self) -> None:
         sql = "SELECT id FROM players UNION ALL BY NAME SELECT id, scores FROM players"
         async with _env(stale_sql_dataset(sql=sql, column="scores", data_source="ds")) as (engine, ds):
-            await check_reingest_retypes(engine, datasource=ds, table="players", column="scores", element=DataType.INT)
+            await check_reingest_retypes(engine, datasource=ds, table="players", column="scores", element=DataType.INTEGER)
 
     async def test_re_ingest_skips_a_parameterized_model(self) -> None:
         sql = "SELECT id, scores FROM players WHERE id > {min_id}"

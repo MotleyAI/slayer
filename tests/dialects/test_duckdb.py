@@ -79,7 +79,7 @@ def test_duckdb_build_date_add_quarter_normalizes_to_3_month() -> None:
     d = DuckdbDialect()
     col = exp.column("created_at")
     out = d.build_date_add(
-        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.DATETIME,
     )
     assert out.sql(dialect="duckdb").upper() == "CREATED_AT + INTERVAL 3 MONTH"
 

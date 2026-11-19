@@ -30,7 +30,7 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -51,11 +51,11 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="orders",
         data_source="wm",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
         ],
     )
 
@@ -100,10 +100,10 @@ def _composite_orders_dataset() -> SlayerDataset:
         sql_table="orders_c",
         data_source="wm",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -166,7 +166,7 @@ class TestWindowedMeasureValues:
     async def test_rolling_90d_sum_by_month(self, windowed_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}]})
+            )], "metrics": [{"metric": "sum(revenue, window='90d')", "alias": "rev_90d"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "rev_90d")])
@@ -180,7 +180,7 @@ class TestWindowedMeasureValues:
     async def test_rolling_90d_avg_by_month(self, windowed_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "avg(revenue, window='90d')", "name": "rev_avg"}]})
+            )], "metrics": [{"metric": "avg(revenue, window='90d')", "alias": "rev_avg"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "rev_avg")])
@@ -200,7 +200,7 @@ class TestWindowedMeasureValues:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
-            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}]})
+            )], "metrics": [{"metric": "sum(revenue, window='90d')", "alias": "rev_90d"}]})
         result = await windowed_engine.execute(query=query)
         assert result.row_count == 1, result.data
         assert float(result.data[0][_key(result.data[0], "rev_90d")]) == 900.0, result.data
@@ -224,11 +224,11 @@ class TestWindowedMeasureValues:
         """
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [FieldRef(name="region")],
+            "dimensions": [QueryDimension(field="region")],
             "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
+            "metrics": [{"metric": "sum(revenue, window='90d')", "alias": "rev_90d"}],
         })
         result = await windowed_engine.execute(query=query)
         null_rows = [r for r in result.data if r[_key(r, "region")] is None]
@@ -276,7 +276,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
     ) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}]})
+            )], "metrics": [{"metric": "count(id)", "alias": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         months = [str(r[_key(r, "created_at")])[:7] for r in result.data]
         assert months == ["2024-03", "2024-02", "2024-01"], result.data
@@ -288,7 +288,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         as a result column."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}]})
+            )], "metrics": [{"metric": "count(id)", "alias": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         assert all("window" not in c and "90d" not in c for c in result.columns), result.columns
         for row in result.data:
@@ -307,7 +307,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         and ``test_order_only_windowed_inside_composite`` carry that duty."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "asc"}], "limit": 1})
+            )], "metrics": [{"metric": "count(id)", "alias": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "asc"}], "limit": 1})
         result = await windowed_engine.execute(query=query)
         assert result.row_count == 1, result.data
         assert str(result.data[0][_key(result.data[0], "created_at")])[:7] == "2024-01", result.data
@@ -330,7 +330,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         """
         query = SlayerQuery.model_validate({"population": "orders_c", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "count(id) / sum(revenue, window='90d')", "direction": "desc"}]})
+            )], "metrics": [{"metric": "count(id)", "alias": "n"}], "order": [{"field": "count(id) / sum(revenue, window='90d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         months = [str(r[_key(r, "created_at")])[:7] for r in result.data]
         assert months == ["2024-03", "2024-01", "2024-02"], (
@@ -348,7 +348,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         regression."""
         query = SlayerQuery.model_validate({"population": "orders_c", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "roll"}]})
+            )], "metrics": [{"metric": "sum(revenue, window='90d')", "alias": "roll"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "roll")])
@@ -366,7 +366,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         one — two windowed producer CTEs, one projected and one trimmed, both correct."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}], "order": [{"field": "sum(revenue, window='30d')", "direction": "desc"}]})
+            )], "metrics": [{"metric": "sum(revenue, window='90d')", "alias": "rev_90d"}], "order": [{"field": "sum(revenue, window='30d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "rev_90d")])
@@ -399,11 +399,11 @@ class TestHiddenOrderOnlyWindowedValues(object):
         """
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [FieldRef(name="region")],
+            "dimensions": [QueryDimension(field="region")],
             "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            "metrics": [{"expression": "count(id)", "name": "n"}],
+            "metrics": [{"metric": "count(id)", "alias": "n"}],
             "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}],
         })
         sql = (await windowed_engine.execute(query=query, dry_run=True)).sql or ""
@@ -483,11 +483,11 @@ def _fb_orders_dataset() -> SlayerDataset:
         sql_table="orders",
         data_source="fb",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     )
 
@@ -552,7 +552,7 @@ class TestFrameBoundEquivalenceValues:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=date_range,
-            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}], "filter": filters})
+            )], "metrics": [{"metric": "sum(revenue, window='90d')", "alias": "rev_90d"}], "filter": filters})
         return _by_month(await engine.execute(query=query), "rev_90d")
 
     async def test_date_range_and_explicit_filter_agree(
@@ -625,7 +625,7 @@ class TestFrameBoundEquivalenceValues:
                     date_range=date_range,
                 )],
                 metrics=[{
-                    "expression": "time_shift(sum(revenue), -1, 'month')", "name": "prev",
+                    "metric": "time_shift(sum(revenue), -1, 'month')", "alias": "prev",
                 }],
                 filter=filters,
             )

@@ -32,8 +32,8 @@
       ],
       "metrics": [
        {
-        "expression": "sum(amount)",
-        "name": "rev"
+        "metric": "sum(amount)",
+        "alias": "rev"
        }
       ]
      }
@@ -59,8 +59,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "t"
+      "metric": "sum(rev)",
+      "alias": "t"
      }
     ]
    }
@@ -94,16 +94,16 @@
     "fields": [
      {
       "name": "id",
-      "datatype": "INT",
+      "datatype": "Integer",
       "primary_key": true
      },
      {
       "name": "customer_id",
-      "datatype": "INT"
+      "datatype": "Integer"
      },
      {
       "name": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -137,16 +137,16 @@
     "fields": [
      {
       "name": "id",
-      "datatype": "INT",
+      "datatype": "Integer",
       "primary_key": true
      },
      {
       "name": "customer_id",
-      "datatype": "INT"
+      "datatype": "Integer"
      },
      {
       "name": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }

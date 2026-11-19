@@ -14,8 +14,8 @@ from slayer.core.enums import (
     PRIMARY_KEY_AGGREGATIONS,
     DataType,
 )
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._engine_helpers import _engine_generate
 
@@ -30,9 +30,9 @@ def _dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
         ],
     )
 
@@ -71,7 +71,7 @@ def test_allowed_on_primary_key_columns() -> None:
 async def test_duckdb_emits_native_approx() -> None:
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count_distinct_approx(customer_id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
     )
     sql = (await _generate("duckdb", query, _dataset())).lower()
     assert "approx_count_distinct(" in sql
@@ -80,7 +80,7 @@ async def test_duckdb_emits_native_approx() -> None:
 async def test_postgres_emits_exact_fallback() -> None:
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count_distinct_approx(customer_id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
     )
     sql = (await _generate("postgres", query, _dataset())).upper()
     assert "COUNT(DISTINCT" in sql
@@ -97,7 +97,7 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
     override (not just that the override exists)."""
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count_distinct_approx(customer_id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(customer_id)")],
     )
     sql = (await _generate("clickhouse", query, _dataset())).lower()
     assert "uniq(" in sql
@@ -106,7 +106,7 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
 async def test_approx_on_primary_key_column_generates() -> None:
     query = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="count_distinct_approx(id)")],
+        metrics=[QueryMetric(metric="count_distinct_approx(id)")],
     )
     # Must not raise an eligibility error on the PK column.
     sql = await _generate("duckdb", query, _dataset())
@@ -123,7 +123,7 @@ async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
     for alias in ("approx_count_distinct", "countdistinctapprox"):
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression=f"{alias}(customer_id)")],
+            metrics=[QueryMetric(metric=f"{alias}(customer_id)")],
         )
         sql = (await _generate("duckdb", query, _dataset())).lower()
         assert "approx_count_distinct(" in sql, alias

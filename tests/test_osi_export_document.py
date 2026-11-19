@@ -109,7 +109,7 @@ async def test_join_to_excluded_model_is_reported(env) -> None:
 @pytest.mark.parametrize("name", ["segment", "discounted"])
 async def test_slayer_only_entity_needing_excluded_model_is_reported(env, name: str) -> None:
     model = orders(metrics=[*BASIC_MEASURES, slayer_metric("discounted", "sum(amount * customers.rate)")])
-    model.fields.append(col("segment", DataType.TEXT, "customers.segment"))
+    model.fields.append(col("segment", DataType.STRING, "customers.segment"))
     result = await export_datasets(env, customers(), model, subset=["orders"])
     [entry] = mentions(result, name, severity="dropped")
     assert entry.suggestion is not None

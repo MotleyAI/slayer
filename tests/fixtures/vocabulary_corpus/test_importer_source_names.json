@@ -16,8 +16,8 @@
     "population": "payments",
     "metrics": [
      {
-      "expression": "total",
-      "name": "v"
+      "metric": "total",
+      "alias": "v"
      }
     ]
    }

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "tags",
-    "join_pairs": [
-     [
-      "tag_id",
-      "tag_id"
-     ]
+    "from_columns": [
+     "tag_id"
+    ],
+    "to_columns": [
+     "tag_id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "tags",
-    "join_pairs": [
-     [
-      "tag_id",
-      "tag_id"
-     ]
+    "from_columns": [
+     "tag_id"
+    ],
+    "to_columns": [
+     "tag_id"
     ]
    }
   }

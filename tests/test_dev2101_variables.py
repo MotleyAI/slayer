@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 
 from slayer.core.errors import ListTypeError
-from slayer.core.query import ComputedDimension
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.query import QueryDimension
 from tests._dev2101_fixtures import EXEC_BACKENDS, by_key, ids, m, make_exec_engine, num, q, single
 
 MONTH = {"field": "created_at", "granularity": "month"}
@@ -72,7 +72,7 @@ class TestLiteralSlots:
         assert ids(resp) == {1, 5}
 
     async def test_doubled_braces_render_literal_braces(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=[{"expression": "'{{' || status || '}}'", "name": "b"}],
+        resp = await engine.execute(q(dimensions=[{"field": "'{{' || status || '}}'", "alias": "b"}],
                                       metrics=[m("count(*)")], variables={"k": 1}))
         assert set(by_key(resp, "b")) == {"{paid}", "{Pending}", "{void}"}
 
@@ -114,13 +114,13 @@ class TestTemplateNames:
         assert resp.data == [{"orders.amount_sum_k": pytest.approx(100.0 * k)}]
 
     @pytest.mark.parametrize("k", [2, 3])
-    @pytest.mark.parametrize("dimension", ["quantity * {k}", {"expression": "quantity * {k}"}])
+    @pytest.mark.parametrize("dimension", ["quantity * {k}", {"field": "quantity * {k}"}])
     async def test_dimension_name_comes_from_the_written_text(self, engine: SlayerQueryEngine, dimension, k: int) -> None:
         resp = await engine.execute(q(dimensions=[dimension], metrics=[m("count(*)")], variables={"k": k}))
         assert {float(v) for v in by_key(resp, "quantity_k")} == {float(x * k) for x in (1, 2, 3, 4)}
 
     def test_no_text_splice_on_computed_dimensions(self) -> None:
-        assert not hasattr(ComputedDimension, "substituted")
+        assert not hasattr(QueryDimension, "substituted")
 
 
 class TestDateRangeBounds:

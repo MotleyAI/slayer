@@ -21,7 +21,7 @@ The `query` tool SHALL accept a single query object with the documented query fi
 
 #### Scenario: Single query object runs
 
-- **WHEN** `query` is called with `query={"population": "orders", "metrics": [{"expression": "count(*)"}], "dimensions": ["status"]}`
+- **WHEN** `query` is called with `query={"population": "orders", "metrics": [{"metric": "count(*)"}], "dimensions": ["status"]}`
 - **THEN** the aggregated result rows are returned in the requested output format
 
 #### Scenario: In-query control fields are honored
@@ -31,11 +31,11 @@ The `query` tool SHALL accept a single query object with the documented query fi
 
 ### Requirement: Multi-stage list execution
 
-The `query` tool SHALL accept a non-empty list of query objects forming a multi-stage DAG with the engine's list semantics: every non-final entry is named, stages reference siblings by name (as a `population` string, an extension's `source_name`, or an `extensions[].relationships[].to` — there is no top-level `relationships` field), the engine reorders stages so references resolve, and the last entry is the root whose rows are returned. An empty list SHALL be rejected with a clear error.
+The `query` tool SHALL accept a non-empty list of query objects forming a multi-stage DAG with the engine's list semantics: every non-final entry is named, stages reference siblings by name (as a `population` string, an extension's `dataset`, or an `extensions[].relationships[].to` — there is no top-level `relationships` field), the engine reorders stages so references resolve, and the last entry is the root whose rows are returned. An empty list SHALL be rejected with a clear error.
 
 #### Scenario: Two-stage query returns the root stage's rows
 
-- **WHEN** `query` is called with `query=[{"name": "monthly", "population": "orders", "metrics": [{"expression": "sum(revenue)"}], "time_dimensions": [{"field": "created_at", "granularity": "month"}]}, {"population": "monthly", "metrics": [{"expression": "count(*)"}]}]`
+- **WHEN** `query` is called with `query=[{"name": "monthly", "population": "orders", "metrics": [{"metric": "sum(revenue)"}], "time_dimensions": [{"field": "created_at", "granularity": "month"}]}, {"population": "monthly", "metrics": [{"metric": "count(*)"}]}]`
 - **THEN** the result of the final (root) stage is returned
 
 #### Scenario: Empty list is rejected

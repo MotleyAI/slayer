@@ -125,7 +125,7 @@ def _dataset_with_amount(db_type):
         name="orders",
         data_source="ds",
         sql_table="orders",
-        fields=[DatasetField(name="amount", datatype=DataType.DOUBLE, db_type=db_type)],
+        fields=[DatasetField(name="amount", datatype=DataType.FLOAT, db_type=db_type)],
     )
 
 
@@ -152,9 +152,9 @@ class TestMeasureKeyPreservesNativeType:
 
 def _wide_dataset(data_source: str = "ds") -> SlayerDataset:
     return SlayerDataset(name="t", sql_table="t", data_source=data_source, fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="amount", datatype=DataType.INT, db_type="NUMERIC(38,0)"),
-        DatasetField(name="wide", sql="amount * 10", datatype=DataType.INT, db_type="NUMERIC(38,0)"),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.INTEGER, db_type="NUMERIC(38,0)"),
+        DatasetField(name="wide", sql="amount * 10", datatype=DataType.INTEGER, db_type="NUMERIC(38,0)"),
     ])
 
 
@@ -192,9 +192,9 @@ class TestDerivedColumnPreservesNativeType:
 
     async def test_a_declared_type_other_than_the_physical_one_still_casts(self):
         model = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE, db_type="NUMERIC(18,2)"),
-            DatasetField(name="whole", sql="amount / 3", datatype=DataType.INT, db_type="NUMERIC(18,2)"),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT, db_type="NUMERIC(18,2)"),
+            DatasetField(name="whole", sql="amount / 3", datatype=DataType.INTEGER, db_type="NUMERIC(18,2)"),
         ])
         query = SlayerQuery.model_validate({"population": "t", "dimensions": ["whole"]})
         sql = await _engine_generate(query=query, dataset=model, dialect="postgres")

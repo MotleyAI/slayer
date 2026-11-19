@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
@@ -22,7 +22,6 @@ from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER_STATUS,
     AMOUNT_TOTAL,
     GOLD_SPEND_BY_REGION,
-    DatasetMetric,
     SPEND_BY_REGION,
     SPEND_BY_TIER,
     SPEND_TOTAL,
@@ -38,8 +37,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 #: spend over the distinct customers reaching each segment label.
 SPEND_BY_LABEL = {"Alpha": 160.0, "Beta": 150.0, None: 40.0}
 
@@ -161,7 +160,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.regions.name"],
-            metrics=[DatasetMetric(expression="sum(customers.gold_spend)", name="gs")],
+            metrics=[QueryMetric(metric="sum(customers.gold_spend)", alias="gs")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.regions.name")
@@ -202,8 +201,8 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend) / sum(amount)", name="ratio",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend) / sum(amount)", alias="ratio",
             )],
         )
         resp = await engine.execute(query)

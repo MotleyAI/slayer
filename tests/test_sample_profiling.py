@@ -15,7 +15,7 @@ import slayer.inspect.dataset_render as dataset_render
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.engine.profiling import (
     ProfileOutcome,
     ensure_samples_fresh,
@@ -47,11 +47,11 @@ def _orders(*, extra: list[DatasetField] | None = None, sql_table: str = "t", na
     return SlayerDataset(
         name=name, sql_table=sql_table, data_source=DS,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="qty", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.INTEGER),
             DatasetField(name="ordered_at", datatype=DataType.DATE),
             *(extra or []),
         ],
@@ -68,8 +68,8 @@ def _all_bad() -> SlayerDataset:
     return SlayerDataset(
         name="allbad", sql_table="t", data_source=DS,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            *[DatasetField(name=f"b{i}", sql=f"no_such_fn(status, {i})", datatype=DataType.TEXT) for i in range(5)],
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            *[DatasetField(name=f"b{i}", sql=f"no_such_fn(status, {i})", datatype=DataType.STRING) for i in range(5)],
         ],
     )
 
@@ -110,7 +110,7 @@ def _record(*, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> li
 
 
 def _is_numeric_batch(q: SlayerQuery) -> bool:
-    return any((m.name or "").startswith("_slayer_range_") for m in q.metrics or [])
+    return any((m.alias or "").startswith("_slayer_range_") for m in q.metrics or [])
 
 
 def _numeric_batches(log: list[SlayerQuery]) -> list[SlayerQuery]:
@@ -232,8 +232,8 @@ async def test_owner_returns_input_columns_in_order(env) -> None:
 async def test_hidden_identifier_and_opaque_columns_are_never_profiled(env, monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[
-        DatasetField(name="secret", sql="status", datatype=DataType.TEXT, hidden=True),
-        DatasetField(name="blob", sql="status", datatype=DataType.UNKNOWN),
+        DatasetField(name="secret", sql="status", datatype=DataType.STRING, hidden=True),
+        DatasetField(name="blob", sql="status", datatype=DataType.OPAQUE),
     ]))
     log = _record(engine=engine, monkeypatch=monkeypatch)
     cols = _cols(model, "id", "secret", "blob")
@@ -278,8 +278,8 @@ async def test_healthy_model_parity_across_read_paths(env) -> None:
     engine, storage = env
     names = ("status", "note", "amount", "empty_num", "ordered_at")
     model = await _save(storage, _orders(extra=[
-        DatasetField(name="note", datatype=DataType.TEXT),
-        DatasetField(name="empty_num", datatype=DataType.DOUBLE),
+        DatasetField(name="note", datatype=DataType.STRING),
+        DatasetField(name="empty_num", datatype=DataType.FLOAT),
     ]))
 
     await render_dataset_inspection(dataset=model, storage=storage, engine=engine, sections=["fields"])
@@ -306,12 +306,12 @@ async def test_forced_refresh_skips_non_table_backed_models(env, monkeypatch: py
     await _save(storage, _orders())
     sql_model = SlayerDataset(
         name="sql_orders", sql="SELECT * FROM t", data_source=DS,
-        fields=[DatasetField(name="status", datatype=DataType.TEXT), DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        fields=[DatasetField(name="status", datatype=DataType.STRING), DatasetField(name="amount", datatype=DataType.FLOAT)],
     )
     query_backed = SlayerDataset(
         name="by_status", data_source=DS,
-        source_queries=[SlayerQuery(population="orders", dimensions=[FieldRef(name="status")])],
-        fields=[DatasetField(name="status", datatype=DataType.TEXT)],
+        source_queries=[SlayerQuery(population="orders", dimensions=[QueryDimension(field="status")])],
+        fields=[DatasetField(name="status", datatype=DataType.STRING)],
     )
     log = _record(engine=engine, monkeypatch=monkeypatch)
     for model in (sql_model, query_backed):
@@ -351,7 +351,7 @@ async def test_forced_refresh_reprofiles_cached_columns(env: tuple[SlayerQueryEn
 
 async def test_all_null_numeric_is_cached(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="empty_num", datatype=DataType.DOUBLE)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="empty_num", datatype=DataType.FLOAT)]))
     outcome = await ensure_samples_fresh(
         dataset=model, fields=_cols(model, "empty_num"), engine=engine, storage=storage,
     )
@@ -369,7 +369,7 @@ async def test_all_null_numeric_is_cached(env: tuple[SlayerQueryEngine, StorageB
 
 async def test_all_null_numeric_is_cached_via_inspect_column(env, monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
-    await _save(storage, _orders(extra=[DatasetField(name="empty_num", datatype=DataType.DOUBLE)]))
+    await _save(storage, _orders(extra=[DatasetField(name="empty_num", datatype=DataType.FLOAT)]))
     svc = InspectService(storage=storage, engine=engine)
     await svc.inspect(reference=f"{DS}.orders.empty_num", entity_type="field", compact=False)
     assert (await _stored(storage, column="empty_num")).sampled == "all NULL"
@@ -380,7 +380,7 @@ async def test_all_null_numeric_is_cached_via_inspect_column(env, monkeypatch: p
 
 async def test_empty_categorical_is_cached(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="note", datatype=DataType.TEXT)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="note", datatype=DataType.STRING)]))
     await ensure_samples_fresh(dataset=model, fields=_cols(model, "note"), engine=engine, storage=storage)
     assert _triple(await _stored(storage, column="note")) == ("", [], 0)
     log = _record(engine=engine, monkeypatch=monkeypatch)
@@ -432,7 +432,7 @@ async def test_forced_filter_error_is_classified_via_probe(env, monkeypatch: pyt
 
 async def test_one_bad_column_on_healthy_model(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch, caplog) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.TEXT)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
     model = model.model_copy(update={"fields": [
         model.get_field(n) for n in ("id", "status", "bad", "channel", "amount", "qty", "ordered_at")
     ]})
@@ -467,11 +467,11 @@ async def test_non_consecutive_bad_columns_probe_once(env, monkeypatch: pytest.M
     model = await _save(storage, SlayerDataset(
         name="orders", sql_table="t", data_source=DS,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="bad1", sql=BAD_SQL, datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="bad2", sql="no_such_fn(channel)", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="bad1", sql=BAD_SQL, datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="bad2", sql="no_such_fn(channel)", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
         ],
     ))
     log = _record(engine=engine, monkeypatch=monkeypatch)
@@ -508,10 +508,10 @@ async def test_failing_numeric_batch_on_healthy_model(env: tuple[SlayerQueryEngi
     model = await _save(storage, SlayerDataset(
         name="orders", sql_table="t", data_source=DS,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="badnum", sql=BAD_NUM_SQL, datatype=DataType.DOUBLE),
-            DatasetField(name="qty", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="badnum", sql=BAD_NUM_SQL, datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.INTEGER),
         ],
     ))
     log = _record(engine=engine, monkeypatch=monkeypatch)
@@ -619,7 +619,7 @@ async def test_retry_after_ttl(env, monkeypatch: pytest.MonkeyPatch, clock) -> N
 
 async def test_column_failure_retried_after_ttl(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch, clock) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.TEXT)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
     await _profile(engine=engine, storage=storage, dataset=model)
     log = _record(engine=engine, monkeypatch=monkeypatch)
     clock.now += TTL + 1
@@ -643,7 +643,7 @@ async def test_retry_after_model_edit(env, monkeypatch: pytest.MonkeyPatch) -> N
 
 async def test_retry_after_column_edit(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.TEXT)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
     await _profile(engine=engine, storage=storage, dataset=model)
     reloaded = await storage.get_dataset("orders", data_source=DS)
     assert reloaded is not None
@@ -668,7 +668,7 @@ async def test_engines_do_not_share_failures(env, monkeypatch: pytest.MonkeyPatc
 
 async def test_failures_are_not_persisted(env: tuple[SlayerQueryEngine, StorageBackend]) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.TEXT)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
     before = await _stored(storage, column="bad")
     await _profile(engine=engine, storage=storage, dataset=model)
     assert await _stored(storage, column="bad") == before
@@ -708,7 +708,7 @@ async def test_forced_refresh_ignores_failure_cache_and_records(env, monkeypatch
 
 async def test_forced_refresh_keeps_sample_of_failing_column(env: tuple[SlayerQueryEngine, StorageBackend]) -> None:
     engine, storage = env
-    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.TEXT)]))
+    model = await _save(storage, _orders(extra=[DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING)]))
     await storage.update_field_sampled(
         data_source=DS, dataset_name="orders", field_name="bad",
         sampled="KEEP", sampled_values=["KEEP"], distinct_count=1,
@@ -737,7 +737,7 @@ async def test_refresh_all_bounds_a_failing_model(env, monkeypatch: pytest.Monke
     errors = await refresh_all_table_backed_sampled(engine=engine, storage=storage, data_source=DS)
     assert len(errors) == 1
     assert "ghost" in errors[0]
-    ghost_queries = [q for q in log if q.population == "ghost" or getattr(q.population, "source_name", None) == "ghost"]
+    ghost_queries = [q for q in log if q.population == "ghost" or getattr(q.population, "dataset", None) == "ghost"]
     assert len(ghost_queries) == 2
     assert (await _stored(storage, column="status")).sampled_values is not None
 
@@ -889,7 +889,7 @@ async def test_policy_engine_reuses_its_own_samples(env, monkeypatch: pytest.Mon
 
 async def test_policy_model_failure_still_returns_scoped_samples(env, monkeypatch: pytest.MonkeyPatch) -> None:
     _, storage = env
-    bad = [DatasetField(name=f"bad{i}", sql=f"no_such_fn(status, {i})", datatype=DataType.TEXT) for i in range(3)]
+    bad = [DatasetField(name=f"bad{i}", sql=f"no_such_fn(status, {i})", datatype=DataType.STRING) for i in range(3)]
     model = await _save(storage, _orders(extra=bad))
     engine = _policy_engine(storage)
     first = await _profile(engine=engine, storage=storage, dataset=model)
@@ -921,8 +921,8 @@ async def test_policy_failure_never_returns_persisted_samples(env: tuple[Any, St
 async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env: tuple[Any, StorageBackend]) -> None:
     _, storage = env
     await _save(storage, _orders(extra=[
-        DatasetField(name="secret", sql="status", datatype=DataType.TEXT, hidden=True),
-        DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.TEXT),
+        DatasetField(name="secret", sql="status", datatype=DataType.STRING, hidden=True),
+        DatasetField(name="bad", sql=BAD_SQL, datatype=DataType.STRING),
     ]))
     for name in ("id", "secret", "bad"):
         await storage.update_field_sampled(

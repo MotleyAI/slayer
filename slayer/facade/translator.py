@@ -24,7 +24,14 @@ from sqlglot.expressions.core import Expression
 from sqlglot.expressions.datatypes import DType
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import DataType, RelationshipCardinality, JoinType, TimeGranularity
+from slayer.core.enums import (
+    DataType,
+    JoinType,
+    RelationshipCardinality,
+    TEMPORAL_DATATYPES,
+    TimeGranularity,
+    canonical_datatype,
+)
 from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.core.refs import functional_agg_text
 from slayer.core.query import (
@@ -277,54 +284,54 @@ _COMPARATOR_SQL: dict[type, str] = {
 # DOUBLE, narrow ints → INT (OID int8), TIMESTAMPTZ/LTZ → TIMESTAMP (no TZ).
 # Callers needing exact precision/TZ must compute upstream; see pg-facade.md.
 _SQLGLOT_TYPE_TO_DATATYPE: dict[DType, DataType] = {
-    exp.DataType.Type.TEXT: DataType.TEXT,
-    exp.DataType.Type.VARCHAR: DataType.TEXT,
-    exp.DataType.Type.CHAR: DataType.TEXT,
-    exp.DataType.Type.NCHAR: DataType.TEXT,
-    exp.DataType.Type.NVARCHAR: DataType.TEXT,
-    exp.DataType.Type.INT: DataType.INT,
-    exp.DataType.Type.BIGINT: DataType.INT,
-    exp.DataType.Type.SMALLINT: DataType.INT,
-    exp.DataType.Type.TINYINT: DataType.INT,
-    exp.DataType.Type.MEDIUMINT: DataType.INT,
-    exp.DataType.Type.DOUBLE: DataType.DOUBLE,
-    exp.DataType.Type.FLOAT: DataType.DOUBLE,
-    exp.DataType.Type.DECIMAL: DataType.DOUBLE,
+    exp.DataType.Type.TEXT: DataType.STRING,
+    exp.DataType.Type.VARCHAR: DataType.STRING,
+    exp.DataType.Type.CHAR: DataType.STRING,
+    exp.DataType.Type.NCHAR: DataType.STRING,
+    exp.DataType.Type.NVARCHAR: DataType.STRING,
+    exp.DataType.Type.INT: DataType.INTEGER,
+    exp.DataType.Type.BIGINT: DataType.INTEGER,
+    exp.DataType.Type.SMALLINT: DataType.INTEGER,
+    exp.DataType.Type.TINYINT: DataType.INTEGER,
+    exp.DataType.Type.MEDIUMINT: DataType.INTEGER,
+    exp.DataType.Type.DOUBLE: DataType.FLOAT,
+    exp.DataType.Type.FLOAT: DataType.FLOAT,
+    exp.DataType.Type.DECIMAL: DataType.FLOAT,
     exp.DataType.Type.BOOLEAN: DataType.BOOLEAN,
     exp.DataType.Type.DATE: DataType.DATE,
-    exp.DataType.Type.TIMESTAMP: DataType.TIMESTAMP,
-    exp.DataType.Type.DATETIME: DataType.TIMESTAMP,
-    exp.DataType.Type.TIMESTAMPTZ: DataType.TIMESTAMP,
-    exp.DataType.Type.TIMESTAMPLTZ: DataType.TIMESTAMP,
+    exp.DataType.Type.TIMESTAMP: DataType.DATETIME,
+    exp.DataType.Type.DATETIME: DataType.DATETIME,
+    exp.DataType.Type.TIMESTAMPTZ: DataType.DATETIME,
+    exp.DataType.Type.TIMESTAMPLTZ: DataType.DATETIME,
 }
 
 # Per-pair allowlist of CAST coercions the wire encoders handle losslessly.
 # Unknown-source (None) admits only TEXT; identity (X→X) admitted implicitly.
 _CAST_ADMITTED_TARGETS: dict[DataType, frozenset] = {
-    DataType.DATE: frozenset({DataType.DATE, DataType.TIMESTAMP, DataType.TEXT}),
-    DataType.TIMESTAMP: frozenset({DataType.TIMESTAMP, DataType.DATE, DataType.TEXT}),
-    DataType.INT: frozenset({DataType.INT, DataType.DOUBLE, DataType.TEXT}),
+    DataType.DATE: frozenset({DataType.DATE, DataType.DATETIME, DataType.STRING}),
+    DataType.DATETIME: frozenset({DataType.DATETIME, DataType.DATE, DataType.STRING}),
+    DataType.INTEGER: frozenset({DataType.INTEGER, DataType.FLOAT, DataType.STRING}),
     # DOUBLE → INT dropped: Python int() truncates, Postgres rounds half-even.
-    DataType.DOUBLE: frozenset({DataType.DOUBLE, DataType.TEXT}),
-    DataType.BOOLEAN: frozenset({DataType.BOOLEAN, DataType.TEXT}),
-    DataType.TEXT: frozenset({DataType.TEXT}),
+    DataType.FLOAT: frozenset({DataType.FLOAT, DataType.STRING}),
+    DataType.BOOLEAN: frozenset({DataType.BOOLEAN, DataType.STRING}),
+    DataType.STRING: frozenset({DataType.STRING}),
 }
 
 # CAST pairs rejected in ORDER BY / GROUP BY because the bare-column engine
 # projection would sort/group differently than the casted type under Postgres.
 # ORDER BY lossy: every X→TEXT (lex ≠ natural sort); order-preserving pairs stay.
 _LOSSY_ORDER_BY_CAST_PAIRS: frozenset = frozenset({
-    (DataType.INT, DataType.TEXT),
-    (DataType.DOUBLE, DataType.TEXT),
-    (DataType.BOOLEAN, DataType.TEXT),
-    (DataType.DATE, DataType.TEXT),
-    (DataType.TIMESTAMP, DataType.TEXT),
+    (DataType.INTEGER, DataType.STRING),
+    (DataType.FLOAT, DataType.STRING),
+    (DataType.BOOLEAN, DataType.STRING),
+    (DataType.DATE, DataType.STRING),
+    (DataType.DATETIME, DataType.STRING),
 })
 # GROUP BY lossy: many-to-one casts where bare-column grouping over-reports
 # groups vs the casted column (TIMESTAMP→DATE; INT→DOUBLE past ±2^53).
 _LOSSY_GROUP_BY_CAST_PAIRS: frozenset = frozenset({
-    (DataType.TIMESTAMP, DataType.DATE),
-    (DataType.INT, DataType.DOUBLE),
+    (DataType.DATETIME, DataType.DATE),
+    (DataType.INTEGER, DataType.FLOAT),
 })
 
 # Single source of truth for the GROUP BY string used in lossy-CAST error
@@ -341,7 +348,8 @@ def _sqlglot_type_to_datatype(node: exp.DataType) -> DataType | None:
 def _is_admitted_cast(source: DataType | None, target: DataType) -> bool:
     """Strict per-pair admission. ``None`` source admits only ``TEXT``."""
     if source is None:
-        return target is DataType.TEXT
+        return target is DataType.STRING
+    source, target = canonical_datatype(source), canonical_datatype(target)
     if source == target:
         return True
     return target in _CAST_ADMITTED_TARGETS.get(source, frozenset())
@@ -989,7 +997,7 @@ def _resolve_field_cast_projection(
     )
     source = _item_cast_source_type(inner)
     if not _is_admitted_cast(source=source, target=cast_target):
-        offending = exp.Cast(this=body, to=exp.DataType.build(cast_target.value)).sql()
+        offending = exp.Cast(this=body, to=exp.DataType.build(cast_target.kind.value)).sql()
         raise TranslationError(
             f"Unsupported CAST: cannot project {source!s} column as "
             f"{cast_target!s} ({offending!r}). Admitted coercions: see "
@@ -1629,8 +1637,8 @@ def _cast_pair_is_lossy(
     bare-value grouping preserves whatever per-value distinction TEXT
     would expose."""
     if source is None:
-        return target is DataType.TEXT
-    return (source, target) in lossy_pairs
+        return target is DataType.STRING
+    return (canonical_datatype(source), canonical_datatype(target)) in lossy_pairs
 
 
 def _lossy_cast_error_message(
@@ -1754,7 +1762,7 @@ def _translate_order_by(
         else:
             assert item.dimension is not None
             ref = FieldRef.from_string(item.dimension.dimension_ref)
-        out.append(OrderItem(field=ref, direction=direction))
+        out.append(OrderItem(field=ref.spelling, direction=direction))
     return out
 
 
@@ -2299,8 +2307,8 @@ def _record_metric(
 ) -> None:
     assert item.metric is not None
     plan.metrics.append({
-        "expression": item.metric.metric_expression,
-        "name": item.projected_name,
+        "metric": item.metric.metric_expression,
+        "alias": item.projected_name,
     })
     engine_alias = f"{table.name}.{item.projected_name}"
     plan.field_name_mapping.append((engine_alias, item.projected_name))
@@ -2341,7 +2349,7 @@ def _record_extraction(
     if expression != item.projected_name:
         plan.derived_dims.append(expression)
     plan.field_name_mapping.append((f"{table.name}.{computed_dimension_name(expression)}", item.projected_name))
-    plan.projection_types.append(DataType.INT)
+    plan.projection_types.append(DataType.INTEGER)
 
 
 def _extraction_expression(item: _ProjectionItem) -> str:
@@ -2753,11 +2761,11 @@ def _match_parent_join(
     same_target = [j for j in parent_table.relationships if j.to == target_name]
     if not same_target:
         return None
-    matching = [j for j in same_target if list(j.join_pairs) == [[source_col, target_col]]]
+    matching = [j for j in same_target if list(j.column_pairs) == [(source_col, target_col)]]
     if len(matching) == 1:
         return matching[0]
-    configured = [j.join_pairs for j in same_target]
-    problem = "match several configured relationships" if matching else "do not match the configured join_pairs"
+    configured = [j.column_pairs for j in same_target]
+    problem = "match several configured relationships" if matching else "do not match the configured relationship keys"
     raise TranslationError(
         f"LEFT JOIN to {target_name!r} uses ON columns "
         f"({source_col!r}, {target_col!r}) which {problem} ({configured}) on "
@@ -2811,10 +2819,10 @@ def _extensions_from_join(
     if not plan.is_dynamic:
         return []
     return [DatasetExtension(
-        source_name=parent_name,
+        dataset=parent_name,
         relationships=[DatasetRelationship(
             to=plan.target_table.name,
-            join_pairs=[[plan.source_col, plan.target_col]],
+            from_columns=[plan.source_col], to_columns=[plan.target_col],
             join_type=JoinType.LEFT,
             cardinality=_dynamic_join_cardinality(plan),
         )],
@@ -2946,7 +2954,7 @@ def _projection_exprs(
 def _temporal_field_names(table: FacadeTable, overlays: _JoinOverlays) -> set[str]:
     return {
         d.name for d in (*table.dimensions, *overlays.extra_dims_by_name.values())
-        if d.data_type in (DataType.DATE, DataType.TIMESTAMP)
+        if d.data_type in TEMPORAL_DATATYPES
     }
 
 

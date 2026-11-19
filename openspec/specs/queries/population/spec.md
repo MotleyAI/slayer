@@ -377,7 +377,7 @@ string or null.
 #### Scenario: Extension object validates as a typed extension
 
 - **WHEN** a query is constructed without a version with `population` =
-  `{"source_name": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}`
+  `{"dataset": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}`
 - **THEN** the query's `population` is `orders`, its `extensions` hold one typed extension
   of `orders` whose `metrics` are typed objects, and the query executes exactly as before
 
@@ -396,7 +396,7 @@ string or null.
 #### Scenario: Unknown extension key is rejected
 
 - **WHEN** a query is constructed with an extension
-  `{"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}`, in `extensions` or
+  `{"dataset": "orders", "filters": ["subtotal > tax_paid * 5"]}`, in `extensions` or
   in the legacy `population` form
 - **THEN** construction fails with a validation error naming `filters` as an unexpected
   key, and nothing is silently dropped
@@ -404,7 +404,7 @@ string or null.
 #### Scenario: Object with source_name plus model keys is an extension, never a model
 
 - **WHEN** a query is constructed with `population` =
-  `{"source_name": "orders", "name": "x", "sql_table": "t", "data_source": "ds"}`
+  `{"dataset": "orders", "name": "x", "sql_table": "t", "data_source": "ds"}`
 - **THEN** construction fails with a validation error naming `name`, `sql_table`, and
   `data_source` as unexpected extension keys
 

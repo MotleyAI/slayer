@@ -15,7 +15,7 @@
     "population": "rev",
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }

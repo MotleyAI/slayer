@@ -68,75 +68,75 @@ def _countries() -> SlayerDataset:
     return SlayerDataset(
         name="countries", sql_table="countries", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="gdp", sql="gdp", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="gdp", sql="gdp", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _regions(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-        DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
-        DatasetField(name="weight", sql="weight", datatype=DataType.DOUBLE),
-        DatasetField(name="country_id", sql="country_id", datatype=DataType.DOUBLE),
-        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
+        DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+        DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
+        DatasetField(name="country_id", sql="country_id", datatype=DataType.FLOAT),
+        DatasetField(name="opened_at", sql="opened_at", datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=cols,
-        relationships=[DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])],
+        relationships=[DatasetRelationship(to="countries", from_columns=["country_id"], to_columns=["id"])],
     )
 
 
 def _customers_v2(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-        DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.DOUBLE),
-        DatasetField(name="signup_at", sql="signup_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+        DatasetField(name="lifetime_value", sql="lifetime_value", datatype=DataType.FLOAT),
+        DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
+        DatasetField(name="status", sql="status", datatype=DataType.STRING),
         # Target-LOCAL derived dims (expand to customers_v2-only columns):
-        DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.DOUBLE),
-        DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INT),
+        DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
+        DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INTEGER),
         # Derived, one-hop crossing (customers_v2 → regions):
-        DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.DOUBLE),
-        DatasetField(name="deep_pop_x2", sql="regions.population * 2", datatype=DataType.DOUBLE),
-        DatasetField(name="deep_weight", sql="regions.weight", datatype=DataType.DOUBLE),
+        DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
+        DatasetField(name="deep_pop_x2", sql="regions.population * 2", datatype=DataType.FLOAT),
+        DatasetField(name="deep_weight", sql="regions.weight", datatype=DataType.FLOAT),
         # Derived, TWO-hop crossing (customers_v2 → regions → countries):
-        DatasetField(name="deep_gdp", sql="regions.countries.gdp", datatype=DataType.DOUBLE),
+        DatasetField(name="deep_gdp", sql="regions.countries.gdp", datatype=DataType.FLOAT),
         # Derived TIME dim whose sql crosses a further join (DEV-1701):
         DatasetField(name="region_opened_eff",
                sql="coalesce(regions.opened_at, signup_at)",
-               datatype=DataType.TIMESTAMP),
+               datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)
     return SlayerDataset(
         name="customers_v2", sql_table="customers", data_source="test",
         fields=cols,
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         default_time_dimension="signup_at",
     )
 
 
 def _orders_x(*, extra_columns=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-        DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
     ]
     if extra_columns:
         cols.extend(extra_columns)
     return SlayerDataset(
         name="orders_x", sql_table="orders", data_source="test",
         fields=cols,
-        relationships=[DatasetRelationship(to="customers_v2", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],
         default_time_dimension="created_at",
     )
 

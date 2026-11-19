@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -42,7 +42,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, created_at)"
+      "metric": "last(amount, created_at)"
      }
     ]
    }
@@ -67,7 +67,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(customers.amount, customers.signup_at)"
+      "metric": "last(customers.amount, customers.signup_at)"
      }
     ]
    }
@@ -92,7 +92,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(net_amount, created_at)"
+      "metric": "last(net_amount, created_at)"
      }
     ]
    }
@@ -117,7 +117,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(customers.amount)"
+      "metric": "last(customers.amount)"
      }
     ]
    }
@@ -135,11 +135,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -163,18 +163,18 @@
     ],
     "metrics": [
      {
-      "expression": "last(customers.amount)"
+      "metric": "last(customers.amount)"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "last(customers.amount, customers.signup_at_alias)"
    },
    "new": {
-    "expression": "last(customers.amount, customers.signup_at_alias)"
+    "metric": "last(customers.amount, customers.signup_at_alias)"
    }
   },
   {
@@ -197,7 +197,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(customers.amount)"
+      "metric": "last(customers.amount)"
      }
     ]
    }
@@ -222,7 +222,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(customers.active_amount)"
+      "metric": "last(customers.active_amount)"
      }
     ]
    }
@@ -240,11 +240,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -268,7 +268,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, created_day)"
+      "metric": "last(amount, created_day)"
      }
     ]
    }
@@ -286,11 +286,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -307,11 +307,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -335,7 +335,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, customers.signup_at)"
+      "metric": "last(amount, customers.signup_at)"
      }
     ]
    }
@@ -360,7 +360,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, customers.regions.opened_at)"
+      "metric": "last(amount, customers.regions.opened_at)"
      }
     ]
    }
@@ -385,7 +385,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, cust_signup)"
+      "metric": "last(amount, cust_signup)"
      }
     ]
    }
@@ -411,8 +411,8 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, customers.signup_at) + 1",
-      "name": "plus1"
+      "metric": "last(amount, customers.signup_at) + 1",
+      "alias": "plus1"
      }
     ]
    }
@@ -431,7 +431,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "last(customers.amount, customers.signup_at)"
+      "metric": "last(customers.amount, customers.signup_at)"
      }
     ]
    }
@@ -456,7 +456,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, customers.signup_at)"
+      "metric": "last(amount, customers.signup_at)"
      }
     ]
    }
@@ -481,7 +481,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, customers.regions.opened_at)"
+      "metric": "last(amount, customers.regions.opened_at)"
      }
     ]
    }
@@ -506,7 +506,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, cust_signup)"
+      "metric": "last(amount, cust_signup)"
      }
     ]
    }
@@ -531,7 +531,7 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount, customers.signup_at)"
+      "metric": "last(amount, customers.signup_at)"
      }
     ]
    }

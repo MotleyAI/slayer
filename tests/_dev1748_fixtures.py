@@ -222,97 +222,97 @@ def dev1748_datasets() -> List[SlayerDataset]:
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="opened_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="opened_at", datatype=DataType.DATETIME),
+            DatasetField(name="population", datatype=DataType.FLOAT),
         ],
     )
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         default_time_dimension="signup_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
             # A LOCAL derived time column on the target — the explicit
             # cross-model time arg that needs no further join.
             DatasetField(
-                name="signup_alias", datatype=DataType.TIMESTAMP, sql="signup_at",
+                name="signup_alias", datatype=DataType.DATETIME, sql="signup_at",
             ),
             # A derived time column whose sql CROSSES customers -> regions.
             # Used as an explicit time arg this is the residual-hop shape.
             DatasetField(
-                name="deep_opened", datatype=DataType.TIMESTAMP,
+                name="deep_opened", datatype=DataType.DATETIME,
                 sql="regions.opened_at",
             ),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
     order_tags = SlayerDataset(
         name="order_tags", sql_table="order_tags", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             # Filtered on a LOCAL column.
             DatasetField(
-                name="big_amount", datatype=DataType.DOUBLE, sql="amount",
+                name="big_amount", datatype=DataType.FLOAT, sql="amount",
                 filter=f"amount > {BIG_AMOUNT_THRESHOLD}",
             ),
             # Filtered on a JOINED column.
             DatasetField(
-                name="gold_amount", datatype=DataType.DOUBLE, sql="amount",
+                name="gold_amount", datatype=DataType.FLOAT, sql="amount",
                 filter="customers.tier = 'gold'",
             ),
             # Filtered on a DERIVED column (``amount_x2`` is local-derived).
             DatasetField(
-                name="doubled_big", datatype=DataType.DOUBLE, sql="amount",
+                name="doubled_big", datatype=DataType.FLOAT, sql="amount",
                 filter=f"amount * 2 > {BIG_AMOUNT_THRESHOLD * 2}",
             ),
             # A derived value whose sql CROSSES into regions.
             DatasetField(
-                name="cust_region", datatype=DataType.TEXT,
+                name="cust_region", datatype=DataType.STRING,
                 sql="customers.regions.name",
             ),
             # A local derived value — the non-crossing control.
-            DatasetField(name="amount_x2", datatype=DataType.DOUBLE, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.FLOAT, sql="amount * 2"),
             # A local derived TIME column, for an explicit derived time arg.
             DatasetField(
-                name="created_alias", datatype=DataType.TIMESTAMP, sql="created_at",
+                name="created_alias", datatype=DataType.DATETIME, sql="created_at",
             ),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="order_tags", join_pairs=[["id", "order_id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="order_tags", from_columns=["id"], to_columns=["order_id"]),
         ],
     )
     empty_orders = SlayerDataset(
         name="empty_orders", sql_table="empty_orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(
-                name="big_amount", datatype=DataType.DOUBLE, sql="amount",
+                name="big_amount", datatype=DataType.FLOAT, sql="amount",
                 filter=f"amount > {BIG_AMOUNT_THRESHOLD}",
             ),
         ],

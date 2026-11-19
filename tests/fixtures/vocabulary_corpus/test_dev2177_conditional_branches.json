@@ -37,12 +37,12 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "status",
-      "name": "s"
+      "field": "status",
+      "alias": "s"
      },
      {
-      "expression": "amount",
-      "name": "n"
+      "field": "amount",
+      "alias": "n"
      }
     ]
    }
@@ -62,8 +62,8 @@
     "population": "s1",
     "dimensions": [
      {
-      "expression": "coalesce(s, n)",
-      "name": "x"
+      "field": "coalesce(s, n)",
+      "alias": "x"
      }
     ]
    }
@@ -81,8 +81,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "max(greatest(status, amount))",
-      "name": "x"
+      "metric": "max(greatest(status, amount))",
+      "alias": "x"
      }
     ]
    }

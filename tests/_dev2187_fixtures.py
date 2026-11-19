@@ -36,11 +36,11 @@ CUSTOMERS = TableSpec(
 
 def orders_columns() -> list[DatasetField]:
     return [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="customer_id", datatype=DataType.INT),
-        DatasetField(name="status", datatype=DataType.TEXT),
-        DatasetField(name="note", datatype=DataType.TEXT),
-        DatasetField(name="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="customer_id", datatype=DataType.INTEGER),
+        DatasetField(name="status", datatype=DataType.STRING),
+        DatasetField(name="note", datatype=DataType.STRING),
+        DatasetField(name="amount", datatype=DataType.FLOAT),
         DatasetField(name="created_at", datatype=DataType.DATE),
         DatasetField(name="shipped_at", datatype=DataType.DATE),
     ]
@@ -51,7 +51,7 @@ def orders_dataset(*, edge_name: Optional[str] = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
         fields=orders_columns(),
-        relationships=[DatasetRelationship(to="customers", name=edge_name, join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", name=edge_name, from_columns=["customer_id"], to_columns=["id"])],
         metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
     )
 
@@ -60,9 +60,9 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="score", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="score", datatype=DataType.FLOAT),
         ],
         metrics=[DatasetMetric(name="aov", expression="avg(score)")],
     )
@@ -71,7 +71,7 @@ def customers_dataset() -> SlayerDataset:
 def qb_dataset() -> SlayerDataset:
     """Query-backed: ``tot`` per ``status``."""
     return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["status"], "metrics": [{"expression": "sum(amount)", "name": "tot"}],
+        "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "tot"}],
     })])
 
 

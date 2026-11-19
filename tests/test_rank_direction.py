@@ -44,6 +44,7 @@ from tests._rank_direction_fixtures import (
     rank_windows,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.query import QueryMetric
 
 BOTH_SPELLINGS = ("direction='asc'", "direction='desc'", "lowest first", "highest first")
 
@@ -73,8 +74,8 @@ async def saved_bare_engine(request):
         yield e
 
 
-def _m(expression: str, name: str = "r") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def _m(expression: str, name: str = "r") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def _by_region(resp, name: str = "r") -> dict:
@@ -194,7 +195,7 @@ class TestDirectionInEveryPosition:
         assert [r["sales.region"] for r in resp.data] == ["Gap", "North", "South", "East", "Void"]
 
     async def test_computed_dimension(self, engine):
-        dim = {"expression": "rank(sum(amount, partition_by=region), direction='asc')", "name": "rk"}
+        dim = {"field": "rank(sum(amount, partition_by=region), direction='asc')", "alias": "rk"}
         resp = await engine.execute(sales_q(
             dimensions=["region", dim], metrics=[_m("sum(amount)", "a")]))
         got = {k[0]: k[1] for k in rows_by(resp, "sales.region", "sales.rk")}
@@ -258,8 +259,8 @@ _MISSING = [
     pytest.param({"dimensions": ["region"], "metrics": [_m("sum(amount)", "a")],
                   "order": [{"field": "rank(sum(amount))", "direction": "asc"}]},
                  "rank", id="order"),
-    pytest.param({"dimensions": ["region", {"expression": "rank(sum(amount, partition_by=region))",
-                                            "name": "rk"}],
+    pytest.param({"dimensions": ["region", {"field": "rank(sum(amount, partition_by=region))",
+                                            "alias": "rk"}],
                   "metrics": [_m("sum(amount)", "a")]}, "rank", id="computed-dimension"),
     pytest.param({"dimensions": ["region"],
                   "metrics": [_m("weighted_avg(amount, weight=rank(sum(amount, "

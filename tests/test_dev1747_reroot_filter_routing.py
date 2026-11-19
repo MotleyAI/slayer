@@ -11,7 +11,7 @@ import pytest
 
 from slayer.core.errors import AssociatedGrainWarning, BroadcastGrainWarning
 from slayer.core.keys import AggregateKey
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import _lower_positions
 from tests._dev1747_fixtures import (
@@ -30,7 +30,7 @@ from slayer.engine.cardinality import relationship_safety
 from slayer.engine.compile import stages
 
 #: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
-_CROSS_MODEL_MEASURE = {"expression": "sum(customers.spend)", "name": "cs"}
+_CROSS_MODEL_MEASURE = {"metric": "sum(customers.spend)", "alias": "cs"}
 
 #: Reachable from the re-rooted target (``customers -> regions``).
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"
@@ -52,17 +52,17 @@ FILTER_AGGREGATE_REF = "sum(customers.spend) > 500"
 #: A HOST-ROOTED shape (``cte_root_model == "orders"``): order by a derived crossing column — the filtered-local helpers live only on this route.
 _HOST_ROOTED_QUERY = SlayerQuery.model_validate({
     "population": "orders",
-    "dimensions": [FieldRef(name="status")],
-    "metrics": [{"expression": "sum(amount)", "name": "rev"}],
-    "order": [OrderItem(field=FieldRef(name="cust_region"), direction="asc")],
+    "dimensions": [QueryDimension(field="status")],
+    "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
+    "order": [OrderItem(field="cust_region", direction="asc")],
 })
 
 
 def _query(*filters: str) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [FieldRef(name="name", dataset="customers.regions")],
-        "metrics": [{"expression": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+        "dimensions": [QueryDimension(field="customers.regions.name")],
+        "metrics": [{"metric": "sum(amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
         "filter": list(filters) or None,
     })
 
@@ -199,11 +199,11 @@ class TestMixedOrPushes:
         """Every producer pushes the filter: one ``semi_join_pushed`` entry per measure (cs, pop), no Python warning."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="name", dataset="customers.regions")],
+            dimensions=[QueryDimension(field="customers.regions.name")],
             metrics=[
-                {"expression": "sum(amount)", "name": "rev"},
-                {"expression": "sum(customers.spend)", "name": "cs"},
-                {"expression": "sum(customers.regions.population)", "name": "pop"},
+                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "sum(customers.spend)", "alias": "cs"},
+                {"metric": "sum(customers.regions.population)", "alias": "pop"},
             ],
             filter=[FILTER_MIXED_OR],
         )
@@ -238,8 +238,8 @@ class TestMixedOrPushes:
         """Identity is per filter text: two different mixed-OR filters yield two entries."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [FieldRef(name="name", dataset="customers.regions")],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+            "dimensions": [QueryDimension(field="customers.regions.name")],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
             "filter": [
                 "customers.tier == 'gold' or status == 'A'",
                 "customers.tier == 'silver' or status == 'B'",
@@ -313,9 +313,9 @@ class TestUnreachableDimensionsStillDrop:
     def test_unreachable_dimension_is_dropped_without_a_warning(self) -> None:
         """An unreachable DIMENSION broadcasts but must not raise a dropped-FILTER warning (D7)."""
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [
-                FieldRef(name="name", dataset="customers.regions"),
-                FieldRef(name="name", dataset="order_tags"),
-            ], "metrics": [{"expression": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+                QueryDimension(field="customers.regions.name"),
+                QueryDimension(field="order_tags.name"),
+            ], "metrics": [{"metric": "sum(amount)", "alias": "rev"}, _CROSS_MODEL_MEASURE],
             "to_many_handling": "broadcast"})
         plan = plan_query(query=query, bundle=dev1747_bundle())
         attach = next(
@@ -339,10 +339,10 @@ class TestFilteredLocalDispatchAccounting:
     def _grouped_joined_order(self) -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [FieldRef(name="status")],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "dimensions": [QueryDimension(field="status")],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "order": [OrderItem(
-                field=FieldRef(name="name", dataset="customers.regions"),
+                field="customers.regions.name",
                 direction="asc",
             )],
         })
@@ -368,9 +368,9 @@ class TestFilteredLocalDispatchAccounting:
         plan = plan_query(
             query=SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="status")],
+                dimensions=[QueryDimension(field="status")],
                 metrics=[
-                    {"expression": "sum(amount)", "name": "rev"},
+                    {"metric": "sum(amount)", "alias": "rev"},
                     _CROSS_MODEL_MEASURE,
                 ],
             ),
@@ -565,11 +565,11 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
     #: Mixes a re-rooted plan (``customers``) and a forward plan (``regions``); the filter is reachable from both, and the union used to make the host skip it.
     _MIXED_ROUTES = SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="name", dataset="customers.regions")],
+        dimensions=[QueryDimension(field="customers.regions.name")],
         metrics=[
-            {"expression": "sum(amount)", "name": "rev"},
-            {"expression": "sum(customers.spend)", "name": "cs"},
-            {"expression": "sum(customers.regions.population)", "name": "pop"},
+            {"metric": "sum(amount)", "alias": "rev"},
+            {"metric": "sum(customers.spend)", "alias": "cs"},
+            {"metric": "sum(customers.regions.population)", "alias": "pop"},
         ],
         filter=[FILTER_REACHABLE],
     )
@@ -598,8 +598,8 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         """Adding a cross-model measure must not change which rows a filter keeps — the invariant the host-skip broke."""
         plain = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [FieldRef(name="name", dataset="customers.regions")],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "dimensions": [QueryDimension(field="customers.regions.name")],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "filter": [FILTER_REACHABLE],
         })
         plain_rows = await self._rows(plain)
@@ -617,10 +617,10 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         """Ruled out: the host's copy of a filter on a 1:N path (``order_tags``) must not fan out a sibling ``sum(amount)`` — group A reads 24.0, not the 46.0 a three-way fan-out gives."""
         rows = await self._rows(SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                {"expression": "sum(amount)", "name": "rev"},
-                {"expression": "count(order_tags.id)", "name": "tags"},
+                {"metric": "sum(amount)", "alias": "rev"},
+                {"metric": "count(order_tags.id)", "alias": "tags"},
             ],
             filter=["order_tags.name == 'rush'"],
         ))

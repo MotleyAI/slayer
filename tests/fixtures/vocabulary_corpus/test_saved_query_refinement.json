@@ -38,8 +38,8 @@
     "dimensions": [
      "region",
      {
-      "expression": "amount * 2",
-      "name": "dbl"
+      "field": "amount * 2",
+      "alias": "dbl"
      }
     ],
     "order": [
@@ -50,12 +50,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
@@ -81,13 +81,13 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)",
     "label": "Orders"
    },
    "new": {
-    "expression": "count(*)",
+    "metric": "count(*)",
     "label": "Orders"
    }
   },

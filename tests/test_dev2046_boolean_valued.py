@@ -116,7 +116,7 @@ def test_stage_column() -> None:
     """A stage's BOOLEAN column is boolean-valued through the stage's column types."""
     schema = StageSchema(relation_name="s1", fields=[
         StageField(name="fm", sql_alias="fm", datatype=DataType.BOOLEAN),
-        StageField(name="fs", sql_alias="fs", datatype=DataType.INT),
+        StageField(name="fs", sql_alias="fs", datatype=DataType.INTEGER),
     ])
     column_type = stage_field_type(schema)
     assert boolean_valued(FieldKey(leaf="fm"), field_type=column_type) is True

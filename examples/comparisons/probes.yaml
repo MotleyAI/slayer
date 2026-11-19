@@ -2928,7 +2928,7 @@ probes:
     compare: {values: [best]}
     slayer:
       query:
-        - {name: joined, population: {source_name: customers, relationships: [{to: by_cust, join_pairs: [[id, customer_id]]}]},
+        - {name: joined, population: {source_name: customers, relationships: [{to: by_cust, from_columns: [id], to_columns: [customer_id]}]},
            dimensions: [tier], metrics: [{expression: "sum(by_cust.rev)", name: tier_rev}]}
         - {name: by_cust, population: orders, dimensions: [customer_id], metrics: [{expression: "sum(amount)", name: rev}]}
         - {population: joined, metrics: [{expression: "max(tier_rev)", name: best}]}
@@ -3031,7 +3031,7 @@ probes:
     truth_sql: select c.tier, sum(o.amount) from customers c left join orders o on o.customer_id = c.id group by 1
     compare: {keys: [tier], values: [v]}
     slayer:
-      query: {population: {source_name: customers, relationships: [{to: orders_flat, join_pairs: [[id, customer_id]]}]},
+      query: {population: {source_name: customers, relationships: [{to: orders_flat, from_columns: [id], to_columns: [customer_id]}]},
               dimensions: [tier], metrics: [{expression: "sum(orders_flat.amount)", name: v}]}
 
   - id: Q16c
@@ -3965,7 +3965,7 @@ probes:
         - &facade_edge
           tool: edit_dataset
           args: {dataset_name: sales,
-                 relationships: [{name: buyer, to: customers, join_pairs: [[customer_id, id]], cardinality: many_to_one}],
+                 relationships: [{name: buyer, to: customers, from_columns: [customer_id], to_columns: [id], cardinality: many_to_one}],
                  fields: [{name: region, sql: buyer.regions.name, datatype: string}, {name: customer, sql: buyer.name, datatype: string}],
                  metrics: [{name: revenue, expression: "sum(amount)"}]}
         - &hide_orders {tool: edit_dataset, args: {dataset_name: orders, hidden: true}}

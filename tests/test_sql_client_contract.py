@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, finer_datatype
 from slayer.core.errors import ForcedFilterError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig
@@ -48,7 +48,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 
 
 class Shop(BaseModel):
@@ -215,26 +215,26 @@ class TestTypedFailures:
 _INT = NumberFormat(type=NumberFormatType.INTEGER)
 _FLOAT = NumberFormat(type=NumberFormatType.FLOAT)
 _DUCKDB_KINDS = {
-    "id": (DataType.INT, _INT, None),
-    "qty": (DataType.INT, _INT, None),
-    "price": (DataType.DOUBLE, _FLOAT, "DECIMAL(12,2)"),
-    "ratio": (DataType.DOUBLE, _FLOAT, None),
-    "label": (DataType.TEXT, None, None),
-    "created_at": (DataType.TIMESTAMP, None, None),
+    "id": (DataType.INTEGER, _INT, None),
+    "qty": (DataType.INTEGER, _INT, None),
+    "price": (DataType.FLOAT, _FLOAT, "DECIMAL(12,2)"),
+    "ratio": (DataType.FLOAT, _FLOAT, None),
+    "label": (DataType.STRING, None, None),
+    "created_at": (DataType.DATETIME, None, None),
     "flag": (DataType.BOOLEAN, None, None),
-    "uid": (DataType.TEXT, None, None),
-    "doc": (DataType.TEXT, None, "JSON"),
+    "uid": (DataType.STRING, None, None),
+    "doc": (DataType.STRING, None, "JSON"),
 }
 _SQLITE_KINDS = {
-    "id": (DataType.INT, _INT, None),
-    "qty": (DataType.INT, _INT, None),
-    "price": (DataType.DOUBLE, _FLOAT, "NUMERIC(12, 2)"),
-    "ratio": (DataType.DOUBLE, _FLOAT, None),
-    "label": (DataType.TEXT, None, None),
-    "created_at": (DataType.TIMESTAMP, None, None),
+    "id": (DataType.INTEGER, _INT, None),
+    "qty": (DataType.INTEGER, _INT, None),
+    "price": (DataType.FLOAT, _FLOAT, "NUMERIC(12, 2)"),
+    "ratio": (DataType.FLOAT, _FLOAT, None),
+    "label": (DataType.STRING, None, None),
+    "created_at": (DataType.DATETIME, None, None),
     "flag": (DataType.BOOLEAN, None, None),
-    "uid": (DataType.DOUBLE, _FLOAT, "NUMERIC"),
-    "payload": (DataType.TEXT, None, None),
+    "uid": (DataType.FLOAT, _FLOAT, "NUMERIC"),
+    "payload": (DataType.STRING, None, None),
 }
 
 
@@ -282,7 +282,9 @@ class TestReflectedMetadataUsesSlayerTypes:
             engine.close()
             engine_factory.invalidate_engine(ds)
         (model,) = report.datasets
-        assert {c.name: (c.datatype, c.format, c.db_type) for c in model.fields} == expected
+        # Ingestion narrows an exact numeric or zoned timestamp by its db_type; raw reflection keeps the coarse type.
+        assert {c.name: (c.datatype, c.format, c.db_type) for c in model.fields} == {
+            name: (finer_datatype(t, d), f, d) for name, (t, f, d) in expected.items()}
         assert all(isinstance(c.type, DataType) for c in reflected)
         assert {c.name: c.type for c in reflected} == {name: t for name, (t, _f, _d) in expected.items()}
 

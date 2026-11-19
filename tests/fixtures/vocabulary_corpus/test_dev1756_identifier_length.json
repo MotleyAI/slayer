@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "SandboxSubscription",
-    "join_pairs": [
-     [
-      "subscription_id",
-      "id"
-     ]
+    "from_columns": [
+     "subscription_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "SandboxCustomer",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "SandboxConsumer",
-    "join_pairs": [
-     [
-      "consumer_id",
-      "id"
-     ]
+    "from_columns": [
+     "consumer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -76,12 +76,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(totalAmount)"
    },
    "new": {
-    "expression": "sum(totalAmount)"
+    "metric": "sum(totalAmount)"
    }
   },
   {

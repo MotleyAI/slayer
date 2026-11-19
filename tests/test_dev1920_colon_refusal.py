@@ -105,7 +105,7 @@ async def _query_failure(storage: StorageBackend, query: dict) -> BaseException:
 #: (query fields, colon span, twin).
 QUERY_POSITIONS = [
     pytest.param({"metrics": ["amount:sum"]}, "amount:sum", "sum(amount)", id="measure"),
-    pytest.param({"metrics": [{"name": "t", "expression": "amount:sum"}]}, "amount:sum", "sum(amount)",
+    pytest.param({"metrics": [{"alias": "t", "metric": "amount:sum"}]}, "amount:sum", "sum(amount)",
                  id="named-measure"),
     pytest.param({"metrics": ["*:count"]}, "*:count", "count(*)", id="star"),
     pytest.param({"metrics": ["customers.*:count"]}, "customers.*:count", "count(customers.*)",
@@ -122,7 +122,7 @@ QUERY_POSITIONS = [
                   "order": [{"field": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-string"),
     pytest.param({"metrics": ["count(*)"], "dimensions": ["status"],
-                  "order": [{"field": {"name": "amount:sum"}, "direction": "desc"}]}, "amount:sum", "sum(amount)",
+                  "order": [{"field": "amount:sum", "direction": "desc"}]}, "amount:sum", "sum(amount)",
                  id="order-object"),
     pytest.param({"metrics": ["count(*)"], "dimensions": ["status"], "order": [{"amount:sum": "desc"}]},
                  "amount:sum", "sum(amount)", id="order-shorthand"),
@@ -139,9 +139,9 @@ QUERY_POSITIONS = [
     pytest.param({"metrics": ["count(*)"], "main_time_dimension": "created_at:month"}, "created_at:month",
                  "date_trunc('month', created_at)", id="main-time-dimension"),
     pytest.param({"metrics": ["count(*)"],
-                  "dimensions": [{"name": "d", "expression": "amount:sum(partition_by=region)"}]},
+                  "dimensions": [{"alias": "d", "field": "amount:sum(partition_by=region)"}]},
                  "amount:sum(partition_by=region)", "sum(amount, partition_by=region)", id="computed-dimension"),
-    pytest.param({"population": {"source_name": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
+    pytest.param({"population": {"dataset": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
                   "metrics": ["m"]}, "amount:sum", "sum(amount)", id="model-extension-measure"),
 ]
 
@@ -170,8 +170,8 @@ class TestFreshQueries:
     async def test_non_colon_colons_run(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         resp = await run(storage, {"population": "orders", "filter": ["note = 'a:sum'"], "metrics": [
-            {"name": "total", "expression": "sum(amount::INT)"},
-            {"name": "tagged", "expression": "sum(amount) FILTER (WHERE note = 'x:count')"},
+            {"alias": "total", "metric": "sum(amount::INT)"},
+            {"alias": "tagged", "metric": "sum(amount) FILTER (WHERE note = 'x:count')"},
         ]})
         assert rows(resp) == [{"orders.total": 60.0, "orders.tagged": None}]
 
@@ -191,8 +191,8 @@ class TestSaves:
     async def test_model_measure(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         doc = {"name": "orders_m", "sql_table": "orders", "data_source": DS,
-               "fields": [{"name": "order_id", "datatype": "INT", "primary_key": True},
-                           {"name": "amount", "datatype": "DOUBLE"}],
+               "fields": [{"name": "order_id", "datatype": "Integer", "primary_key": True},
+                           {"name": "amount", "datatype": "Float"}],
                "metrics": [{"name": "total", "expression": "amount:sum"}]}
         exc = await _save_failure(storage, doc)
         assert_colon_refused(exc, span="amount:sum", twin="sum(amount)")
@@ -201,7 +201,7 @@ class TestSaves:
     async def test_query_backed_model(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
         doc = {"name": "order_count", "data_source": DS,
-               "source_queries": [{"population": "orders", "metrics": [{"name": "n", "expression": "*:count"}]}]}
+               "source_queries": [{"population": "orders", "metrics": [{"alias": "n", "metric": "*:count"}]}]}
         exc = await _save_failure(storage, doc)
         assert_colon_refused(exc, span="*:count", twin="count(*)")
         assert await storage.get_dataset("order_count", data_source=DS) is None

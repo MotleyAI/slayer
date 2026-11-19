@@ -100,10 +100,10 @@ class TestEverySurface:
             filters=['status == "paid"'],
             order=[{"column": 'sum(iif(status == "paid", amount, 0))', "direction": "desc"}],
         )
-        assert [m.expression for m in query.metrics or []] == [
+        assert [m.metric for m in query.metrics or []] == [
             "sum(iif(region = 'EU', amount, 0))", "count_distinct(status || 'x')",
         ]
-        assert [getattr(d, "expression") for d in query.dimensions or []] == ["concat(status, '!')", "status || '-'"]
+        assert [d.field for d in query.dimensions or []] == ["concat(status, '!')", "status || '-'"]
         assert query.filter == ["status = 'paid'"]
         assert query.order is not None
         assert query.order[0].raw_expression == "sum(iif(status = 'paid', amount, 0))"
@@ -168,7 +168,7 @@ class TestStoredResultsUnchanged:
         assert isinstance(loaded, SlayerQuery)
         assert loaded.filter == ["status = 'ok'"]
         assert loaded.metrics is not None
-        assert loaded.metrics[0].expression == "sum(iif(status = 'ok', amount, 0))"
+        assert loaded.metrics[0].metric == "sum(iif(status = 'ok', amount, 0))"
         resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 80.0
 

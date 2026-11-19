@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -111,21 +111,21 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.revenue)"
    },
    "new": {
-    "expression": "sum(customers.revenue)"
+    "metric": "sum(customers.revenue)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.Rev)"
    },
    "new": {
-    "expression": "sum(customers.Rev)"
+    "metric": "sum(customers.Rev)"
    }
   },
   {

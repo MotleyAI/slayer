@@ -276,9 +276,9 @@ class TestDriftSeesViews:
             sql_table="stg_orders",
             data_source="ds",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
         )
         entries = await _with_client(validate_datasource, datasource=ds, datasets=[model])
@@ -294,7 +294,7 @@ class TestDriftSeesViews:
             name="gone",
             sql_table="gone",
             data_source="ds",
-            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
         )
         entries = await _with_client(validate_datasource, datasource=ds, datasets=[model])
         assert any(isinstance(e, WholeDatasetDelete) for e in entries)

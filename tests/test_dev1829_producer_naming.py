@@ -10,7 +10,7 @@ import re
 
 import pytest
 
-from slayer.core.query import DatasetMetric, SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 
 from tests._dev1739_fixtures import cm_cte_bodies, gen
 
@@ -35,8 +35,8 @@ class TestProducerOutputAlias:
     async def test_named_measure_uses_public_alias(self, dialect: str) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(
-                expression="sum(amount, partition_by=region)", name="region_rev",
+            metrics=[QueryMetric(
+                metric="sum(amount, partition_by=region)", alias="region_rev",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -47,8 +47,8 @@ class TestProducerOutputAlias:
     async def test_composite_leaf_uses_canonical_alias(self, dialect: str) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(
-                expression="sum(amount) / sum(amount, partition_by=region)", name="sh",
+            metrics=[QueryMetric(
+                metric="sum(amount) / sum(amount, partition_by=region)", alias="sh",
             )],
         ), dialect=dialect)
         body = cm_cte_bodies(sql)
@@ -64,8 +64,8 @@ async def test_filtered_measure_predicate_lives_in_producer(dialect: str) -> Non
     # producer CTE, at the partition grain — unchanged from the DEV-1739 path.
     sql = await gen(_q(
         dimensions=["region", "city"],
-        metrics=[DatasetMetric(
-            expression="sum(ok_amount, partition_by=region)", name="o",
+        metrics=[QueryMetric(
+            metric="sum(ok_amount, partition_by=region)", alias="o",
         )],
     ), dialect=dialect)
     body = cm_cte_bodies(sql)

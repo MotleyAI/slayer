@@ -178,7 +178,7 @@ class TestPositions:
 
     async def test_computed_dimension(self, dialect) -> None:
         resp = await _run(dialect, population="customers", dimensions=[
-            "name", {"expression": "count(orders.id, partition_by=[id]) == 0", "name": "none"}],
+            "name", {"field": "count(orders.id, partition_by=[id]) == 0", "alias": "none"}],
             metrics=[m("count(*)", "n")])
         got = by(resp.data, resp.columns, key="name", value="none")
         assert {k: None if v is None else bool(v) for k, v in got.items()} == {
@@ -186,7 +186,7 @@ class TestPositions:
 
     async def test_every_position_in_one_query(self, dialect) -> None:
         resp = await _run(dialect, population="customers", dimensions=[
-            "name", {"expression": "count(orders.id, partition_by=[id]) == 0", "name": "none"}],
+            "name", {"field": "count(orders.id, partition_by=[id]) == 0", "alias": "none"}],
             metrics=[m("count(orders.id) * 2", "c2")],
             filter=["count(orders.id) = 0"],
             order=[{"field": "count(orders.id)", "direction": "asc"},

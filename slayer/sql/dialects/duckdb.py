@@ -76,7 +76,7 @@ def _compact(values: Expression) -> Expression:
 
 
 # DuckDB's JSON is VARCHAR-backed and comparable, unlike Postgres ``json``.
-_TYPE_NAME_OVERRIDES = {"JSON": DataType.TEXT}
+_TYPE_NAME_OVERRIDES = {"JSON": DataType.STRING}
 
 
 def _scope(*, table: str, schema: str | None, catalog: str | None) -> list[Expression]:

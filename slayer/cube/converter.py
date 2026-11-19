@@ -15,12 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
-from slayer.core.enums import (
-    DataType,
-    RelationshipCardinality,
-    JoinType,
-    invert_cardinality,
-)
+from slayer.core.enums import DataType, JoinType, NUMERIC_DATATYPES, RelationshipCardinality, invert_cardinality
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import render_probe_text
@@ -72,8 +67,8 @@ logger = logging.getLogger(__name__)
 _CALC_TYPES = {"number", "string", "time", "boolean"}
 _DEFERRED_MEASURE_TYPES = {"number_agg"}
 _DIM_TYPE_MAP = {
-    "string": DataType.TEXT, "number": DataType.DOUBLE,
-    "boolean": DataType.BOOLEAN, "time": DataType.TIMESTAMP,
+    "string": DataType.STRING, "number": DataType.FLOAT,
+    "boolean": DataType.BOOLEAN, "time": DataType.DATETIME,
 }
 _FORMAT_MAP = {
     "percent": NumberFormatType.PERCENT, "currency": NumberFormatType.CURRENCY,
@@ -146,7 +141,7 @@ def _is_exact_inverse(a: DatasetRelationship, b: DatasetRelationship) -> bool:
     """Swapped pair set, same join type, cardinalities inversion-consistent (or one unset)."""
     if a.join_type != b.join_type:
         return False
-    if {(s, t) for s, t in a.join_pairs} != {(t, s) for s, t in b.join_pairs}:
+    if {(s, t) for s, t in a.column_pairs} != {(t, s) for s, t in b.column_pairs}:
         return False
     if a.cardinality is None or b.cardinality is None:
         return True
@@ -239,7 +234,7 @@ def _window_from_rolling(rolling, report, *, cube, member) -> str | None:
 def _implied(aggs: list[str]) -> Typed | None:
     """The type a field's aggregations imply: numeric over a count's ``TEXT``."""
     implied = [t for a in aggs if (t := implied_type(a)) is not None]
-    return next((t for t in implied if t[0] is not DataType.TEXT), implied[0] if implied else None)
+    return next((t for t in implied if t[0] is not DataType.STRING), implied[0] if implied else None)
 
 
 class _CubeOperands(OperandPolicy):
@@ -771,7 +766,7 @@ class CubeToSlayerConverter:
             sql = None if sql == name else sql
         else:
             sql = None
-        declared = _DIM_TYPE_MAP.get(dim.type, DataType.TEXT)
+        declared = _DIM_TYPE_MAP.get(dim.type, DataType.STRING)
         build.dimensions.add(name)
         if "type" in dim.model_fields_set:
             build.declared[name] = (declared, None)
@@ -912,7 +907,7 @@ class CubeToSlayerConverter:
             return reader.name
         if (problem := index.problem(node.this)) is not None:
             raise Unconvertible(problem)
-        name = self._add_physical(build, node.this, datatype=DataType.DOUBLE, format=fmt)
+        name = self._add_physical(build, node.this, datatype=DataType.FLOAT, format=fmt)
         build.field_aggs[name].append(agg)
         return name
 
@@ -964,7 +959,7 @@ class CubeToSlayerConverter:
         if name is None:
             name = build.helpers[key] = build.names.take(f"{metric}_col")
             build.fields.append(DatasetField(name=name, sql=sql, filter=predicate, format=fmt, hidden=True,
-                                        datatype=implied[0] if implied else DataType.DOUBLE))
+                                        datatype=implied[0] if implied else DataType.FLOAT))
         build.field_aggs[name].append(agg)
         return name
 
@@ -1066,7 +1061,7 @@ class CubeToSlayerConverter:
         if found is None:
             return False
         col.datatype, col.element_type = found
-        if col.datatype not in (DataType.INT, DataType.DOUBLE):
+        if col.datatype not in NUMERIC_DATATYPES:
             col.format = None
         return True
 
@@ -1154,7 +1149,7 @@ class CubeToSlayerConverter:
                         message=(f"Unrecognized join relationship {relationship!r}; "
                                  f"cardinality left unset (metrics crossing it broadcast).")))
                 dataset.relationships.append(DatasetRelationship(
-                    to=target_name, join_pairs=[[s, t] for (s, _), (t, _) in pairs],
+                    to=target_name, from_columns=[s for (s, _), _ in pairs], to_columns=[t for _, (t, _) in pairs],
                     join_type=JoinType.LEFT, cardinality=cardinality))
 
     def _drop_unreachable(self, datasets: list[SlayerDataset], report) -> None:
@@ -1330,7 +1325,7 @@ class CubeToSlayerConverter:
 
     def _facade_relationship_keys(self, *, relationship: DatasetRelationship, root_dataset: SlayerDataset, fields, names, view, report) -> bool:
         """Declare a carried join's source keys on the facade (hidden); ``False`` drops the join."""
-        for src, _ in relationship.join_pairs:
+        for src, _ in relationship.column_pairs:
             col = next((c for c in fields if c.name == src), None)
             root_col = root_dataset.get_field(src)
             if col is None and root_col is not None and src not in names.used:

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryDimension, QueryMetric
+
 from tests._dev1847_fixtures import (
     INNER_CR,
-    FieldRef,
-    DatasetMetric,
     SlayerDataset,
     SlayerQuery,
     dev1847_datasets,
@@ -34,12 +34,12 @@ def _sq_dataset(outer: str) -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name=f"s1_{outer}", population="sales",
-                dimensions=[FieldRef(name="region"), FieldRef(name="city")],
-                metrics=[DatasetMetric(expression="sum(amount)", name="ct")]),
+                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
+                metrics=[QueryMetric(metric="sum(amount)", alias="ct")]),
             SlayerQuery(
                 population=f"s1_{outer}",
-                dimensions=[FieldRef(name="region")],
-                metrics=[DatasetMetric(expression=f"{outer}(ct)", name="v")]),
+                dimensions=[QueryDimension(field="region")],
+                metrics=[QueryMetric(metric=f"{outer}(ct)", alias="v")]),
         ])
 
 

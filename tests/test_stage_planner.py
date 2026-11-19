@@ -32,16 +32,16 @@ def _orders() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
             ),
         ],
     )
@@ -53,12 +53,12 @@ def _customers() -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
     )
 
@@ -69,8 +69,8 @@ def _regions() -> SlayerDataset:
         data_source="prod",
         sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -90,7 +90,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestSingleStage:
     def test_simple_aggregation(self):
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         # One slot in projection.
         assert len(planned.projection) == 1
@@ -102,7 +102,7 @@ class TestSingleStage:
     def test_dimension_plus_measure(self):
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "dimensions": ["status"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -112,7 +112,7 @@ class TestSingleStage:
     def test_filter_in_planned_query(self):
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "filter": ["status == 'paid'"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -133,7 +133,7 @@ class TestUserNameAlias:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "sum(customers.revenue)", "name": "rev_sum"},
+                {"metric": "sum(customers.revenue)", "alias": "rev_sum"},
             ],
             dimensions=["status"],
         )
@@ -156,12 +156,12 @@ class TestDownstreamStageFlatRefs:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "dimensions": ["status"],
         })
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "metrics": [{"expression": "max(amount_sum)"}],
+            "metrics": [{"metric": "max(amount_sum)"}],
             "dimensions": ["status"],
         })
         planned_stages = plan_stages(
@@ -179,13 +179,13 @@ class TestDownstreamStageFlatRefs:
         stage1 = SlayerQuery(
             name="stage1",
             population="orders",
-            metrics=[{"expression": "sum(customers.revenue)",
-                       "name": "robot_details__modelseriesval"}],
+            metrics=[{"metric": "sum(customers.revenue)",
+                       "alias": "robot_details__modelseriesval"}],
             dimensions=["status"],
         )
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "metrics": [{"expression": "robot_details.modelseriesval"}],
+            "metrics": [{"metric": "robot_details.modelseriesval"}],
             "dimensions": ["status"],
         })
         bundle = _bundle()
@@ -206,13 +206,13 @@ class TestTopoSort:
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "dimensions": ["status"],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
             "population": "stage_a",
-            "metrics": [{"expression": "max(amount_sum)"}],
+            "metrics": [{"metric": "max(amount_sum)"}],
             "dimensions": ["status"],
         })
         root = SlayerQuery(population="stage_b", dimensions=["status"])
@@ -230,13 +230,13 @@ class TestTopoSort:
         s1 = SlayerQuery.model_validate({
             "name": "dup",
             "population": "orders",
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
             "dimensions": ["status"],
         })
         s2 = SlayerQuery.model_validate({
             "name": "dup",
             "population": "orders",
-            "metrics": [{"expression": "max(amount)"}],
+            "metrics": [{"metric": "max(amount)"}],
             "dimensions": ["status"],
         })
         root = SlayerQuery(
@@ -275,8 +275,8 @@ class TestStageSchemaMultiAlias:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "sum(amount)", "name": "rev1"},
-                {"expression": "sum(amount)", "name": "rev2"},
+                {"metric": "sum(amount)", "alias": "rev1"},
+                {"metric": "sum(amount)", "alias": "rev2"},
             ],
             dimensions=["status"],
         )

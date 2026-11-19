@@ -181,7 +181,7 @@ class TestOwners:
 def _stage_key(expression: str) -> AggregateKey:
     models = dev1901_datasets()
     scope = StageSchema(relation_name="stage1", fields=[StageField(
-        name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.DOUBLE)])
+        name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.FLOAT)])
     key = bind_expr(parse_expr(expression), scope=scope, bundle=ResolvedSourceBundle(
         dialect="postgres", population=None, referenced_datasets=models)).value_key
     assert isinstance(key, AggregateKey), key
@@ -271,7 +271,7 @@ class TestUnanalysableText:
 
     async def test_no_sql_reaches_the_database(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         sent = execution_spy(monkeypatch)
-        query = orders_q(metrics=[{"expression": "wbad_agg(amount)", "name": "w"}])
+        query = orders_q(metrics=[{"metric": "wbad_agg(amount)", "alias": "w"}])
         with pytest.raises(UnanalyzableAggregationParameterError):
             await engine.execute(query)
         assert sent == []
@@ -312,18 +312,18 @@ def _first_token_revisit_datasets() -> List[SlayerDataset]:
     so ``wback``'s default ``back.amount`` revisits ``orders`` on its first token."""
     orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="customer_id", datatype=DataType.INT),
-                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                          name="primary", cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="order_ref", datatype=DataType.INT),
-                 DatasetField(name="spend", datatype=DataType.DOUBLE),
-                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
-        relationships=[DatasetRelationship(to="orders", join_pairs=[["order_ref", "id"]],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="order_ref", datatype=DataType.INTEGER),
+                 DatasetField(name="spend", datatype=DataType.FLOAT),
+                 DatasetField(name="amount", datatype=DataType.FLOAT)],
+        relationships=[DatasetRelationship(to="orders", from_columns=["order_ref"], to_columns=["id"],
                          name="back", cardinality=RelationshipCardinality.MANY_TO_ONE)],
         aggregations=[Aggregation(name="wback", expression="SUM({value} * {weight})",
                                   params=[AggregationParam(name="weight", sql="back.amount")])])

@@ -106,8 +106,8 @@
     ],
     "metrics": [
      {
-      "expression": "change(count(*))",
-      "name": "c"
+      "metric": "change(count(*))",
+      "alias": "c"
      }
     ]
    }

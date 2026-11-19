@@ -28,7 +28,8 @@ import logging
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.facade.rows import FacadeColumn, RowBatch
 from slayer.facade.translator import QueryResult, TranslationError, translate
@@ -38,18 +39,18 @@ def _catalog() -> FacadeCatalog:
     customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="email", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="email", datatype=DataType.STRING),
         ],
     )
     orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="total", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="total", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
     return build_catalog(datasets_by_datasource={"jaffle": [customers, orders]})
@@ -137,13 +138,13 @@ def test_qualified_table_exact_match_wins_over_public_alias() -> None:
     a different schema's same-named table)."""
     public_orders = SlayerDataset(
         name="orders", data_source="public", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="public_only_col", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="public_only_col", datatype=DataType.STRING)],
     )
     jaffle_orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="jaffle_only_col", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="jaffle_only_col", datatype=DataType.STRING)],
     )
     catalog = build_catalog(datasets_by_datasource={
         "public": [public_orders], "jaffle": [jaffle_orders],
@@ -252,7 +253,7 @@ def test_translate_accepts_lazy_catalog_executor_factory() -> None:
     class _RecordingExecutor:
         def execute(self, *, parsed, sql):
             return RowBatch(
-                columns=[FacadeColumn(name="x", type=DataType.INT)],
+                columns=[FacadeColumn(name="x", type=DataType.INTEGER)],
                 rows=[{"x": 1}],
             )
 
@@ -304,8 +305,8 @@ def test_aggregate_over_three_part_qualified_column() -> None:
     assert isinstance(result, QueryResult)
     aliases = [projected for _alias, projected in result.field_name_mapping]
     assert aliases == ["total_sum"]
-    def _formula(m: DatasetMetric | dict[str, str]) -> str:
-        return m["formula"] if isinstance(m, dict) else m.expression
+    def _formula(m: QueryMetric | dict[str, str]) -> str:
+        return m["metric"] if isinstance(m, dict) else m.metric
     measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
     assert "sum(total)" in measure_formulas
 
@@ -379,7 +380,7 @@ def test_metabase_gui_question_count_orders_corpus_20() -> None:
     # Underlying engine measure is `count(*)` (the canonical count-all form).
     # The measures list carries pydantic ModelMeasure-shaped entries; accept
     # both dict and attribute access.
-    def _formula(m: DatasetMetric | dict[str, str]) -> str:
-        return m["formula"] if isinstance(m, dict) else m.expression
+    def _formula(m: QueryMetric | dict[str, str]) -> str:
+        return m["metric"] if isinstance(m, dict) else m.metric
     measure_formulas = [_formula(m) for m in (result.query.metrics or [])]
     assert "count(*)" in measure_formulas
