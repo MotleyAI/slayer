@@ -35,7 +35,7 @@ reading path tokens as model names.
 ### Requirement: Paths resolve to one canonical spelling
 Every resolved join path SHALL be spelled canonically: per hop, the traversed edge's
 declared name, else its traversal-target model's name. Query references, saved
-measures, routed anchors, model SQL (`Column.sql`, `Column.filter`, model
+measures, routed anchors, model SQL (`DatasetField.sql`, `DatasetField.filter`, model
 filters) and definition defaults SHALL all resolve to that spelling, so two spellings
 of one edge denote one value: one join, one slot, one home, and identical results.
 Persisted models SHALL keep their authored spelling; error messages SHALL quote the

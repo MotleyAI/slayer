@@ -1,8 +1,8 @@
 ## 1. Prerequisites
 
 - [ ] 1.1 DEV-2021 and DEV-1607 are merged to `main`; merge `origin/main` into this branch (merge commit, never rebase). Verify: `git log` shows both merges and DEV-1607's change is archived under `openspec/changes/archive/`.
-- [ ] 1.2 Confirm on the merged tree: `deprecated_input` exists and is in the tripwire's `HELPERS`; `docs/upgrading/2.0.md` exists; `CURRENT_VERSIONS` for SlayerQuery, SlayerModel and Memory (else renumber design § Migration Plan's steps); DEV-1607's FutureWarning-as-error test filter is active. Verify by reading each.
-- [ ] 1.3 Re-base every delta on the merged corpus: respell the deltas' literal identifiers with DEV-1607's respelling script, re-copy each MODIFIED requirement from the merged `openspec/specs/` and re-apply this change's edits, and add the `compatibility/ossie-vocabulary` MODIFIED delta of design decision 31. Show the owner the diff and wait for the OK; then `openspec validate dev-2277-qualified-references-every-name-is-dataset --strict` passes.
+- [ ] 1.2 Confirm on the merged tree: `deprecated_input` exists and is in the tripwire's `HELPERS`; `docs/upgrading/2.0.md` exists; `CURRENT_VERSIONS` is SlayerQuery 16, SlayerModel 26, Memory 12 (else renumber design § Migration Plan's steps); DEV-1607's FutureWarning-as-error test filter is active. Verify by reading each.
+- [x] 1.3 Re-base every delta on the merged corpus: respell the deltas' literal identifiers with DEV-1607's respelling script, re-copy each MODIFIED requirement from the merged `openspec/specs/` and re-apply this change's edits, and add the `compatibility/ossie-vocabulary` MODIFIED delta of design decision 31. Show the owner the diff and wait for the OK; then `openspec validate dev-2277-qualified-references-every-name-is-dataset --strict` passes.
 - [ ] 1.4 Scenario sweep (design decision 18 and 32): list every scenario in `openspec/specs/` whose asserted result keys or outcome change under `queries/references` (root-prefixed keys of joined references or aliases, literal-first routing, root-qualifier equivalence), plus the idiom list of `mcp/tool-surface` › Documented query idioms behave as documented; draft one MODIFIED delta per affected requirement; show the owner the list and the diff and wait for the OK. Verify: `openspec validate --strict` passes.
 - [ ] 1.5 Load `la:living-architecture` and `la:deterministic-refactor`; run `la:make-refactor-target-compliant` over the modules design § Context names before changing their signatures. Verify: `la-typecheck` reports no new errors.
 
@@ -27,7 +27,7 @@
 - [ ] 3.3 Bare names: alias, then the unknown-metric error with qualified suggestions; root-less `count(*)` typed error. Verify: the bare-name and row-count scenarios pass.
 - [ ] 3.4 Keys: carry the reference identity (anchor, canonical route, leaf) through projection; build keys from it; aliases bare; expressions by common anchored prefix; stage column names from keys minus the population. Verify: test 2.4 passes.
 - [ ] 3.5 Legacy conversion at pipeline entry over `core.syntax` parse trees, through `deprecated_input(…, removal="3.0")`; saved queries store the twin; refinement and cache compare converted forms. Verify: test 2.5 passes.
-- [ ] 3.6 Meaning-change notice, typed, surfaced on the response and as a Python warning, marked for 3.0. Verify: test 2.6 passes.
+- [ ] 3.6 Meaning-change notice as an informational structured response warning built through `scheduled_notice(…, removal="3.0")`, never a `FutureWarning`. Verify: test 2.6 passes.
 - [ ] 3.7 Dataset-local binding mode for stored definitions. Verify: test 2.7 passes.
 - [ ] 3.8 Stored migration in the model-aware load pipeline with the version steps; round-trip check; unloadable boundary. Verify: test 2.8 passes.
 - [ ] 3.9 `recommend_population` items (DEV-2045). Verify: test 2.9 passes.

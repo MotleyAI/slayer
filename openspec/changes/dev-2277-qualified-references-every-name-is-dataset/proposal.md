@@ -14,7 +14,7 @@ SLayer 2.0 is a strict superset of Ossie: a valid Ossie Layer 3 query must be a 
   
   Stage column names stay the same.
 - Legacy root-relative forms in a query that names a population convert with one deprecation warning per form, removed in 3.0: bare fields and metrics, `count(*)`, and paths whose first segment is an edge or a list column.
-- A typed notice reports the one silent meaning change: a dataset-first reference that the 1.x reading sent through a direct edge.
+- An informational structured warning (not a `FutureWarning`) reports the one silent meaning change: a dataset-first reference that the 1.x reading sent through a direct edge.
 - Stored queries migrate to the qualified form in the model-aware load pipeline, keeping their meaning and their stage column names. `SlayerQuery`, `SlayerModel` and `Memory` get new versions.
 - `recommend_population(["count(orders.*)"])` works: the item is an attachment on `orders`. This absorbs DEV-2045.
 - MCP descriptions, help memories and docs use the qualified syntax only. The migration guide gets a section.
@@ -35,6 +35,7 @@ SLayer 2.0 is a strict superset of Ossie: a valid Ossie Layer 3 query must be a 
 - `mcp/tool-surface`: the documented idioms are written qualified.
 - `models/stored-upgrade`: stored queries migrate to the qualified form.
 - `compatibility/removal-tripwire`: the legacy reference forms and the notice are covered workarounds.
+- `compatibility/ossie-vocabulary`: "The rename changes no result" compares the two spellings only, since this change moves keys.
 
 ## Impact
 
@@ -49,4 +50,4 @@ SLayer 2.0 is a strict superset of Ossie: a valid Ossie Layer 3 query must be a 
 - **Stored data:** new version steps for `SlayerQuery`, `SlayerModel` and `Memory`.
 - **Tests:** the whole suite is respelled to the qualified syntax.
 - **Downstream:** Storyline and scripts keep working on legacy spellings until 3.0, but read changed result keys.
-- **Depends on:** DEV-1607 and DEV-2021 merging first. Followed by DEV-2279 (output names), DEV-2212 (row rule, path origin from each home) and DEV-2243 (model-scoped metrics).
+- **Depends on:** DEV-2021 and DEV-2318 (on `main`) and DEV-1607 (PR #604, merged into this branch), merging first. Followed by DEV-2279 (output names), DEV-2212 (row rule, path origin from each home) and DEV-2243 (model-scoped metrics).

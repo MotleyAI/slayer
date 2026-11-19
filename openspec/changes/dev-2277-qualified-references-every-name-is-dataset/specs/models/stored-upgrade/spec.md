@@ -5,17 +5,17 @@ A stored query written before this change — a saved query, a query-backed mode
 - each reference SHALL be rewritten to the qualified spelling that has the meaning it had before this change, reading the stage's own population;
 - a reference the new routing would send along a different path SHALL be rewritten to the explicit route from the population that keeps its old path;
 - a rewritten path SHALL be kept only if it resolves back to the same oriented sequence of relationships;
-- an unaliased entry whose references share no anchor SHALL get an alias equal to its column name before this change, so every later stage, query-backed model consumer and `Column.sql` reading that column keeps working;
+- an unaliased entry whose references share no anchor SHALL get an alias equal to its column name before this change, so every later stage, query-backed model consumer and `DatasetField.sql` reading that column keeps working;
 - `count(*)` SHALL become `count(<population>.*)`.
 
 A stored query that cannot be converted this way (a dataset it reads is missing, or an old path has no unique explicit spelling) SHALL fail to load through the existing unloadable-document boundary, untouched on disk, with a warning naming the document and the reference. Saved queries and query-backed models SHALL be written back as other migrated documents are; memories SHALL convert on each load.
 
 #### Scenario: A saved query loads qualified with its results
-- **WHEN** a store holds a saved query with `source_model: orders`, the dimension `status`, the metric `sum(amount)` and the filter `customers.region = 'EAST'`
+- **WHEN** a store holds a saved query with `population: orders`, the dimension `status`, the metric `sum(amount)` and the filter `customers.region = 'EAST'`
 - **THEN** it loads as `orders.status`, `sum(orders.amount)` and `customers.region = 'EAST'`, with no `FutureWarning`, and returns the rows it returned before
 
 #### Scenario: A stored cycle reference keeps its path
-- **WHEN** a stored query with `source_model: x` over the cycle `x → y → z → x` measures `sum(z.amount)`
+- **WHEN** a stored query with `population: x` over the cycle `x → y → z → x` measures `sum(z.amount)`
 - **THEN** it loads as `sum(x.z.amount)` and returns the value it returned before
 
 #### Scenario: A stored stage chain keeps its column names
@@ -27,5 +27,5 @@ A stored query that cannot be converted this way (a dataset it reads is missing,
 - **THEN** the document fails to load, stays untouched on disk, and the warning names the document and the reference
 
 #### Scenario: A memory's query converts on every load
-- **WHEN** a stored memory holds a query with `source_model: orders` measuring `count(*)`
+- **WHEN** a stored memory holds a query with `population: orders` measuring `count(*)`
 - **THEN** each load reads it as `count(orders.*)`, with no `FutureWarning`, and the stored memory is not rewritten

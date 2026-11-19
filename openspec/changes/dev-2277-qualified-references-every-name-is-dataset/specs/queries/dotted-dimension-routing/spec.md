@@ -60,7 +60,7 @@ SHALL be judged by the routing rule like any other set of routes.
 - THEN the reference is rejected with no suggested path, and the error names that pair and the remedy to name its edges
 
 #### Scenario: Adjacent parallel edges stay an ambiguous hop
-- WHEN the population has two named many-to-one edges to the anchor and a reference names `Target.column` (dimension or saved metric)
+- WHEN the population has two named many-to-one edges to the anchor and a reference names `Target.field` (dimension or saved metric)
 - THEN it fails as ambiguous, suggesting the spelling through each edge name, and schema-drift attributes the reference to nothing
 
 #### Scenario: A suggestion through a single named edge uses the edge name
@@ -69,7 +69,7 @@ SHALL be judged by the routing rule like any other set of routes.
 
 ### Requirement: Route-aware rejection of ambiguous and unreachable targets
 A reference whose anchor is ambiguous (two or more routes, not uniquely fan-out-free) SHALL be rejected with
-`UnresolvableDimensionJoinError`; an anchor with no route is an unrelated dataset (`queries/unrelated-datasets`).
+`UnresolvableDimensionRelationshipError`; an anchor with no route is an unrelated dataset (`queries/unrelated-datasets`).
 An ambiguous rejection SHALL carry a `suggested_path` when an executable full path exists (the shortest
 fan-out-free one if any, else the shortest executable full path), spelled from the population; among
 equal-length candidates the suggestion SHALL be the one with fewer hops that are not provably to-one, then the
@@ -149,18 +149,19 @@ key `<anchor>.<metric>`, and inherit the saved metric's declared type with the u
 - WHEN a query with population `Invoice` selects `Consumer.aov` (a typed saved metric on the uniquely-routable `Consumer`) without an alias
 - THEN the result column key is `Consumer.aov` and the column carries the saved metric's declared type
 
-### Requirement: A joined stage's flattened columns are read by their flat names
+### Requirement: A joined stage's flattened columns are read by their flat names from any root
 A stage's output column keeps its flat name when another query object joins the stage: a stage dimension
 `customers.name` (flat name `customers__name`) SHALL be read through a join onto stage `s` as `s.customers__name`,
-from a stored or a sibling-stage population alike. The dotted spelling of a flattened column SHALL NOT bind to it.
+from a stored or a sibling-stage population alike, under the result key `s.customers__name`. The dotted spelling
+of a flattened column SHALL NOT bind to it.
 
 #### Scenario: A stored root reads a joined stage's flat column
 - **WHEN** stage `s` over `orders` selects `customers.name` and `{"metric": "count(orders.*)", "alias": "n"}`, and a query with population stored `addresses` (or stored `regions`) joins `s` through a query extension and selects `s.customers__name`
 - **THEN** it executes on SQLite and DuckDB and returns stage `s`'s `customers.name` values under the result key `s.customers__name`
 
-#### Scenario: An inline root named like a stored model reads a joined stage's flat column
-- **WHEN** a query with population `customers` joins `s` through a query extension and selects `s.customers__name`
-- **THEN** it executes and reads `s`'s column, never a hop back to the population
+#### Scenario: A root named like the flattened path reads a joined stage's flat column
+- **WHEN** a query with population stored `customers` joins `s` through a query extension and selects `s.customers__name`
+- **THEN** it executes and reads `s`'s column under the result key `s.customers__name`, never a hop back to the population
 
 ## REMOVED Requirements
 

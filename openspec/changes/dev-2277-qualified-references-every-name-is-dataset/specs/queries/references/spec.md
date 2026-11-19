@@ -165,7 +165,7 @@ A dotted reference whose first segment names a dataset or a stage SHALL be read 
 
 ### Requirement: A reference whose meaning changed announces it
 
-When a fresh query that names its population reads a dataset-first reference whose anchor is the target of a relationship incident to the population and spelled with that dataset's name, and the path taken is not that relationship, the response SHALL carry one typed notice per reference naming the reference, the path taken and the explicit spelling of the relationship's path, and SHALL emit it as a Python warning. The notice is scheduled for removal in SLayer 3.0.
+When a fresh query that names its population reads a dataset-first reference whose anchor is the target of a relationship incident to the population and spelled with that dataset's name, and the path taken is not that relationship, the response SHALL carry one informational structured warning per reference naming the reference, the path taken and the explicit spelling of the relationship's path. It SHALL NOT be a `FutureWarning`, and it is marked for removal in SLayer 3.0 as `compatibility/removal-tripwire` marks a notice.
 
 #### Scenario: The directed cycle is announced
 - **WHEN** `x → y`, `y → z` and `z → x` are many-to-one and a query with `population: "x"` measures `sum(z.amount)`

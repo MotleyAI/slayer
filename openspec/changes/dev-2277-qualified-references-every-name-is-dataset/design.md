@@ -13,7 +13,8 @@ See proposal.md › Why. Facts the approach rests on (read on 2026-11-12 to 2026
 - **Keys.** They come from `sql/naming.py`: `result_key_from_alias(source_relation, alias)` and `slot_result_key`, with `source_relation` set to the root spelling (`compile/stages.py`). Unaliased aggregates use `canonical_aggregate_alias` over the root-relative `source_anchor_path`. Stage column names are `flat_name(key, strip_relation=population)`.
 - **Recommendation.** `query_engine._resolve_recommend_item` splits off the aggregation and passes `orders.*` to `resolve_entity`, which refuses it (the DEV-2045 bug).
 - **Tests.** Nearly every test query names `source_model` and uses bare names: about 6,900 bare dimension strings, 1,550 `count(*)`, and only 66 of 1,946 `SlayerQuery` literals without `source_model`.
-- **Builds on DEV-1607 and DEV-2021,** neither yet merged. Examples use DEV-1607's vocabulary. The MODIFIED texts here are written against today's corpus and are re-based on the merged one (tasks 1.x).
+- **Builds on DEV-2021 and DEV-2318,** both on `main`, and on DEV-1607 (PR #604), whose branch is merged into this one (`11cd2c03b`, 2026-11-19). The MODIFIED texts are re-based on that merged corpus (task 1.3).
+- **Notices follow DEV-2280's convention:** a marked informational notice is a structured response warning built through `slayer.core.deprecation.scheduled_notice`, never a `FutureWarning` (`compatibility/removal-tripwire`).
 
 **Principles that apply:**
 - `semantics` §4 P1, rewritten here, and Axioms 2.4, 2.6 and 3.1, reworded here.
@@ -51,7 +52,7 @@ None is strained beyond the approved arc42 edits.
 3. **The path origin is written as the target state.** The reading dataset is the population, or an aggregate's home for its grain and filters, `[target: DEV-2212]`. A comment on DEV-2212 records the gap (a valid Ossie query that SLayer refuses until slice 5), what slice 5 must do, and every other ruling below that affects it. (user)
 4. **An aliased entry keys by its bare alias.** Alternative: `<common anchor>.<alias>`. Rejected: the key would change with the expression, and the query would refer to the entry by a different name than its key. (user, Q2 A)
 5. **Root-less `count(*)` is always refused,** with or without dimensions. This supersedes the with-dimensions half of DEV-2212's ruling ("binds to A"). Alternative: bind to the inferred population as a permanent shorthand. Rejected: what it counts would change when a dimension is added. (user, Q3 A)
-6. **A typed notice announces the one silent meaning change,** a dataset-first reference that the 1.x reading sent through a direct edge. It is removed in 3.0. Alternative: migration guide only. (user, Q4 A)
+6. **An informational notice announces the one silent meaning change,** a dataset-first reference that the 1.x reading sent through a direct edge. It is removed in 3.0. Alternative: migration guide only. (user, Q4 A) After merging DEV-1607 it follows the merged notice convention: a structured response warning marked through `scheduled_notice`, not a `FutureWarning` and not a separate Python warning. (user, re-base approval 2026-11-19)
 7. **`architecture/semantics.arc42.md` §4 Principle 1** (user, approved wording) is replaced by:
 
    > 1. **Dotted-canonical references**: dots denote join paths in queries and model
@@ -98,7 +99,8 @@ None is strained beyond the approved arc42 edits.
 28. **A migrated path must round-trip to the same oriented relationship sequence,** else the document is unloadable with a targeted warning. (codex)
 29. **First segments follow DEV-2215's identifier-case rule;** a hidden dataset is unknown and never revealed. Tests cover quoting, case, stage-over-dataset precedence and hidden datasets. (codex)
 30. **`queries/multi-stage` is not modified.** No requirement there contradicts this change; stage references by name are specified in `queries/references`. (default)
-31. **`compatibility/ossie-vocabulary`** (DEV-1607's new capability) gets its MODIFIED delta, dropping "and the same as before this change" from "The rename changes no result", once DEV-1607 is archived on `main` (task 1.3). It cannot validate before. (default)
+31. **`compatibility/ossie-vocabulary`** gets its MODIFIED delta: "The rename changes no result" compares the two spellings only, dropping "and the same as before this change" and the scenarios' "equal to those recorded before the rename". (default; added in the re-base, user-approved 2026-11-19)
+33. **Re-base on the merged corpus** (user, 2026-11-19): deltas respelled to the merged vocabulary; the MODIFIED delta of the renamed "A joined stage's flattened columns are read by their flat names from any root" uses its new scenario title; the tripwire block is re-copied from the merged text before this change's items are added.
 32. **The idiom list in `mcp/tool-surface`** › Documented query idioms behave as documented is re-spelled qualified in the post-DEV-1607 sweep. The new requirement "Documented examples are written qualified" governs the texts from this change on. (default)
 
 ## Risks / Trade-offs
@@ -106,10 +108,10 @@ None is strained beyond the approved arc42 edits.
 - **[Keys change for every caller of joined fields, cross-dataset aggregates and aliases]** → Intended. The migration guide shows a before and after; stage column names stay stable.
 - **[Root-less Ossie queries whose path from the inferred population is ambiguous are refused until DEV-2212]** → The target clause in P1 and the DEV-2212 comment track it; the refusal names explicit spellings.
 - **[The respelling of about 10,000 test references could change what a test checks]** → Conversions are recorded from the engine's own converter, so each respelled reference means exactly what the bare one meant. Changes to key assertions and test logic get per-file owner approval.
-- **[Silent meaning change in directed cycles]** → The typed notice, and stored queries keep their old path.
-- **[The MODIFIED texts drift against DEV-1607's respelled corpus]** → Re-based after merge (task 1.3), with `openspec validate --strict` as the gate.
+- **[Silent meaning change in directed cycles]** → The notice, and stored queries keep their old path.
+- **[The MODIFIED texts drift if PR #604 changes before it merges]** → Re-run the re-base of task 1.3 after merging `origin/main`, with `openspec validate --strict` as the gate.
 
 ## Migration Plan
 
-- `SlayerQuery` 15 → 16, with `SlayerModel` and `Memory` bumped, renumbered if another slice merges first. The model-aware conversion runs in DEV-2021's storage load pipeline. Saved queries and query-backed models are written back; memories convert on each load.
+- `SlayerQuery` 16 → 17, `SlayerModel` 26 → 27 and `Memory` 12 → 13, renumbered if another slice merges first. The model-aware conversion runs in DEV-2021's storage load pipeline. Saved queries and query-backed models are written back; memories convert on each load.
 - Rollback: a v16 document read by older code fails on the unknown version, as for every bump.

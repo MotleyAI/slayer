@@ -12,12 +12,12 @@ A query SHALL reference a saved metric as `<dataset>.<metric>` (`queries/referen
 - THEN every suite passes with values unchanged, and inside saved expressions bare names keep reading the declaring dataset
 
 ### Requirement: Naming and metadata of dotted references
-An unaliased saved-metric reference SHALL surface under the key `<anchor>.<route>.<metric>` exactly as written, canonically spelled (`customers.aov`), never prefixed by the population. An alias SHALL win and key as itself. The saved metric's declared `type` SHALL be inherited with the same precedence as before (query-level type, then saved type, then inference); format and description derive from the bound result exactly as for the hand-expanded form.
+An unaliased saved-metric reference SHALL surface under the key `<anchor>.<route>.<metric>` exactly as written, canonically spelled (`customers.aov`), never prefixed by the population. An alias SHALL win and key as itself. The saved metric's declared `datatype` SHALL be inherited with the same precedence as before (query-level type, then saved type, then inference); format and description derive from the bound result exactly as for the hand-expanded form.
 
 #### Scenario: Implicit name is the dotted path
 - WHEN a query with `population: "orders"` selects `customers.aov` without an alias
 - THEN the result column key is `customers.aov`, and an alias `x` makes it `x`
 
 #### Scenario: Saved type is inherited
-- WHEN the target saved metric declares an explicit `type`
+- WHEN the target saved metric declares an explicit `datatype`
 - THEN the reference's result column carries that type unless the query entry overrides it
