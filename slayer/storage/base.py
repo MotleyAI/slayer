@@ -16,6 +16,7 @@ from collections.abc import Callable, Hashable, Iterable
 
 from typing_extensions import deprecated
 
+from slayer.core.deprecation import outside_stacklevel
 from slayer.core.enums import RESERVED_NAMES, DataType, TimeGranularity
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
@@ -465,7 +466,7 @@ def warn_library_shadows(dataset: SlayerDataset) -> None:
         if shadows_library_function(agg):
             warnings.warn(SlayerLibraryNameShadowWarning(LibraryNameShadowWarning(
                 dataset=dataset.name, aggregation=agg.name, function=agg.name,
-            )), stacklevel=3)
+            )), stacklevel=outside_stacklevel())
 
 
 def without_none(value: Any) -> Any:
@@ -702,7 +703,7 @@ class StorageBackend(ABC):
             if (where, tuple(group)) not in held:
                 raise CaseCollisionError(names=group, namespace=f"dataset {dataset.name!r}'s {where}")
         for payload in [*name_collision_warnings(dataset), *spine_variant_warnings(dataset)]:
-            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=4)
+            warnings.warn(SlayerNameCollisionWarning(payload), stacklevel=outside_stacklevel())
 
     async def _validate_mode_a_placeholders(self, dataset: SlayerDataset) -> None:
         ds = await self.get_datasource(dataset.data_source) if dataset.data_source else None

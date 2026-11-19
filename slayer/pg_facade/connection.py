@@ -70,7 +70,9 @@ from slayer.pg_facade.types import (
     value_to_binary,
     value_to_text,
 )
+from slayer.core import probes as core_probes
 from slayer.core import timing
+from slayer import otel
 
 logger = logging.getLogger(__name__)
 
@@ -1128,6 +1130,7 @@ class PgConnection:
             self._writer.write(proto.encode_data_row(values))
         self._writer.write(proto.encode_command_complete(command="SELECT", rows=len(batch.rows)))
 
+    @otel.request(surface="pg", token="query")
     async def _run_query(
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:
@@ -1147,6 +1150,7 @@ class PgConnection:
                     )
             usage_reporting.observe_executed(response)
         except Exception as exc:  # noqa: BLE001 — surface any engine error to the client
+            core_probes.current().set({"error.type": type(exc).__qualname__})  # the request failed though handled
             code, message = _engine_error_fields(exc)
             await self._send_error(code=code, message=message)
             self._fail_tx()
