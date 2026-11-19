@@ -12,7 +12,6 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import (
     AmbiguousReferenceError,
-    IllegalScopeReferenceError,
     SlayerError,
     UnknownReferenceError,
 )
@@ -126,7 +125,7 @@ class TestFolding:
 
     @pytest.mark.parametrize(("ref", "error"), [
         ("ITEMS.value", None), ('"items".value', None), ('"ITEMS".value', UnknownReferenceError),
-        ("items.VALUE", None), ('items."value"', None), ('items."VALUE"', IllegalScopeReferenceError),
+        ("items.VALUE", None), ('items."value"', None), ('items."VALUE"', UnknownReferenceError),
     ])
     async def test_a_list_element_reference_follows_quoting(self, ref: str, error: type[SlayerError] | None) -> None:
         stages: list[Any] = [

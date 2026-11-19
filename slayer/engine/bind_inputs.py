@@ -1720,7 +1720,7 @@ def _resolve_main_time_dimension(
     dataset: Optional[SlayerDataset],
     root: Optional[str] = None,
 ) -> Optional[TimeDimension]:
-    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the dataset's default_time_dimension else None. A stage has no dataset, so its default step is skipped."""
+    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the dataset's default_time_dimension else None."""
     tds = list(query.time_dimensions or [])
     if not tds:
         return None

@@ -558,7 +558,7 @@ def _walk(
         if not revisits and edge.to in visited:
             raise CircularRelationshipPathError(
                 reference=".".join(path),
-                root_dataset=root.name,
+                root_dataset=root.spelling,
                 revisited=edge.to,
                 hop=token,
                 via=current.name,

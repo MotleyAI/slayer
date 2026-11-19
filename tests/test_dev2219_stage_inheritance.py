@@ -14,7 +14,6 @@ import pytest
 from slayer.core.errors import AmbiguousRelationshipPathError, UnrelatedDatasetError
 
 from tests._dev2219_fixtures import (
-    CUSTOMER_REVENUE_BY_REGION,
     DIALECTS,
     INVOICE_TOTAL_BY_BILLING,
     REVENUE_BY_NAME,
@@ -106,7 +105,7 @@ class TestPassThrough:
     async def test_reverse_direction_is_inherited(self, engine) -> None:
         stage = q(name="s", population="customers", dimensions=["id", "region"], metrics=[m("count(*)", "n")])
         resp = await engine.execute([stage, over("s", dimensions=["region"], metric="sum(orders.amount)")])
-        assert by(resp, key="region", value="total") == CUSTOMER_REVENUE_BY_REGION
+        assert by(resp, key="region", value="total") == REVENUE_BY_REGION
 
     async def test_relationship_of_the_stages_own_extension_is_inherited(self, engine) -> None:
         stage = q(name="s", population="orders", extensions=[ext("orders", join("regions", [("region_id", "id")]))],
@@ -240,7 +239,7 @@ class TestDeclaredEdgesWin:
             by_alias = await engine.execute([per_customer(), over("per_customer", dimensions=["buyer.region"],
                                                                   extensions=extension)])
         assert by(by_target, key="customers.region", value="total") == REVENUE_BY_REGION
-        assert by(by_alias, key="buyer.region", value="total") == REVENUE_BY_REGION
+        assert by(by_alias, key="customers.region", value="total") == REVENUE_BY_REGION
 
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_identical_declared_edge_in_a_consuming_extension_applies_once(self, dialect: str) -> None:

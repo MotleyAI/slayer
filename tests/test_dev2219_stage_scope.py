@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import PopulationInferenceError, UnknownReferenceError, UnrelatedDatasetError
+from slayer.core.errors import (
+    PopulationInferenceError,
+    UnknownReferenceError,
+    UnrelatedDatasetError,
+    UnresolvableDimensionRelationshipError,
+)
 
 from tests._dev2219_fixtures import (
     DIALECTS,
@@ -77,6 +82,15 @@ class TestEdgeLessStage:
             resp = await engine.execute([stage, root])
         assert {r["s.sts.value"]: r["s.n"] for r in resp.data} == {"ok": 5, "new": 2}
 
+    async def test_an_unknown_list_element_field_leaks_no_minted_identity(self) -> None:
+        pytest.importorskip("duckdb")
+        stage = q(name="s", population="orders", dimensions=["customer_id"], metrics=[m("collect(status)", "sts")])
+        root = q(population="s", metrics=[m("count(sts.nope)", "n")])
+        async with shop("duckdb") as engine:
+            with pytest.raises(UnknownReferenceError) as ei:
+                await engine.execute([stage, root])
+        assert "__slayer" not in str(ei.value)
+
 
 # --------------------------------------------------------------------------- #
 # Dotted references follow the stored-root rules.
@@ -111,3 +125,9 @@ class TestDottedReferences:
         staged = await outcome(engine, [per_customer(), over("per_customer", dimensions=["customers.nope.name"])])
         assert stored[0] == staged[0] == "error"
         assert staged[1] == stored[1]
+
+    @pytest.mark.parametrize("dimension", ["nosuch.region", "per_customer.nosuch.x"])
+    async def test_a_route_miss_names_the_stage_by_its_label(self, engine, dimension: str) -> None:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
+            await engine.execute([per_customer(), over("per_customer", dimensions=[dimension])])
+        assert ei.value.root_dataset == "per_customer"

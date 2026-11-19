@@ -68,10 +68,8 @@ _TABLES: dict[str, tuple[str, list[tuple]]] = {
 REVENUE_BY_CUSTOMER = {1: 30.0, 2: 30.0, 3: 5.0, 4: 40.0, 5: 15.0, None: 7.0}
 #: REVENUE_BY_CUSTOMER by the customer's name, customers-rooted (the orphan order has no customer).
 REVENUE_BY_NAME = {"Ann": 30.0, "Bob": 30.0, "Cid": 5.0, "Dee": 40.0, "Eve": 15.0}
-#: sum(orders.amount) by customers.region, from orders (Dee and the orphan land in None).
+#: sum(orders.amount) by customers.region, rooted anywhere (Dee and the orphan land in None: Ossie S1).
 REVENUE_BY_REGION = {"North": 35.0, "South": 30.0, "East": 15.0, None: 47.0}
-#: sum(orders.amount) by customers.region, customers-rooted (the orphan order drops).
-CUSTOMER_REVENUE_BY_REGION = {"North": 35.0, "South": 30.0, "East": 15.0, None: 40.0}
 #: sum(orders.amount) by the order's own regions.name.
 REVENUE_BY_ORDER_REGION = {"North": 22.0, "South": 50.0, "East": 40.0, None: 15.0}
 #: Per orders.region_id, regions.name joined on that region's order count (3, 2, 1, 1) instead of its id.

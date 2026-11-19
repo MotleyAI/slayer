@@ -1190,9 +1190,11 @@ def _unresolved_dotted_error(
     dotted = ".".join(parts)
     fields = [c.name for c in terminal_dataset.fields]
     metrics = [m.name for m in terminal_dataset.metrics if m.name]
+    # A list child's identity is minted: name it by the list path the user wrote.
+    label = ".".join(parts[:-1]) if terminal_dataset.list_of is not None else terminal_dataset.spelling
     detail = (
         f"{dotted!r} is neither a field nor a saved metric on "
-        f"{terminal_dataset.spelling!r}. Fields: {fields}; saved metrics: {metrics}."
+        f"{label!r}. Fields: {fields}; saved metrics: {metrics}."
     )
     match = _name_suggestion(name=parts[-1], dataset=terminal_dataset)
     if match:
@@ -1200,7 +1202,7 @@ def _unresolved_dotted_error(
     return UnknownReferenceError(
         name=dotted,
         scope_kind="DatasetScope",
-        scope_summary=f"dataset {terminal_dataset.spelling!r}",
+        scope_summary=f"dataset {label!r}",
         suggestion=detail,
     )
 

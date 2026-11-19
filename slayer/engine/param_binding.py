@@ -276,7 +276,7 @@ def _field_key(
     terminal = walk_key_path(dataset=root, path=path, bundle=bundle)
     if terminal is None:
         raise UnresolvableDimensionRelationshipError(
-            reference=spelled, root_dataset=root.name,
+            reference=spelled, root_dataset=root.spelling,
             reason="its relationship path does not resolve from the query root.",
         )
     col = resolve_generated_field(dataset=terminal, name=leaf)
@@ -313,7 +313,7 @@ def resolve_default_path(
             owner_path=root_path, datasets_by_name=mbn,
         )
         raise UnresolvableDimensionRelationshipError(
-            reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.name,
+            reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.spelling,
             reason="not reachable forward from the owning dataset or the query root.",
         )
     return abs_path
@@ -362,7 +362,7 @@ def resolve_default_qualifier_path(
         quals[-1],
     )
     raise UnresolvableDimensionRelationshipError(
-        reference=".".join((*quals, leaf)), root_dataset=root_dataset.name,
+        reference=".".join((*quals, leaf)), root_dataset=root_dataset.spelling,
         reason=f"'{failing}' is not a joined dataset on the preceding hop.",
     )
 
@@ -378,7 +378,7 @@ def _raise_if_circular(
     if revisit is not None:
         hop, revisited, via = revisit
         raise CircularRelationshipPathError(
-            reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.name,
+            reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.spelling,
             revisited=revisited, hop=hop, via=via,
         )
 

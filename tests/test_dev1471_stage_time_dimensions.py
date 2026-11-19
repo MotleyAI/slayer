@@ -12,7 +12,7 @@ from slayer.core.errors import (
     IllegalScopeReferenceError,
     TimeDimensionFieldError,
     UnknownReferenceError,
-    UnrelatedDatasetError,
+    UnresolvableDimensionRelationshipError,
 )
 from slayer.core.keys import FieldKey, TimeTruncKey
 from slayer.core.models import DatasourceConfig, SlayerDataset
@@ -259,7 +259,7 @@ class TestStageBindingErrorsEndToEnd:
             "time_dimensions": [TimeDimension(field="customers.created_at", granularity=TG.MONTH)],
             "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
         })
-        with pytest.raises(UnrelatedDatasetError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await engine.execute(query=[inner, outer], dry_run=True)
 
 
