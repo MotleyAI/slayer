@@ -15,13 +15,13 @@
 
 ## 3. Route by the resolved home (failure 2)
 
-- [ ] 3.1 Elaborator: classify each aggregate's home as `host` / `physical_target(path)` / `operand_dataset` / `unresolved` (design D6), produced where `home_path_for` / `resolve_aggregate_homes` run; verify by unit tests on the classification of the 1.3/1.4 shapes
-- [ ] 3.2 Replace the anchor-based test with one target-homed predicate in `is_cross_dataset_agg` (`slayer/core/keys.py`), `crossing_local_root_predicate` (`slayer/engine/cardinality/relationship_safety.py`), `combined_kind` (`slayer/engine/elaborate_env.py`), the routing helpers of `slayer/engine/compile/discovery.py` (`discover_roots` receives the classification) and all callers; verify 1.3 and 1.4 pass
-- [ ] 3.3 Carry the home through every compiler substitution that rebuilds an `AggregateKey` (`_strip_redundant_partitions` and any other), a missing home raising an internal error, never falling back to the anchor (D7); verify the redundant-`partition_by` test passes
-- [ ] 3.4 Any existing test that pins a refusal or value this change alters: STOP and ask the user for approval to align it (name each file and change) before editing
+- [x] 3.1 Elaborator: classify each aggregate's home as `host` / `physical_target(path)` / `operand_dataset` / `unresolved` (design D6), produced where `home_path_for` / `resolve_aggregate_homes` run; verify by unit tests on the classification of the 1.3/1.4 shapes
+- [x] 3.2 Replace the anchor-based test with one target-homed predicate in `is_cross_dataset_agg` (`slayer/core/keys.py`), `crossing_local_root_predicate` (`slayer/engine/cardinality/relationship_safety.py`), `combined_kind` (`slayer/engine/elaborate_env.py`), the routing helpers of `slayer/engine/compile/discovery.py` (`discover_roots` receives the classification) and all callers; verify 1.3 and 1.4 pass
+- [x] 3.3 Carry the home through every compiler substitution that rebuilds an `AggregateKey` (`_strip_redundant_partitions` and any other), a missing home raising an internal error, never falling back to the anchor (D7); verify the redundant-`partition_by` test passes
+- [x] 3.4 Any existing test that pins a refusal or value this change alters: STOP and ask the user for approval to align it (name each file and change) before editing
 
 ## 4. Docs, gates and hand-off
 
-- [ ] 4.1 Add the approved sentence to `docs/concepts/queries.md` (design D14)
-- [ ] 4.2 Run the local test scope (`la-affected-tests --base main` plus list / association / home / cross-model suites), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`; all green
+- [x] 4.1 Add the approved sentence to `docs/concepts/queries.md` (design D14)
+- [x] 4.2 Run the local test scope (`la-affected-tests --base main` plus list / association / home / cross-model suites), `poetry run ruff check slayer/ tests/`, `poetry run basedpyright` (no new errors vs baseline), `poetry run la-arch-check`; all green
 - [ ] 4.3 After the PR is opened, comment on DEV-2277: its strict xfails `test_list_element_saved_metric` and `test_custom_aggregation_default_reads_like_from_its_home[list-element]` (tests/test_dev2277_stored_definitions.py) XPASS once this lands — whichever of the two branches merges second removes them

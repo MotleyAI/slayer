@@ -12,6 +12,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from slayer.core.keys import (
     is_ranked,
+    is_reaggregation_key,
     AggregateKey,
     TransformKey,
     ValueKey,
@@ -30,6 +31,7 @@ from slayer.engine.cardinality.relationship_safety import attributable_from_root
 from slayer.engine.reference_closure import key_closure
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import AggregateHome, AggregateHomes
 
 Path = Tuple[str, ...]
 
@@ -85,6 +87,19 @@ def home_path_for(
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> Path:
+    """The path of :func:`aggregate_home`."""
+    return aggregate_home(
+        agg=agg, host_dataset=host_dataset, datasets_by_name=datasets_by_name, bundle=bundle,
+        dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
+    ).path
+
+
+def aggregate_home(
+    *, agg: AggregateKey, host_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
+    dim_keys: List[ValueKey], td_keys: List[ValueKey],
+    active_bucket: Optional[ValueKey],
+) -> AggregateHome:
     """The home dataset of an aggregate (Axiom 2): the deepest relationship path that
     determines every input — each source leaf and each row leaf of every argument
     (a bound definition default included) — over provably to-one hops. Candidates are
@@ -112,15 +127,18 @@ def home_path_for(
         {anchor, _longest_common_prefix(input_paths), *seed_paths},
         key=lambda p: (-len(p), p != anchor, p),
     )
+    second_order = is_reaggregation_key(agg)
     for p in candidates:
         if _determines_all(
             path=p, input_paths=input_paths, host_dataset=host_dataset, datasets_by_name=datasets_by_name, bundle=bundle,
         ):
-            return p
+            return AggregateHome(kind="operand_dataset" if second_order else "physical_target" if p else "host", path=p)
     # No valid home: fall to the inputs' common prefix (never deeper than the
     # source anchor) so input safety walks each input forward from there and names
     # the fanning forward hop, not a cancelled reverse hop back onto the path.
-    return _longest_common_prefix(input_paths)
+    return AggregateHome(
+        kind="operand_dataset" if second_order else "unresolved", path=_longest_common_prefix(input_paths),
+    )
 
 
 def resolve_aggregate_homes(
@@ -128,25 +146,25 @@ def resolve_aggregate_homes(
     datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
-) -> Dict[AggregateKey, Path]:
-    """Home path of every aggregate reachable from ``roots``; empty when the
-    stage has no dataset host (a stage query's aggregates are all host-local).
+) -> AggregateHomes:
+    """The home of every aggregate reachable from ``roots``; unresolved at its anchor when the stage has no
+    dataset host.
 
     ``dim_keys`` / ``td_keys`` are the query's projected non-time / time
     dimension keys and ``active_bucket`` its main time bucket — an ungrained
     constituent's grain (Axiom 2.3)."""
-    if host_dataset is None:
-        return {}
-    homes: Dict[AggregateKey, Path] = {}
+    homes: Dict[AggregateKey, AggregateHome] = {}
     for root in roots:
         for k in walk_value_keys(root):
-            if isinstance(k, AggregateKey) and k not in homes:
-                homes[k] = home_path_for(
+            if not isinstance(k, AggregateKey) or k in homes:
+                continue
+            homes[k] = AggregateHome(kind="unresolved", path=source_anchor_path(k.source)) if host_dataset is None \
+                else aggregate_home(
                     agg=k, host_dataset=host_dataset,
                     datasets_by_name=datasets_by_name, bundle=bundle,
                     dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
                 )
-    return homes
+    return AggregateHomes(by_key=homes)
 
 
 def _determines_all(

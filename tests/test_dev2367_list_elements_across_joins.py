@@ -15,6 +15,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.errors import TimeAxisError, UnsafeRelationshipInputError
+from slayer.core.keys import AggregateKey, FieldKey, Grain
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
@@ -25,7 +26,11 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
+from slayer.engine.elaborate import elaborate_query
+from slayer.engine.population.home import resolve_aggregate_homes
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
+from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.terms import AggregateHome, AggregateHomes
 from slayer.sql.dialects.base import ServerProfile
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_engine, contractors_statements, emit_contractors
 from tests._dev2137_fixtures import (
@@ -312,7 +317,61 @@ async def test_every_producer_kind_is_independent_of_the_root(engine: SlayerQuer
     if isinstance(expected, type):
         assert home == other == expected
         return
-    assert isinstance(other, dict) and other == expected, other
+    assert isinstance(other, dict), other
+    assert other == expected, other
     assert isinstance(home, dict), home
     # The contractors root also yields cells assignments never reaches (Dee): compare where both attribute.
     assert {k: home[k] for k in other} == other
+
+
+# --------------------------------------------------------------------------- #
+# The elaborator's home classification (design D6, D7)
+# --------------------------------------------------------------------------- #
+def _home(population: str, expression: str, *, dimensions: Optional[list[str]] = None) -> AggregateHome:
+    """The resolved home of ``expression``'s outer aggregate from ``population``."""
+    datasets = with_contractors(aggregations=[W])
+    bundle = ResolvedSourceBundle(dialect="duckdb", population=next(d for d in datasets if d.name == population),
+                                  referenced_datasets=datasets)
+    env = elaborate_query(query=SlayerQuery.model_validate(body(population, m(expression), dimensions=dimensions)),
+                          bundle=bundle)
+    root = env.prebound.declared_metrics[-1].bound.value_key
+    assert isinstance(root, AggregateKey), root
+    return env.homes.of(root)
+
+
+class TestHomeClassification:
+    @pytest.mark.parametrize(("population", "expression", "kind", "path"), [
+        ("contractors", "sum(rate)", "host", ()),
+        ("contractors", "sum(rate * length(skills.value))", "physical_target", ("skills",)),
+        ("assignments", "sum(contractors.rate * length(contractors.skills.value))", "physical_target",
+         ("contractors", "skills")),
+        ("contractors", "w(rate)", "physical_target", ("skills",)),
+        ("assignments", "w(contractors.rate)", "physical_target", ("contractors", "skills")),
+        ("contractors", "sum(rate * assignments.id)", "physical_target", ("assignments",)),
+        ("assignments", "sum(contractors.rate * id)", "host", ()),
+        ("contractors", "sum(assignments.id * length(skills.value))", "unresolved", ()),
+    ])
+    def test_kind_and_path(self, population: str, expression: str, kind: str, path: tuple[str, ...]) -> None:
+        assert _home(population, expression) == AggregateHome(kind=kind, path=path)  # pyright: ignore[reportArgumentType]
+
+    def test_second_order_homes_on_its_operand(self) -> None:
+        assert _home("contractors", "max(sum(rate, partition_by=team))").kind == "operand_dataset"
+
+    def test_hostless_aggregate_is_unresolved_at_its_anchor(self) -> None:
+        agg = AggregateKey(source=FieldKey(path=("skills",), leaf="value"), agg="count")
+        homes = resolve_aggregate_homes(roots=[agg], host_dataset=None, datasets_by_name={},
+                                        bundle=ResolvedSourceBundle(dialect="duckdb"), dim_keys=[], td_keys=[],
+                                        active_bucket=None)
+        assert homes.of(agg) == AggregateHome(kind="unresolved", path=("skills",))
+        assert homes.target_rooted(agg)
+
+    def test_a_missing_home_is_an_internal_error(self) -> None:
+        homes, agg = AggregateHomes(), AggregateKey(source=FieldKey(leaf="rate"), agg="sum")
+        with pytest.raises(RuntimeError, match="no resolved home"):
+            homes.of(agg)
+
+    def test_a_rebuilt_aggregate_keeps_its_home(self) -> None:
+        old = AggregateKey(source=FieldKey(leaf="rate"), agg="sum", partition_keys=Grain.of([FieldKey(leaf="team")]))
+        new = old.model_copy(update={"partition_keys": None})
+        homes = AggregateHomes(by_key={old: AggregateHome(kind="physical_target", path=("skills",))})
+        assert homes.carried({old: new}).of(new) == homes.of(old)

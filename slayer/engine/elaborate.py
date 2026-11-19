@@ -37,6 +37,7 @@ from slayer.ir.prebound import (
     partition_declared_metrics,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
+from slayer.ir.terms import AggregateHomes
 
 
 def elaborate_query(
@@ -66,12 +67,15 @@ def elaborate_query(
                 check_dataset_filters(dataset=dataset, reachable=datasets)
     sides = ProductSides(host=scope.population, bundle=bundle) if isinstance(scope, DatasetScope) and (
         scope.population is not None) else None
-    crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
+    # Splitting conjuncts never rebuilds an aggregate, so the homes resolved here serve the split prebound too.
+    homes = resolve_homes(prebound, bundle=bundle, scope=scope)
+    crossing = crossing_local_root_predicate(scope=scope, bundle=bundle, homes=homes)
     prebound, filter_typings = type_and_split_filters(
         prebound,
         crossing_root=crossing if sides is None or not sides.tokens else (
             lambda k: crossing(k) or bool(sides.crossed(k))
         ),
+        homes=homes,
     )
     if sides is not None:
         _check_product_hops(prebound, filter_typings=filter_typings, sides=sides)
@@ -81,7 +85,7 @@ def elaborate_query(
     )
     return ElaboratedStage(query=query, **_environment_fields(
         prebound, filter_typings=filter_typings, bundle=bundle, scope=scope,
-        stage_schemas=stage_schemas,
+        stage_schemas=stage_schemas, homes=homes,
     ))
 
 
@@ -129,6 +133,28 @@ def elaborate_synthesized(
     )
 
 
+def resolve_homes(
+    prebound: PreboundQuery, *, bundle: ResolvedSourceBundle, scope: Union[DatasetScope, StageSchema],
+) -> AggregateHomes:
+    """The home of every aggregate ``prebound`` reads."""
+    dim_dms, td_dms, _ = partition_declared_metrics(
+        declared_metrics=prebound.declared_metrics,
+        n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
+    )
+    return resolve_aggregate_homes(
+        roots=[
+            *(dm.bound.value_key for dm in prebound.declared_metrics),
+            *(bf.value_key for bf in prebound.bound_filters),
+            *(spec.bound.value_key for spec in prebound.order_specs),
+        ],
+        host_dataset=scope.population if isinstance(scope, DatasetScope) else None,
+        datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+        dim_keys=[dm.bound.value_key for dm in dim_dms],
+        td_keys=[dm.bound.value_key for dm in td_dms],
+        active_bucket=prebound.main_time_key,
+    )
+
+
 def _environment_fields(
     prebound: PreboundQuery,
     *,
@@ -136,32 +162,18 @@ def _environment_fields(
     bundle: ResolvedSourceBundle,
     scope: Union[DatasetScope, StageSchema],
     stage_schemas: Dict[str, StageSchema],
+    homes: Optional[AggregateHomes] = None,
 ) -> Dict[str, Any]:
     dim_keys, row_agg_set = position_typing_context(prebound)
     dataset = scope.population if isinstance(scope, DatasetScope) else None
-    home_roots = [
-        *(dm.bound.value_key for dm in prebound.declared_metrics),
-        *(bf.value_key for bf in prebound.bound_filters),
-        *(spec.bound.value_key for spec in prebound.order_specs),
-    ]
-    dim_dms, td_dms, _ = partition_declared_metrics(
-        declared_metrics=prebound.declared_metrics,
-        n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
-    )
-    home_paths = resolve_aggregate_homes(
-        roots=home_roots, host_dataset=dataset,
-        datasets_by_name=bundle.datasets_by_name, bundle=bundle,
-        dim_keys=[dm.bound.value_key for dm in dim_dms],
-        td_keys=[dm.bound.value_key for dm in td_dms],
-        active_bucket=prebound.main_time_key,
-    )
+    homes = homes if homes is not None else resolve_homes(prebound, bundle=bundle, scope=scope)
     env = build_environment(
         prebound=prebound,
         home=home_dataset(scope=scope, dataset=dataset),
         dim_keys=dim_keys,
         row_agg_set=row_agg_set,
         filter_typings=filter_typings,
-        home_paths=home_paths,
+        homes=homes,
     )
     return {
         **{name: getattr(env, name) for name in ElaboratedQuery.model_fields},
@@ -170,4 +182,5 @@ def _environment_fields(
         "stage_schemas": dict(stage_schemas),
         "prebound": prebound,
         "filter_typings": tuple(filter_typings),
+        "homes": homes,
     }
