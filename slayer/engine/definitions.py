@@ -27,7 +27,7 @@ from slayer.core.scope import DatasetScope
 from slayer.core.syntax import DottedRef, Ref, parse_expr, walk_parsed
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql.definitions import with_converted_sql
+from slayer.sql.definitions import check_metric_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type, ossie_token
 from slayer.sql.render.row_expr import render_row_expression
 
@@ -192,16 +192,6 @@ def _resolved_field(
         return field.with_native(form.text)
     return field.with_native(portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets,
                                               ds_type=ds_type, live=live))
-
-
-def check_metric_forms(dataset: SlayerDataset, *, ds_type: str | None) -> None:
-    """Refuse a metric carrying an entry for the datasource's own dialect: a metric runs only its portable ``sql``."""
-    token = ossie_token(ds_type)
-    for metric in dataset.metrics:
-        if dialect_entries(metric.expression, token):
-            raise FieldExpressionError(
-                owner=f"Metric {metric.name!r}", reason=f"carries a {token} entry; a metric runs only its sql.",
-                suggestion="Write it as the metric's sql.")
 
 
 def _metric_readers(dataset: SlayerDataset, *, live: ColumnTypes, ds_type: str | None) -> list[DatasetField]:

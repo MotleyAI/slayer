@@ -110,6 +110,28 @@ class TestDialectSelection:
                 await engine.save_dataset(n)
         assert_refused(caught.value, "n", "SNOWFLAKE")
 
+    @pytest.mark.parametrize(("doc", "named"), [
+        (orders_doc(fld("n", {"dialects": [entry("DUCKDB", "amount + 1"), entry("duckdb", "amount + 2")]})), ("n", "DUCKDB")),
+        (orders_doc(fld("n", {"dialects": [entry("SNOWFLAKE", "amount::NUMBER")]})), ("n", "SNOWFLAKE")),
+        (orders_doc(fld("amount"), metrics=[{"name": "p", "expression": {
+            "sql": "sum(amount)", "dialects": [entry("DUCKDB", "sum(amount)")]}}]), ("p", "sql")),
+    ], ids=["two-entries", "no-runnable-form", "metric-own-entry"])
+    async def test_a_direct_storage_save_is_refused_too(self, doc: dict, named: tuple[str, str]) -> None:
+        refused = dataset(doc)
+        async with engine_with(dialect="duckdb") as (_, storage, _):
+            with pytest.raises(SlayerError) as caught:
+                await storage.save_dataset(refused)
+        assert_refused(caught.value, *named)
+
+    async def test_a_direct_storage_save_stores_a_deprecated_sql_as_its_entry(self) -> None:
+        legacy = dataset(orders_doc(fld("n", sql="amount + 1")))
+        async with engine_with(dialect="duckdb") as (_, storage, _):
+            await storage.save_dataset(legacy)
+            raw = await storage._load_raw_dataset_dict(name="orders", data_source=legacy.data_source)
+        assert raw is not None
+        (n,) = [f for f in raw["fields"] if f["name"] == "n"]
+        assert (n.get("sql"), n["expression"]) == (None, {"dialects": [{"dialect": "DUCKDB", "expression": "amount + 1"}]})
+
 
 # ── portable vs dialect meaning ───────────────────────────────────────────
 

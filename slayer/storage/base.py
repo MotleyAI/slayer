@@ -105,7 +105,7 @@ from slayer.storage.legacy_alias_rewrite import (
     mode_a_surface_texts,
 )
 from slayer.database.client import SqlClient
-from slayer.sql.definitions import with_converted_sql
+from slayer.sql.definitions import check_forms, with_converted_sql
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.mode_a_variables import check_placeholders
 from slayer.storage.extension_fields import holds_removed_forms, inline_extension_fields
@@ -658,9 +658,13 @@ class StorageBackend(ABC):
         self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
         """Persist a dataset after ``validate_for_save`` (skipped by ``_validate=False``, migration write-back only), each
-        deprecated Mode-B spelling stored as its twin. Backends must NOT override this."""
+        deprecated Mode-B spelling stored as its twin and a deprecated field ``sql`` as its datasource's entry. Backends
+        must NOT override this."""
         if _validate:
             dataset, _ = with_canonical_spellings(dataset)
+            datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+            if datasource is not None and not dataset.source_queries:
+                dataset = with_converted_sql(dataset, ds_type=datasource.type)
             await self.validate_for_save(dataset, failures=failures)
             warn_library_shadows(dataset)
         await self._save_dataset_impl(dataset)
@@ -672,6 +676,9 @@ class StorageBackend(ABC):
         if is_spine_spelling(dataset.name) and (dataset.data_source, dataset.name) not in identities:
             raise ReservedDatasetNameError(name=dataset.name)
         _refuse_colon_metrics(dataset)
+        datasource = await self.get_datasource(dataset.data_source) if dataset.data_source else None
+        if datasource is not None and not dataset.source_queries:
+            check_forms(dataset, ds_type=datasource.type)
         if self._ids_collide_as_filenames:
             await self._check_dataset_identity_collision(dataset)
         await self._check_case_collisions(dataset)
