@@ -15,7 +15,7 @@ from sqlalchemy.exc import DatabaseError, OperationalError
 from slayer.core.enums import DataType, NUMERIC_DATATYPES
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, neighbors
-from slayer.core.models import DatasetField, SlayerDataset, field_type_text, is_identifier
+from slayer.core.models import DatasetField, RelationshipOrigin, SlayerDataset, field_type_text, is_identifier
 from slayer.core.names import qualified_reference
 from slayer.core.query import (
     SlayerQuery,
@@ -512,6 +512,16 @@ def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
     return f"Variables: {', '.join(parts)}"
 
 
+def _inherited_origin(*, dataset: SlayerDataset, hop: OrientedRelationship) -> RelationshipOrigin | None:
+    """The edge an inherited outgoing ``hop`` of ``dataset`` derives from; ``None`` for any other hop."""
+    if hop.declaring_dataset != dataset.name or hop.source_dataset != dataset.name:
+        return None
+    pairs = set(hop.column_pairs)
+    found = next((j for j in dataset.relationships
+                  if j.to == hop.to and j.name == hop.name and set(j.column_pairs) == pairs), None)
+    return None if found is None else found.inherited_from
+
+
 async def _oriented_hops(
     dataset: SlayerDataset, storage: StorageBackend, *, failures: DocumentLoadFailures,
 ) -> list[OrientedRelationship]:
@@ -610,10 +620,13 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     # Informs the sample query's avg vs count_distinct choice.
     metric_types: dict[str, ResultColumnType] = {}
     if engine is not None and "samples" in included_set:
-        metric_types = await engine.get_result_column_types(
-            dataset_name=dataset.name,
-            data_source=dataset.data_source or None,
-        )
+        try:
+            metric_types = await engine.get_result_column_types(
+                dataset_name=dataset.name,
+                data_source=dataset.data_source or None,
+            )
+        except ValueError:  # SlayerError included
+            pass  # an unplannable dataset still renders; the profile reports its error
 
     visible_fields = [c for c in dataset.fields if not c.hidden]
     if "fields" in included_set:
@@ -706,21 +719,27 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             f"## Aggregations ({len(dataset.aggregations)} — names only)\n\n{csv}"
         )
 
+    inherited_error: str | None = None
+    if engine is not None and dataset.source_queries:
+        relationships, inherited_error = await engine.relationships_as_read(dataset)
+        dataset = dataset.model_copy(update={"relationships": relationships})
     hops = await _oriented_hops(dataset, storage, failures=failures)
+    origins = [_inherited_origin(dataset=dataset, hop=h) for h in hops]
     if "relationships" in included_set:
         relationship_rows: list[dict[str, Any]] = []
-        for h in hops:
+        for h, origin in zip(hops, origins):
             relationship_rows.append({
                 "name": h.name or "",
                 "to": h.to,
                 "keys": "; ".join(f"{src} = {tgt}" for src, tgt in h.column_pairs),
                 "cardinality": str(h.cardinality) if h.cardinality else "",
+                "inherited": "" if origin is None else f"inherited from {origin.dataset_spelling}.{origin.relationship}",
             })
         out_sections.append(
             f"## Relationships ({len(relationship_rows)})\n\n"
             + _markdown_table(
                 rows=relationship_rows,
-                fields=["name", "to", "keys", "cardinality"],
+                fields=["name", "to", "keys", "cardinality", *(["inherited"] if any(origins) else [])],
             )
         )
     elif hops:
@@ -728,6 +747,8 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         out_sections.append(
             f"## Relationships ({len(hops)} — names only)\n\n{csv}"
         )
+    if inherited_error is not None and "relationships" in included_set:
+        out_sections.append(f"> Inherited relationships could not be derived: {inherited_error}")
 
     sample_sql: str | None = None
     sample_data: dict[str, Any] | None = None
@@ -936,9 +957,15 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     "from_columns": [src for src, _ in h.column_pairs],
                     "to_columns": [tgt for _, tgt in h.column_pairs],
                     "cardinality": h.cardinality,
+                    **({} if origin is None else {
+                        "inherited": True,
+                        "inherited_from": {"dataset": origin.dataset_spelling, "relationship": origin.relationship},
+                    }),
                 }
-                for h in hops
+                for h, origin in zip(hops, origins)
             ]
+            if dataset.source_queries:
+                payload["inherited_relationships_error"] = inherited_error
         elif hops:
             payload["relationships_names"] = [canonical_token(h) for h in hops]
 

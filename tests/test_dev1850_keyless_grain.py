@@ -231,7 +231,7 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
         metrics=[QueryMetric(metric="sum(orders.amount)", alias="m")],
         filter=[f"{CM_AGG} > 100"],
     )
-    scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
+    scope = resolve_scope(bundle=bundle)
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
     crossing_root = crossing_local_root_predicate(scope=scope, bundle=bundle)
     _, typings = type_and_split_filters(

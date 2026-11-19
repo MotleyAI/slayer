@@ -25,7 +25,7 @@ from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
 from slayer.core.syntax import parse_expr
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from tests._dev1901_fixtures import (
     BAD_DEFAULTS,
     bundle_of,
@@ -180,8 +180,9 @@ class TestOwners:
 
 def _stage_key(expression: str) -> AggregateKey:
     models = dev1901_datasets()
-    scope = StageSchema(relation_name="stage1", fields=[StageField(
+    schema = StageSchema(relation_name="stage1", fields=[StageField(
         name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.FLOAT)])
+    scope = DatasetScope(population=dataset_from_stage_schema(name="stage1", schema=schema, data_source="test"))
     key = bind_expr(parse_expr(expression), scope=scope, bundle=ResolvedSourceBundle(
         dialect="postgres", population=None, referenced_datasets=models)).value_key
     assert isinstance(key, AggregateKey), key

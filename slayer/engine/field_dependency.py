@@ -333,7 +333,7 @@ def _check_reference_arity(
             verdict = _classify_hop_path(host=dataset, path=path, reachable=reachable)
         except CircularRelationshipPathError as exc:
             raise DerivedFieldCircularError(
-                field=field.name, reference=reference, root_dataset=dataset.name,
+                field=field.name, reference=reference, root_dataset=dataset.spelling,
                 revisited=exc.revisited, hop=exc.hop, via=exc.via,
             ) from exc
         if verdict is None:

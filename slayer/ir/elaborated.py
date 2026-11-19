@@ -76,7 +76,7 @@ class ElaboratedQuery(BaseModel):
 class _CompileInputs(ElaboratedQuery):
     """The typed bound query an environment types — the compiler's inputs."""
 
-    scope: Union[DatasetScope, StageSchema] = PydanticField(repr=False)
+    scope: DatasetScope = PydanticField(repr=False)
     bundle: ResolvedSourceBundle = PydanticField(repr=False)
     stage_schemas: Dict[str, StageSchema] = PydanticField(
         default_factory=dict, repr=False,

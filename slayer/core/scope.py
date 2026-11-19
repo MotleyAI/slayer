@@ -1,13 +1,7 @@
 """Typed scope and stage-schema for the new pipeline.
 
-Two scope kinds, never confused (P5):
-
-- ``DatasetScope``: relationships exist; dotted refs walk the relationship graph rooted at
-  ``population``. ``__`` in a Mode-B ref is an error unless it exact-
-  matches a field literally named that way (legacy persisted query-backed
-  fields).
-- ``StageSchema``: flat namespace; dots are not relationship syntax;
-  ``__``-bearing identifiers are flat names.
+``DatasetScope`` is the one binding scope: dotted refs walk the relationship graph
+rooted at ``population``; a stage is read through the dataset its ``StageSchema`` defines.
 
 ``StageField`` is the typed projection element (P6): explicit ``name``
 (downstream bind name), ``sql_alias`` (emitted SQL identifier),
@@ -27,14 +21,44 @@ from typing import Any, Dict, Generator, List, Optional, Sequence, Tuple, TypeVa
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, JoinType, RelationshipCardinality
 from slayer.core.errors import AmbiguousReferenceError, UnknownReferenceError
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec
-from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, RelationshipOrigin, SlayerDataset
 from slayer.core.names import match_name
+from slayer.core.relationship_walker import OrientedRelationship
 
 _T = TypeVar("_T")
+
+
+class PassThrough(BaseModel):
+    """What an untransformed row-level stage output reads: ``field`` at the end of ``path`` (its hops, from the stage's population)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: Tuple[OrientedRelationship, ...] = ()
+    field: str
+
+
+class InheritedEdge(BaseModel):
+    """An edge a stage inherits on pass-through keys, oriented from the stage; ``to`` is the target's identity."""
+
+    model_config = ConfigDict(frozen=True)
+
+    to: str
+    from_columns: Tuple[str, ...]
+    to_columns: Tuple[str, ...]
+    name: Optional[str] = None
+    join_type: JoinType = JoinType.LEFT
+    cardinality: Optional[RelationshipCardinality] = None
+    origin: RelationshipOrigin
+
+    def as_relationship(self) -> DatasetRelationship:
+        return DatasetRelationship(
+            to=self.to, from_columns=list(self.from_columns), to_columns=list(self.to_columns), name=self.name,
+            join_type=self.join_type, cardinality=self.cardinality,
+        ).as_inherited(self.origin)
 
 
 class StageField(BaseModel):
@@ -73,6 +97,8 @@ class StageField(BaseModel):
     provenance: Optional[str] = None
     #: ``name`` under each non-canonical spelling of its path (stale-spelling slack).
     respellings: Tuple[str, ...] = ()
+    #: Set only for an untransformed public row-level output.
+    pass_through: Optional[PassThrough] = None
 
 
 class StageDisplay(BaseModel):
@@ -94,12 +120,7 @@ class StageDisplay(BaseModel):
 
 
 class StageSchema(BaseModel):
-    """The typed projection of one query stage (P6).
-
-    Downstream stages bind against this as a flat namespace (P5). They
-    never re-walk the upstream relationship graph through a StageSchema — the
-    only legal refs are entries in ``fields`` and a list field's
-    elements (``L.value`` / ``L.*``).
+    """The typed projection of one query stage (P6); later stages bind against the dataset it defines.
 
     ``relation_name`` is the stage's internal identity: its CTE name.
     ``display`` is its user-facing spelling (``None`` → ``relation_name``).
@@ -117,8 +138,11 @@ class StageSchema(BaseModel):
     grain: Optional[List[str]] = None
     # A spliced query-backed dataset's final stage keeps its source's default time dimension.
     default_time_dimension: Optional[str] = None
-    #: A later stage's own scope: its references are anchored (``queries/references``).
-    anchored: bool = False
+    inherited_edges: Tuple[InheritedEdge, ...] = ()
+    # The stage's rows restrict its population: a filter, or a restricted population.
+    restricted: bool = False
+    # Why inherited edges could not be derived (inspect only); ``None`` when they were.
+    inherited_edges_error: Optional[str] = None
     #: Two public fields flattening to one name ``(flat name, first key, second key)``: refused once the stage is read.
     flatten_collision: Optional[Tuple[str, str, str]] = None
 
@@ -187,27 +211,21 @@ class DatasetScope(BaseModel):
     anchored: bool = False
 
 
-def root_spelling(scope) -> Optional[str]:
-    """The name a reference writes for the scope's root: a dataset's spelling, a stage's display name."""
-    if isinstance(scope, DatasetScope) and scope.population is not None:
-        return scope.population.spelling
-    if isinstance(scope, StageSchema):
-        return scope.display_name
-    return None
+def root_spelling(scope: DatasetScope) -> Optional[str]:
+    """The name a reference writes for the scope's root: its dataset's spelling."""
+    return scope.population.spelling if scope.population is not None else None
 
 
-def anchored_scope(scope):
+def anchored_scope(scope: DatasetScope) -> DatasetScope:
     """``scope`` as a query's own scope, its references anchored at their first segment."""
-    if isinstance(scope, (DatasetScope, StageSchema)) and not scope.anchored:
-        return scope.model_copy(update={"anchored": True})
-    return scope
+    return scope if scope.anchored else scope.model_copy(update={"anchored": True})
 
 
-def is_anchored(scope) -> bool:
-    return isinstance(scope, (DatasetScope, StageSchema)) and scope.anchored
+def is_anchored(scope: DatasetScope) -> bool:
+    return scope.anchored
 
 
-def host_dataset_name(scope) -> str:
+def host_dataset_name(scope: DatasetScope) -> str:
     """The host relation's display name for alias-collision reporting."""
     return root_spelling(scope) or "(stage)"
 

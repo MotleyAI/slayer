@@ -157,10 +157,10 @@ elaborate→compile and `query_engine.py` orchestrates.
    the public projection. [review] A value consumed at several attach phases
    attaches once per phase over one interned producer — never a phase chosen by
    precedence. [enforced: test:tests/test_dev1964_dual_phase_consumption.py]
-5. **Stages compose only through schemas**: every stage emits an explicit flat
-   `StageSchema` downstream stages bind against; the two scope kinds
-   (`DatasetScope`: dots walk joins; `StageSchema`: flat names, plus a list
-   column's elements `L.value` / `L.*`) are distinct types, never a flag. [review]
+5. **Stages compose only through schemas**: every stage emits an explicit
+   `StageSchema` (its columns, grain and inherited edges), and a later stage
+   reads a stage only as the dataset that schema defines, bound like any other
+   dataset. [review]
 6. **Phase and stage are properties of the value**: phase (ROW / AGGREGATE /
    POST — when the value exists relative to aggregation) is intrinsic to the
    term; stage (the relation of the emitted statement that computes the value)
@@ -205,5 +205,5 @@ elaborate→compile and `query_engine.py` orchestrates.
 Structural identity end to end (P1) is what keeps enrichment from degenerating
 into string rewriting. Purity of binding (P3) is what keeps re-resolution
 state (context variables) unrepresentable; schema-only composition (P5) is
-what makes downstream stages structurally unable to reach an upstream join
-graph.
+what limits a downstream stage to the edges its upstream schema carries, never
+the rest of the upstream join graph.

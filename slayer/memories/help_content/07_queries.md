@@ -23,7 +23,9 @@ An outer stage reads the inner result's columns through the stage's name:
 paths flattened to `__` (in a stage over `orders`, `customers.regions.name` is
 `running.customers__regions__name` and `orders.status` is `running.status`); an alias is
 its own name. Select the columns the outer stage needs, display names included, in the
-inner stage.
+inner stage. A stage keeps the relationships of the keys it outputs unchanged: grouped
+by `orders.customer_id`, a later stage reads `customers.region` with no relationship
+declared.
 
 ## Rows
 

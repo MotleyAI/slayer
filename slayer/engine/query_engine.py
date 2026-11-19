@@ -157,7 +157,7 @@ from slayer.engine.response_meta import (
     projection_result_keys,
 )
 from slayer.sql.field_expansion import expand_derived_refs_sync
-from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
+from slayer.ir.source_bundle import ResolvedSourceBundle, absorb_inherited, dataset_from_stage_schema
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
@@ -1015,8 +1015,9 @@ class SlayerQueryEngine:
         cls,
         queries: List["SlayerQuery"],
     ) -> List["SlayerQuery"]:
-        """Shim delegating to :func:`topologically_order_stages`."""
-        return topologically_order_stages(queries)
+        """Shim delegating to :func:`topologically_order_stages`; reads populations and extensions only — the planner,
+        with the datasets, orders by expressions too."""
+        return topologically_order_stages(queries, expressions=False)
 
     async def aclose(self) -> None:
         """Release every client's loop-bound resources; the clients stay cached and usable."""
@@ -1211,7 +1212,7 @@ class SlayerQueryEngine:
         """A query-backed dataset's stages as ``(main_query, named_queries)``, variables layered."""
         # Stored ``source_queries`` may be non-topological for
         # ``relationships[].to`` deps; topo-sort to match save-time semantics.
-        stages = topologically_order_stages(list(dataset.source_queries or []))
+        stages = topologically_order_stages(list(dataset.source_queries or []), expressions=False)
         if not stages:
             raise ValueError(f"Dataset {dataset.name!r} has no source_queries")
         main_query = stages[-1]
@@ -3097,6 +3098,26 @@ class SlayerQueryEngine:
         """The sql-mode dataset a query-backed ``dataset`` renders as, under its default variables, in its datasource."""
         return await self._expand_query_backed_dataset(dataset=dataset, prefer_data_source=dataset.data_source or None)
 
+    async def relationships_as_read(self, dataset: SlayerDataset) -> Tuple[List[DatasetRelationship], Optional[str]]:
+        """``dataset``'s relationships as a query reads them — a query-backed one's inherited edges merged in under its
+        default variables — and why inherited edges could not be derived (``None`` when they were)."""
+        if not dataset.source_queries:
+            return list(dataset.relationships), None
+        try:
+            expansion = await self._query_backed_expansion(dataset=dataset, prefer_data_source=dataset.data_source or None)
+            view = dataset_from_stage_schema(
+                name=dataset.name, schema=expansion.stage_schema, data_source=dataset.data_source or "_stage",
+                saved=dataset,
+            )
+        except ValueError as exc:  # SlayerError included
+            return list(dataset.relationships), str(exc)
+        # An identical edge a peer declares back absorbs the inherited one, as in execution.
+        if not dataset.data_source:
+            return list(view.relationships), None
+        peers = await self._preload_relationship_targets(view, failures=DocumentLoadFailures())
+        loaded = {n: d for n, d in peers.items() if d is not None}
+        return list(absorb_inherited(loaded)[view.name].relationships), None
+
     async def create_dataset_from_query(
         self,
         query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]",
@@ -3432,7 +3453,7 @@ class SlayerQueryEngine:
         stages: List[SlayerQuery] = list(dataset.source_queries or [])
         if all(stage.population is not None for stage in stages):
             return dataset
-        ordered = topologically_order_stages(stages)
+        ordered = topologically_order_stages(stages, expressions=False)
         localized, displays = localize_stages(ordered)
         localized, _ = await self._respell_spine(
             queries=localized, stage_names={d.name for d in displays.values()}, data_source=prefer_data_source,

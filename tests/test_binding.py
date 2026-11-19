@@ -1,5 +1,5 @@
 """ExpressionBinder + FilterBinder tests: ``ParsedExpr`` + scope (``ModelScope``
-with joins / flat ``StageSchema``) → typed ``BoundExpr`` of resolved ``ValueKey``s.
+with joins / a stage's dataset) → typed ``BoundExpr`` of resolved ``ValueKey``s.
 Covers self-prefix stripping (C14) and phase classification (P8)."""
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import (
-    IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     UnknownReferenceError,
     UnresolvableDimensionRelationshipError,
@@ -32,7 +31,7 @@ from slayer.engine.binding import (
     bind_expr,
     bind_filter,
 )
-from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_schema
 from slayer.core.syntax import Ref, parse_expr
 
 
@@ -402,40 +401,47 @@ def _stage_schema_with_flat_names() -> StageSchema:
     )
 
 
+def _stage_dataset_scope() -> tuple[DatasetScope, ResolvedSourceBundle]:
+    """The dataset scope a later stage binds ``stage1`` through, and its bundle."""
+    stage = dataset_from_stage_schema(name="stage1", schema=_stage_schema_with_flat_names(), data_source="prod")
+    bundle = ResolvedSourceBundle(
+        dialect="postgres", population=stage, referenced_datasets=[_orders(), _customers(), _regions()],
+    )
+    return DatasetScope(population=stage), bundle
+
+
 class TestStageSchemaScope:
     def test_flat_name_resolves(self):
-        # In a StageSchema scope, refs resolve as flat names — no join
-        # walking.
-        scope = _stage_schema_with_flat_names()
+        # A stage's fields resolve by their flat names.
+        scope, bundle = _stage_dataset_scope()
         bound = bind_expr(
-            parse_expr("status"), scope=scope, bundle=_bundle(),
+            parse_expr("status"), scope=scope, bundle=bundle,
         )
         assert bound.value_key == FieldKey(path=(), leaf="status")
 
     def test_dotted_ref_in_stage_schema_rejected(self):
-        # DEV-1449: downstream stages see a flat schema — dotted refs
-        # are illegal in StageSchema scope.
-        scope = _stage_schema_with_flat_names()
-        expr, bundle = parse_expr("robot_details.modelseriesval"), _bundle()
-        with pytest.raises(IllegalScopeReferenceError):
+        # A dotted spelling of a flattened field fails as from a stored root.
+        scope, bundle = _stage_dataset_scope()
+        expr = parse_expr("robot_details.modelseriesval")
+        with pytest.raises(UnknownReferenceError):
             bind_expr(expr, scope=scope, bundle=bundle)
 
     def test_flat_underscore_name_resolves(self):
         # The flat name `robot_details__modelseriesval` IS a column on
         # the stage schema — it resolves.
-        scope = _stage_schema_with_flat_names()
+        scope, bundle = _stage_dataset_scope()
         # The syntax parser rejects `__` in user identifiers — bind_expr
         # is given a pre-parsed ParsedExpr that explicitly uses the flat
         # column name via the Ref constructor.
         bound = bind_expr(Ref(name="robot_details__modelseriesval"),
-                          scope=scope, bundle=_bundle())
+                          scope=scope, bundle=bundle)
         assert bound.value_key == FieldKey(
             path=(), leaf="robot_details__modelseriesval",
         )
 
     def test_unknown_flat_name_raises(self):
-        scope = _stage_schema_with_flat_names()
-        expr, bundle = parse_expr("nope"), _bundle()
+        scope, bundle = _stage_dataset_scope()
+        expr = parse_expr("nope")
         with pytest.raises(UnknownReferenceError):
             bind_expr(expr, scope=scope, bundle=bundle)
 

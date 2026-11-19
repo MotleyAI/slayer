@@ -77,7 +77,7 @@ from slayer.sql.naming import (
 )
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
-from slayer.core.scope import DatasetScope, StageField, StageSchema, host_dataset_name
+from slayer.core.scope import DatasetScope, PassThrough, StageField, StageSchema, host_dataset_name
 from slayer.engine.elaborate_env import (
     check_reserved_regroup_prefix,
     ConsumerPosition,
@@ -149,6 +149,7 @@ from slayer.engine.compile.spine import (
 from slayer.engine.compile.shift import carried_placeholders
 from slayer.engine.cardinality.unrelated import crosses_product_hop
 from slayer.engine.compile.staging import stage_slots
+from slayer.engine.stage_edges import inherited_edges, pass_through
 from slayer.engine.key_metadata import (
     dimension_key_metadata,
     key_element_type,
@@ -1047,7 +1048,7 @@ def _synthesize_wrap_attach(
     wrap_key: AggregateKey,
     prebound: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
@@ -1056,7 +1057,7 @@ def _synthesize_wrap_attach(
     population: "Population",
 ) -> RegroupAttachPlan:
     """A host-grain ORDER-BY wrap as a HOST-rooted producer synthesized late: a combined attach at the full projected grain whose placeholder IS the wrap key. Inherits the population disposition (D1) like every other host-rooted producer."""
-    producer_dataset = scope.population if isinstance(scope, DatasetScope) else None
+    producer_dataset = scope.population
     datasets_by_name = bundle.datasets_by_name
     if producer_dataset is not None:
         _assert_local_producer_inputs_safe(
@@ -1171,7 +1172,7 @@ def _plan_shifted_attaches(
     prebound: PreboundQuery,
     rewritten: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_source_dataset: Optional[str],
@@ -1205,7 +1206,7 @@ def _plan_shifted_attaches(
         prebound=prebound, filter_typings=filter_typings,
         time_fields=frozenset(k.source for k in td_keys if isinstance(k, TimeTruncKey)),
     )
-    producer_dataset = scope.population if isinstance(scope, DatasetScope) else None
+    producer_dataset = scope.population
     kernel_root = producer_dataset or bundle.population
     # A bare answer is named like its combined producer: the metric's public name.
     public_alias = {
@@ -1992,13 +1993,13 @@ def _dispose_one_conjunct(
 
 def dispose_population_filters(
     *, prebound: PreboundQuery, filter_typings: Sequence[ConjunctTyping],
-    scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
+    scope: DatasetScope, bundle: ResolvedSourceBundle,
 ) -> Optional[PopulationFilters]:
     """Dispose the population's ROW-phase, FIELD-typed, stratum-0 filter conjuncts
     once at the host root (D1) — inline / semi-join / excluded — recording each
     conjunct's fanning paths for the per-consumer same-row rule (D2). Raises the
     analyzability error on a conjunct whose closure cannot be analysed."""
-    host_dataset = scope.population if isinstance(scope, DatasetScope) else None
+    host_dataset = scope.population
     if host_dataset is None:
         return None
     datasets_by_name = bundle.datasets_by_name
@@ -2077,7 +2078,7 @@ class _ProducerSynthesisContext(BaseModel):
     projected_dim_keys: List[ValueKey]
     projected_td_keys: List[ValueKey]
     base_filters_with_text: List[Tuple[BoundFilter, Optional[str]]]
-    scope: DatasetScope | StageSchema
+    scope: DatasetScope
     stage_schemas: Dict[str, StageSchema]
     # Home path per aggregate (Axiom 2), resolved in the elaborator and read
     # here; the source anchor is the fallback for keys with no term.
@@ -2134,7 +2135,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     projected_dim_keys = context.projected_dim_keys
     projected_td_keys = context.projected_td_keys
     base_filters_with_text = context.base_filters_with_text
-    scope, stage_schemas = context.scope, context.stage_schemas
+    stage_schemas = context.stage_schemas
     target_path = context.home_of(agg)
     root_dataset = walk_key_path(dataset=host_dataset, path=target_path, bundle=bundle)
     if root_dataset is None:  # pragma: no cover — bind resolved the path already
@@ -2318,10 +2319,7 @@ def _synthesize_cross_dataset_producer(  # NOSONAR(S3776) — one cohesive targe
     if associate and entity is not None:
         root_dataset = entity.root_dataset
     root_bundle = bundle.rerooted(root_dataset)
-    root_scope = (
-        DatasetScope(population=root_dataset)
-        if isinstance(scope, DatasetScope) else scope
-    )
+    root_scope = DatasetScope(population=root_dataset)
     host_by_rerooted = {rr: hk for hk, rr in safe_pairs}
     if window_td_key is not None:
         # The bucket joins back on the consumer's own active TD.
@@ -2462,7 +2460,7 @@ class _EndpointsSource(BaseModel):
 
     host_dataset: SlayerDataset
     bundle: ResolvedSourceBundle
-    scope: DatasetScope | StageSchema
+    scope: DatasetScope
     stage_schemas: Dict[str, StageSchema]
     population: Population | None
     population_filters: List[BoundFilter]
@@ -2475,7 +2473,7 @@ def _window_endpoints(
     producer_registry: Optional[Dict[Hashable, PlannedQuery]],
 ) -> Optional[PlannedQuery]:
     """The population's cells at a windowed producer's grain, in host coordinates, host keys' order."""
-    if source.population is None or not isinstance(source.scope, DatasetScope):
+    if source.population is None:
         return None
     prebound, _ = _regroup_producer_prebound(
         pks=Grain.of(host_keys), aggs=[], dataset=source.host_dataset, bundle=source.bundle,
@@ -3118,7 +3116,7 @@ def _build_carrier_attach(
     constituent_placeholders: Dict[ValueKey, ValueKey],
     host_dataset: SlayerDataset,
     bundle: ResolvedSourceBundle,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     stage_schemas: Dict[str, StageSchema],
     inherited: List[BoundFilter],
     n_date_range: int,
@@ -3431,7 +3429,7 @@ class _LocalRegroupContext(BaseModel):
 
     prebound: PreboundQuery
     bundle: ResolvedSourceBundle
-    scope: DatasetScope | StageSchema
+    scope: DatasetScope
     stage_schemas: Dict[str, StageSchema]
     producer_source_dataset: Optional[str]  # NOSONAR(S8396) — required-nullable: the one caller always decides
     producer_registry: Dict[Hashable, PlannedQuery]
@@ -3724,7 +3722,7 @@ def _plan_regroups(
     *,
     prebound: PreboundQuery,
     filter_typings: Sequence[ConjunctTyping],
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     bundle: ResolvedSourceBundle,
     stage_schemas: Dict[str, StageSchema],
     producer_source_dataset: Optional[str],
@@ -3770,10 +3768,8 @@ def _plan_regroups(
     ):
         return prebound, []
     # A real field sharing the reserved placeholder prefix would shadow a placeholder at render; reject while a regroup is active.
-    producer_dataset = scope.population if isinstance(scope, DatasetScope) else None
-    reserved = reserved_prefix_fields(
-        producer_dataset if isinstance(scope, DatasetScope) else scope
-    )
+    producer_dataset = scope.population
+    reserved = reserved_prefix_fields(producer_dataset)
     check_reserved_regroup_prefix(reserved)
     mapping: Dict[ValueKey, ValueKey] = {
         agg: registry.placeholder_for(agg)
@@ -3827,9 +3823,7 @@ def _plan_regroups(
     ]
 
     # One target-rooted producer per distinct cross-dataset aggregate; roles share one producer + placeholder.
-    host_dataset_for_cm = (
-        scope.population if isinstance(scope, DatasetScope) else bundle.population
-    )
+    host_dataset_for_cm = scope.population
     assert host_dataset_for_cm is not None
     datasets_by_name_cm = bundle.datasets_by_name
     base_filters_with_text = [
@@ -3936,7 +3930,7 @@ def compile_synthesized(
     *,
     source_dataset: Optional[str],
     bundle: ResolvedSourceBundle,
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
     stage_schemas: Dict[str, StageSchema],
     population: Population,
     producer_registry: Optional[Dict[Hashable, PlannedQuery]] = None,
@@ -4063,7 +4057,7 @@ def _route_producer(
 def _producer_source_dataset(env: ElaboratedStage | ElaboratedProducer) -> Optional[str]:
     if isinstance(env.query.population, str):
         return env.query.population
-    if isinstance(env.scope, DatasetScope) and env.scope.population is not None:
+    if env.scope.population is not None:
         return env.scope.population.name
     return None
 
@@ -4140,10 +4134,8 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     )
     regroup_attach_plans: List[RegroupAttachPlan] = list(routed.attaches)
     _producer_source_dataset_name = _producer_source_dataset(env)
-    # The generator renders FROM / joins against the binder's dataset (DatasetScope → host; StageSchema → None).
-    render_source_dataset = (
-        scope.population if isinstance(scope, DatasetScope) else None
-    )
+    # The generator renders FROM / joins against the binder's dataset.
+    render_source_dataset = scope.population
     declared_metrics = list(prebound.declared_metrics)
     bound_filters = list(prebound.bound_filters)
     n_date_range = prebound.n_date_range
@@ -4213,9 +4205,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
     # Host-grain / crossing wraps synthesized as late producers, and the slots they answer.
     late_wrap_keys: set = set()
     late_attach_answered: set = set()
-    host_dataset_for_wraps = (
-        scope.population if isinstance(scope, DatasetScope) else None
-    )
+    host_dataset_for_wraps = scope.population
     grain_dim_keys = frozenset(dm.bound.value_key for dm in declared_metrics[:n_dims + n_tds])
     for spec in order_specs:
         okey = spec.bound.value_key
@@ -4416,7 +4406,7 @@ def _emit_planned(routed: _Routed) -> PlannedQuery:  # NOSONAR(S3776) — projec
         originals={sub.placeholder: sub.original_key
                    for attach in regroup_attach_plans for sub in attach.substitutions},
         upstream=_upstream_respellings(scope),
-        scope=scope,
+        restricted=_stage_restricts(prebound=typed_prebound, population=render_source_dataset, bundle=bundle),
     )
 
     frame_bound_fields = _frame_bound_fields(grain=grain, registry=projection.registry)
@@ -4540,13 +4530,14 @@ def _host_membership(
 
 
 def _restricted_dataset(dataset: Optional[SlayerDataset], *, bundle: ResolvedSourceBundle) -> bool:
-    """Whether reading ``dataset`` reads only some of its rows: it, or the parent a list child reads, has filters."""
+    """Whether reading ``dataset`` reads only some of its rows: it, or the parent a list child reads, has filters
+    or is a stage whose rows restrict its population."""
     if dataset is None:
         return False
     if dataset.list_of is not None:
         parent = bundle.datasets_by_name.get(dataset.list_of[0])
-        return parent is not None and bool(parent.filters)
-    return bool(dataset.filters)
+        return parent is not None and (bool(parent.filters) or parent.restricts_rows)
+    return bool(dataset.filters) or dataset.restricts_rows
 
 
 def _plan_empty_base_grain(
@@ -4617,12 +4608,10 @@ def _plan_src_row_filters(
 
 
 def _source_field_names(
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
 ) -> FrozenSet[str]:
-    if isinstance(scope, DatasetScope) and scope.population is not None:
+    if scope.population is not None:
         return frozenset(c.name for c in scope.population.fields)
-    if isinstance(scope, StageSchema):
-        return frozenset(c.name for c in scope.fields)
     return frozenset()
 
 
@@ -4690,11 +4679,9 @@ def _field_respellings(fields) -> Dict[str, Tuple[str, ...]]:
 
 
 def _upstream_respellings(
-    scope: DatasetScope | StageSchema,
+    scope: DatasetScope,
 ) -> Dict[str, Tuple[str, ...]]:
     """Respellings of the fields a stage reads locally (upstream stage / query-backed)."""
-    if isinstance(scope, StageSchema):
-        return _field_respellings(scope.fields)
     if scope.population is None:
         return {}
     return _field_respellings(scope.population.fields)
@@ -4728,7 +4715,7 @@ def _emit_stage_schema(
     datasets_by_name: Dict[str, SlayerDataset],
     originals: Mapping[ValueKey, ValueKey],
     upstream: Mapping[str, Tuple[str, ...]],
-    scope: DatasetScope | StageSchema | None = None,
+    restricted: bool = False,
 ) -> StageSchema:
     """Each grain slot's first public field names the schema grain; ``None`` in raw-row mode."""
     fields: List[StageField] = []
@@ -4753,19 +4740,33 @@ def _emit_stage_schema(
         key_by_flat[flat] = rk
         fields.append(_stage_field(
             slot=slot, alias=rk.removeprefix(f"{source_relation}."), flat=flat,
-            source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name, scope=scope),
+            source=_source_field(key=slot.key, root=root, datasets_by_name=datasets_by_name),
             respellings=() if alias in slot.explicit_aliases else _respellings(
                 flat=flat, key=originals.get(slot.key, slot.key), root=root,
                 datasets_by_name=datasets_by_name, upstream=upstream,
             ),
+            passes=pass_through(key=slot.key, root=root, datasets_by_name=datasets_by_name)
+            if slot.phase == Phase.ROW else None,
         ))
         flat_by_sid.setdefault(sid, flat)
+    grain_names = None if grain is None else [flat_by_sid[sid] for sid in grain if sid in flat_by_sid]
     return StageSchema(
         relation_name=stage_name or "(unnamed_stage)", fields=fields,
-        grain=None if grain is None else [flat_by_sid[sid] for sid in grain if sid in flat_by_sid],
+        grain=grain_names,
         default_time_dimension=_surviving_default(projection=projection, fields=fields, root=root),
+        inherited_edges=inherited_edges(fields=fields, grain=grain_names, root=root, datasets_by_name=datasets_by_name),
+        restricted=restricted,
         flatten_collision=collision,
     )
+
+
+def _stage_restricts(
+    *, prebound: PreboundQuery, population: Optional[SlayerDataset], bundle: ResolvedSourceBundle,
+) -> bool:
+    """Whether a stage's rows restrict its population: it filters (date bounds and metric filters included) or
+    trims rows, or reads a restricted population."""
+    trimmed = prebound.limit is not None or bool(prebound.offset)
+    return bool(prebound.bound_filters) or trimmed or _restricted_dataset(population, bundle=bundle)
 
 
 def _surviving_default(*, projection, fields: List[StageField], root: Optional[SlayerDataset]) -> Optional[str]:
@@ -4784,7 +4785,6 @@ def _surviving_default(*, projection, fields: List[StageField], root: Optional[S
 
 def _source_field(
     *, key: ValueKey, root: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
-    scope: DatasetScope | StageSchema | None,
 ):
     """The field a row-level stage output reads (a dataset field or an upstream stage
     field), for the metadata it carries downstream; ``None`` for anything else."""
@@ -4793,8 +4793,6 @@ def _source_field(
     if not isinstance(key, (FieldKey, FieldSqlKey)):
         return None
     leaf = field_leaf(key)
-    if isinstance(scope, StageSchema):
-        return scope.get(leaf) if not key.path else None
     if root is None:
         return None
     try:
@@ -4809,6 +4807,7 @@ def _source_field(
 
 def _stage_field(
     *, slot: ValueSlot, alias: str, flat: str, respellings: Tuple[str, ...], source=None,
+    passes: Optional[PassThrough] = None,
 ) -> StageField:
     # A bucketed field (bucketed here, or passed through from upstream) carries its granularity
     # so a re-binding TimeDimension can type-check the re-bucket.
@@ -4829,6 +4828,7 @@ def _stage_field(
         format=slot.format or (row.format if row is not None else None),
         description=slot.description or (row.description if row is not None else None),
         respellings=respellings,
+        pass_through=passes,
     )
 
 

@@ -106,7 +106,7 @@ def route_dotted_target(
         reason = "; ".join([reason, *(p.describe() for p in pairs)])
     raise UnresolvableDimensionRelationshipError(
         reference=f"{target_dataset}.{leaf}",
-        root_dataset=root.name,
+        root_dataset=root.spelling,
         reason=reason,
         suggested_path=suggested,
     )

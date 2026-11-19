@@ -5,7 +5,7 @@ The orchestrator builds this once at execute start; the binder reads it purely.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,6 +15,7 @@ from slayer.core.relationship_edges import EdgeMerge
 from slayer.core.relationship_walker import with_list_children
 from slayer.core.models import (
     DatasetField,
+    DatasetRelationship,
     SlayerDataset,
     _check_field_metric_namespace,
     _check_relationship_keys,
@@ -24,6 +25,7 @@ from slayer.core.scope import DatasetScope, StageDisplay, StageSchema
 
 __all__ = [
     "InnerRestriction",
+    "absorb_inherited",
     "resolve_scope",
     "ResolvedSourceBundle",
     "apply_extension_overlay",
@@ -32,6 +34,7 @@ __all__ = [
     "overlay_metrics",
     "source_name_if_sibling",
     "stage_bundle_with_siblings",
+    "without_inherited",
 ]
 
 
@@ -187,6 +190,70 @@ def follow_sibling_chain(
         spec = named_queries[sib].population
 
 
+def without_inherited(dataset: SlayerDataset) -> Tuple[SlayerDataset, List[DatasetRelationship]]:
+    """``dataset`` without its inherited edges, and those edges."""
+    inherited = [j for j in dataset.relationships if j.inherited_from is not None]
+    if not inherited:
+        return dataset, []
+    return dataset.model_copy(update={
+        "relationships": [j for j in dataset.relationships if j.inherited_from is None]}), inherited
+
+
+def _absorbs(declared: DatasetRelationship, inherited: DatasetRelationship, *, reverse: bool) -> bool:
+    pairs = _pair_set(declared.column_pairs)
+    if reverse:
+        pairs = frozenset((t, s) for s, t in pairs)
+    return pairs == _pair_set(inherited.column_pairs) and (
+        declared.name == inherited.name or None in (declared.name, inherited.name))
+
+
+def absorb_inherited(datasets: Mapping[str, SlayerDataset]) -> Dict[str, SlayerDataset]:
+    """Declared edges win: an identical one absorbs an inherited edge (an inherited name it lacks becomes its alias), a
+    same-named one on other keys replaces it; differently named edges on the same keys stay parallel."""
+    out = dict(datasets)
+    for name, dataset in datasets.items():
+        absorbed = _absorb_into(name=name, dataset=dataset, datasets=datasets)
+        if absorbed is not None:
+            out[name] = absorbed
+    return out
+
+
+def _absorb_into(
+    *, name: str, dataset: SlayerDataset, datasets: Mapping[str, SlayerDataset],
+) -> Optional[SlayerDataset]:
+    """``dataset`` with its absorbed inherited edges dropped; ``None`` when none is."""
+    declared = [j for j in dataset.relationships if j.inherited_from is None]
+    aliases: Dict[int, List[str]] = {}
+    dropped: set = set()
+    for j in dataset.relationships:
+        if j.inherited_from is None:
+            continue
+        hit = next((d for d in declared if d.to == j.to and _absorbs(d, j, reverse=False)), None)
+        if hit is not None and j.name is not None and hit.name is None:
+            aliases.setdefault(id(hit), []).append(j.name)
+        if hit is not None or _declared_back(j, name=name, datasets=datasets) or (
+                j.name is not None and any(d.name == j.name for d in declared)):
+            dropped.add(id(j))
+    if not dropped:
+        return None
+    return dataset.model_copy(update={"relationships": [
+        j.with_aliases(tuple(dict.fromkeys((*j.aliases, *aliases[id(j)])))) if id(j) in aliases else j
+        for j in dataset.relationships if id(j) not in dropped
+    ]})
+
+
+def _declared_back(inherited: DatasetRelationship, *, name: str, datasets: Mapping[str, SlayerDataset]) -> bool:
+    """Whether ``inherited``'s target declares the identical edge back to ``name``."""
+    target = datasets.get(inherited.to)
+    return target is not None and any(
+        d.to == name and d.inherited_from is None and _absorbs(d, inherited, reverse=True)
+        for d in target.relationships)
+
+
+def _pair_set(pairs: Iterable[Sequence[str]]) -> FrozenSet[Tuple[str, str]]:
+    return frozenset((p[0], p[1]) for p in pairs)
+
+
 def dataset_from_stage_schema(
     *,
     name: str,
@@ -197,8 +264,8 @@ def dataset_from_stage_schema(
     default_time_dimension: Optional[str] = None,
     saved: Optional[SlayerDataset] = None,
 ) -> SlayerDataset:
-    """The dataset a stage's output is read as: over its CTE (``sql=None``) or over ``sql``,
-    with the relationships and filters of ``saved``, the stored query-backed dataset it reads as.
+    """The dataset a stage's output is read as: over its CTE (``sql=None``) or over ``sql``, with its inherited edges
+    and the relationships and filters of ``saved``, the stored query-backed dataset it reads as (declared edges win).
 
     A single-field grain is stamped ``unique``; a composite grain ``primary_key`` on each member.
     """
@@ -226,16 +293,18 @@ def dataset_from_stage_schema(
             for c in schema.fields
         ],
     )
-    relationships = list(saved.relationships) if saved is not None else []
+    declared = list(saved.relationships) if saved is not None else []
     # Relationships attach after the rename (validators skip model_copy), so check their keys here.
-    _check_relationship_keys(dataset_name=name, fields=dataset.fields, relationships=relationships)
+    _check_relationship_keys(dataset_name=name, fields=dataset.fields, relationships=declared)
     # A minted stage identity carries the reserved prefix the name validator rejects.
-    return dataset.model_copy(update={
+    out = dataset.model_copy(update={
         "name": name, "sql_table": name if sql is None else None,
         "default_time_dimension": default_time_dimension or schema.default_time_dimension,
-        "relationships": relationships,
+        "relationships": [*declared, *(e.as_relationship() for e in schema.inherited_edges)],
         "filters": list(saved.filters) if saved is not None else [],
-    }).with_spelling(schema.display_name if schema.display_name != name else None)
+    }).with_spelling(schema.display_name if schema.display_name != name else None).with_restricted_rows(
+        schema.restricted)
+    return absorb_inherited({name: out})[name] if schema.inherited_edges else out
 
 
 def stage_bundle_with_siblings(
@@ -270,21 +339,14 @@ def stage_bundle_with_siblings(
         + synths
         + [m for m in bundle.referenced_datasets if m.name != source_dataset.name]
     )
+    # A stage's inherited edge yields to an identical edge its target declares back.
+    absorbed = absorb_inherited({m.name: m for m in referenced})
+    referenced = [absorbed.get(m.name, m) for m in referenced]
     return bundle.model_copy(
-        update={"population": source_dataset, "referenced_datasets": referenced}
+        update={"population": referenced[0], "referenced_datasets": referenced}
     )
 
 
-
-
-def resolve_scope(
-    *,
-    query: SlayerQuery,
-    bundle: "ResolvedSourceBundle",
-    stage_schemas: Optional[Dict[str, "StageSchema"]],
-):
-    """The scope a query binds against: its named sibling stage's schema, else the bundle's dataset."""
-    source = query.population
-    if isinstance(source, str) and source in (stage_schemas or {}):
-        return (stage_schemas or {})[source].model_copy(update={"anchored": True})
+def resolve_scope(*, bundle: "ResolvedSourceBundle") -> DatasetScope:
+    """The anchored scope a query binds against: the bundle's population, a sibling stage's dataset included."""
     return DatasetScope(population=bundle.population, anchored=True)
