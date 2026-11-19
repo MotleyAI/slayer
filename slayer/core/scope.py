@@ -117,6 +117,10 @@ class StageSchema(BaseModel):
     grain: Optional[List[str]] = None
     # A spliced query-backed dataset's final stage keeps its source's default time dimension.
     default_time_dimension: Optional[str] = None
+    #: A later stage's own scope: its references are anchored (``queries/references``).
+    anchored: bool = False
+    #: Two public fields flattening to one name ``(flat name, first key, second key)``: refused once the stage is read.
+    flatten_collision: Optional[Tuple[str, str, str]] = None
 
     @property
     def display_name(self) -> str:
@@ -178,6 +182,9 @@ class DatasetScope(BaseModel):
     """
 
     population: Optional[SlayerDataset] = None
+    #: A query's own scope: each reference is anchored at its first segment (``queries/references``); otherwise
+    #: references read from ``population`` (a stored definition's dataset-local mode).
+    anchored: bool = False
 
 
 def root_spelling(scope) -> Optional[str]:
@@ -187,6 +194,17 @@ def root_spelling(scope) -> Optional[str]:
     if isinstance(scope, StageSchema):
         return scope.display_name
     return None
+
+
+def anchored_scope(scope):
+    """``scope`` as a query's own scope, its references anchored at their first segment."""
+    if isinstance(scope, (DatasetScope, StageSchema)) and not scope.anchored:
+        return scope.model_copy(update={"anchored": True})
+    return scope
+
+
+def is_anchored(scope) -> bool:
+    return isinstance(scope, (DatasetScope, StageSchema)) and scope.anchored
 
 
 def host_dataset_name(scope) -> str:

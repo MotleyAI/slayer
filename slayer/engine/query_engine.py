@@ -134,6 +134,7 @@ from slayer.engine.cache import (
     _CacheEntry,
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
+from slayer.engine.legacy_references import AnchorNames, Conversions, convert_query, convert_refinement
 from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
 from slayer.ir.planned import (
     PlannedQuery,
@@ -158,7 +159,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, dataset_from_stage_sch
 from slayer.engine.stage_ordering import localize_stages, topologically_order_stages
 from slayer.engine.statement_reads import StatementReads, statement_reads
 from slayer.engine.binding import collect_bind_records
-from slayer.engine.elaborate_env import check_result_names_case, saved_date_only_notices
+from slayer.engine.elaborate_env import check_result_names_case, check_stage_flatten_collision, saved_date_only_notices
 from slayer.engine.extensions import with_own_extension
 from slayer.engine.plan import plan_stages
 from slayer.ir.variables import (
@@ -1113,6 +1114,7 @@ class SlayerQueryEngine:
             with one_document():
                 queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
             out.extend(deprecated_inputs_of(q for q in queries if isinstance(q, SlayerQuery)))
+            queries = await self._qualified(queries, data_source=prefer_data_source, deprecations_out=out)
             # Reorder so each stage follows the siblings it references (last stays
             # the entry point); validates names / dups / self-refs / cycles.
             queries = self._topologically_order_queries(queries)
@@ -1122,7 +1124,7 @@ class SlayerQueryEngine:
             if isinstance(query, dict):
                 query = SlayerQuery.model_validate(query)
             out.extend(deprecated_inputs_of([query] if isinstance(query, SlayerQuery) else []))
-            main_query = query
+            [main_query] = await self._qualified([query], data_source=prefer_data_source, deprecations_out=out)
             named_queries = {}
 
         # Merge ``variables=`` kwarg into query.variables (runtime wins).
@@ -1158,11 +1160,46 @@ class SlayerQueryEngine:
             # Legacy unpinned stages pin from the unrefined stage, so a refinement never moves the source.
             dataset = await self._pin_populations(dataset=dataset, prefer_data_source=prefer_data_source)
             *earlier, final = dataset.source_queries or []
+            conversions = Conversions()
+            refinement = convert_refinement(
+                run.refinement, saved=final, conversions=conversions,
+                anchors=await self._anchor_names(dataset.source_queries or [], data_source=prefer_data_source),
+            )
+            deprecations_out.extend(conversions.payloads)
             dataset = dataset.model_copy(update={
-                "source_queries": [*earlier, refine_query(saved=final, refinement=run.refinement)],
+                "source_queries": [*earlier, refine_query(saved=final, refinement=refinement)],
             })
         main_query, named_queries = self._stages_of_dataset(dataset=dataset, runtime_kwarg=runtime_kwarg)
         return main_query, named_queries, prefer_data_source, (dataset.name,)
+
+    async def _anchor_names(self, queries: Sequence[SlayerQuery], *, data_source: Optional[str]) -> AnchorNames:
+        """What a first segment of ``queries`` may anchor at: the datasets the caller sees in their populations'
+        datasources, their stages and the spine."""
+        identities = await self.storage._list_all_dataset_identities()
+        stage_names = {q.name for q in queries if q.name}
+        if data_source is None:
+            sources = {ds for q in queries if (p := q.population_name) and p not in stage_names
+                       for ds, n in identities if n == p}
+            data_source_set = sources or {ds for ds, _ in identities}
+        else:
+            data_source_set = {data_source}
+        names = {n for ds, n in identities if ds in data_source_set}
+        names |= {q.name for q in queries if q.name} | {q.population_name for q in queries if q.population_name}
+        return AnchorNames(names=frozenset({*names, TIME_SPINE_DATASET}))
+
+    async def _qualified(
+        self, queries: List[Any], *, data_source: Optional[str], deprecations_out: List[DeprecatedInputWarning],
+    ) -> List[Any]:
+        """``queries`` (one input document) with their root-relative references qualified; deprecations to the list."""
+        stages = [q for q in queries if isinstance(q, SlayerQuery)]
+        if not any(q.population is not None for q in stages):
+            return queries
+        anchors = await self._anchor_names(stages, data_source=data_source)
+        conversions = Conversions()
+        out = [convert_query(q, anchors=anchors, conversions=conversions) if isinstance(q, SlayerQuery) else q
+               for q in queries]
+        deprecations_out.extend(conversions.payloads)
+        return out
 
     @staticmethod
     def _stages_of_dataset(
@@ -1257,7 +1294,8 @@ class SlayerQueryEngine:
         shadows = [w for w in records.shadows.values() if (w.dataset, w.aggregation) in reads.aggregations]
         collisions = _read_dataset_collisions(reads=reads, bundle=rendered.bundle)
         return rendered.model_copy(update={
-            "element_reads": reads, "warnings": [*rendered.warnings, *shadows, *collisions],
+            "element_reads": reads,
+            "warnings": [*rendered.warnings, *shadows, *collisions, *records.notices.values()],
         })
 
     async def _plan_and_render_statement(  # NOSONAR S3776 — linear pipeline (localize→infer→bundle→normalize→variables→plan→render); splitting hides the order of operations
@@ -2197,8 +2235,7 @@ class SlayerQueryEngine:
             bare = _bare_source_name(slot.key)
             if bare is None:
                 continue
-            public = slot.public_name or slot.declared_name
-            full = f"{source_relation}.{public}"
+            full = slot.public_name or f"{source_relation}.{slot.declared_name}"
             if full in raw_types:
                 result[bare] = raw_types[full]
         # A metric answered by a regroup producer surfaces as a placeholder ROW
@@ -2212,8 +2249,7 @@ class SlayerQueryEngine:
                 bare = _bare_source_name(sub.original_key)
                 if bare is None or bare in result:
                     continue
-                public = ph_slot.public_name or ph_slot.declared_name
-                full = f"{source_relation}.{public}"
+                full = ph_slot.public_name or f"{source_relation}.{ph_slot.declared_name}"
                 if full in raw_types:
                     result[bare] = raw_types[full]
         return result
@@ -2963,6 +2999,9 @@ class SlayerQueryEngine:
         )
         schema = rendered.planned_list[-1].stage_schema
         assert schema is not None
+        if schema.flatten_collision is not None:
+            flat, first, second = schema.flatten_collision
+            check_stage_flatten_collision(flat_name=flat, collides=True, entries=(first, second))
         # ``DatasetField.sql`` carries the length-fitted alias; ``DatasetField.name`` stays canonical.
         fit_map = get_dialect(rendered.dialect).alias_rewrite_map([c.name for c in schema.fields])
         return _QueryBackedExpansion(name=dataset.name, rendered=rendered, stage_schema=schema, fit_map=fit_map)
@@ -3025,6 +3064,8 @@ class SlayerQueryEngine:
         raw = query if isinstance(query, list) else [query]
         with one_document():
             stages = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in raw]
+        if not save:
+            stages = await self._qualified(stages, data_source=None, deprecations_out=[])
         dataset = SlayerDataset(
             name=name,
             description=description,
@@ -3112,6 +3153,11 @@ class SlayerQueryEngine:
         ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
         deprecated_inputs = deprecated_inputs_of([dataset, *(dataset.source_queries or [])])
         dataset, spellings = with_canonical_spellings(dataset)
+        if dataset.source_queries:
+            stages = await self._qualified(
+                list(dataset.source_queries), data_source=dataset.data_source, deprecations_out=deprecated_inputs,
+            )
+            dataset = dataset.model_copy(update={"source_queries": stages})
         if warnings_out is not None:
             warnings_out.extend([*deprecated_inputs, *spellings])
         with announced_by_caller():

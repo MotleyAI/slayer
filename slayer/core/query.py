@@ -1971,6 +1971,18 @@ class QueryRefinement(BaseModel):
         self.filter = value
 
 
+def declared_aliases(*sources: "SlayerQuery | QueryRefinement") -> list[str]:
+    """The names the entries of ``sources`` declare: aliases and unaliased computed dimensions' names."""
+    names: list[str] = []
+    for source in sources:
+        names.extend(m.alias for m in source.metrics or [] if m.alias)
+        for d in source.dimensions or []:
+            if d.alias or d.ref is None:
+                names.append(d.name)
+        names.extend(td.alias for td in source.time_dimensions or [] if td.alias)
+    return names
+
+
 def deprecated_inputs_of(
     sources: Iterable[SlayerDataset | SlayerQuery | QueryRefinement | None],
 ) -> list[DeprecatedInputWarning]:

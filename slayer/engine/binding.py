@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Final, List, Mapping, Optional, Tuple, T
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
+    AmbiguousRelationshipPathError,
     ScalarArgumentError,
     ScalarOperandTypeError,
     AggregationArgumentError,
@@ -67,6 +68,8 @@ from slayer.core.vocabulary import deprecated_spelling, renamed_arguments
 from slayer.core.keys import FieldTypeFn, input_masked, is_ranked, source_anchor_path, window_kwarg_of, DATE_ADD_COUNT_ARG, DATE_OPERAND_ARGS, MIRRORED_TIME_POINT_OP, SCALAR_FUNCTIONS, cast_type_parts, check_scalar_arity, type_date_values, AggregateKey, AggregateSource, ArithmeticKey, ArrayLiteralKey, CastKey, FieldKey, FieldSqlKey, Grain, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, SqlFragmentKey, StarKey, TimePointCmpKey, TimePointOp, TimeTruncKey, TransformKey, VALUE_KEY_TYPES, ValueKey, boolean_valued, field_leaf, field_path, is_attached_source, normalize_scalar, prepend_value_key, temporal_type, walk_value_keys, TEXT_RESULT_SCALARS, integer_text_valued, list_valued, numeric_valued
 from slayer.core.relationship_walker import (
     LIST_ELEMENT_FIELD,
+    canonical_token,
+    resolve_hop,
     resolved_terminal,
     aggregation_owner,
     canonical_path,
@@ -87,13 +90,23 @@ from slayer.core.models import (
     reserved_value_param_message,
     shadows_library_function,
 )
-from slayer.core.warnings import LibraryNameShadowWarning
+from slayer.core.deprecation import scheduled_notice
+from slayer.core.warnings import ChangedReferenceWarning, LibraryNameShadowWarning
 from slayer.engine.population import dimension_routing
+from slayer.engine.population.anchors import (
+    anchor_route,
+    edge_first_refusal,
+    find_anchor,
+    unknown_dataset,
+    unknown_metric,
+    unqualified_count,
+)
 from slayer.engine.key_metadata import bundle_dialect, scope_field_type
 from slayer.engine.param_binding import QuotedArgumentRefused, bind_aggregation_params
 from slayer.core.query import TimeDimension
-from slayer.core.scope import DatasetScope, StageSchema, peek_dataset_field, resolve_generated_field, root_spelling
+from slayer.core.scope import DatasetScope, StageSchema, is_anchored, peek_dataset_field, resolve_generated_field, root_spelling
 from slayer.core.time_points import is_time_point, parse_temporal_value
+from slayer.core.time_spine import TIME_SPINE_DATASET
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import (
     AggCall,
@@ -162,6 +175,7 @@ class BindRecords(BaseModel):
 
     metrics: Dict[Tuple[str, str], None] = {}
     shadows: Dict[Tuple[str, str, str], LibraryNameShadowWarning] = {}
+    notices: Dict[str, ChangedReferenceWarning] = {}
 
 
 _bind_records: ContextVar[Optional[BindRecords]] = ContextVar("slayer_bind_records", default=None)
@@ -547,7 +561,7 @@ def _bind_leaf(
     if isinstance(parsed, TemporalLiteral):
         return LiteralKey(value=_temporal_literal_value(parsed))
     if isinstance(parsed, StarSource):
-        return StarKey()
+        return _bare_star(scope=scope)
     if not isinstance(parsed, (Ref, DottedRef)):
         return None
     try:
@@ -787,6 +801,8 @@ def _resolve_ref(
     alias = match_name(name=name, declared=alias_map, quoted=quoted) if alias_map else None
     if alias_map and alias is not None:
         return alias_map[alias]
+    if is_anchored(scope):
+        raise unknown_metric(name, datasets=_visible_datasets(scope=scope, bundle=bundle))
 
     if isinstance(scope, StageSchema):
         col = scope.resolve_flat_name(name, quoted=quoted)
@@ -837,6 +853,59 @@ def _resolve_ref(
     )
 
 
+def _visible_datasets(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> List[SlayerDataset]:
+    """The datasets a bare name's suggestions may name: the bundle's, the reading dataset included."""
+    found = dict(bundle.datasets_by_name)
+    if isinstance(scope, DatasetScope) and scope.population is not None:
+        found.setdefault(scope.population.name, scope.population)
+    return [d for d in found.values() if d.name != TIME_SPINE_DATASET]
+
+
+def _anchored_parts(
+    parts: Tuple[str, ...], *, scope: DatasetScope, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
+) -> Tuple[Tuple[str, ...], Tuple[bool, ...]]:
+    """``parts`` as a path from the reading dataset: its anchor replaced by the route reaching it."""
+    host = scope.population
+    assert host is not None
+    datasets = bundle.datasets_by_name
+    anchor = find_anchor(parts[0], quoted=quoted[0], reader=host, datasets_by_name=datasets)
+    if anchor is None:
+        raise edge_first_refusal(parts, datasets_by_name={**datasets, host.name: host}) or unknown_dataset(parts)
+    reached = anchor_route(reader=host, anchor=anchor, datasets_by_name=datasets, rest=parts[1:])
+    if anchor.name != host.name:
+        _announce_changed_reference(parts, host=host, anchor=anchor, route=reached.route, datasets=datasets,
+                                    quoted=quoted[0])
+    return (*reached.route, *parts[1:]), (*(False,) * len(reached.route), *quoted[1:])
+
+
+def _announce_changed_reference(
+    parts: Tuple[str, ...], *, host: SlayerDataset, anchor: SlayerDataset, route: Tuple[str, ...],
+    datasets: Dict[str, SlayerDataset], quoted: bool,
+) -> None:
+    """Record the notice of a dataset-first reference whose direct relationship from ``host`` is not its path."""
+    records = _bind_records.get()
+    if records is None:
+        return
+    try:
+        direct = resolve_hop(current=host, token=parts[0], datasets_by_name={**datasets, host.name: host},
+                             quoted=quoted)
+    except AmbiguousRelationshipPathError:
+        return
+    if direct is None or direct.to != anchor.name or route == (canonical_token(direct),):
+        return
+    reference = ".".join(parts)
+    path = " → ".join((host.spelling, *route))
+    spelling = ".".join((host.spelling, canonical_token(direct), *parts[1:]))
+    message = scheduled_notice(
+        f"`{reference}` reads {anchor.spelling!r} along {path}, its only to-one path; before 2.0 it read the direct "
+        f"relationship, which `{spelling}` names.",
+        removal="3.0",
+    )
+    records.notices.setdefault(message, ChangedReferenceWarning(
+        reference=reference, path=path, spelling=spelling, message=message,
+    ))
+
+
 def _walk_relationship_chain(
     *,
     hop_path: Tuple[str, ...],
@@ -847,6 +916,7 @@ def _walk_relationship_chain(
     original_parts: Optional[Tuple[str, ...]] = None,
     quoted: Tuple[bool, ...] = (),
     original_quoted: Tuple[bool, ...] = (),
+    routes_short_form: bool = True,
 ):
     """Walk ``hop_path`` relationship hops from ``host`` through the shared bidirectional
     walker; returns ``(terminal_dataset, canonical effective_hop_path)``. Each token
@@ -890,7 +960,7 @@ def _walk_relationship_chain(
         assert miss.target is not None
         match_name(name=miss.target, declared=datasets_by_name, quoted=False)  # raises when several match by case
         raise _target_not_in_bundle(parts=parts, target=miss.target)
-    broken = len(hop_path) != 1
+    broken = len(hop_path) != 1 or not routes_short_form
     flat = refusal() if broken else None
     if flat is not None:
         raise flat
@@ -1047,9 +1117,14 @@ def _resolve_dotted(
     """Resolve a dotted ref against the scope; ``quoted`` flags each double-quoted segment, matched exactly.
 
     Resolution order: root qualifier dropped → declared alias (dotted text) → relationship walk
-    → leaf field → saved metric (re-anchored into host coords, eligible position)."""
+    → leaf field → saved metric (re-anchored into host coords, eligible position). An anchored scope reads the
+    first segment as the reference's anchor instead (``queries/references``)."""
     original_parts = parts
     original_quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    if is_anchored(scope):
+        return _resolve_anchored(
+            parts, scope=scope, bundle=bundle, alias_map=alias_map, metric_ctx=metric_ctx, quoted=original_quoted,
+        )
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=original_quoted)
     quoted = original_quoted[len(original_parts) - len(parts):]
     if alias_map:
@@ -1092,6 +1167,63 @@ def _resolve_dotted(
         original_parts=original_parts, scope=scope, bundle=bundle,
         metric_ctx=metric_ctx, quoted=quoted[-1],
     )
+
+
+def _resolve_anchored(
+    parts: Tuple[str, ...],
+    *,
+    scope: DatasetScope | StageSchema,
+    bundle: ResolvedSourceBundle,
+    alias_map: Optional[Dict[str, "ValueKey"]],
+    metric_ctx: Optional[MetricResolutionCtx],
+    quoted: Tuple[bool, ...],
+) -> ValueKey:
+    """A query's dotted reference: an alias by its text, else anchored at its first segment."""
+    if alias_map:
+        alias = match_path(parts=parts, declared=alias_map, quoted=quoted)
+        if alias is not None:
+            return alias_map[alias]
+    if isinstance(scope, StageSchema):
+        return _resolve_stage_reference(parts, scope=scope, bundle=bundle, quoted=quoted)
+    if scope.population is None:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
+        )
+    host = scope.population
+    path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    if not path[:-1]:
+        return _resolve_terminal_leaf(
+            current=host, leaf=path[-1], hop_path=(), original_parts=parts, scope=scope, bundle=bundle,
+            metric_ctx=metric_ctx, quoted=flags[-1],
+        )
+    current, effective_hop_path = _walk_relationship_chain(
+        hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf=path[-1], quoted=flags,
+        routes_short_form=False,
+    )
+    return _resolve_terminal_leaf(
+        current=current, leaf=path[-1], hop_path=effective_hop_path, original_parts=parts, scope=scope,
+        bundle=bundle, metric_ctx=metric_ctx, quoted=flags[-1],
+    )
+
+
+def _resolve_stage_reference(
+    parts: Tuple[str, ...], *, scope: StageSchema, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
+) -> ValueKey:
+    """A later stage's reference ``<stage>.<column>`` (or a list column's element) to the stage it reads."""
+    if match_name(name=parts[0], declared=[scope.display_name], quoted=quoted[0]) is None:
+        datasets = bundle.datasets_by_name
+        raise edge_first_refusal(parts, datasets_by_name=datasets) or unknown_dataset(parts)
+    rest, flags = parts[1:], quoted[1:]
+    if len(rest) == 1:
+        col = scope.resolve_flat_name(rest[0], quoted=flags[0])
+        if col is None:
+            raise UnknownReferenceError(
+                name=".".join(parts), scope_kind="StageSchema",
+                scope_summary=f"{scope.label} fields: {[c.name for c in scope.fields]}", suggestion=None,
+            )
+        return FieldKey(path=(), leaf=col.name)
+    plain = scope.model_copy(update={"anchored": False})
+    return _resolve_dotted(rest, scope=plain, bundle=bundle, quoted=flags)
 
 
 def _stage_list_scope(
@@ -1248,6 +1380,8 @@ def _resolve_saved_metric(
         terminal_dataset = terminal_dataset.definition_view()
         if scope.population is not None:
             scope = DatasetScope(population=scope.population.definition_view())
+    elif scope.anchored:
+        scope = DatasetScope(population=scope.population)
     if not host_path:
         # Bare/local: metric lives on the host; bind inline at this scope.
         return _bind(
@@ -1275,6 +1409,8 @@ def _resolve_dotted_star(
     """Resolve a dotted star (``customers.*``) to a ``StarKey`` whose ``path`` is
     the validated hop chain (empty path = local star)."""
     assert parts and parts[-1] == "*"
+    if is_anchored(scope):
+        return _resolve_anchored_star(parts, scope=scope, bundle=bundle, quoted=quoted)
     original_parts = parts
     parts = drop_root_qualifier(parts, root_spelling(scope), quoted=quoted)
     quoted = quoted[len(original_parts) - len(parts):]
@@ -1298,6 +1434,38 @@ def _resolve_dotted_star(
         hop_path=hop_path, host=host, bundle=bundle, parts=parts, leaf="*", quoted=quoted,
     )
     return StarKey(path=tuple(effective_hop_path))
+
+
+def _resolve_anchored_star(
+    parts: Tuple[str, ...], *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle, quoted: Tuple[bool, ...],
+) -> StarKey:
+    """A query's ``<anchor>[.<route>].*``."""
+    quoted = tuple(quoted[:len(parts)]) + (False,) * max(0, len(parts) - len(quoted))
+    if isinstance(scope, StageSchema):
+        if match_name(name=parts[0], declared=[scope.display_name], quoted=quoted[0]) is None:
+            raise edge_first_refusal(parts, datasets_by_name=bundle.datasets_by_name) or unknown_dataset(parts)
+        return _resolve_dotted_star(parts[1:] if len(parts) > 2 else ("*",),
+                                    scope=scope.model_copy(update={"anchored": False}), bundle=bundle,
+                                    quoted=quoted[1:])
+    host = scope.population
+    if host is None:
+        raise UnknownReferenceError(
+            name=".".join(parts), scope_kind="DatasetScope", scope_summary=_NO_ANCHOR_SCOPE_SUMMARY, suggestion=None,
+        )
+    path, flags = _anchored_parts(parts, scope=scope, bundle=bundle, quoted=quoted)
+    if len(path) == 1:
+        return StarKey()
+    _, effective_hop_path = _walk_relationship_chain(
+        hop_path=path[:-1], host=host, bundle=bundle, parts=parts, leaf="*", quoted=flags, routes_short_form=False,
+    )
+    return StarKey(path=tuple(effective_hop_path))
+
+
+def _bare_star(*, scope: DatasetScope | StageSchema) -> StarKey:
+    """A bare ``*``: refused in a query's own scope, where a row count names its dataset."""
+    if is_anchored(scope):
+        raise unqualified_count(root_spelling(scope))
+    return StarKey()
 
 
 def _bind_partition_keys(
@@ -1615,7 +1783,7 @@ def _bind_agg_source(
             raise _not_an_aggregation_source(bound, agg=parsed.agg)
         return bound
     if isinstance(parsed.source, StarSource):
-        return StarKey()
+        return _bare_star(scope=scope)
     if (
         isinstance(parsed.source, DottedRef)
         and parsed.source.parts

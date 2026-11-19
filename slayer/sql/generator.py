@@ -100,7 +100,9 @@ from slayer.sql.naming import (
     flat_name,
     key_identifier,
     maybe_quote_ident,
+    internal_result_key,
     next_slot_result_key,
+    result_key_from_alias,
     quote_mixed_case_identifiers,
 )
 from slayer.sql.render.cte_assembly import (
@@ -1684,7 +1686,8 @@ class SQLGenerator:
                 rendered = _wrap_cast_for_type(dialect=self._dialect, expr=rendered, dt=self._slot_cast_type(slot))
             # One column per declared name (C13); as_ copies its child, so the rendered node is safely reused.
             for alias in names:
-                full_alias = f"{source_relation}.{alias}"
+                full_alias = (result_key_from_alias(source_relation=source_relation, alias=alias) if slot.public_aliases
+                              else internal_result_key(source_relation=source_relation, name=alias))
                 step_parts.append(rendered.as_(full_alias, quoted=True))
                 published.append((map_key, full_alias))
         for map_key, full_alias in published:
@@ -2160,7 +2163,7 @@ class SQLGenerator:
                             source_relation=source_relation,
                             bundle=bundle,
                         )
-                    select_columns.append(col_expr.copy().as_(full_alias))
+                    select_columns.append(col_expr.copy().as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, TimeTruncKey):
@@ -2173,7 +2176,7 @@ class SQLGenerator:
                     trunc_expr = self._build_date_trunc(
                         col_expr=col_expr, granularity=key.granularity,
                     )
-                    select_columns.append(trunc_expr.copy().as_(full_alias))
+                    select_columns.append(trunc_expr.copy().as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, trunc_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, FieldSqlKey):
@@ -2184,18 +2187,18 @@ class SQLGenerator:
                             source_relation=source_relation,
                             leaf=key.field_name,
                         )
-                    select_columns.append(col_expr.copy().as_(full_alias))
+                    select_columns.append(col_expr.copy().as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, col_expr)
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) and slot.is_dimension:
                     dim_expr = computed_dim_expr_by_sid[sid]
-                    select_columns.append(self._grouped_display(dim_expr, key=key).as_(full_alias))
+                    select_columns.append(self._grouped_display(dim_expr, key=key).as_(full_alias, quoted=True))
                     group_by_keys.setdefault(sid, self._grain_key(dim_expr, key=key))
                     display_by_sid[sid] = dim_expr
                     _record_alias(sid, full_alias)
                 elif isinstance(key, LiteralKey) and slot.is_dimension:
                     # A constant needs no GROUP BY entry (a constant one is refused or read as a position).
-                    select_columns.append(_literal(key.value, dialect=self._dialect).as_(full_alias))
+                    select_columns.append(_literal(key.value, dialect=self._dialect).as_(full_alias, quoted=True))
                     _record_alias(sid, full_alias)
                 elif isinstance(key, SLOT_COMPOSITE_KINDS) or (
                     isinstance(key, LiteralKey) and not slot.is_dimension
@@ -2239,7 +2242,7 @@ class SQLGenerator:
                 if is_agg:
                     agg_expr = _wrap_cast_for_type(dialect=self._dialect, expr=agg_expr, dt=self._slot_cast_type(slot))
                     has_aggregation = True
-                select_columns.append(agg_expr.copy().as_(full_alias))
+                select_columns.append(agg_expr.copy().as_(full_alias, quoted=True))
                 _record_alias(sid, full_alias)
             else:
                 raise MaterialisationStageError(
@@ -2274,7 +2277,7 @@ class SQLGenerator:
                 composite = _wrap_cast_for_type(dialect=self._dialect, expr=composite, dt=self._slot_cast_type(slot))
             elif grand_total:
                 composite = _grand_total_value(composite)
-            select_columns[idx] = composite.as_(full_alias)
+            select_columns[idx] = composite.as_(full_alias, quoted=True)
         has_aggregation = has_aggregation or grand_total
 
         base_select = exp.Select()
@@ -3661,7 +3664,9 @@ class SQLGenerator:
                     else aliases_for_slot[-1]
                 )
                 outer_emission_count[sid] = idx + 1
-                full_alias = f"{source_relation}.{public_alias}"
+                full_alias = (result_key_from_alias(source_relation=source_relation, alias=public_alias)
+                              if cslot.public_aliases
+                              else internal_result_key(source_relation=source_relation, name=public_alias))
                 _emit(
                     sid,
                     _render_outer_composite(cslot).as_(full_alias, quoted=True),
@@ -3919,7 +3924,7 @@ class SQLGenerator:
         """User-facing combined-SELECT aliases for this cross-dataset slot."""
         if not slot.public_aliases:
             return [canonical_alias]
-        return [f"{source_relation}.{a}" for a in slot.public_aliases]
+        return [result_key_from_alias(source_relation=source_relation, alias=a) for a in slot.public_aliases]
 
     @staticmethod
     def _producer_render_bundle(attach: RegroupAttachPlan, bundle: ResolvedSourceBundle) -> ResolvedSourceBundle:
@@ -5004,7 +5009,7 @@ class SQLGenerator:
             dialect=self._dialect,
         )
         source_relation = chain.source_relation
-        slot_full_aliases = [f"{source_relation}.{a}" for a in slot_aliases]
+        slot_full_aliases = [result_key_from_alias(source_relation=source_relation, alias=a) for a in slot_aliases]
         sjoin_select = exp.Select().select(
             *[grain_alias_field(alias=a, table=chain_tail)
               for a in self._carry_aliases_in_plan_order(chain.aliases_by_slot_id)],
@@ -5096,7 +5101,8 @@ class SQLGenerator:
             slot_alias = slot.public_aliases[0]
         else:
             slot_alias = cte_allocator.allocate_cte(slot.declared_name)
-        full_slot_alias = f"{source_relation}.{slot_alias}"
+        full_slot_alias = (result_key_from_alias(source_relation=source_relation, alias=slot_alias) if slot.public_aliases
+                           else internal_result_key(source_relation=source_relation, name=slot_alias))
         cp_reset_alias = f"_cp_reset_{full_slot_alias}"
         cp_prev_alias = f"_cp_prev_{full_slot_alias}"
 
@@ -5185,7 +5191,7 @@ class SQLGenerator:
         )
         cp_value_cte_name = cte_allocator.allocate_cte(f"cp_value_{slot_alias}")
         output_aliases = [
-            f"{source_relation}.{a}" for a in slot.public_aliases
+            result_key_from_alias(source_relation=source_relation, alias=a) for a in slot.public_aliases
         ] or [full_slot_alias]
         ctes.append(CteEntry(
             name=cp_value_cte_name,

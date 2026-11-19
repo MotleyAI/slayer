@@ -574,13 +574,14 @@ def check_computed_dim_name_collision(
         )
 
 
-def check_stage_flatten_collision(*, flat_name: str, collides: bool) -> None:
+def check_stage_flatten_collision(*, flat_name: str, collides: bool, entries: Tuple[str, ...] = ()) -> None:
     """Two projected fields must not flatten to one downstream name (both the declaration-time and stage-schema firing points)."""
     if collides:
+        named = f" ({' and '.join(repr(e) for e in entries)})" if entries else ""
         raise NameCollisionError(
             summary=f"Stage field name collision on {flat_name!r}: two projected "
-            f"fields flatten to the same downstream name.",
-            suggestion="Give one an explicit metric `name` to disambiguate.",
+            f"fields{named} flatten to the same downstream name.",
+            suggestion="Give one an explicit alias to disambiguate.",
         )
 
 

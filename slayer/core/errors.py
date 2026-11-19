@@ -693,6 +693,22 @@ class UnknownReferenceError(SlayerError, ValueError):
         ))
 
 
+class UnknownMetricError(UnknownReferenceError):
+    """A bare query name that is neither an alias of the query nor a metric."""
+
+
+class UnqualifiedRowCountError(SlayerError, ValueError):
+    """``count(*)`` in a query that names no population: a row count names its dataset."""
+
+    def __init__(self, *, suggestion: str | None = None) -> None:
+        self.suggestion = suggestion
+        super().__init__(_format_error_message(
+            cls_name=type(self).__name__,
+            summary="'count(*)' names no dataset in a query without a population.",
+            suggestion=suggestion or "Write count(<dataset>.*), or name the query's population.",
+        ))
+
+
 class RefinementConflictError(SlayerError):
     """A saved-query refinement gives an entry of the saved final stage a different value."""
 

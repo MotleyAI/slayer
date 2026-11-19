@@ -281,5 +281,5 @@ def resolve_scope(
     """The scope a query binds against: its named sibling stage's schema, else the bundle's dataset."""
     source = query.population
     if isinstance(source, str) and source in (stage_schemas or {}):
-        return (stage_schemas or {})[source]
-    return DatasetScope(population=bundle.population)
+        return (stage_schemas or {})[source].model_copy(update={"anchored": True})
+    return DatasetScope(population=bundle.population, anchored=True)

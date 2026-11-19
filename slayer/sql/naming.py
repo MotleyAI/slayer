@@ -160,7 +160,15 @@ def result_key(*, source_relation: str, path: Tuple[str, ...] = (), leaf: str) -
 
 
 def result_key_from_alias(*, source_relation: str, alias: str) -> str:
-    return f"{source_relation}.{alias}"
+    """A projected public ``alias``'s result key: the alias itself (a query entry's public name is its key, which
+    never carries the population); ``source_relation`` is unused and kept for callers' symmetry."""
+    del source_relation
+    return alias
+
+
+def internal_result_key(*, source_relation: str, name: str) -> str:
+    """The result key of a slot projected under an internal (non-public) name."""
+    return f"{source_relation}.{name}"
 
 
 def time_trunc_result_key(
@@ -196,11 +204,13 @@ def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]
 
 
 def slot_result_key(*, slot: "ValueSlot", alias: str, source_relation: str) -> str:
-    """Result key of one projected ``alias`` of ``slot``: a user-chosen alias keys by itself,
-    any other alias of a joined ROW slot by its canonical path."""
-    joined = None if alias in slot.explicit_aliases else _joined_row_path(slot)
+    """Result key of one projected ``alias`` of ``slot``: a public alias keys by itself; an internal name of a
+    joined ROW slot by its canonical path, of any other slot under the relation."""
+    if alias in slot.public_aliases:
+        return alias
+    joined = _joined_row_path(slot)
     if joined is None:
-        return result_key_from_alias(source_relation=source_relation, alias=alias)
+        return internal_result_key(source_relation=source_relation, name=alias)
     path, leaf = joined
     if isinstance(slot.key, TimeTruncKey):
         return time_trunc_result_key(

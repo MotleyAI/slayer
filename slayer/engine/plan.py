@@ -21,6 +21,7 @@ from slayer.core.time_spine import is_spine_query, query_host
 from slayer.core.scope import (
     DatasetScope,
     StageDisplay,
+    anchored_scope,
     StageSchema,
     collect_stale_spellings,
     stale_spelling_stage,
@@ -104,7 +105,7 @@ def _stage_scope_and_bundle(
     scope, sb = apply_query_extensions(query=query, scope=scope, bundle=sb)
     framed_scope, framed = _framed(query=query, scope=scope, bundle=sb, placeholders=placeholders)
     assert framed_scope is not None
-    return framed_scope, framed
+    return anchored_scope(framed_scope), framed
 
 
 def _framed(
