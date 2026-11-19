@@ -7461,7 +7461,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 23,
-                    "endColumn": 26,
+                    "endColumn": 37,
                     "lineCount": 1
                 }
             },
@@ -7469,7 +7469,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 51,
-                    "endColumn": 54,
+                    "endColumn": 65,
                     "lineCount": 1
                 }
             },
@@ -7477,7 +7477,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 51,
-                    "endColumn": 54,
+                    "endColumn": 65,
                     "lineCount": 1
                 }
             },
@@ -7485,7 +7485,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 51,
-                    "endColumn": 54,
+                    "endColumn": 65,
                     "lineCount": 1
                 }
             },
@@ -7501,7 +7501,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 50,
-                    "endColumn": 53,
+                    "endColumn": 64,
                     "lineCount": 1
                 }
             },
@@ -7517,7 +7517,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 48,
-                    "endColumn": 51,
+                    "endColumn": 62,
                     "lineCount": 1
                 }
             },
@@ -7533,7 +7533,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 50,
-                    "endColumn": 53,
+                    "endColumn": 64,
                     "lineCount": 1
                 }
             },
@@ -7565,7 +7565,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 51,
-                    "endColumn": 54,
+                    "endColumn": 65,
                     "lineCount": 1
                 }
             },
@@ -7573,7 +7573,7 @@
                 "code": "reportOptionalMemberAccess",
                 "range": {
                     "startColumn": 51,
-                    "endColumn": 54,
+                    "endColumn": 65,
                     "lineCount": 1
                 }
             }
