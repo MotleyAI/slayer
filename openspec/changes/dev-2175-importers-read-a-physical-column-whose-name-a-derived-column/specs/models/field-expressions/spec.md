@@ -168,11 +168,15 @@ The checks that need the datasource's dialect (which form runs, two entries for 
 
 ### Requirement: A field's sql converts to its expression
 
-A field given with `sql` SHALL be converted to its `expression`, with exactly one `FutureWarning` and one `deprecated_input` warning per input document naming `sql`, `expression` and SLayer 3.0. A bare or double-quoted identifier SHALL become the shorthand string of that identifier. Any other text SHALL become the one `dialects` entry for the dataset's datasource's own dialect, verbatim except that each bare name that today reads a sibling field is written as that field's path from the dataset; dotted names SHALL stay as written. Values SHALL be unchanged. A field given both `sql` and `expression` SHALL be refused with a typed error naming both.
+A field given with `sql` SHALL be converted to its `expression`, with exactly one `FutureWarning` and one `deprecated_input` warning per input document naming `sql`, `expression` and SLayer 3.0. A bare or double-quoted identifier SHALL become the shorthand string of that identifier, unless today it reads a sibling field, in which case it SHALL become the shorthand string of that field's path from the dataset (`<dataset>.<field>`). Any other text SHALL become the one `dialects` entry for the dataset's datasource's own dialect, verbatim except that each bare name that today reads a sibling field is written as that field's path from the dataset; dotted names SHALL stay as written. Values SHALL be unchanged. A field given both `sql` and `expression` SHALL be refused with a typed error naming both.
 
 #### Scenario: A bare column
 - **WHEN** a field is submitted as `{name: total, sql: amount}`
 - **THEN** it is stored as `expression: amount` and the save reports one `deprecated_input` warning naming `sql`
+
+#### Scenario: A bare alias of a sibling field
+- **WHEN** dataset `orders` is submitted with fields `doubled` (`sql: "amount * 2"`) and `alias` (`sql: doubled`)
+- **THEN** `alias` is stored as `expression: orders.doubled` and returns 20, 40 and 10
 
 #### Scenario: A sibling reference is qualified
 - **WHEN** dataset `orders` on a DuckDB datasource is submitted with fields `doubled` (`sql: "amount * 2"`) and `ratio` (`sql: "doubled / 4"`)

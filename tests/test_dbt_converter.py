@@ -1639,23 +1639,23 @@ class TestJoinKeyColumns:
             w.dataset_name == "orders" and "CAST(cust AS INT)" in w.message
             for w in result.warnings)
 
-    def test_dimension_named_like_the_fk_but_reading_another_column_is_not_the_key(self) -> None:
+    def test_dimension_named_like_the_fk_but_reading_another_column_keys_the_join_on_a_hidden_reader(self) -> None:
         project = _make_simple_project()
         orders_sm = next(sm for sm in project.semantic_models if sm.name == "orders")
         orders_sm.dimensions.append(DbtDimension(
             name="customer_id", type="categorical", expr="billing_customer_id"))
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.datasets if m.name == "orders")
-        dim = orders.get_field("customer_id")
-        assert orders.relationships == []
-        assert dim is not None
-        assert dim.sql == "billing_customer_id"
-        assert any(
+        (join,) = orders.relationships
+        assert (join.to, join.from_columns) == ("customers", ["customer_id_raw"])
+        fields = {f["name"]: f for f in orders.model_dump(mode="json", exclude_none=True)["fields"]}
+        assert fields["customer_id_raw"].get("expression") == "customer_id"
+        assert fields["customer_id"].get("expression") == "billing_customer_id"
+        assert not any(
             w.dataset_name == "orders" and "customer_id" in w.message
             for w in result.warnings)
 
-    @pytest.mark.xfail(strict=True, reason="DEV-2175: self-named dimension")
-    def test_target_key_named_by_a_derived_column_drops_the_join(self) -> None:
+    def test_target_key_named_by_a_derived_column_keys_the_join_on_the_physical_column(self) -> None:
         project = _make_simple_project()
         customers_sm = next(sm for sm in project.semantic_models if sm.name == "customers")
         customers_sm.dimensions.append(DbtDimension(
@@ -1663,11 +1663,14 @@ class TestJoinKeyColumns:
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.datasets if m.name == "orders")
         customers = next(m for m in result.datasets if m.name == "customers")
+        (join,) = orders.relationships
+        assert (join.to, join.to_columns) == ("customers", ["id_raw"])
+        key = next(f for f in customers.model_dump(mode="json", exclude_none=True)["fields"] if f["name"] == "id_raw")
+        assert (key.get("hidden"), key.get("primary_key"), key.get("expression")) == (True, True, "id")
         dim = customers.get_field("id")
-        assert orders.relationships == []
         assert dim is not None
         assert dim.primary_key is False
-        assert any("customers" in w.message and "id" in w.message for w in result.warnings)
+        assert not any("customers" in w.message and "id" in w.message for w in result.warnings)
 
 
 def test_non_bare_primary_entity_expr_declares_no_key_column() -> None:

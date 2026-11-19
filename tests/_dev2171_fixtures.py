@@ -12,7 +12,6 @@ from collections.abc import Callable, Coroutine, Generator, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-import pytest
 import sqlalchemy as sa
 import yaml
 from sqlalchemy import event
@@ -36,9 +35,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import build_exec_engine, disposable_engine
 
 DS = "ds"
-
-#: Reading a physical column whose name a different column holds; DEV-2175 lifts these.
-MASKED = pytest.mark.xfail(strict=True, reason="DEV-2175: physical name held by a different column")
 
 ORDERS_DDL = (
     "CREATE TABLE orders (id INTEGER PRIMARY KEY, status VARCHAR, state VARCHAR, amount INTEGER, "

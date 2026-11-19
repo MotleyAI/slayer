@@ -419,7 +419,7 @@ class TestCycleAndPathValidation:
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="der1", datatype=DataType.FLOAT, sql="amount"),
                 DatasetField(name="der2", datatype=DataType.FLOAT, sql="amount",
-                       filter="der1 > 0"),
+                       filter="fedge.der1 > 0"),
             ]))
 
     async def test_filter_naming_own_column_is_a_cycle(self) -> None:
@@ -429,7 +429,7 @@ class TestCycleAndPathValidation:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="loop", datatype=DataType.FLOAT, sql="amount",
-                       filter="loop > 0"),
+                       filter="floop.loop > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
             await _save_validated(model)
@@ -471,7 +471,7 @@ class TestCycleAndPathValidation:
             name="cyc", sql_table="cyc", data_source="test",
             fields=[
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
-                DatasetField(name="x", datatype=DataType.FLOAT, sql="x", filter="y > 0"),
+                DatasetField(name="x", datatype=DataType.FLOAT, sql="x", filter="cyc.y > 0"),
                 DatasetField(name="y", datatype=DataType.FLOAT, sql="x")])
         x_col = model.get_field("x")
         assert x_col is not None
@@ -488,9 +488,9 @@ class TestCycleAndPathValidation:
                 DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(name="der_a", datatype=DataType.FLOAT, sql="amount",
-                       filter="der_b > 0"),
+                       filter="fmutual.der_b > 0"),
                 DatasetField(name="der_b", datatype=DataType.FLOAT, sql="amount",
-                       filter="der_a > 0"),
+                       filter="fmutual.der_a > 0"),
             ])
         with pytest.raises(ValueError, match="(?i)circular|cycle"):
             await _save_validated(model)

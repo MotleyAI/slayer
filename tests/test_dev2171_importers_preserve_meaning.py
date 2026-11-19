@@ -12,7 +12,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
 from tests._dev2171_fixtures import (
-    by_id, column, counts_by, cube_issues, entries, has_column, has_metric, import_cube, import_dbt, import_osi,
+    by_id, column, counts_by, cube_issues, entries, has_metric, import_cube, import_dbt, import_osi,
     datasets_of, rows, seed,
 )
 from tests._osi_helpers import ds, f, flat, m, rel, unconverted
@@ -151,15 +151,14 @@ async def test_cube(db: Path) -> None:
     for refused in ("tag_kinds", "windowed"):
         assert not has_metric(result, "orders", refused)
         assert cube_issues(result, refused), refused
-    clash = datasets_of(result)["orders_clash"]
-    for member in ("status_upper", "paid_cnt", "paid_sum", "is_paid"):
-        assert clash.get_field(member) is None, member
-        assert clash.get_metric(member) is None, member
-        assert [i for i in cube_issues(result, member) if "status" in i.message], member
-    assert clash.relationships == []
-    assert [i for i in cube_issues(result, "customer_id") if i.cube == "orders_clash"]
-    assert not has_column(result, "orders_self", "status")
-    assert cube_issues(result, "status")
+    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status_upper") == UPPER_COUNTS
+    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="is_paid") == {True: 2, False: 1}
+    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="customers.name") == {
+        "Ann": 2, "Bo": 1}
+    assert await _values(datasets=models, db=db, dataset="orders_clash", names=["paid_cnt", "paid_sum"]) == {
+        "paid_cnt": 2, "paid_sum": 30}
+    assert await counts_by(datasets=models, db=db, dataset="orders_self", dimension="status") == UPPER_COUNTS
+    assert await counts_by(datasets=models, db=db, dataset="orders_view", dimension="status") == UPPER_COUNTS
 
 
 async def test_dbt(db: Path) -> None:
@@ -174,14 +173,12 @@ async def test_dbt(db: Path) -> None:
     assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status") == STATE_COUNTS
     assert not has_metric(result, "orders", "tag_kinds")
     assert entries(result, "tag_kinds")
-    for member in ("status_upper", "paid_cnt", "paid_bool"):
-        assert not has_column(result, "orders_clash", member)
-        assert not has_metric(result, "orders_clash", member)
-        assert [e for e in entries(result, member) if "status" in e.message], member
-    assert datasets_of(result)["orders_clash"].relationships == []
-    assert entries(result, "customer_id")
-    assert not has_column(result, "orders_self", "status")
-    assert entries(result, "status")
+    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status_upper") == UPPER_COUNTS
+    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="customers.name") == {
+        "Ann": 2, "Bo": 1}
+    assert await _values(datasets=models, db=db, dataset="orders_clash", names=["paid_cnt", "paid_bool"]) == {
+        "paid_cnt": 2, "paid_bool": 2}
+    assert await counts_by(datasets=models, db=db, dataset="orders_self", dimension="status") == UPPER_COUNTS
 
 
 async def test_osi(db: Path) -> None:
@@ -198,7 +195,5 @@ async def test_osi(db: Path) -> None:
     assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status") == STATE_COUNTS
     for refused in ("tag_max", "tag_kinds"):
         assert unconverted(result, refused), refused
-    assert not has_column(result, "orders_clash", "status_upper")
-    assert [e for e in entries(result, "status_upper") if "status" in e.message]
-    assert not has_column(result, "orders_self", "status")
-    assert entries(result, "status")
+    assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status_upper") == UPPER_COUNTS
+    assert await counts_by(datasets=models, db=db, dataset="orders_self", dimension="status") == UPPER_COUNTS

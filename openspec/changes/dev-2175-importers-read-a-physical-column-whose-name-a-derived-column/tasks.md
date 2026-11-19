@@ -5,11 +5,11 @@
 
 ## 2. Tests first (pr-tests)
 
-- [ ] 2.1 Write `tests/test_dev2175_definition_names.py` (the arc42 P3 enforcement file) covering every scenario of `models/field-expressions` on in-process SQLite and DuckDB; verify every test fails for the right reason before implementation.
-- [ ] 2.2 Write tests for each MODIFIED/ADDED requirement in `models/column-definitions`, `models/column-filters`, `models/model-filters`, `models/join-keys`, `models/stored-upgrade`, `compatibility/removal-tripwire`; include direct `model_validate`, bulk and missing-peer loads, a missing datasource config, `DatasetField(sql=…)` in Python, and a field whose dialect entry and portable `sql` deliberately differ; verify they fail before implementation.
-- [ ] 2.3 Write importer tests for each MODIFIED/ADDED requirement in `importers/meaning-preservation`, `cube-import`, `dbt-import`, `osi-import`, `osi-export`, including helper reuse and idempotent re-import, quoted and mixed-case physical names, export/re-import values for derived, filtered, joined, quoted and dialect-only fields; verify they fail before implementation.
-- [ ] 2.4 Remove the strict-xfail markers from the 33 tests tied to this change (`tests/_dev2171_fixtures.py::MASKED` users, `tests/test_osi_converter.py` `SELF_NAMED`, `tests/test_dbt_converter.py::TestJoinKeyColumns`, `tests/test_osi_source_columns.py::test_source_column_behind_a_renamed_field_reads_the_physical_column`), respelling their inputs only; verify they fail before implementation.
-- [ ] 2.5 Apply the six approved test alignments of design decision 30 exactly; no other existing test's assertions change without the owner's consent.
+- [x] 2.1 Write `tests/test_dev2175_definition_names.py` (the arc42 P3 enforcement file) covering every scenario of `models/field-expressions` on in-process SQLite and DuckDB; verify every test fails for the right reason before implementation.
+- [x] 2.2 Write tests for each MODIFIED/ADDED requirement in `models/column-definitions`, `models/column-filters`, `models/model-filters`, `models/join-keys`, `models/stored-upgrade`, `compatibility/removal-tripwire`; include direct `model_validate`, bulk and missing-peer loads, a missing datasource config, `DatasetField(sql=…)` in Python, and a field whose dialect entry and portable `sql` deliberately differ; verify they fail before implementation.
+- [x] 2.3 Write importer tests for each MODIFIED/ADDED requirement in `importers/meaning-preservation`, `cube-import`, `dbt-import`, `osi-import`, `osi-export`, including helper reuse and idempotent re-import, quoted and mixed-case physical names, export/re-import values for derived, filtered, joined, quoted and dialect-only fields; verify they fail before implementation.
+- [x] 2.4 Remove the strict-xfail markers from the 33 tests tied to this change (`tests/_dev2171_fixtures.py::MASKED` users, `tests/test_osi_converter.py` `SELF_NAMED`, `tests/test_dbt_converter.py::TestJoinKeyColumns`, `tests/test_osi_source_columns.py::test_source_column_behind_a_renamed_field_reads_the_physical_column`), respelling their inputs only; verify they fail before implementation.
+- [x] 2.5 Apply the six approved test alignments of design decision 30 exactly; no other existing test's assertions change without the owner's consent.
 
 ## 3. Field model and conversion
 
@@ -36,7 +36,7 @@
 
 ## 6. Suite respelling
 
-- [ ] 6.1 Value pass: a script built on the production conversion rewrites test field `sql` values that need qualification or a dialect entry, in Python sources and YAML fixtures; re-run each touched test; list for the owner any test whose expected value would change and wait for consent before touching it.
+- [ ] 6.1 Value pass: a script built on the production conversion rewrites test field `sql` values that need qualification or a dialect entry, in Python sources and YAML fixtures; re-run each touched test; rewrite test reads of a field's `.sql` (outside the deprecated-spelling tests) to read its stored `expression` (shorthand string or object), keeping each assertion's meaning; list for the owner any test whose expected value would change and wait for consent before touching it.
 - [ ] 6.2 Keyword pass: once DEV-2295 and DEV-2292 are released, bump the la pin and respell `sql=` and the field-level dict keys to `expression` with `la:deterministic-refactor` (dry-run, review, apply, full gate); verify no field-level `sql=` remains outside the deprecated-spelling tests and the gate is green.
 
 ## 7. Architecture and docs

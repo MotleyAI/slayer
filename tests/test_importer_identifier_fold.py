@@ -37,7 +37,9 @@ from tests._dev2171_fixtures import (
     typing_notes, write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
-from tests._osi_helpers import by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, seed_db
+from tests._osi_helpers import (
+    by_name, cols, convert, disable_type_probe, documents, ds, f, f_dialects, flat, running_form, seed_db,
+)
 
 DS = "ds"
 ITEMS = {"name": "items", "sql_table": "Sales.OrderItems",
@@ -360,8 +362,7 @@ def osi_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _osi_sql(db: Path, field: dict[str, Any], *, target: str) -> str | None:
     result = convert(db=db, docs=documents(flat([ds("orders", fields=[f("id"), field])])), target_dialect=target)
-    found = cols(by_name(result)["orders"]).get(field["name"])
-    return found.sql if found is not None else None
+    return running_form(cols(by_name(result)["orders"]).get(field["name"]), target=target)
 
 
 def test_osi_target_native_kept_verbatim(osi_db: Path) -> None:
@@ -372,12 +373,6 @@ def test_osi_target_native_kept_verbatim(osi_db: Path) -> None:
 def test_osi_target_native_mixed_case_identifier_folded(osi_db: Path) -> None:
     assert _osi_sql(osi_db, f_dialects("pick", ("SNOWFLAKE", "OrderAmount::NUMBER(10,2)")),
                     target="snowflake") == "orderamount::NUMBER(10,2)"
-
-
-def test_osi_portable_expression_folded_by_the_target(osi_db: Path) -> None:
-    sql = _osi_sql(osi_db, f("pos", "IFF(OrderAmount > 0, OrderAmount, 0)"), target="postgres")
-    assert sql is not None
-    assert _columns_read(sql) == {"orderamount"}
 
 
 def test_osi_candidate_read_with_its_dialect_folded_by_the_target(osi_db: Path) -> None:

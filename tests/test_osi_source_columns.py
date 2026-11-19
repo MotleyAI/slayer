@@ -147,13 +147,6 @@ _RENAMED = [f("order_id"), f("status", "state")]
 _OPEN = m("open_orders", "COUNT(*) FILTER (WHERE source.status = 'open')")
 
 
-def test_source_column_behind_a_renamed_field_is_reported(db: Path) -> None:
-    result = _import(db, _OPEN, fields=_RENAMED)
-    assert unconverted(result, "open_orders")
-    assert "'status'" in _reason(result, "open_orders")
-
-
-@pytest.mark.xfail(strict=True, reason="DEV-2175 reads a physical column whose name a field has taken")
 async def test_source_column_behind_a_renamed_field_reads_the_physical_column(db: Path) -> None:
     result = _import(db, _OPEN, fields=_RENAMED)
     assert await _value(result, db, "open_orders") == 1
