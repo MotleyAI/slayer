@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     FIRST_BY_SHIPPED,
     LAST_BY_ORDERED,
     LAST_BY_SHIPPED,
-    DatasetMetric,
     OK_W90,
     REGION_LAST,
     TimeDimension,
@@ -53,7 +54,7 @@ class TestFrameBoundExecuted:
         self, exec_backend,
     ) -> None:
         _, engine = exec_backend
-        w = DatasetMetric(expression="sum(amount, window='90d')", name="w")
+        w = QueryMetric(metric="sum(amount, window='90d')", alias="w")
         bounded = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             filter=["ordered_at >= '2024-02-01'"], metrics=[w],
@@ -75,7 +76,7 @@ class TestFrameBoundExecuted:
     ) -> None:
         """The first visible bucket's ``prev`` reaches the invisible January."""
         _, engine = exec_backend
-        prev = DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev")
+        prev = QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev")
         expected = {
             ("North", "2024-02"): 30.0, ("South", "2024-03"): None,
             (None, "2024-03"): None,
@@ -103,7 +104,7 @@ class TestFrameBoundExecuted:
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             filter=["status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
+            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
         ))
         _assert_map(_by_region_month(resp, "w"), {
             k: v for k, v in OK_W90.items() if k != ("South", "2024-03")
@@ -115,11 +116,11 @@ class TestExplicitRankingTime:
         _, engine = shipped_backend
         bare = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[QueryMetric(metric="last(amount)", alias="l")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="last(amount, ordered_at)", name="l")],
+            metrics=[QueryMetric(metric="last(amount, ordered_at)", alias="l")],
         ))
         _assert_map(got=_by_region(resp=bare, col="l"), expected=LAST_BY_ORDERED)
         _assert_map(got=_by_region(resp=explicit, col="l"), expected=LAST_BY_ORDERED)
@@ -129,11 +130,11 @@ class TestExplicitRankingTime:
         _, engine = shipped_backend
         last = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="last(amount, shipped_at)", name="l")],
+            metrics=[QueryMetric(metric="last(amount, shipped_at)", alias="l")],
         ))
         first = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="first(amount, shipped_at)", name="f")],
+            metrics=[QueryMetric(metric="first(amount, shipped_at)", alias="f")],
         ))
         _assert_map(_by_region(last, "l"), LAST_BY_SHIPPED)
         _assert_map(_by_region(first, "f"), FIRST_BY_SHIPPED)
@@ -147,8 +148,8 @@ class TestRankedCompositionPins:
         resp = await engine.execute(q(
             dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="last(amount) / sum(amount)", name="x"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="last(amount) / sum(amount)", alias="x"),
             ],
         ))
         _assert_map(_by_region(resp, "x"), {"North": 0.3, "South": 0.5, None: 1.0})
@@ -157,7 +158,7 @@ class TestRankedCompositionPins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="cumsum(last(amount))", name="x")],
+            metrics=[QueryMetric(metric="cumsum(last(amount))", alias="x")],
         ))
         _assert_map(_by_region_month(resp, "x"), {
             ("North", "2024-01"): 20.0, ("North", "2024-02"): 50.0,
@@ -169,7 +170,7 @@ class TestRankedCompositionPins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="rank(last(amount), direction='desc')", name="x")],
+            metrics=[QueryMetric(metric="rank(last(amount), direction='desc')", alias="x")],
         ))
         got = {r["orders.region"]: int(r["orders.x"]) for r in resp.data}
         # REGION_LAST desc: NULL 60 → 1, North 30 → 2, South 25 → 3.
@@ -181,8 +182,8 @@ class TestRankedCompositionPins:
             dimensions=["region"],
             filter=["last(amount) > 28"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="last(amount)", name="l"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="last(amount)", alias="l"),
             ],
         ))
         _assert_map(

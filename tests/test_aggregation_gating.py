@@ -21,18 +21,18 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
 def _customers_dataset(extra_columns=None, extra_aggregations=None) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
     ]
     if extra_columns:
         columns.extend(extra_columns)
@@ -70,13 +70,13 @@ def _orders_with_status() -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="rating", sql="rating", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="rating", sql="rating", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -89,7 +89,7 @@ class TestCrossModelGating:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "sum(customers.id)", "name": "result"}],
+                metrics=[{"metric": "sum(customers.id)", "alias": "result"}],
             )
 
     async def test_cross_model_pk_count_allowed(self) -> None:
@@ -97,7 +97,7 @@ class TestCrossModelGating:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "count(customers.id)", "name": "result"}],
+            metrics=[{"metric": "count(customers.id)", "alias": "result"}],
         )
         assert "COUNT" in sql.upper()
 
@@ -109,7 +109,7 @@ class TestCrossModelGating:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "sum(customers.name)", "name": "result"}],
+                metrics=[{"metric": "sum(customers.name)", "alias": "result"}],
             )
 
     async def test_cross_model_string_min_allowed(self) -> None:
@@ -117,7 +117,7 @@ class TestCrossModelGating:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "min(customers.name)", "name": "result"}],
+            metrics=[{"metric": "min(customers.name)", "alias": "result"}],
         )
         assert "MIN" in sql.upper()
 
@@ -131,7 +131,7 @@ class TestCrossModelGating:
                 DatasetField(
                     name="rating",
                     sql="rating",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     allowed_aggregations=["avg"],
                 ),
             ]
@@ -141,7 +141,7 @@ class TestCrossModelGating:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "sum(customers.rating)", "name": "result"}],
+                metrics=[{"metric": "sum(customers.rating)", "alias": "result"}],
             )
 
     async def test_cross_model_whitelist_match_allowed(self) -> None:
@@ -151,7 +151,7 @@ class TestCrossModelGating:
                 DatasetField(
                     name="rating",
                     sql="rating",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     allowed_aggregations=["avg"],
                 ),
             ]
@@ -159,7 +159,7 @@ class TestCrossModelGating:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=customers,
-            metrics=[{"expression": "avg(customers.rating)", "name": "result"}],
+            metrics=[{"metric": "avg(customers.rating)", "alias": "result"}],
         )
         assert "AVG" in sql.upper()
 
@@ -171,7 +171,7 @@ class TestCrossModelGating:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "bogus_agg(customers.name)", "name": "result"}],
+                metrics=[{"metric": "bogus_agg(customers.name)", "alias": "result"}],
             )
 
     async def test_cross_model_custom_aggregation_allowed(self) -> None:
@@ -189,7 +189,7 @@ class TestCrossModelGating:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=customers,
-            metrics=[{"expression": "name_concat(customers.name)", "name": "result"}],
+            metrics=[{"metric": "name_concat(customers.name)", "alias": "result"}],
         )
         assert "STRING_AGG" in sql.upper()
 
@@ -207,13 +207,13 @@ class TestStatAggregationEligibility:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
     # Postgres preserves canonical names (no VAR_SAMP→VARIANCE rewrite —
@@ -234,7 +234,7 @@ class TestStatAggregationEligibility:
         sql = await _generate_sql(
             orders=numeric_orders,
             customers=_customers_dataset(),
-            metrics=[{"expression": f"{agg}(amount)", "name": "result"}],
+            metrics=[{"metric": f"{agg}(amount)", "alias": "result"}],
         )
         # Pin the function-call shape: family name immediately followed by
         # the qualified value column. The earlier "( in sql" check passed
@@ -260,7 +260,7 @@ class TestStatAggregationEligibility:
             orders=numeric_orders,
             customers=_customers_dataset(),
             metrics=[
-                {"expression": f"{agg}(amount, other=quantity)", "name": "result"}
+                {"metric": f"{agg}(amount, other=quantity)", "alias": "result"}
             ],
         )
         # Both legs must be qualified and appear in the function call's
@@ -279,7 +279,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                metrics=[{"expression": f"{agg}(status)", "name": "result"}],
+                metrics=[{"metric": f"{agg}(status)", "alias": "result"}],
             )
 
     @pytest.mark.parametrize(
@@ -295,7 +295,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                metrics=[{"expression": f"{agg}(id)", "name": "result"}],
+                metrics=[{"metric": f"{agg}(id)", "alias": "result"}],
             )
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
@@ -313,7 +313,7 @@ class TestStatAggregationEligibility:
                 orders=numeric_orders,
                 customers=customers,
                 metrics=[
-                    {"expression": f"{agg}(status, other=quantity)", "name": "result"}
+                    {"metric": f"{agg}(status, other=quantity)", "alias": "result"}
                 ],
             )
 
@@ -327,7 +327,7 @@ class TestStatAggregationEligibility:
                 orders=numeric_orders,
                 customers=customers,
                 metrics=[
-                    {"expression": f"{agg}(id, other=quantity)", "name": "result"}
+                    {"metric": f"{agg}(id, other=quantity)", "alias": "result"}
                 ],
             )
 
@@ -343,7 +343,7 @@ class TestStatAggregationEligibility:
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                metrics=[{"expression": f"{agg}(amount)", "name": "result"}],
+                metrics=[{"metric": f"{agg}(amount)", "alias": "result"}],
             )
 
 
@@ -361,7 +361,7 @@ class TestCrossModelColumnFilter:
                 DatasetField(
                     name="completed_rev",
                     sql="amount",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     filter="status = 'completed'",
                 ),
             ]
@@ -370,7 +370,7 @@ class TestCrossModelColumnFilter:
             orders=_orders_dataset(),
             customers=customers,
             metrics=[
-                {"expression": "sum(customers.completed_rev)", "name": "result"}
+                {"metric": "sum(customers.completed_rev)", "alias": "result"}
             ],
         )
         assert "CASE" in sql.upper()
@@ -389,7 +389,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "bogus(amount)", "name": "result"}],
+                metrics=[{"metric": "bogus(amount)", "alias": "result"}],
             )
 
     async def test_unknown_name_lists_known_aggregations(self) -> None:
@@ -399,7 +399,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "bogus(amount)", "name": "result"}],
+                metrics=[{"metric": "bogus(amount)", "alias": "result"}],
             )
 
     async def test_unknown_name_suggests_close_match(self) -> None:
@@ -411,7 +411,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "stdev(amount)", "name": "result"}],
+                metrics=[{"metric": "stdev(amount)", "alias": "result"}],
             )
 
     async def test_type_disallowed_keeps_not_applicable_wording(self) -> None:
@@ -419,11 +419,11 @@ class TestDev1576UnknownVsDisallowed:
         # keep the existing 'not applicable to <TYPE> column' message.
         orders = _orders_with_status()
         customers = _customers_dataset()
-        with pytest.raises(ValueError, match=r"not applicable to TEXT field"):
+        with pytest.raises(ValueError, match=r"not applicable to String field"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "sum(status)", "name": "result"}],
+                metrics=[{"metric": "sum(status)", "alias": "result"}],
             )
 
     async def test_type_disallowed_is_not_reported_as_unknown(self) -> None:
@@ -433,7 +433,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "sum(status)", "name": "result"}],
+                metrics=[{"metric": "sum(status)", "alias": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
 
@@ -448,7 +448,7 @@ class TestDev1576UnknownVsDisallowed:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "bogus(*)", "name": "result"}],
+                metrics=[{"metric": "bogus(*)", "alias": "result"}],
             )
 
     async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
@@ -460,25 +460,25 @@ class TestDev1576UnknownVsDisallowed:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 DatasetField(
                     name="rating",
                     sql="rating",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     allowed_aggregations=["avg"],
                 ),
             ],
             aggregations=[Aggregation(name="myagg", expression="SUM({value}) * 2")],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         customers = _customers_dataset()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "myagg(rating)", "name": "result"}],
+                metrics=[{"metric": "myagg(rating)", "alias": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
         assert "not allowed" in str(exc.value)
@@ -491,17 +491,17 @@ class TestDev1576UnknownVsDisallowed:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
             aggregations=[Aggregation(name="myagg", expression="SUM({value}) * 2")],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         sql = await _generate_sql(
             orders=orders,
             customers=_customers_dataset(),
-            metrics=[{"expression": "myagg(amount)", "name": "result"}],
+            metrics=[{"metric": "myagg(amount)", "alias": "result"}],
         )
         assert "SUM" in sql.upper()
 
@@ -511,7 +511,7 @@ class TestDev1576UnknownVsDisallowed:
         sql = await _generate_sql(
             orders=_orders_with_status(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "countd(amount)", "name": "result"}],
+            metrics=[{"metric": "countd(amount)", "alias": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
 
@@ -527,7 +527,7 @@ class TestDev1576UnknownVsDisallowed:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)", "name": "total"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "total"}],
             "filter": [f"{raw}(amount) > 5"],
         })
         sql = await _engine_generate(
@@ -549,7 +549,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "round(sum(amount), 2)", "name": "r"}],
+            metrics=[{"metric": "round(sum(amount), 2)", "alias": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -561,7 +561,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "round(sum(amount), 2)", "name": "r"}],
+            metrics=[{"metric": "round(sum(amount), 2)", "alias": "r"}],
             dialect=dialect,
         )
         up = sql.upper()
@@ -574,7 +574,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "round(sum(amount))", "name": "r"}],
+            metrics=[{"metric": "round(sum(amount))", "alias": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -586,7 +586,7 @@ class TestDev1576RoundAbsGeneration:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "abs(sum(amount))", "name": "a"}],
+            metrics=[{"metric": "abs(sum(amount))", "alias": "a"}],
             dialect=dialect,
         )
         assert "ABS(" in sql.upper()
@@ -602,19 +602,19 @@ class TestDev1576UnknownNamePrecedence:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(
                     name="rating",
                     sql="rating",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     allowed_aggregations=["avg"],
                 ),
             ],
             aggregations=[Aggregation(name="myagg", expression="SUM({value}) * 2")],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
 
     @pytest.mark.parametrize("column", ["rating", "id", "status"])
@@ -630,7 +630,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": f"bogus({column})", "name": "result"}],
+                metrics=[{"metric": f"bogus({column})", "alias": "result"}],
             )
 
     async def test_known_list_includes_custom_aggregations(self) -> None:
@@ -640,7 +640,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "bogus(amount)", "name": "result"}],
+                metrics=[{"metric": "bogus(amount)", "alias": "result"}],
             )
         assert "myagg" in str(exc.value)
 
@@ -651,7 +651,7 @@ class TestDev1576UnknownNamePrecedence:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                metrics=[{"expression": "zzzzz(amount)", "name": "result"}],
+                metrics=[{"metric": "zzzzz(amount)", "alias": "result"}],
             )
         assert "Did you mean" not in str(exc.value)
 
@@ -667,19 +667,19 @@ class TestDev1576CustomAggPrecedence:
             sql_table="public.orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             ],
             aggregations=[
                 Aggregation(name="countd", expression="COUNT(DISTINCT {value}) + 1"),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         sql = await _generate_sql(
             orders=orders,
             customers=_customers_dataset(),
-            metrics=[{"expression": "countd(amount)", "name": "result"}],
+            metrics=[{"metric": "countd(amount)", "alias": "result"}],
         )
         # The custom formula (… + 1) must win, not the healed builtin
         # count_distinct (plain COUNT(DISTINCT …)).
@@ -691,7 +691,7 @@ class TestDev1576CustomAggPrecedence:
         sql = await _generate_sql(
             orders=_orders_dataset(),
             customers=_customers_dataset(),
-            metrics=[{"expression": "countd(amount)", "name": "result"}],
+            metrics=[{"metric": "countd(amount)", "alias": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
         assert "+ 1" not in sql

@@ -13,14 +13,13 @@
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "name",
     "model": "customers.regions"
    },
    "new": {
-    "name": "name",
-    "dataset": "customers.regions"
+    "field": "customers.regions.name"
    }
   },
   {
@@ -68,14 +67,13 @@
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "name",
     "model": "customers.regions"
    },
    "new": {
-    "name": "name",
-    "dataset": "customers.regions"
+    "field": "customers.regions.name"
    }
   },
   {

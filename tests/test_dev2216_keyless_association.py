@@ -102,17 +102,17 @@ def keyed_sales_datasets() -> list[SlayerDataset]:
     sales = SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="source_ref", datatype=DataType.TEXT, unique=True),
-            DatasetField(name="tag_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.INT),
-            DatasetField(name="weight", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="source_ref", datatype=DataType.STRING, unique=True),
+            DatasetField(name="tag_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.INTEGER),
+            DatasetField(name="weight", datatype=DataType.INTEGER),
         ],
-        relationships=[DatasetRelationship(to="tags", join_pairs=[["tag_id", "tag_id"]])],
+        relationships=[DatasetRelationship(to="tags", from_columns=["tag_id"], to_columns=["tag_id"])],
     )
     tags = SlayerDataset(
         name="tags", data_source="test", sql_table="tags",
-        fields=[DatasetField(name="tag_id", datatype=DataType.INT), DatasetField(name="label", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="tag_id", datatype=DataType.INTEGER), DatasetField(name="label", datatype=DataType.STRING)],
     )
     return [sales, tags]
 
@@ -192,7 +192,7 @@ class TestRowIdentity:
             models = await engine.ingest(ds)
             sales = next(model for model in models if model.name == "sales")
             assert next(col for col in sales.fields if col.name == "source_ref").unique
-            sales.relationships = [DatasetRelationship(to="tags", join_pairs=[["tag_id", "tag_id"]])]
+            sales.relationships = [DatasetRelationship(to="tags", from_columns=["tag_id"], to_columns=["tag_id"])]
             for model in models:
                 await engine.storage.save_dataset(model, _validate=False)
             resp = await engine.execute(sales_query(source=source, mode=mode))
@@ -226,7 +226,7 @@ class TestRowIdentity:
 
     async def test_a_regroup_prefixed_home_column_does_not_shadow_the_row_identity(self, dialect) -> None:
         models = ossie_datasets()
-        models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", sql="id", datatype=DataType.INT)]
+        models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", sql="id", datatype=DataType.INTEGER)]
         async with ossie_engine(dialect, datasets=models) as engine:
             resp = await engine.execute(query(
                 population="orders", dimensions=["status"], metrics=[metric("sum(customers.spend)", "sp")]))
@@ -234,7 +234,7 @@ class TestRowIdentity:
 
     def test_no_model_column_can_take_the_row_identity_name(self) -> None:
         with pytest.raises(ValidationError):
-            DatasetField(name=ROW_IDENTITY_FIELD, datatype=DataType.INT)
+            DatasetField(name=ROW_IDENTITY_FIELD, datatype=DataType.INTEGER)
 
     async def test_postgres_executes(self, request) -> None:
         async with ossie_engine("postgres", request=request, duplicate=True) as engine:

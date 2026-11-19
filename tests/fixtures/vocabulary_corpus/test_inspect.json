@@ -40,11 +40,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -127,11 +127,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -170,11 +170,11 @@
    },
    "new": {
     "to": "zebra",
-    "join_pairs": [
-     [
-      "z_id",
-      "id"
-     ]
+    "from_columns": [
+     "z_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -191,11 +191,11 @@
    },
    "new": {
     "to": "apple",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

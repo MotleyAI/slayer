@@ -37,8 +37,8 @@ class TestDbtDependencyCheck:
     def _prune(self, metrics: list[DatasetMetric]) -> tuple[set[str], set[str]]:
         model = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            fields=[DatasetField(name=c, datatype=DataType.DOUBLE) for c in ("id", "amount", "quantity", "price")]
-            + [DatasetField(name="status", datatype=DataType.TEXT)],
+            fields=[DatasetField(name=c, datatype=DataType.FLOAT) for c in ("id", "amount", "quantity", "price")]
+            + [DatasetField(name="status", datatype=DataType.STRING)],
             aggregations=[Aggregation(name="wsum", expression="SUM({value} * {weight})")],
             metrics=metrics,
         )

@@ -45,10 +45,10 @@ async def _env(*models: SlayerDataset) -> AsyncGenerator[SlayerQueryEngine]:
 
 def _contractors(skills: DatasetField) -> SlayerDataset:
     return SlayerDataset(name="contractors", sql_table="contractors", data_source="ds",
-                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), skills])
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), skills])
 
 
-STALE = DatasetField(name="skills", datatype=DataType.TEXT)
+STALE = DatasetField(name="skills", datatype=DataType.STRING)
 
 
 def _dumps(entries: list[Any]) -> list[dict[str, Any]]:
@@ -77,15 +77,15 @@ class TestValidation:
         assert "ingest" in text.lower(), finding
 
     async def test_a_typed_list_column_is_not_drift(self) -> None:
-        typed = DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)
+        typed = DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING)
         async with _env(_contractors(typed)) as engine:
             entries = _dumps(await engine.validate_datasets(data_source="ds"))
         assert entries == [], entries
 
     async def test_a_declared_list_in_an_sql_mode_model(self) -> None:
         model = SlayerDataset(name="crew", sql="SELECT id, skills FROM contractors", data_source="ds", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)])
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING)])
         async with _env(model) as engine:
             entries = _dumps(await engine.validate_datasets(data_source="ds"))
         assert entries == [], entries
@@ -95,7 +95,7 @@ class TestQueryTime:
     async def test_a_refused_query_explained(self) -> None:
         async with _env(_contractors(STALE)) as engine:
             with pytest.raises(SchemaDriftError) as info:
-                await engine.execute({"population": "contractors", "metrics": [{"expression": "count(*)", "name": "n"}],
+                await engine.execute({"population": "contractors", "metrics": [{"metric": "count(*)", "alias": "n"}],
                                       "filter": ["skills = 'go'"]})
         err = info.value
         assert "contractors" in err.datasets

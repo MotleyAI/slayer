@@ -97,7 +97,7 @@ async def test_ingestion_flags_and_joins(pg_ds) -> None:
     customers, orders = models["customers"], models["orders"]
     assert [c.name for c in customers.fields if c.primary_key] == ["id"]
     assert {c.name for c in customers.fields if c.unique} == {"email", "code"}
-    assert {tuple(map(tuple, j.join_pairs)): j.cardinality for j in orders.relationships} == {
+    assert {tuple(map(tuple, j.column_pairs)): j.cardinality for j in orders.relationships} == {
         (("customer_id", "id"),): RelationshipCardinality.MANY_TO_ONE,
         (("a", "a"), ("b", "b")): RelationshipCardinality.MANY_TO_ONE,
     }

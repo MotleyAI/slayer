@@ -13,18 +13,19 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1900_fixtures import (
     HOME_WIDEN_VALUE,
-    DatasetMetric,
     SlayerQuery,
     home_path_datasets,
     make_exec_engine,
     orders_q,
 )
 
-EXPLICIT = DatasetMetric(
-    expression="wsum_cust_spend(customers.regions.pop, weight=customers.spend)", name="w")
-DEFAULT = DatasetMetric(expression="wsum_cust_spend(customers.regions.pop)", name="w")
+EXPLICIT = QueryMetric(
+    metric="wsum_cust_spend(customers.regions.pop, weight=customers.spend)", alias="w")
+DEFAULT = QueryMetric(metric="wsum_cust_spend(customers.regions.pop)", alias="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -54,6 +55,6 @@ class TestReverseHopDefaultFailsClosed:
         no forward home."""
         q = SlayerQuery(
             population="regions",
-            metrics=[DatasetMetric(expression="wsum_cust_spend(pop)", name="w")])
+            metrics=[QueryMetric(metric="wsum_cust_spend(pop)", alias="w")])
         with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(q)

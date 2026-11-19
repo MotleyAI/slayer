@@ -45,7 +45,7 @@ from slayer.core.keys import (
 )
 from slayer.core.keys import TimeTruncKey
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, DatasetMetric, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.core.time_bounds import is_frame_bound, is_temporal_literal, strip_frame_bounds
 from slayer.engine.plan import plan_query
 from slayer.sql.scope_check import assert_scope_closed
@@ -326,13 +326,13 @@ def _orders(**kw) -> SlayerDataset:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="ship_date", sql="ship_date", datatype=DataType.TIMESTAMP),
-            DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="ship_date", sql="ship_date", datatype=DataType.DATETIME),
+            DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
     )
     base.update(kw)
@@ -345,10 +345,10 @@ def _customers(**kw) -> SlayerDataset:
         sql_table="customers",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
         ],
     )
     base.update(kw)
@@ -359,15 +359,15 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
 
 
 def _joined_orders() -> SlayerDataset:
     return _orders(
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -380,7 +380,7 @@ def _windowed_query(**kw) -> SlayerQuery:
     base = dict(
         population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        metrics=[DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d")],
+        metrics=[QueryMetric(metric="sum(revenue, window='90d')", alias="rev_90d")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -653,7 +653,7 @@ class TestWindowedSrcFrameBounds:
         regions because the residual needs it — and only the bound disappears.
         """
         customers = _customers(
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         query = _windowed_query(
             time_dimensions=[
@@ -686,7 +686,7 @@ class TestWindowedSrcFrameBounds:
     async def test_multi_hop_residual_keeps_its_full_join_chain(self) -> None:
         """Codex F4: a residual crossing two hops keeps every hop."""
         customers = _customers(
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         query = _windowed_query(
             filter=["created_at >= '2024-06-01' and customers.regions.name = 'North'"],
@@ -707,8 +707,8 @@ class TestWindowedSrcFrameBounds:
     async def test_two_windowed_measures_share_the_residual(self) -> None:
         query = _windowed_query(
             metrics=[
-                DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d"),
-                DatasetMetric(expression="avg(revenue, window='30d')", name="rev_30d"),
+                QueryMetric(metric="sum(revenue, window='90d')", alias="rev_90d"),
+                QueryMetric(metric="avg(revenue, window='30d')", alias="rev_30d"),
             ],
             filter=["created_at >= '2024-06-01' and status = 'paid'"],
         )
@@ -736,7 +736,7 @@ class TestWindowedSrcFrameBounds:
         assertions so the test is not merely a SQL-validity check that would
         pass without any stripping."""
         query = _windowed_query(
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["created_at >= '2024-06-01' and status = 'paid'"],
         )
         sql = await _wm_sql(query, _orders())
@@ -865,7 +865,7 @@ def _shift_query(**kw) -> SlayerQuery:
     base = dict(
         population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        metrics=[DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="prev")],
+        metrics=[QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="prev")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)

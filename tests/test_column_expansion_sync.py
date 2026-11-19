@@ -25,17 +25,17 @@ def _dataset_a() -> SlayerDataset:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.INT),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="bar", sql="bar", datatype=DataType.FLOAT),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.INTEGER),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
             # Local derived chain: c2 references sibling derived c1.
-            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.FLOAT),
             # Cross-model derived ref into B's derived column.
-            DatasetField(name="ratio", sql="A.bar / B.foo_normalized", datatype=DataType.DOUBLE),
+            DatasetField(name="ratio", sql="A.bar / B.foo_normalized", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
 
 
@@ -45,9 +45,9 @@ def _dataset_b() -> SlayerDataset:
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE),
-            DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.FLOAT),
+            DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.FLOAT),
         ],
     )
 
@@ -100,9 +100,9 @@ def test_cycle_raises_column_cycle_error() -> None:
         data_source="ds",
         sql_table="C",
         fields=[
-            DatasetField(name="x", sql="x", datatype=DataType.DOUBLE),
-            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="x", sql="x", datatype=DataType.FLOAT),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError):

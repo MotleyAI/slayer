@@ -17,7 +17,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, SUB_DAY_GRANULARITIES, TimeGranularity, TypeKind, kind_of
 from slayer.core.json_path import JsonPath
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
 from slayer.sql import connection_policy
@@ -334,7 +334,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
 
     def try_cast_type(self, to: exp.DataType, *, data_type: DataType) -> exp.DataType:
         zoned = to.this is exp.DataType.Type.TIMESTAMPTZ
-        return _DATETIME.copy() if data_type is DataType.TIMESTAMP and zoned else to
+        return _DATETIME.copy() if data_type.kind is TypeKind.TIMESTAMP and zoned else to
 
     def build_temporal_literal(self, *, value: date, dt: DataType) -> Expression:
         if dt is DataType.DATE:
@@ -381,7 +381,7 @@ class BigqueryDialect(DottedAliasManglingMixin, SqlDialect):
             return exp.Anonymous(this="DATETIME_DIFF", expressions=[
                 trunc(end), trunc(start), exp.var(unit.value.upper()),
             ])
-        if operand is DataType.TIMESTAMP:
+        if kind_of(operand) is TypeKind.TIMESTAMP:
             start = exp.Cast(this=start.copy(), to=exp.DataType.build("DATE"))
             end = exp.Cast(this=end.copy(), to=exp.DataType.build("DATE"))
         return exp.Anonymous(this="DATE_DIFF", expressions=[end.copy(), start.copy(), _date_part_unit(unit)])

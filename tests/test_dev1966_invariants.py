@@ -49,8 +49,8 @@ class TestGeneratorInvariant:
 
 def _schema(name: str) -> StageSchema:
     return StageSchema(relation_name=name, grain=["id"], fields=[
-        StageField(name="id", sql_alias="id", datatype=DataType.INT),
-        StageField(name="tr", sql_alias="tr", datatype=DataType.TEXT),
+        StageField(name="id", sql_alias="id", datatype=DataType.INTEGER),
+        StageField(name="tr", sql_alias="tr", datatype=DataType.STRING),
     ])
 
 
@@ -70,7 +70,7 @@ class TestStageBundleCollision:
 
     def test_an_extended_host_replaces_its_base(self) -> None:
         extended = orders_dataset().model_copy(update={"fields": [
-            *orders_dataset().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE)]})
+            *orders_dataset().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.FLOAT)]})
         out = stage_bundle_with_siblings(
             bundle=_bundle(), source_dataset=extended, sibling_schemas={}, data_source="test")
         (host,) = [x for x in out.referenced_datasets if x.name == "orders"]

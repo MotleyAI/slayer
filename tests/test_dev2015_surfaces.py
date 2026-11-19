@@ -141,7 +141,7 @@ class TestDeclaredDefaultTimeDimensionType:
                            default_time_dimension="day_text", fields=[DatasetField(name="day_text")])
         with pytest.raises(DefaultTimeDimensionTypeError):
             await storage.save_dataset(text)
-        for column_type in (DataType.DATE, DataType.TIMESTAMP):
+        for column_type in (DataType.DATE, DataType.DATETIME):
             model = SlayerDataset(name=f"by_{column_type.value.lower()}", sql_table="returns", data_source="test",
                                 default_time_dimension="day", fields=[DatasetField(name="day", datatype=column_type)])
             await storage.save_dataset(model)
@@ -315,7 +315,7 @@ async def test_spine_query_through_mcp(backend) -> None:
     async with spine_engine(backend) as eng:
         server = create_mcp_server(storage=eng.storage)
         text = await _call(server, name="query", arguments={"query": {
-            "metrics": [{"expression": "sum(orders.amount)", "name": "o"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "o"}],
             "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                                  "date_range": ["2025-01-01", "2025-03-31"]}],
         }})

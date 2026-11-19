@@ -24,7 +24,7 @@ from slayer.core.keys import (
     ValueKey,
 )
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.compile.discovery import RootDisposition
 from slayer.engine.compile.stages import _regroup_producer_prebound
 from slayer.engine.plan import plan_query
@@ -34,7 +34,6 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
 
 from tests._dev1847_fixtures import (
-    DatasetMetric,
     chain_q,
     dev1847_datasets,
     gen,
@@ -46,10 +45,10 @@ from tests.test_dev1903_discovery import _discover
 from slayer.engine.query_engine import SlayerQueryEngine
 
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
-RLEVEL = {"expression": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
-TLEVEL = {"expression": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
-          "name": "tlevel"}
-TOT = DatasetMetric(expression="sum(amount)", name="tot")
+RLEVEL = {"field": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "alias": "rlevel"}
+TLEVEL = {"field": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
+          "alias": "tlevel"}
+TOT = QueryMetric(metric="sum(amount)", alias="tot")
 
 R_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0, "Void": None}
 TOT_BY_REGION = {"North": 90.0, "South": 140.0, "East": 180.0, "Gap": 20.0, "Void": None}
@@ -59,20 +58,20 @@ TLEVEL_BY_REGION = {"South": "rest", "East": "top", "North": "top", "Gap": "top"
                     "Void": "rest"}
 
 PLAIN_RANK = "rank(sum(amount, partition_by=region), direction='desc')"
-PBAND = {"expression": f"CASE WHEN {PLAIN_RANK} > 1 THEN 'top' ELSE 'rest' END",
-         "name": "pband"}
+PBAND = {"field": f"CASE WHEN {PLAIN_RANK} > 1 THEN 'top' ELSE 'rest' END",
+         "alias": "pband"}
 
 # Finer-grained re-aggregation: outer grain [city, region] under dimensions [region].
 FINE = "avg(sum(amount, partition_by=[city, region, product]), partition_by=[city, region])"
-FINE_DIM = {"expression": f"CASE WHEN {FINE} > 30 THEN 'hi' ELSE 'lo' END", "name": "x"}
+FINE_DIM = {"field": f"CASE WHEN {FINE} > 30 THEN 'hi' ELSE 'lo' END", "alias": "x"}
 FINE_TOT = {("North", "lo"): 30.0, ("North", "hi"): 60.0, ("South", "hi"): 140.0,
             ("East", "hi"): 180.0, ("Gap", "lo"): 20.0, ("Void", "lo"): None}
 
-CITY_BAND = {"expression": "CASE WHEN sum(amount, partition_by=[city, region]) > 45 "
-                           "THEN 'hi' ELSE 'lo' END", "name": "band"}
+CITY_BAND = {"field": "CASE WHEN sum(amount, partition_by=[city, region]) > 45 "
+                           "THEN 'hi' ELSE 'lo' END", "alias": "band"}
 
 CHAIN_R = "avg(sum(amount, partition_by=customer_id), partition_by=customers.regions.name)"
-CL = {"expression": f"CASE WHEN {CHAIN_R} > 40 THEN 'hi' ELSE 'lo' END", "name": "cl"}
+CL = {"field": f"CASE WHEN {CHAIN_R} > 40 THEN 'hi' ELSE 'lo' END", "alias": "cl"}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -125,13 +124,13 @@ class TestReaggregationInDimensionAndElsewhere:
 
     async def test_measure(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], metrics=[TOT, DatasetMetric(expression=R, name="r")]))
+            dimensions=["region", RLEVEL], metrics=[TOT, QueryMetric(metric=R, alias="r")]))
         assert _col(resp, "r") == _approx(R_BY_REGION)
         assert _col(resp, "rlevel") == RLEVEL_BY_REGION
 
     async def test_filter_by_dimension_name_uses_band(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], metrics=[TOT, DatasetMetric(expression=R, name="r")],
+            dimensions=["region", RLEVEL], metrics=[TOT, QueryMetric(metric=R, alias="r")],
             filter=["rlevel = 'hi'"]))
         assert _col(resp, "r") == _approx({"South": 70.0, "East": 60.0})
 
@@ -145,7 +144,7 @@ class TestTransformOverReaggregationInDimension:
     async def test_rank_as_measure(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL],
-            metrics=[TOT, DatasetMetric(expression=f"rank({R}, direction='desc')", name="rk")]))
+            metrics=[TOT, QueryMetric(metric=f"rank({R}, direction='desc')", alias="rk")]))
         assert _col(resp, "rk") == RANK_BY_REGION
         assert _col(resp, "tlevel") == TLEVEL_BY_REGION
 
@@ -168,7 +167,7 @@ class TestTransformOverReaggregationInDimension:
     async def test_two_dimensions_share_the_reaggregation(self, exec_engine: SlayerQueryEngine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL, RLEVEL],
-            metrics=[TOT, DatasetMetric(expression=R, name="r")]))
+            metrics=[TOT, QueryMetric(metric=R, alias="r")]))
         got = {r["sales.region"]: (r["sales.tlevel"], r["sales.rlevel"]) for r in resp.data}
         assert got == {"South": ("rest", "hi"), "East": ("top", "hi"),
                        "North": ("top", "lo"), "Gap": ("top", "lo"), "Void": ("rest", "lo")}
@@ -204,8 +203,8 @@ class TestFilterOnAggregateOwnedByDimensionTransform:
         assert _col(resp, "tot") == _approx({"South": 140.0, "East": 180.0})
 
     def test_finer_partition_key_is_a_typed_error(self):
-        band = {"expression": "CASE WHEN rank(sum(amount, partition_by=[city, region]), direction='desc') > 1 "
-                              "THEN 'top' ELSE 'rest' END", "name": "cband"}
+        band = {"field": "CASE WHEN rank(sum(amount, partition_by=[city, region]), direction='desc') > 1 "
+                              "THEN 'top' ELSE 'rest' END", "alias": "cband"}
         query = sales_q(dimensions=["region", band], metrics=[TOT],
                         filter=["sum(amount, partition_by=[city, region]) > 50"])
         bundle = _bundle()
@@ -218,7 +217,7 @@ class TestCrossModelReaggregationInDimension:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name", CL],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")],
             filter=[f"{CHAIN_R} < sum(amount)"]))
         got = [(r["corders.customers.regions.name"], r["corders.cl"], r["corders.tot"])
                for r in resp.data]
@@ -236,7 +235,7 @@ class TestFinerGrainedReaggregationDimension:
 
     async def test_order_by_name_of_the_reaggregation_dimension(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", {"expression": FINE, "name": "x"}], metrics=[TOT],
+            dimensions=["region", {"field": FINE, "alias": "x"}], metrics=[TOT],
             order=[{"field": "x", "direction": "desc"}]))
         xs = [r["sales.x"] for r in resp.data if r["sales.x"] is not None]
         assert xs == pytest.approx([100.0, 80.0, 60.0, 50.0, 40.0, 15.0, 12.0, 8.0])
@@ -259,14 +258,14 @@ class TestPlainMeasureTypedFilterOverDimensionAggregate:
 
 def _fine_cases():
     """(id, query kwargs, expected location pattern) for combined consumers of FINE."""
-    fm = DatasetMetric(expression=FINE, name="f")
+    fm = QueryMetric(metric=FINE, alias="f")
     return [
         ("measure", {"metrics": [fm]}, r"metric 'f'"),
         ("order", {"metrics": [TOT], "order": [{"field": FINE, "direction": "asc"}]},
          r"order item\b"),
-        ("arithmetic", {"metrics": [DatasetMetric(expression=f"{FINE} + 1", name="f")]},
+        ("arithmetic", {"metrics": [QueryMetric(metric=f"{FINE} + 1", alias="f")]},
          r"metric 'f'"),
-        ("transform", {"metrics": [DatasetMetric(expression=f"rank({FINE}, direction='desc')", name="f")]},
+        ("transform", {"metrics": [QueryMetric(metric=f"rank({FINE}, direction='desc')", alias="f")]},
          r"metric 'f'"),
         ("filter", {"metrics": [TOT], "filter": [f"{FINE} < sum(amount)"]}, r"filter\b"),
         ("split-filter",
@@ -308,7 +307,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
     def test_cross_model_outer_key(self):
         formula = "avg(sum(amount, partition_by=customer_id), partition_by=customers.region_id)"
         query = chain_q(dimensions=["customers.regions.name"],
-                        metrics=[DatasetMetric(expression=formula, name="c")])
+                        metrics=[QueryMetric(metric=formula, alias="c")])
         bundle = _bundle("corders")
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -325,7 +324,7 @@ def _is_r(key: ValueKey) -> bool:
 _R_CONSUMERS = [
     pytest.param({"filter": [f"{R} < sum(amount)"]}, id="filter"),
     pytest.param({"order": [{"field": R, "direction": "desc"}]}, id="order"),
-    pytest.param({"metrics": [TOT, DatasetMetric(expression=R, name="r")]}, id="measure"),
+    pytest.param({"metrics": [TOT, QueryMetric(metric=R, alias="r")]}, id="measure"),
 ]
 
 
@@ -374,7 +373,7 @@ class TestDimensionTransformOwnsReaggregation:
 
     def test_measure_occurrence_is_combined_only(self):
         ds = _discover(sales_q(dimensions=["region", TLEVEL],
-                               metrics=[TOT, DatasetMetric(expression=R, name="r")]),
+                               metrics=[TOT, QueryMetric(metric=R, alias="r")]),
                        _bundle())
         assert {d.phase for d in ds if _is_rank(d.root)} == {"row"}
         assert {d.phase for d in ds if _is_r(d.root)} == {"combined"}
@@ -438,25 +437,25 @@ class TestSynthesizedGrainNames:
 
         models = [
             SlayerDataset(name="orders", data_source="test", sql_table="orders", fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="region", datatype=DataType.TEXT),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-            ], relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+            ], relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                                 cardinality=RelationshipCardinality.MANY_TO_ONE)]),
             SlayerDataset(name="customers", data_source="test", sql_table="customers", fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ]),
         ]
         months = [TimeDimension(field=n, granularity=TimeGranularity.MONTH)
                   for n in ("created_at", "customers.created_at")]
         q = SlayerQuery(
-            population="orders", dimensions=[FieldRef(name="region")], time_dimensions=months,
-            metrics=[DatasetMetric(
-                expression="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
-                        " partition_by=[created_at, customers.created_at])", name="m")],
+            population="orders", dimensions=[QueryDimension(field="region")], time_dimensions=months,
+            metrics=[QueryMetric(
+                metric="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
+                        " partition_by=[created_at, customers.created_at])", alias="m")],
         )
         async with seeded_exec_engine(dialect="sqlite", seed=seed, datasets=models) as (eng, _):
             resp = await eng.execute(q)

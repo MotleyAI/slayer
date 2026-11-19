@@ -61,10 +61,10 @@ def monthly_dataset() -> SlayerDataset:
         name="monthly", data_source="test", sql_table="monthly",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -77,10 +77,10 @@ def monthly_multi_dataset() -> SlayerDataset:
         name="monthly_multi", data_source="test", sql_table="monthly_multi",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -89,15 +89,15 @@ def _extend_graph_a(datasets: List[SlayerDataset]) -> None:
     """Add DEV-1832's columns/aggregations to the DEV-1900 graph in place."""
     orders = next(m for m in datasets if m.name == "orders")
     orders.fields.extend([
-        DatasetField(name="cost", datatype=DataType.DOUBLE),
-        DatasetField(name="quantity", datatype=DataType.DOUBLE),
-        DatasetField(name="weight", datatype=DataType.DOUBLE),
+        DatasetField(name="cost", datatype=DataType.FLOAT),
+        DatasetField(name="quantity", datatype=DataType.FLOAT),
+        DatasetField(name="weight", datatype=DataType.FLOAT),
     ])
     cust = next(m for m in datasets if m.name == "customers")
     cust.fields.extend([
-        DatasetField(name="discount", datatype=DataType.DOUBLE),
+        DatasetField(name="discount", datatype=DataType.FLOAT),
         # Filtered joined-model leaf: spend restricted to North customers.
-        DatasetField(name="north_spend", datatype=DataType.DOUBLE, sql="spend",
+        DatasetField(name="north_spend", datatype=DataType.FLOAT, sql="spend",
                filter="regions.name = 'North'"),
     ])
     # Customers-owned custom aggregation; default weight is customers-local, so

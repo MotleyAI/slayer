@@ -16,8 +16,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -43,8 +43,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -85,7 +85,7 @@
     "population": "no_such_model",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }

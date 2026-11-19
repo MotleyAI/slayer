@@ -12,8 +12,9 @@ from slayer.ir.planned import _iter_plans_with_producers, _walk_regroup_attaches
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import (
-    DatasetMetric,
     TimeDimension,
     TimeGranularity,
     degenerate_warnings,
@@ -38,7 +39,7 @@ def _q(expression: str, *, date_range: bool = False):
                          date_range=["2024-02-01", "2024-03-31"])]
           if date_range else month_td())
     return monthly_q(dimensions=["region"], time_dimensions=td,
-                     metrics=[DatasetMetric(expression=f"time_shift({expression}, -1)", name="t")])
+                     metrics=[QueryMetric(metric=f"time_shift({expression}, -1)", alias="t")])
 
 
 def _ctes(sql: str) -> list[str]:

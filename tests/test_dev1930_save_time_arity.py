@@ -34,9 +34,9 @@ def _line_items(*, extra: tuple[DatasetField, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="line_items", data_source=DS, sql_table="line_items",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", sql="order_id", datatype=DataType.INT),
-            DatasetField(name="qty", sql="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", sql="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
             *extra,
         ],
     )
@@ -47,9 +47,9 @@ def _orders(*, li_column: DatasetField, joins: list[DatasetRelationship]) -> Sla
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
             li_column,
         ],
         relationships=joins,
@@ -75,10 +75,10 @@ class TestProvablyFans:
     def test_declared_one_to_many_on_non_unique_target_fans(self) -> None:
         target = SlayerDataset(
             name="b", data_source=DS, sql_table="b",
-            fields=[DatasetField(name="grp", sql="grp", datatype=DataType.INT)],
+            fields=[DatasetField(name="grp", sql="grp", datatype=DataType.INTEGER)],
         )
         edge = DatasetRelationship(
-            to="b", join_pairs=[["b_grp", "grp"]],
+            to="b", from_columns=["b_grp"], to_columns=["grp"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )
         assert provably_fans(edge=edge, target_dataset=target) is True
@@ -86,10 +86,10 @@ class TestProvablyFans:
     def test_declared_many_to_many_fans(self) -> None:
         target = SlayerDataset(
             name="b", data_source=DS, sql_table="b",
-            fields=[DatasetField(name="grp", sql="grp", datatype=DataType.INT)],
+            fields=[DatasetField(name="grp", sql="grp", datatype=DataType.INTEGER)],
         )
         edge = DatasetRelationship(
-            to="b", join_pairs=[["b_grp", "grp"]],
+            to="b", from_columns=["b_grp"], to_columns=["grp"],
             cardinality=RelationshipCardinality.MANY_TO_MANY,
         )
         assert provably_fans(edge=edge, target_dataset=target) is True
@@ -97,14 +97,14 @@ class TestProvablyFans:
     def test_undeclared_hop_does_not_fan(self) -> None:
         # cardinality None (reverse-PK-covered forward hop): unproven, not fanning.
         target = _line_items()
-        edge = DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]])
+        edge = DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])
         assert provably_fans(edge=edge, target_dataset=target) is False
 
     def test_declared_to_many_but_covers_unique_key_does_not_fan(self) -> None:
         # Proof beats a contradictory to-many declaration.
         target = _line_items()
         edge = DatasetRelationship(
-            to="line_items", join_pairs=[["li_id", "id"]],
+            to="line_items", from_columns=["li_id"], to_columns=["id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )
         assert provably_fans(edge=edge, target_dataset=target) is False
@@ -112,7 +112,7 @@ class TestProvablyFans:
     def test_many_to_one_does_not_fan(self) -> None:
         target = _line_items()
         edge = DatasetRelationship(
-            to="line_items", join_pairs=[["li_id", "order_id"]],
+            to="line_items", from_columns=["li_id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.MANY_TO_ONE,
         )
         assert provably_fans(edge=edge, target_dataset=target) is False
@@ -130,9 +130,9 @@ async def test_sql_across_declared_one_to_many_rejected(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.DOUBLE),
+        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
-            to="line_items", join_pairs=[["id", "order_id"]],
+            to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
@@ -162,11 +162,11 @@ async def test_filter_across_declared_one_to_many_rejected(tmp_path) -> None:
     # Value SQL is host-local; only the filter crosses the fanning hop.
     orders = _orders(
         li_column=DatasetField(
-            name="big_item", sql="amount", datatype=DataType.DOUBLE,
+            name="big_item", sql="amount", datatype=DataType.FLOAT,
             filter="line_items.qty >= 2",
         ),
         joins=[DatasetRelationship(
-            to="line_items", join_pairs=[["id", "order_id"]],
+            to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
@@ -187,10 +187,10 @@ async def test_host_prefixed_reference_rejected(tmp_path) -> None:
     await storage.save_dataset(_line_items())
     orders = _orders(
         li_column=DatasetField(
-            name="li_qty", sql="orders.line_items.qty", datatype=DataType.DOUBLE,
+            name="li_qty", sql="orders.line_items.qty", datatype=DataType.FLOAT,
         ),
         joins=[DatasetRelationship(
-            to="line_items", join_pairs=[["id", "order_id"]],
+            to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
@@ -207,18 +207,18 @@ async def test_join_declared_on_peer_side_rejected(tmp_path) -> None:
     line_items = SlayerDataset(
         name="line_items", data_source=DS, sql_table="line_items",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", sql="order_id", datatype=DataType.INT),
-            DatasetField(name="qty", sql="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", sql="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
-            to="orders", join_pairs=[["order_id", "id"]],
+            to="orders", from_columns=["order_id"], to_columns=["id"],
             cardinality=RelationshipCardinality.MANY_TO_ONE,
         )],
     )
     await storage.save_dataset(line_items)
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.DOUBLE),
+        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
         joins=[],  # no join declared on orders — it resolves over the reverse edge
     )
     with pytest.raises(DerivedFieldFanningError) as ei:
@@ -231,27 +231,27 @@ async def test_multihop_fanning_then_unproven_rejected(tmp_path) -> None:
     parts = SlayerDataset(
         name="parts", data_source=DS, sql_table="parts",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="code", sql="code", datatype=DataType.TEXT),  # non-unique
-            DatasetField(name="pval", sql="pval", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="code", sql="code", datatype=DataType.STRING),  # non-unique
+            DatasetField(name="pval", sql="pval", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(parts)
     # orders -> line_items fans; line_items -> parts is undeclared on a
     # non-unique target column (unproven). The fanning hop is first.
     line_items = _line_items(
-        extra=(DatasetField(name="part_code", sql="part_code", datatype=DataType.TEXT),),
+        extra=(DatasetField(name="part_code", sql="part_code", datatype=DataType.STRING),),
     )
     line_items = line_items.model_copy(update={
         "relationships": [DatasetRelationship(
-            to="parts", join_pairs=[["part_code", "code"]],
+            to="parts", from_columns=["part_code"], to_columns=["code"],
         )],
     })
     await storage.save_dataset(line_items)
     orders = _orders(
-        li_column=DatasetField(name="pv", sql="line_items.parts.pval", datatype=DataType.DOUBLE),
+        li_column=DatasetField(name="pv", sql="line_items.parts.pval", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
-            to="line_items", join_pairs=[["id", "order_id"]],
+            to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
@@ -265,9 +265,9 @@ async def test_multihop_unproven_then_fanning_rejected(tmp_path) -> None:
     addresses = SlayerDataset(
         name="addresses", data_source=DS, sql_table="addresses",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="street", sql="street", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="street", sql="street", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(addresses)
@@ -275,11 +275,11 @@ async def test_multihop_unproven_then_fanning_rejected(tmp_path) -> None:
     customers = SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(
-            to="addresses", join_pairs=[["id", "customer_id"]],
+            to="addresses", from_columns=["id"], to_columns=["customer_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
@@ -287,11 +287,11 @@ async def test_multihop_unproven_then_fanning_rejected(tmp_path) -> None:
     orders = SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="astreet", sql="customers.addresses.street", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="astreet", sql="customers.addresses.street", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["region", "region"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["region"], to_columns=["region"])],
     )
     with pytest.raises(DerivedFieldFanningError) as ei:
         await storage.save_dataset(orders)
@@ -308,20 +308,20 @@ async def test_declared_many_to_one_accepted_silently(tmp_path) -> None:
     customers = SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(customers)
     orders = SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="cust_id", sql="cust_id", datatype=DataType.INT),
-            DatasetField(name="cust_region", sql="customers.region", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="cust_id", sql="cust_id", datatype=DataType.INTEGER),
+            DatasetField(name="cust_region", sql="customers.region", datatype=DataType.STRING),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["cust_id", "id"]],
+            to="customers", from_columns=["cust_id"], to_columns=["id"],
             cardinality=RelationshipCardinality.MANY_TO_ONE,
         )],
     )
@@ -340,12 +340,12 @@ async def test_proof_beats_contradictory_to_many_declaration(tmp_path) -> None:
     orders = SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="li_id", sql="li_id", datatype=DataType.INT),
-            DatasetField(name="item_qty", sql="line_items.qty", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="li_id", sql="li_id", datatype=DataType.INTEGER),
+            DatasetField(name="item_qty", sql="line_items.qty", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
-            to="line_items", join_pairs=[["li_id", "id"]],
+            to="line_items", from_columns=["li_id"], to_columns=["id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
@@ -366,8 +366,8 @@ async def test_reverse_pk_undeclared_hop_warns_and_saves(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.DOUBLE),
-        joins=[DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]])],
+        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
+        joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -381,20 +381,20 @@ async def test_fully_undeclared_hop_warns_and_saves(tmp_path) -> None:
     widgets = SlayerDataset(
         name="widgets", data_source=DS, sql_table="widgets",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="w", sql="w", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="w", sql="w", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(widgets)
     orders = SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="wsum", sql="widgets.w", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="wsum", sql="widgets.w", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="widgets", join_pairs=[["region", "region"]])],
+        relationships=[DatasetRelationship(to="widgets", from_columns=["region"], to_columns=["region"])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -409,10 +409,10 @@ async def test_filter_across_unproven_hop_warns_and_saves(tmp_path) -> None:
     await storage.save_dataset(_line_items())
     orders = _orders(
         li_column=DatasetField(
-            name="big_item", sql="amount", datatype=DataType.DOUBLE,
+            name="big_item", sql="amount", datatype=DataType.FLOAT,
             filter="line_items.qty >= 2",
         ),
-        joins=[DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]])],
+        joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -428,9 +428,9 @@ async def test_unproven_warning_deduplicated_per_hop(tmp_path) -> None:
     orders = _orders(
         li_column=DatasetField(
             name="qtysum", sql="line_items.qty + line_items.order_id",
-            datatype=DataType.DOUBLE,
+            datatype=DataType.FLOAT,
         ),
-        joins=[DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]])],
+        joins=[DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"])],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -448,9 +448,9 @@ async def test_unloaded_target_skipped(tmp_path) -> None:
     the hop's target is unloaded → skipped (no error, no warning)."""
     storage = _storage(tmp_path)
     orders = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.DOUBLE),
+        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
-            to="line_items", join_pairs=[["id", "order_id"]],
+            to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
@@ -468,8 +468,8 @@ async def test_unresolvable_reference_skipped(tmp_path) -> None:
     orders = SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="ghost", sql="nowhere.value", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="ghost", sql="nowhere.value", datatype=DataType.FLOAT),
         ],
     )
     with warnings.catch_warnings(record=True) as rec:
@@ -486,25 +486,25 @@ async def test_ambiguous_parallel_edge_rejected(tmp_path) -> None:
     widgets = SlayerDataset(
         name="widgets", data_source=DS, sql_table="widgets",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="w", sql="w", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="w", sql="w", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(widgets)
     orders = SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="w1", sql="w1", datatype=DataType.INT),
-            DatasetField(name="w2", sql="w2", datatype=DataType.INT),
-            DatasetField(name="wsum", sql="widgets.w", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="w1", sql="w1", datatype=DataType.INTEGER),
+            DatasetField(name="w2", sql="w2", datatype=DataType.INTEGER),
+            DatasetField(name="wsum", sql="widgets.w", datatype=DataType.FLOAT),
         ],
         relationships=[
             DatasetRelationship(
-                to="widgets", join_pairs=[["w1", "id"]], name="e1",
+                to="widgets", from_columns=["w1"], to_columns=["id"], name="e1",
                 cardinality=RelationshipCardinality.ONE_TO_MANY,
             ),
-            DatasetRelationship(to="widgets", join_pairs=[["w2", "id"]], name="e2"),
+            DatasetRelationship(to="widgets", from_columns=["w2"], to_columns=["id"], name="e2"),
         ],
     )
     with warnings.catch_warnings(record=True) as rec:
@@ -524,16 +524,16 @@ async def test_peer_save_does_not_reclassify_stored_column(tmp_path) -> None:
     storage = _storage(tmp_path)
     await storage.save_dataset(_line_items())
     fanning = _orders(
-        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.DOUBLE),
+        li_column=DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),
         joins=[DatasetRelationship(
-            to="line_items", join_pairs=[["id", "order_id"]],
+            to="line_items", from_columns=["id"], to_columns=["order_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         )],
     )
     await storage.save_dataset(fanning, _validate=False)  # persist the ill-formed model
     peer = SlayerDataset(
         name="widgets", data_source=DS, sql_table="widgets",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")

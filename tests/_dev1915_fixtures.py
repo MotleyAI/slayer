@@ -62,16 +62,16 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
         aggregations=[
             # Custom aggregation with literal defaults (lo=0, hi=1000).
@@ -92,11 +92,11 @@ def customers_dataset() -> SlayerDataset:
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="discount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="discount", datatype=DataType.FLOAT),
         ],
         aggregations=[
             # Custom aggregation whose definition default names a target column.

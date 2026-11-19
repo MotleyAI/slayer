@@ -81,7 +81,7 @@ def test_default_build_date_trunc_idempotent_on_already_cast() -> None:
 def _date_add(count: int, unit: TimeGranularity) -> Expression:
     col = exp.column("created_at")
     return SqlDialect().build_date_add(
-        expr=col, count=exp.Literal.number(count), unit=unit, operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(count), unit=unit, operand=DataType.DATETIME,
     )
 
 

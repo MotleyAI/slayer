@@ -41,13 +41,13 @@ async def storage() -> AsyncIterator[YAMLStorage]:
                     DatasetField(
                         name="id",
                         sql="id",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                         primary_key=True,
                     ),
                     DatasetField(
                         name="amount",
                         sql="amount",
-                        datatype=DataType.DOUBLE,
+                        datatype=DataType.FLOAT,
                     ),
                 ],
                 metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
@@ -82,7 +82,7 @@ class TestSaveMemory:
             learning="rev",
             linked_entities={
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             },
         )
         assert resp.memory_id == "1"

@@ -20,8 +20,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -53,7 +53,7 @@
     ]
    },
    "new": {
-    "source_name": "customers",
+    "dataset": "customers",
     "metrics": [
      {
       "name": "n",
@@ -96,8 +96,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -116,7 +116,7 @@
     "population": "by_region",
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -142,8 +142,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)",
-      "name": "rev"
+      "metric": "sum(orders.amount)",
+      "alias": "rev"
      }
     ]
    }

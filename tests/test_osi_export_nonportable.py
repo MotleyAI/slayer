@@ -154,7 +154,7 @@ async def test_retypable_strings_round_trip(env, tmp_path: Path) -> None:
 
 
 async def test_retypable_strings_quoted_outside_payloads(env, tmp_path: Path) -> None:
-    columns = [*orders_columns(), col("x1e3", DataType.TEXT, "note", label="1e3", description="0o17")]
+    columns = [*orders_columns(), col("x1e3", DataType.STRING, "note", label="1e3", description="0o17")]
     await save(env, customers(), orders(columns=columns, metrics=BASIC_MEASURES))
     out = tmp_path / "shop.osi.yaml"
     assert run_cli_in_process(["export-osi", "--datasource", env.datasource, "--out", str(out),

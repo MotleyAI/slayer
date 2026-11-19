@@ -44,8 +44,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.credit)",
-      "name": "cr"
+      "metric": "sum(customers.credit)",
+      "alias": "cr"
      }
     ]
    }
@@ -74,11 +74,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },

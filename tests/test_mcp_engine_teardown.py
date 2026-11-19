@@ -71,16 +71,16 @@ async def _seed_storage(workspace: Path, *, with_sql_mode: bool = False) -> YAML
     await storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="v", sql="v", datatype=DataType.INT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
         ],
     ))
     if with_sql_mode:
         await storage.save_dataset(SlayerDataset(
             name="sv", data_source="lite", sql="SELECT id, v FROM t",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="v", sql="v", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="v", sql="v", datatype=DataType.INTEGER),
             ],
         ))
     return storage
@@ -98,7 +98,7 @@ async def _query_count(server, *, source_dataset: str) -> int:
         arguments={
             "query": {
                 "population": source_dataset,
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             },
             "format": "json",
         },
@@ -156,7 +156,7 @@ class TestContractAttribute:
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
             server, name="query",
-            arguments={"query": [{"population": "t", "metrics": [{"expression": "count(*)"}]}]},
+            arguments={"query": [{"population": "t", "metrics": [{"metric": "count(*)"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine

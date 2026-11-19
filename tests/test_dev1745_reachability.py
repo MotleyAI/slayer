@@ -65,10 +65,10 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="population", datatype=DataType.DOUBLE),
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.FLOAT),
+            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
         ],
     )
 
@@ -77,11 +77,11 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -89,12 +89,12 @@ def _warehouses() -> SlayerDataset:
     return SlayerDataset(
         name="warehouses", sql_table="warehouses", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             # deliberately shares the name 'regions' territory: a warehouse
             # also has a region_id, so 'regions' appears on BOTH branches
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -102,35 +102,35 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="warehouse_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="warehouse_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             # a model and a column that share a name — the heuristic's blind spot
-            DatasetField(name="customers", datatype=DataType.TEXT),
+            DatasetField(name="customers", datatype=DataType.STRING),
             # derived, LOCAL to the host, but its SQL crosses INTO customers
             DatasetField(name="host_derived_crossing", sql="customers.balance * 2",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # derived, local, purely local sql
             DatasetField(name="host_derived_local", sql="amount * 2",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # derived, host-declared, sql that is BOTH host-local AND crossing
             DatasetField(name="host_derived_mixed", sql="amount * customers.balance",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # derived referencing TWO models
             DatasetField(name="multi_model",
                    sql="customers.balance + customers.regions.population",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # derived-of-derived across two hops
             DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # quoted dotted identifier
             DatasetField(name="quoted_cross", sql='"customers"."balance"',
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="warehouses", from_columns=["warehouse_id"], to_columns=["id"]),
         ],
     )
 
@@ -406,8 +406,8 @@ class TestInlineScalarsAreNotReferences:
         planned = plan_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"expression": "amount", "name": "amount"}],
-                "metrics": [{"expression": "percentile(amount, p=0.9)", "name": "p90"}],
+                "dimensions": [{"field": "amount", "alias": "amount"}],
+                "metrics": [{"metric": "percentile(amount, p=0.9)", "alias": "p90"}],
                 "filter": ["percentile(amount, p=0.9) > 100"],
             }),
             bundle=_bundle(),
@@ -454,7 +454,7 @@ class TestCoordinateSystemInvariant:
         host = _orders()
         host.fields.append(
             DatasetField(name="eu_amount", sql="amount",
-                   filter="customers.balance > 0", datatype=DataType.DOUBLE),
+                   filter="customers.balance > 0", datatype=DataType.FLOAT),
         )
         bundle = ResolvedSourceBundle(
             dialect="postgres",
@@ -464,8 +464,8 @@ class TestCoordinateSystemInvariant:
         planned = plan_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"expression": "amount", "name": "amount"}],
-                "metrics": [{"expression": "sum(eu_amount)", "name": "eu"}],
+                "dimensions": [{"field": "amount", "alias": "amount"}],
+                "metrics": [{"metric": "sum(eu_amount)", "alias": "eu"}],
                 "filter": ["sum(eu_amount) > 100"],
             }),
             bundle=bundle,

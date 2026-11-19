@@ -35,7 +35,7 @@ from typing import List, Optional, Sequence
 from pydantic import BaseModel, ConfigDict, Field
 
 from slayer.core.models import SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.core.scope import StaleSpelling
 from slayer.core.syntax import Ref, parse_expr, root_relative
 from slayer.core.warnings import NormalizationWarning, SlayerNormalizationWarning
@@ -96,27 +96,23 @@ def _apply_misplaced_metric(
     field_names = {c.name for c in dataset.fields}
 
     new_metrics = list(query.metrics)
-    moved_dims: List[FieldRef] = []
+    moved_dims: List[QueryDimension] = []
     emitted: List[NormalizationWarning] = []
 
     kept: List = []
     for i, m in enumerate(new_metrics):
-        expression = getattr(m, "expression", None)
-        if not isinstance(expression, str):
-            kept.append(m)
-            continue
-        bare = _bare_name(expression, root=dataset.spelling)
+        bare = _bare_name(m.metric, root=dataset.spelling)
         # A bare name of a saved metric stays a metric; of a field, it moves to dimensions.
         if bare is None or bare in metric_expression_names:
             kept.append(m)
             continue
         if bare in field_names:
-            moved_dims.append(FieldRef.from_string(bare))
+            moved_dims.append(QueryDimension(field=bare))
             emitted.append(NormalizationWarning(
                 rule_id="MISPLACED_METRIC",
                 original=bare,
                 normalized=f"dimensions += {bare!r}",
-                location=f"metrics[{i}].expression",
+                location=f"metrics[{i}].metric",
                 rule_doc_url="docs/agent_input_slack.md#misplaced-metric",
             ))
             _warnings_module.warn(
@@ -129,8 +125,7 @@ def _apply_misplaced_metric(
     if not emitted:
         return query, []
 
-    # model_copy skips validation, so build the FieldRef here.
-    # A raw string reaches the planner and fails on ``.full_name``.
+    # model_copy skips validation, so the entries are built here.
     new_dimensions = list(query.dimensions or []) + moved_dims
     return (
         query.model_copy(update={"metrics": kept, "dimensions": new_dimensions}),

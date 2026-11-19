@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "customer__region",
-    "join_pairs": [
-     [
-      "cr_id",
-      "id"
-     ]
+    "from_columns": [
+     "cr_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,11 +77,11 @@
    },
    "new": {
     "to": "b",
-    "join_pairs": [
-     [
-      "b_id",
-      "id"
-     ]
+    "from_columns": [
+     "b_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -98,11 +98,11 @@
    },
    "new": {
     "to": "a",
-    "join_pairs": [
-     [
-      "a_id",
-      "id"
-     ]
+    "from_columns": [
+     "a_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -119,11 +119,11 @@
    },
    "new": {
     "to": "a__b",
-    "join_pairs": [
-     [
-      "ab_id",
-      "id"
-     ]
+    "from_columns": [
+     "ab_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

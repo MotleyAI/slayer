@@ -3,7 +3,7 @@ name: calendar
 data_source: probe
 sql: "select cast(d as date) as day from generate_series(date '2024-01-01', date '2025-06-30', interval 1 day) t(d)"
 fields:
-  - {name: day, datatype: date, primary_key: true}
+  - {name: day, datatype: Date, primary_key: true}
 relationships:
-  - {to: orders, join_pairs: [[day, order_date]], cardinality: one_to_many}
-  - {to: returns, join_pairs: [[day, return_date]], cardinality: one_to_many}
+  - {to: orders, from_columns: [day], to_columns: [order_date], cardinality: one_to_many}
+  - {to: returns, from_columns: [day], to_columns: [return_date], cardinality: one_to_many}

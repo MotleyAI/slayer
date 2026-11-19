@@ -118,12 +118,12 @@ class TestTwoHomesPartitionsAndRankedPicks:
 
     async def test_every_cell_reads_its_interval(self, engine) -> None:
         resp = await engine.execute(spine_query(metrics=WINDOWED, dimensions=["customers.region"]))
-        names = [x["name"] for x in WINDOWED]
+        names = [x["alias"] for x in WINDOWED]
         assert by_bucket(resp, names, by=["region"]) == _expected(names)
 
-    @pytest.mark.parametrize("drop", [x["name"] for x in WINDOWED])
+    @pytest.mark.parametrize("drop", [x["alias"] for x in WINDOWED])
     async def test_removing_one_measure_changes_nothing_else(self, engine, drop) -> None:
-        kept = [x for x in WINDOWED if x["name"] != drop]
+        kept = [x for x in WINDOWED if x["alias"] != drop]
         resp = await engine.execute(spine_query(metrics=kept, dimensions=["customers.region"]))
-        names = [x["name"] for x in kept]
+        names = [x["alias"] for x in kept]
         assert by_bucket(resp, names, by=["region"]) == _expected(names)

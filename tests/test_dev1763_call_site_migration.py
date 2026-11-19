@@ -38,10 +38,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import AliasAllocator
@@ -70,24 +69,24 @@ def _orders() -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
-            DatasetField(name="disc", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="net", sql="amount - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="disc", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="net", sql="amount - 1", datatype=DataType.FLOAT),
             # A NON-trivial DERIVED TIMESTAMP: the filter-CAST policy must
             # suppress the CAST for temporal types (Codex F9 / _filter_cast_type).
             DatasetField(name="net_ts", sql="coalesce(created_at, created_at)",
-                   datatype=DataType.TIMESTAMP),
+                   datatype=DataType.DATETIME),
             # A MIXED-CASE physical column: quoting must survive on the
             # shifted-CTE WHERE path, which stringifies without a re-parse
             # (byte-parity risk register / Codex F15).
-            DatasetField(name="MixedCol", datatype=DataType.DOUBLE),
+            DatasetField(name="MixedCol", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         aggregations=[Aggregation(name="sum_sq", expression="SUM({value} * {value})")],
     )
 
@@ -96,12 +95,12 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -109,9 +108,9 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="population", datatype=DataType.DOUBLE),
-            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="population", datatype=DataType.FLOAT),
+            DatasetField(name="tier", datatype=DataType.STRING),
         ],
     )
 
@@ -142,28 +141,28 @@ _MONTH = TimeDimension(
 _FILTER_SHAPES = {
     "host_where_scalar": SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="count(*)")],
         filter=["ifnull(disc, 0) > 1"],
     ),
     "host_where_derived": SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="count(*)")],
         filter=["net > 5"],
     ),
     "host_having_aggregate": SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="sum(qty)", name="q")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="sum(qty)", alias="q")],
         filter=["sum(qty) > 5"],
     ),
     "shifted_cte_where": SlayerQuery(
         population="orders",
         time_dimensions=[_MONTH],
         metrics=[
-            DatasetMetric(expression="sum(amount)", name="amt"),
-            DatasetMetric(expression="time_shift(sum(amount), -1, 'month')", name="prev"),
+            QueryMetric(metric="sum(amount)", alias="amt"),
+            QueryMetric(metric="time_shift(sum(amount), -1, 'month')", alias="prev"),
         ],
         filter=["status = 'new'"],
     ),
@@ -171,8 +170,8 @@ _FILTER_SHAPES = {
         population="orders",
         time_dimensions=[_MONTH],
         metrics=[
-            DatasetMetric(expression="sum(amount)", name="amt"),
-            DatasetMetric(expression="time_shift(sum(amount), -1, 'month')", name="prev"),
+            QueryMetric(metric="sum(amount)", alias="amt"),
+            QueryMetric(metric="time_shift(sum(amount), -1, 'month')", alias="prev"),
         ],
         filter=["MixedCol > 5"],
     ),
@@ -230,20 +229,20 @@ class TestScopeFrameColumnType:
     the filter-CAST policy, using the same model lookup as resolution."""
 
     def test_local_column_type(self) -> None:
-        assert _scope().field_type(FieldKey(leaf="amount")) is DataType.DOUBLE
+        assert _scope().field_type(FieldKey(leaf="amount")) is DataType.FLOAT
 
     def test_derived_column_type(self) -> None:
         key = FieldSqlKey(dataset="orders", field_name="net")
-        assert _scope().field_type(key) is DataType.DOUBLE
+        assert _scope().field_type(key) is DataType.FLOAT
 
     def test_temporal_column_type(self) -> None:
-        assert _scope().field_type(FieldKey(leaf="created_at")) is DataType.TIMESTAMP
+        assert _scope().field_type(FieldKey(leaf="created_at")) is DataType.DATETIME
 
     def test_joined_column_type_uses_the_owning_model(self) -> None:
         key = FieldSqlKey(
             path=("customers",), dataset="customers", field_name="spend",
         )
-        assert _scope().field_type(key) is DataType.DOUBLE
+        assert _scope().field_type(key) is DataType.FLOAT
 
     def test_unknown_column_type_is_none(self) -> None:
         assert _scope().field_type(FieldKey(leaf="does_not_exist")) is None
@@ -265,10 +264,10 @@ class TestFilterCastPolicyMovedToRenderPackage:
 
     def test_temporal_types_suppress_the_cast(self) -> None:
         assert _filter_cast_type(DataType.DATE) is None
-        assert _filter_cast_type(DataType.TIMESTAMP) is None
+        assert _filter_cast_type(DataType.DATETIME) is None
 
     def test_non_temporal_type_passes_through(self) -> None:
-        assert _filter_cast_type(DataType.DOUBLE) is DataType.DOUBLE
+        assert _filter_cast_type(DataType.FLOAT) is DataType.FLOAT
 
 
 class TestFacilityFieldStructure:
@@ -449,7 +448,7 @@ class TestFilterAggBuilderSeam:
 
         return ValueSlot(
             id="s1", key=key, declared_name="q", phase=Phase.AGGREGATE,
-            type=DataType.DOUBLE,
+            type=DataType.FLOAT,
         )
 
     def _key(self) -> AggregateKey:

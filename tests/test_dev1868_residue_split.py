@@ -8,14 +8,16 @@ import re
 
 import pytest
 
-from tests._dev1836_fixtures import DatasetMetric, gen, month_td, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1836_fixtures import gen, month_td, q
 
 
 async def _raises(band: str) -> str:
     query = q(
-        dimensions=["customers.tier", {"expression": band, "name": "b"}],
+        dimensions=["customers.tier", {"field": band, "alias": "b"}],
         time_dimensions=month_td(),
-        metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="s")],
     )
     with pytest.raises(ValueError) as ei:
         await gen(query=query)

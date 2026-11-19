@@ -315,7 +315,7 @@ def test_view_facade_declares_the_join_key():
     models, _ = convert(project)
     view = models["orders_overview"]
     (join,) = [j for j in view.relationships if j.to == "customers"]
-    assert join.join_pairs == [["customer_id", "id"]]
+    assert join.column_pairs == [("customer_id", "id")]
     col = column(view, "customer_id")
     assert col is not None
     assert col.is_base

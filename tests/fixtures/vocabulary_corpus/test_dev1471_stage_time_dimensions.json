@@ -23,7 +23,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -51,8 +51,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -80,8 +80,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -108,7 +108,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(created_at, partition_by=customer_id)"
+      "metric": "max(created_at, partition_by=customer_id)"
      }
     ]
    }
@@ -138,8 +138,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }

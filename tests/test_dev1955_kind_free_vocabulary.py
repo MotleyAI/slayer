@@ -35,8 +35,8 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source=DS, sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -45,12 +45,12 @@ def _customers(*, cols: tuple[DatasetField, ...] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
             *cols,
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                          cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
@@ -59,9 +59,9 @@ def _orders(*, cols: tuple[DatasetField, ...] = (), joins: tuple[DatasetRelation
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             *cols,
         ],
         relationships=list(joins),
@@ -72,15 +72,15 @@ def _line_items() -> SlayerDataset:
     return SlayerDataset(
         name="line_items", data_source=DS, sql_table="line_items",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _li_join(*, cardinality: RelationshipCardinality | None = None) -> DatasetRelationship:
-    return DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]],
+    return DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"],
                      cardinality=cardinality)
 
 
@@ -144,7 +144,7 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.DOUBLE),),
+            cols=(DatasetField(name="li_qty", sql="line_items.qty", datatype=DataType.FLOAT),),
             joins=(_li_join(),),
         )
         with warnings.catch_warnings(record=True) as rec:
@@ -162,7 +162,7 @@ class TestUnprovenWarning:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_qty", sql="line_items.qty", datatype=DataType.DOUBLE,
+            cols=(DatasetField(name="big_qty", sql="line_items.qty", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
             joins=(_li_join(),),
         )
@@ -180,7 +180,7 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="li_qty", sql="orders.line_items.qty", datatype=DataType.DOUBLE),),
+            cols=(DatasetField(name="li_qty", sql="orders.line_items.qty", datatype=DataType.FLOAT),),
             joins=(_li_join(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
         with pytest.raises(DerivedFieldFanningError) as ei:
@@ -195,7 +195,7 @@ class TestFanningReferenceSpelling:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_dataset(_line_items())
         orders = _orders(
-            cols=(DatasetField(name="big_item", sql="amount", datatype=DataType.DOUBLE,
+            cols=(DatasetField(name="big_item", sql="amount", datatype=DataType.FLOAT,
                          filter="line_items.qty >= 2"),),
             joins=(_li_join(cardinality=RelationshipCardinality.ONE_TO_MANY),),
         )
@@ -213,13 +213,13 @@ class TestEngineDoorCrossModelAttribution:
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         await storage.save_dataset(_regions())
         await storage.save_dataset(
-            _customers(cols=(DatasetField(name="bad", datatype=DataType.DOUBLE, sql="spend",
+            _customers(cols=(DatasetField(name="bad", datatype=DataType.FLOAT, sql="spend",
                                     filter="regions.customers.spend > 0"),)),
             _validate=False,
         )
         orders = _orders(
-            cols=(DatasetField(name="outer", datatype=DataType.DOUBLE, sql="customers.bad * 2"),),
-            joins=(DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+            cols=(DatasetField(name="outer", datatype=DataType.FLOAT, sql="customers.bad * 2"),),
+            joins=(DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                              cardinality=RelationshipCardinality.MANY_TO_ONE),),
         )
         engine = SlayerQueryEngine(storage=storage)

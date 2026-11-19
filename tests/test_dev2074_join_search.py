@@ -33,10 +33,10 @@ def _m(
     default_time_dimension: str | None = None,
 ) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="fk", datatype=DataType.INT),
-        DatasetField(name="fk2", datatype=DataType.INT),
-        DatasetField(name="grp", datatype=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="fk", datatype=DataType.INTEGER),
+        DatasetField(name="fk2", datatype=DataType.INTEGER),
+        DatasetField(name="grp", datatype=DataType.STRING),
         *(extra or []),
     ]
     return SlayerDataset(
@@ -47,7 +47,7 @@ def _m(
 
 def _to(target: str, *, name: str | None = None, src: str = "fk", tgt: str = "id",
         cardinality: RelationshipCardinality | None = None) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=[[src, tgt]], name=name, cardinality=cardinality)
+    return DatasetRelationship(to=target, from_columns=[src], to_columns=[tgt], name=name, cardinality=cardinality)
 
 
 def _by(*models: SlayerDataset) -> dict[str, SlayerDataset]:
@@ -158,7 +158,7 @@ class TestAddressability:
 class TestSpineRule:
     def _two_facts(self) -> dict[str, SlayerDataset]:
         """Axes on ``orders`` and ``returns``; ``lines`` reaches ``orders`` to-one; ``customers`` is detached."""
-        ts = [DatasetField(name="at", datatype=DataType.TIMESTAMP)]
+        ts = [DatasetField(name="at", datatype=DataType.DATETIME)]
         orders = _m("orders", extra=ts, default_time_dimension="at", joins=[_to("customers", cardinality=M2O)])
         returns = _m("returns", extra=ts, default_time_dimension="at")
         lines = _m("lines", joins=[_to("orders", cardinality=M2O)])
@@ -374,7 +374,7 @@ class TestBlockingPairs:
         assert blocking_pairs(root=models["shop"], target="orders", datasets_by_name=models) == []
 
     def test_pair_reaching_the_target_only_through_the_spine_is_not_reported(self) -> None:
-        ts = [DatasetField(name="at", datatype=DataType.TIMESTAMP)]
+        ts = [DatasetField(name="at", datatype=DataType.DATETIME)]
         models = _by(
             _m("a", joins=[_to("b"), _to("b", src="fk2")]),
             _m("b", extra=ts, default_time_dimension="at"),

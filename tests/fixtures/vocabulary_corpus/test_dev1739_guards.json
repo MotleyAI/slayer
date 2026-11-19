@@ -2,84 +2,84 @@
  "source": "tests/test_dev1739_guards.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount, partition_by=city)"
    },
    "new": {
-    "expression": "sum(amount, partition_by=city)"
+    "metric": "sum(amount, partition_by=city)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount, partition_by=ordered_at)"
    },
    "new": {
-    "expression": "sum(amount, partition_by=ordered_at)"
+    "metric": "sum(amount, partition_by=ordered_at)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.spend, partition_by=region)"
    },
    "new": {
-    "expression": "sum(customers.spend, partition_by=region)"
+    "metric": "sum(customers.spend, partition_by=region)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount, window='90d', partition_by=region)"
    },
    "new": {
-    "expression": "sum(amount, window='90d', partition_by=region)"
+    "metric": "sum(amount, window='90d', partition_by=region)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "cumsum(sum(amount, partition_by=region))"
    },
    "new": {
-    "expression": "cumsum(sum(amount, partition_by=region))"
+    "metric": "cumsum(sum(amount, partition_by=region))"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "rank(sum(amount), partition_by=region, direction='desc')"
    },
    "new": {
-    "expression": "rank(sum(amount), partition_by=region, direction='desc')"
+    "metric": "rank(sum(amount), partition_by=region, direction='desc')"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount, partition_by=[channel, region])"
    },
    "new": {
-    "expression": "sum(amount, partition_by=[channel, region])"
+    "metric": "sum(amount, partition_by=[channel, region])"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount, partition_by=channel_region)"
    },
    "new": {
-    "expression": "sum(amount, partition_by=channel_region)"
+    "metric": "sum(amount, partition_by=channel_region)"
    }
   }
  ],

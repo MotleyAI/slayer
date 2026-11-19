@@ -31,7 +31,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 def _bind(text: str, *, custom: tuple[str, ...] = ()) -> ValueKey:
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="t",
-        fields=[DatasetField(name=n, datatype=DataType.DOUBLE) for n in ("revenue", "cost", "other", "x")],
+        fields=[DatasetField(name=n, datatype=DataType.FLOAT) for n in ("revenue", "cost", "other", "x")],
         aggregations=[Aggregation(name=n, expression="COUNT(DISTINCT {value})") for n in custom],
     )
     bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])

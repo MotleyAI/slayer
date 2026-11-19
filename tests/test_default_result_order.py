@@ -36,10 +36,10 @@ STATUS_MONTH_EXPLICIT: dict[str, Any] = {
 }
 PER_CUSTOMER_STAGE: dict[str, Any] = {
     "name": "per_customer", "population": "orders",
-    "dimensions": ["customer_id", "region"], "metrics": [{"expression": REVENUE, "name": "rev"}],
+    "dimensions": ["customer_id", "region"], "metrics": [{"metric": REVENUE, "alias": "rev"}],
 }
 BY_REGION_STAGE: dict[str, Any] = {
-    "population": "per_customer", "dimensions": ["region"], "metrics": [{"expression": "sum(rev)", "name": "total"}],
+    "population": "per_customer", "dimensions": ["region"], "metrics": [{"metric": "sum(rev)", "alias": "total"}],
 }
 SPINE: dict[str, Any] = {
     "population": "orders", "dimensions": ["region"], "metrics": [REVENUE],
@@ -64,14 +64,14 @@ _ORDERS_ROWS = [
 def _stores() -> SlayerDataset:
     return SlayerDataset(
         name="stores", data_source="test", sql_table="stores",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
     )
 
 
 def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
     )
 
 
@@ -79,22 +79,22 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders", default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="order_total", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="order_total", datatype=DataType.FLOAT),
             DatasetField(name="ordered_at", datatype=DataType.DATE),
             # Sorts opposite to order_total: big orders label "a-big".
             DatasetField(
-                name="size_label", datatype=DataType.TEXT,
+                name="size_label", datatype=DataType.STRING,
                 sql="CASE WHEN order_total >= 50 THEN 'a-big' ELSE 'b-small' END",
             ),
         ],
         relationships=[
-            DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]]),
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -296,7 +296,7 @@ class TestOnlyOutermost:
     async def test_query_backed_model_backing_query_unordered(self, dialect) -> None:
         sql = await _sql({
             "population": "per_customer_m", "dimensions": ["region"],
-            "metrics": [{"expression": "sum(rev)", "name": "total"}],
+            "metrics": [{"metric": "sum(rev)", "alias": "total"}],
         }, dialect=dialect)
         assert _ordered_ctes(sql, dialect=dialect) == []
         assert "region" in _order_text(sql, dialect=dialect)

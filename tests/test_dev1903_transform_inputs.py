@@ -9,13 +9,13 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.keys import FieldKey, Grain, TimeTruncKey, TransformKey
-from slayer.core.models import DatasetMetric
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.elaborate_env import check_transform_inputs
 from slayer.engine.plan import plan_query
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.core.query import QueryMetric
 
 from tests._dev1846_fixtures import SlayerQuery, dev1846_datasets, month_td
 from tests._dev1871_raise_ledger import ROWS
@@ -90,7 +90,7 @@ class TestMessagesMatchTheLedger:
         _check(formula)
 
     def test_planner_raises_the_same_message(self):
-        measures = [DatasetMetric(expression="cumsum(weight)", name="m")]
+        measures = [QueryMetric(metric="cumsum(weight)", alias="m")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
@@ -102,13 +102,13 @@ class TestInnermostTransformNamed:
         "time_shift(cumsum(weight), -1)", "change(cumsum(weight))",
     ])
     def test_consuming_transform_is_named(self, formula):
-        measures = [DatasetMetric(expression=formula, name="m")]
+        measures = [QueryMetric(metric=formula, alias="m")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_first_over_row_leaf_transform_is_not_the_expression_error(self):
-        measures = [DatasetMetric(expression="first(cumsum(weight))", name="m")]
+        measures = [QueryMetric(metric="first(cumsum(weight))", alias="m")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures)
         assert "not supported over an expression" not in str(ei.value)
@@ -131,7 +131,7 @@ class TestTraversal:
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_filter_position(self):
-        measures = [DatasetMetric(expression="sum(revenue)", name="r")]
+        measures = [QueryMetric(metric="sum(revenue)", alias="r")]
         with pytest.raises(ValueError) as ei:
             _plan(metrics=measures, filter=["cumsum(weight) > 0"])
         assert _row_leaf_op(str(ei.value)) == "cumsum"

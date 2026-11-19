@@ -211,7 +211,7 @@ async def rows(*, datasets: Iterable[SlayerDataset], db: Path, payload: dict[str
 async def value(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str, expression: str,
                 variables: dict[str, Any] | None = None) -> Any:
     """The single value of ``formula`` over ``model``."""
-    payload: dict[str, Any] = {"population": dataset, "metrics": [{"expression": expression, "name": "v"}]}
+    payload: dict[str, Any] = {"population": dataset, "metrics": [{"metric": expression, "alias": "v"}]}
     if variables is not None:
         payload["variables"] = variables
     (row,) = await rows(datasets=datasets, db=db, payload=payload)
@@ -222,7 +222,7 @@ async def counts_by(*, datasets: Iterable[SlayerDataset], db: Path, dataset: str
                     variables: dict[str, Any] | None = None) -> dict[Any, int]:
     """Row counts of ``model`` grouped by ``dimension``."""
     payload: dict[str, Any] = {"population": dataset, "dimensions": [dimension],
-                               "metrics": [{"expression": "count(*)", "name": "n"}]}
+                               "metrics": [{"metric": "count(*)", "alias": "n"}]}
     if variables is not None:
         payload["variables"] = variables
     out = await rows(datasets=datasets, db=db, payload=payload)

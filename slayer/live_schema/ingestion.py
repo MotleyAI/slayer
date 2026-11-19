@@ -15,7 +15,15 @@ from sqlglot.schema import MappingSchema
 
 from slayer.async_utils import run_sync
 from slayer.core import probes
-from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, DataType, ObjectKind
+from slayer.core.enums import (
+    DEFAULT_AGGREGATIONS_BY_TYPE,
+    DataType,
+    NUMERIC_DATATYPES,
+    ObjectKind,
+    TypeKind,
+    finer_datatype,
+    kind_of,
+)
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
     DatasetField,
@@ -92,7 +100,7 @@ class IntrospectedColumn(BaseModel):
     quoted: bool = False  # SQLAlchemy's ``quoted_name`` flag on ``name``
 
 
-_NUMERIC_TYPES = {DataType.INT, DataType.DOUBLE}
+_NUMERIC_TYPES = NUMERIC_DATATYPES
 _ID_SUFFIXES = ("_id", "_key", "_pk", "_fk")
 
 
@@ -245,8 +253,8 @@ async def _generate_relationships(
         relationships.append(
             DatasetRelationship(
                 to=target_name,
-                join_pairs=[[_logical_field_name(s), _logical_field_name(t)]
-                            for s, t in pairs],
+                from_columns=[_logical_field_name(s) for s, _ in pairs],
+                to_columns=[_logical_field_name(t) for _, t in pairs],
                 cardinality=cardinality,
             )
         )
@@ -263,10 +271,11 @@ async def _safe_get_table_comment(client: SqlClient, table_name: str, ref: Schem
 
 
 def _introspected_field(col: ReflectedColumn, *, name: str, primary_key: bool) -> IntrospectedColumn:
-    """One live column; ``db_type`` only where ``DataType`` is lossy (opaque, a list, exact NUMERIC/DECIMAL, JSON
-    or a zoned timestamp)."""
+    """One live column, its type narrowed by the database's type name; ``db_type`` only where ``DataType`` is lossy
+    (opaque, a list, exact NUMERIC/DECIMAL, JSON or a zoned timestamp)."""
     return IntrospectedColumn(
-        name=name, type=col.type, element_type=col.element_type, primary_key=primary_key, is_float=col.is_float,
+        name=name, type=col.narrowed_type, element_type=col.element_type, primary_key=primary_key,
+        is_float=col.is_float,
         db_type=col.db_type, comment=col.comment, quoted=col.quoted,
     )
 
@@ -295,7 +304,7 @@ async def _inferred_elements(
     field: IntrospectedColumn, *, client: SqlClient, table_name: str, ref: SchemaRef | None,
 ) -> IntrospectedColumn:
     """An untyped list's element type read from its data with one limited query (Snowflake semi-structured ARRAY)."""
-    if field.type is not DataType.ARRAY or field.element_type is not DataType.UNKNOWN:
+    if field.type is not DataType.ARRAY or kind_of(field.element_type) is not TypeKind.UNKNOWN:
         return field
     dialect = dialect_of(client)
     table = exp.Table(
@@ -347,17 +356,18 @@ class SqlResultTypes(BaseModel):
         }
 
 
-_SQLGLOT_TYPES: dict[DataType, exp.DType] = {
-    DataType.TEXT: exp.DataType.Type.TEXT, DataType.INT: exp.DataType.Type.BIGINT,
-    DataType.DOUBLE: exp.DataType.Type.DOUBLE, DataType.BOOLEAN: exp.DataType.Type.BOOLEAN,
-    DataType.DATE: exp.DataType.Type.DATE, DataType.TIMESTAMP: exp.DataType.Type.TIMESTAMP,
+_DATA_TYPES: dict[exp.DType, DataType] = {
+    exp.DataType.Type.TEXT: DataType.STRING, exp.DataType.Type.BIGINT: DataType.INTEGER,
+    exp.DataType.Type.DOUBLE: DataType.FLOAT, exp.DataType.Type.BOOLEAN: DataType.BOOLEAN,
+    exp.DataType.Type.DATE: DataType.DATE, exp.DataType.Type.TIMESTAMP: DataType.DATETIME,
 }
-_DATA_TYPES = {v: k for k, v in _SQLGLOT_TYPES.items()}
+_SQLGLOT_TYPES: dict[DataType, exp.DType] = {
+    t: sqlglot_type for sqlglot_type, canonical in _DATA_TYPES.items() for t in DataType if t.kind is canonical.kind}
 
 
 def _sqlglot_type(data_type: DataType, element: DataType | None) -> exp.DataType:
     if data_type is DataType.ARRAY:
-        return exp.DataType(this=exp.DataType.Type.ARRAY, expressions=[_sqlglot_type(element or DataType.UNKNOWN, None)],
+        return exp.DataType(this=exp.DataType.Type.ARRAY, expressions=[_sqlglot_type(element or DataType.OPAQUE, None)],
                             nested=True)
     return exp.DataType(this=_SQLGLOT_TYPES.get(data_type, exp.DataType.Type.UNKNOWN))
 
@@ -380,7 +390,7 @@ async def _typed_result_lists(*, sql: str, client: SqlClient) -> dict[str, Resul
     out: dict[str, ResultList] = {}
     for name, result in _list_projections(typed).items():
         inner = result.expressions[0] if result.expressions else None
-        element = _DATA_TYPES.get(inner.this, DataType.UNKNOWN) if isinstance(inner, exp.DataType) else DataType.UNKNOWN
+        element = _DATA_TYPES.get(inner.this, DataType.OPAQUE) if isinstance(inner, exp.DataType) else DataType.OPAQUE
         out[name] = ResultList(element_type=element, db_type=result.sql(dialect=dialect))
     return out
 
@@ -421,7 +431,7 @@ async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
     dialect = dialect_of(client)
     probed = await client.get_result_column_types(
         render_type_probe(sql_dataset_trial_query(sql, dialect=dialect), dialect=dialect))
-    columns = {name: found.type for name, found in probed.items()}
+    columns = {name: finer_datatype(found.type, found.db_type) for name, found in probed.items()}
     typed = await _typed_result_lists(sql=sql, client=client)
     by_name = {name.casefold(): found for name, found in typed.items()}
     lists: dict[str, ResultList] = {}
@@ -433,7 +443,7 @@ async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
             columns[name] = DataType.ARRAY
             lists[name] = found.model_copy(update={"db_type": reported}) if reported else found
         elif data_type is DataType.ARRAY:
-            lists[name] = ResultList(element_type=DataType.UNKNOWN, db_type=reported or "ARRAY")
+            lists[name] = ResultList(element_type=DataType.OPAQUE, db_type=reported or "ARRAY")
     db_types = {name: found.db_type for name, found in probed.items() if found.db_type}
     return SqlResultTypes(columns=columns, lists=lists, db_types=db_types)
 
@@ -526,7 +536,7 @@ def _fields_to_dataset(
                 # A quoted lower-case Snowflake / Oracle column names itself exactly.
                 sql=exp.to_identifier(col.name, quoted=True).sql() if col.quoted else col.name,
                 datatype=col.type,
-                element_type=(col.element_type or DataType.UNKNOWN) if col.type is DataType.ARRAY else None,
+                element_type=(col.element_type or DataType.OPAQUE) if col.type is DataType.ARRAY else None,
                 db_type=col.db_type,
                 primary_key=col.primary_key,
                 unique=(col.name in unique_set),
@@ -565,7 +575,7 @@ async def _sqlite_probe_integer_columns(
     schema, table = location.schema_name, location.name
     out: list[IntrospectedColumn] = []
     for col in columns:
-        if col.type is not DataType.INT or "." in col.name:
+        if col.type is not DataType.INTEGER or "." in col.name:
             out.append(col)
             continue
         try:
@@ -585,12 +595,12 @@ async def _sqlite_probe_integer_columns(
                 exc,
             )
             verdict = None
-        if verdict is None or verdict is DataType.INT:
+        if verdict is None or verdict is DataType.INTEGER:
             out.append(col)
             continue
         out.append(col.model_copy(update={
             "type": verdict,
-            "is_float": verdict is DataType.DOUBLE,
+            "is_float": verdict is DataType.FLOAT,
         }))
     return out
 
@@ -1174,7 +1184,7 @@ def _is_auto_default_integer_format(fmt: NumberFormat | None) -> bool:
 
 def _format_for_widened_type(verdict: DataType) -> NumberFormat | None:
     """Return the auto-default format for a probed widening verdict."""
-    if verdict is DataType.DOUBLE:
+    if verdict is DataType.FLOAT:
         return NumberFormat(type=NumberFormatType.FLOAT)
     return None  # TEXT clears format
 
@@ -1190,8 +1200,8 @@ def _merge_persisted_field_with_probe(
     if not (
         sqlite_widen_enabled
         and fresh_col is not None
-        and persisted_col.datatype is DataType.INT
-        and fresh_col.datatype in (DataType.DOUBLE, DataType.TEXT)
+        and persisted_col.datatype is DataType.INTEGER
+        and fresh_col.datatype.kind in (TypeKind.DOUBLE, TypeKind.TEXT)
     ):
         return persisted_col, False
 
@@ -1210,7 +1220,7 @@ def _merge_persisted_field_with_probe(
 
 
 def _relationship_sig(j: DatasetRelationship) -> tuple:
-    return (j.to, tuple(sorted((p[0], p[1]) for p in j.join_pairs)))
+    return (j.to, tuple(sorted((p[0], p[1]) for p in j.column_pairs)))
 
 
 def _repair_legacy_relationship_targets(
@@ -1301,7 +1311,7 @@ def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetFie
         })
     inferred = (fresh.db_type or "").strip().upper() == "ARRAY"
     known = fresh.element_type is not None and not fresh.element_type.is_opaque
-    if persisted.datatype is DataType.ARRAY and persisted.element_type is DataType.UNKNOWN and inferred and known:
+    if persisted.datatype is DataType.ARRAY and kind_of(persisted.element_type) is TypeKind.UNKNOWN and inferred and known:
         return persisted.model_copy(update={"element_type": fresh.element_type})
     return None
 

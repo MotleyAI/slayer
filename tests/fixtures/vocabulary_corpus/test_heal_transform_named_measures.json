@@ -54,8 +54,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "rank"
+      "metric": "count(*)",
+      "alias": "rank"
      }
     ]
    }

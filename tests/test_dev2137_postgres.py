@@ -41,4 +41,4 @@ async def test_ingested_list_columns(pg) -> None:
     engine, ds = pg
     (model,) = await ingest_datasource_async(ds, client=engine.client_for(ds), include_tables=["contractors"])
     typed = {c.name: (c.datatype, c.element_type) for c in model.fields if c.name in ("skills", "scores")}
-    assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}
+    assert typed == {"skills": (DataType.ARRAY, DataType.STRING), "scores": (DataType.ARRAY, DataType.INTEGER)}

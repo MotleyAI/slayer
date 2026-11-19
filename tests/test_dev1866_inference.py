@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ComputedDimension, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, SlayerQuery, TimeDimension
 from slayer.engine.population.inference import (
     PopulationChoice,
     determination_items,
@@ -67,7 +67,7 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             }),
             storage=storage,
         )
@@ -79,7 +79,7 @@ class TestSelection:
         with_measure = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
             }),
             storage=storage,
         )
@@ -190,7 +190,7 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"expression": "count(widgets.x)", "name": "wc"}],
+                "metrics": [{"metric": "count(widgets.x)", "alias": "wc"}],
             }),
             storage=storage,
         )
@@ -233,7 +233,7 @@ class TestDeterminationItems:
     def test_measures_never_participate(self) -> None:
         items = self._items(SlayerQuery.model_validate({
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         }))
         assert items == {"customers.region"}
 
@@ -275,22 +275,22 @@ class TestDeterminationItems:
 
     def test_computed_dim_row_valued_ref_participates(self) -> None:
         items = self._items(SlayerQuery(dimensions=[
-            ComputedDimension(expression="customers.tier", name="t"),
+            QueryDimension(field="customers.tier", alias="t"),
         ]))
         assert items == {"customers.tier"}
 
     def test_computed_dim_excludes_refs_inside_aggregation(self) -> None:
         items = self._items(SlayerQuery(dimensions=[
             "customers.region",
-            ComputedDimension(expression="sum(orders.amount)", name="tot"),
+            QueryDimension(field="sum(orders.amount)", alias="tot"),
         ]))
         assert items == {"customers.region"}
 
     def test_computed_dim_partition_by_participates(self) -> None:
         items = self._items(SlayerQuery(dimensions=[
-            ComputedDimension(
-                expression="sum(orders.amount, partition_by=customers.tier)",
-                name="share",
+            QueryDimension(
+                field="sum(orders.amount, partition_by=customers.tier)",
+                alias="share",
             ),
         ]))
         assert items == {"customers.tier"}

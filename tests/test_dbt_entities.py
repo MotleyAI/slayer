@@ -76,7 +76,7 @@ class TestJoinResolution:
         joins = reg.resolve_relationships_for_model(orders)
         assert len(joins) == 1
         assert joins[0].to == "customers"
-        assert joins[0].join_pairs == [["customer_id", "id"]]
+        assert joins[0].column_pairs == [("customer_id", "id")]
 
     def test_no_self_joins(self) -> None:
         """A model's own primary entity should not generate a join to itself."""
@@ -125,10 +125,10 @@ class TestJoinResolution:
         assert len(joins) == 2
         # Both joins point at users but via different FK columns
         assert all(j.to == "users" for j in joins)
-        fk_columns = sorted(j.join_pairs[0][0] for j in joins)
+        fk_columns = sorted(j.column_pairs[0][0] for j in joins)
         assert fk_columns == ["buyer_id", "seller_id"]
         # Both target the same primary key on users
-        assert all(j.join_pairs[0][1] == "id" for j in joins)
+        assert all(j.column_pairs[0][1] == "id" for j in joins)
 
     def test_multiple_foreign_entities(self) -> None:
         orders = _make_dataset("orders", [
@@ -178,9 +178,9 @@ class TestJoinResolution:
 
         joins = reg.resolve_relationships_for_model(model_a)
         # Both peer joins should survive (different columns)
-        assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.to, j.join_pairs) for j in joins]}"
-        pairs = sorted([j.join_pairs[0] for j in joins])
-        assert pairs == [["col_x", "bx"], ["col_y", "by"]]
+        assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.to, j.column_pairs) for j in joins]}"
+        pairs = sorted([j.column_pairs[0] for j in joins])
+        assert pairs == [("col_x", "bx"), ("col_y", "by")]
 
     def test_peer_join_declared_once_per_pair(self) -> None:
         """DEV-1853: only the lexicographically smaller model declares the peer

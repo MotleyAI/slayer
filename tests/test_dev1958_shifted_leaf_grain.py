@@ -9,8 +9,9 @@ import re
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import (
-    DatasetMetric,
     dev1832_datasets,
     TimeDimension,
     TimeGranularity,
@@ -73,7 +74,7 @@ def _dr_td() -> list:
 def _q(expression: str, *, date_range: bool = False, **kw):
     kw.setdefault("dimensions", ["region"])
     return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
-                     metrics=[DatasetMetric(expression=expression, name="t")], **kw)
+                     metrics=[QueryMetric(metric=expression, alias="t")], **kw)
 
 
 def _cells(resp, name: str = "monthly.t") -> dict:
@@ -189,8 +190,8 @@ class TestSharedShiftedRelation:
     def _two_offsets(self):
         return monthly_q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression=f"time_shift({SHARE}, -1)", name="t1"),
-                      DatasetMetric(expression=f"time_shift({SHARE}, -2)", name="t2")])
+            metrics=[QueryMetric(metric=f"time_shift({SHARE}, -1)", alias="t1"),
+                      QueryMetric(metric=f"time_shift({SHARE}, -2)", alias="t2")])
 
     async def test_two_offsets_values(self, exec_engine) -> None:
         resp = await exec_engine.execute(self._two_offsets())

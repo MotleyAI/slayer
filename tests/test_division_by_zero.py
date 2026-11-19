@@ -24,9 +24,9 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
@@ -35,8 +35,8 @@ def _empty_population_ratios() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "metrics": [
-            {"expression": "sum(amount) / count(*)", "name": "avg_amount"},
-            {"expression": "count(id) / count(*)", "name": "share"},
+            {"metric": "sum(amount) / count(*)", "alias": "avg_amount"},
+            {"metric": "count(id) / count(*)", "alias": "share"},
         ],
         "filter": ["status = 'none'"],
     })
@@ -65,6 +65,6 @@ async def test_every_dialect_guards_the_divisor(dialect: str) -> None:
 
 
 async def test_a_nonzero_literal_divisor_is_not_guarded() -> None:
-    query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount) / 2", "name": "half"}]})
+    query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount) / 2", "alias": "half"}]})
     sql = await _engine_generate(query=query, dataset=_orders(), dialect="postgres")
     assert "NULLIF" not in sql.upper(), sql

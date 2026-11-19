@@ -35,9 +35,9 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[Datase
         sql_table=sql_table,
         data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
         relationships=joins or [],
     )
@@ -45,11 +45,11 @@ def _orders(data_source: str, *, sql_table: str = "orders_t", joins: list[Datase
 
 def _customers(data_source: str, *, sql_table: str = "customers_t", with_revenue: bool = False) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region", sql="region", datatype=DataType.STRING),
     ]
     if with_revenue:
-        cols.append(DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE))
+        cols.append(DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT))
     return SlayerDataset(
         name="customers",
         sql_table=sql_table,
@@ -83,7 +83,7 @@ class TestSourceModelResolution:
         """Single ``orders`` across all datasources → bare ``source_model`` works."""
         engine, tmp = await _engine_with(_orders("db_a"), datasources=["db_a"])
         try:
-            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             assert "amount" in resp.sql.lower()
@@ -98,7 +98,7 @@ class TestSourceModelResolution:
             datasources=["db_a", "db_b"],
         )
         try:
-            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             with pytest.raises(AmbiguousDatasetError) as exc:
                 await engine.execute(q, dry_run=True)
             assert "db_a" in str(exc.value)
@@ -114,7 +114,7 @@ class TestSourceModelResolution:
         )
         try:
             await engine.storage.set_datasource_priority(["db_b", "db_a"])
-            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             resp = await engine.execute(q, dry_run=True)
             assert resp.sql is not None
             # db_b's table appears, not db_a's.
@@ -132,7 +132,7 @@ class TestSourceModelResolution:
         )
         try:
             await engine.storage.set_datasource_priority(["db_b"])
-            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
             assert resp.sql is not None
             assert "db_a.orders_t" in resp.sql
@@ -157,7 +157,7 @@ class TestJoinTargetResolution:
             sql_table="db_a.orders_t",
             joins=[DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -170,7 +170,7 @@ class TestJoinTargetResolution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["customers.region"],
             })
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
@@ -188,7 +188,7 @@ class TestJoinTargetResolution:
             "db_a",
             joins=[DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -200,7 +200,7 @@ class TestJoinTargetResolution:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["customers.region"],
             })
             with pytest.raises((AmbiguousDatasetError, ValueError), match=r"customers"):
@@ -223,7 +223,7 @@ class TestRunByName:
             data_source="db_a",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         rev_b = SlayerDataset(
@@ -231,7 +231,7 @@ class TestRunByName:
             data_source="db_b",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         engine, tmp = await _engine_with(
@@ -253,7 +253,7 @@ class TestRunByName:
             data_source="db_a",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         rev_b = SlayerDataset(
@@ -261,7 +261,7 @@ class TestRunByName:
             data_source="db_b",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         engine, tmp = await _engine_with(
@@ -299,7 +299,7 @@ class TestCrossModelMeasureScoping:
             sql_table="db_a.orders_t",
             joins=[DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -312,7 +312,7 @@ class TestCrossModelMeasureScoping:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             resp = await engine.execute(q, data_source="db_a", dry_run=True)
             assert resp.sql is not None
@@ -331,7 +331,7 @@ class TestCrossModelMeasureScoping:
             sql_table="db_a.orders_t",
             joins=[DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -343,7 +343,7 @@ class TestCrossModelMeasureScoping:
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             with pytest.raises((AmbiguousDatasetError, ValueError), match=r"customers"):
                 await engine.execute(q, data_source="db_a", dry_run=True)
@@ -373,7 +373,7 @@ class TestJoinTargetStrictWhenParentScoped:
             sql_table="db_a.orders_t",
             joins=[DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
                 join_type=JoinType.LEFT,
             )],
         )
@@ -392,7 +392,7 @@ class TestJoinTargetStrictWhenParentScoped:
             # to that when the parent already declared a data_source.
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["customers.region"],
             })
             with pytest.raises((AmbiguousDatasetError, ValueError), match=r"customers"):

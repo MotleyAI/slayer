@@ -16,8 +16,8 @@
     "population": "players",
     "metrics": [
      {
-      "expression": "sum(scores)",
-      "name": "s"
+      "metric": "sum(scores)",
+      "alias": "s"
      }
     ]
    }
@@ -36,7 +36,7 @@
     "population": "players",
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }

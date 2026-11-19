@@ -27,7 +27,7 @@ def _field_stem(field: str) -> str:
 
 
 def _fk_stem(relationship: DatasetRelationship) -> str:
-    return "_".join(_field_stem(p[0]) for p in relationship.join_pairs)
+    return "_".join(_field_stem(p[0]) for p in relationship.column_pairs)
 
 
 def _name_candidates(*, declaring: str, stem: str):
@@ -79,7 +79,7 @@ def _assign_names(
                 incident[relationship.to].add(relationship.name)
     pending = sorted(
         (
-            (pair, declaring, _fk_stem(relationship), sorted((p[0], p[1]) for p in relationship.join_pairs), i, relationship)
+            (pair, declaring, _fk_stem(relationship), sorted((p[0], p[1]) for p in relationship.column_pairs), i, relationship)
             for pair, members in groups.items()
             if len(members) >= 2
             and any(relationship_signature(dataset_name=d, relationship=j) in live for d, _, j in members)

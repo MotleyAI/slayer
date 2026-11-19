@@ -36,11 +36,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -57,11 +57,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -78,11 +78,11 @@
    },
    "new": {
     "to": "warehouses",
-    "join_pairs": [
-     [
-      "warehouse_id",
-      "id"
-     ]
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -99,11 +99,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -120,11 +120,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -141,11 +141,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -162,11 +162,11 @@
    },
    "new": {
     "to": "notes",
-    "join_pairs": [
-     [
-      "id",
-      "order_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "order_id"
     ]
    }
   },
@@ -183,11 +183,11 @@
    },
    "new": {
     "to": "b",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -204,11 +204,11 @@
    },
    "new": {
     "to": "c",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -225,11 +225,11 @@
    },
    "new": {
     "to": "d",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

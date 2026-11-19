@@ -32,7 +32,7 @@ async def engine():
 
 
 async def _values(engine, expr: str, **body: Any) -> dict[str, Any]:
-    resp = await engine.execute(query(dimensions=["name", {"expression": expr, "name": "v"}], **body))
+    resp = await engine.execute(query(dimensions=["name", {"field": expr, "alias": "v"}], **body))
     return {r["contractors.name"]: r["contractors.v"] for r in resp.data}
 
 
@@ -148,7 +148,7 @@ class TestArgumentTypes:
         with pytest.raises(SlayerError) as info:
             await _count(engine, "contains(skills, DATE '2025-01-01')")
         msg = str(info.value)
-        for needle in ("contains", "TEXT", "DATE"):
+        for needle in ("contains", "String", "Date"):
             assert needle in msg, msg
 
     async def test_text_argument_to_a_list_only_function(self, engine) -> None:
@@ -167,9 +167,9 @@ MIXED_DDL = ("CREATE TABLE mixed (id INTEGER, scores INTEGER[], prices DOUBLE[])
 
 def mixed_dataset() -> SlayerDataset:
     return SlayerDataset(name="mixed", sql_table="mixed", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT),
-        DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INTEGER),
+        DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.FLOAT),
     ])
 
 
@@ -249,19 +249,19 @@ class TestEmission:
     @pytest.mark.parametrize("expr", ["contains_any(skills, ['go', 'sql'])", "contains_all(skills, ['go', 'sql'])",
                                       "contains_any(skills, required)", "contains_all(skills, required)"])
     async def test_no_postgres_only_operators(self, dialect: str, expr: str) -> None:
-        sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect=dialect)
+        sql = await emit_contractors(query(dimensions=["id", {"field": expr, "alias": "v"}]), dialect=dialect)
         assert "&&" not in sql, sql
         assert "@>" not in sql, sql
 
     @pytest.mark.parametrize("expr", ["contains(skills, 'go')", "contains_any(skills, required)",
                                       "contains_all(skills, required)", "length(skills)"])
     async def test_no_lambda_arrow_on_duckdb(self, expr: str) -> None:
-        sql = await emit_contractors(query(dimensions=["id", {"expression": expr, "name": "v"}]), dialect="duckdb")
+        sql = await emit_contractors(query(dimensions=["id", {"field": expr, "alias": "v"}]), dialect="duckdb")
         assert "->" not in sql, sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:
         days = DatasetField(name="days", datatype=DataType.ARRAY, element_type=DataType.DATE)
         model = contractors_dataset().model_copy(update={"fields": [*contractors_dataset().fields, days]})
-        await emit_contractors(query(dimensions=["id", {"expression": "contains(days, DATE '2025-01-01')",
-                                                        "name": "v"}]), dialect=dialect, datasets=[model])
+        await emit_contractors(query(dimensions=["id", {"field": "contains(days, DATE '2025-01-01')",
+                                                        "alias": "v"}]), dialect=dialect, datasets=[model])

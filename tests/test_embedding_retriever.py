@@ -79,9 +79,9 @@ def _make_dataset() -> SlayerDataset:
         data_source="dsx",
         description="orders fact table",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE, description="cents"),
-            DatasetField(name="secret", datatype=DataType.TEXT, hidden=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT, description="cents"),
+            DatasetField(name="secret", datatype=DataType.STRING, hidden=True),
         ],
         metrics=[
             DatasetMetric(name="rev", expression="sum(amount)"),

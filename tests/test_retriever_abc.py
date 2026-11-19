@@ -77,7 +77,7 @@ async def test_default_no_op_write_hooks_return_documented_empties() -> None:
     memory = Memory(id="1", learning="hello", entities=[])
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
     for retriever in (BM25Retriever(), TantivyRetriever()):

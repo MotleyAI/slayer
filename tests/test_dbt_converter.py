@@ -140,8 +140,8 @@ class TestBasicConversion:
         orders = next(m for m in result.datasets if m.name == "orders")
         status = next(d for d in orders.fields if d.name == "status")
         order_date = next(d for d in orders.fields if d.name == "order_date")
-        assert status.datatype == DataType.TEXT
-        assert order_date.datatype == DataType.TIMESTAMP
+        assert status.datatype == DataType.STRING
+        assert order_date.datatype == DataType.DATETIME
 
     def test_measures(self) -> None:
         """v2 dbt converter splits dbt measures: a Column per unique expr,
@@ -185,7 +185,7 @@ class TestBasicConversion:
         orders = next(m for m in result.datasets if m.name == "orders")
         assert len(orders.relationships) == 1
         assert orders.relationships[0].to == "customers"
-        assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert orders.relationships[0].column_pairs == [("customer_id", "id")]
 
 
     def test_peer_joins_from_shared_primary_entity(self) -> None:
@@ -220,7 +220,7 @@ DbtMeasure(name="count", agg="count", expr="1")
         assert any(j.to == "claim_coverage" for j in claim.relationships)
         assert not any(j.to == "claim" for j in claim_cov.relationships)
         claim_to_cov = next(j for j in claim.relationships if j.to == "claim_coverage")
-        assert claim_to_cov.join_pairs == [["claim_identifier", "claim_identifier"]]
+        assert claim_to_cov.column_pairs == [("claim_identifier", "claim_identifier")]
 
     def test_peer_join_with_aliased_entity(self) -> None:
         """Peer join works when entity expr differs from name."""
@@ -249,7 +249,7 @@ DbtMeasure(name="number_of_policies", agg="sum", expr="1")
         policy = next(m for m in result.datasets if m.name == "policy")
 
         apr_to_policy = next(j for j in apr.relationships if j.to == "policy")
-        assert apr_to_policy.join_pairs == [["agreement_identifier", "Policy_Identifier"]]
+        assert apr_to_policy.column_pairs == [("agreement_identifier", "Policy_Identifier")]
         # No reverse declaration on the larger-named peer.
         assert not any(j.to == "agreement_party_role" for j in policy.relationships)
 
@@ -369,7 +369,7 @@ class TestMeasureConsolidation:
 
     def test_a_filtered_metric_column_avoids_a_name_in_another_case(self) -> None:
         model = SlayerDataset(name="m", sql_table="m", data_source="test",
-                            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
                             metrics=[DatasetMetric(name="premium_filtered", expression="count(*)")])
         assert DbtToSlayerConverter._alloc_field_name(model, "Premium_filtered") == "Premium_filtered_col"
 
@@ -749,8 +749,8 @@ def _sample_slayer_dataset(name: str = "raw_events") -> SlayerDataset:
         sql_table="staging.raw_events",
         data_source="test_db",
         fields=[
-            DatasetField(name="event_id", sql="event_id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="event_type", sql="event_type", datatype=DataType.TEXT),
+            DatasetField(name="event_id", sql="event_id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="event_type", sql="event_type", datatype=DataType.STRING),
         ],
     )
 
@@ -888,7 +888,7 @@ class TestHiddenModelDescriptionPrecedence:
             if c.name == "event_id":
                 c.description = "db comment on event_id"
         fake_model.fields.append(
-            DatasetField(name="db_only", sql="db_only", datatype=DataType.TEXT,
+            DatasetField(name="db_only", sql="db_only", datatype=DataType.STRING,
                    description="db comment only")
         )
         with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(return_value=fake_model)):
@@ -1140,7 +1140,7 @@ class TestJoinTypeFromDbt:
         assert not any(j.to == "policy_amount" for j in policy.relationships)
         reverse = edges_between(source=policy, target=policy_amount)[0]
         assert str(reverse.join_type) == "inner"
-        assert reverse.join_pairs == [["id", "policy_id"]]
+        assert reverse.column_pairs == [("id", "policy_id")]
 
 
 class TestColumnNamingS4:
@@ -1536,21 +1536,21 @@ class TestDbtConverterRenamedDataTypes:
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.datasets if m.name == "orders")
         status = next(d for d in orders.fields if d.name == "status")
-        assert status.datatype == DataType.TEXT
+        assert status.datatype == DataType.STRING
 
     def test_time_dim_is_timestamp(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.datasets if m.name == "orders")
         order_date = next(d for d in orders.fields if d.name == "order_date")
-        assert order_date.datatype == DataType.TIMESTAMP
+        assert order_date.datatype == DataType.DATETIME
 
     def test_measure_column_is_double(self) -> None:
         project = _make_simple_project()
         result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
         orders = next(m for m in result.datasets if m.name == "orders")
         amount = next(c for c in orders.fields if c.name == "amount")
-        assert amount.datatype == DataType.DOUBLE
+        assert amount.datatype == DataType.FLOAT
 
 
 def test_entity_metadata_merged_into_reused_pk_column() -> None:
@@ -1613,7 +1613,7 @@ class TestJoinKeyColumns:
         assert fk is not None
         assert fk.hidden is True
         assert fk.is_base
-        assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert orders.relationships[0].column_pairs == [("customer_id", "id")]
 
     def test_foreign_entity_covered_by_a_dimension_reuses_it(self) -> None:
         project = _make_simple_project()
@@ -1721,7 +1721,7 @@ def test_quoted_foreign_entity_expr_keys_the_join() -> None:
     result = DbtToSlayerConverter(project=project, data_source="test_db").convert()
     orders = next(m for m in result.datasets if m.name == "orders")
     fk = orders.get_field("CustomerID")
-    assert orders.relationships[0].join_pairs == [["CustomerID", "id"]]
+    assert orders.relationships[0].column_pairs == [("CustomerID", "id")]
     assert fk is not None
     assert fk.physical_name == "CustomerID"
 
@@ -1770,7 +1770,7 @@ class TestEntityExprResolvesPhysically:
 
     def test_keys_resolve_to_the_renamed_dimensions(self) -> None:
         models = {m.name: m for m in _renamed_keys_datasets()}
-        assert models["orders"].relationships[0].join_pairs == [["customer_id", "customer_key"]]
+        assert models["orders"].relationships[0].column_pairs == [("customer_id", "customer_key")]
         assert models["orders"].get_field("cust_fk") is None
         assert models["customers"].get_field("customer_pk") is None
         key = models["customers"].get_field("customer_key")
@@ -1780,6 +1780,6 @@ class TestEntityExprResolvesPhysically:
     async def test_join_executes_over_the_renamed_keys(self, renamed_keys_engine) -> None:
         resp = await renamed_keys_engine.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customers.name"],
-            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
         }))
         assert cells(resp, dim_suffix="customers.name", metric="amt") == AMOUNT_BY_CUSTOMER

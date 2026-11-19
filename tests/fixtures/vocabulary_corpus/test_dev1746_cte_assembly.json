@@ -2,12 +2,12 @@
  "source": "tests/test_dev1746_cte_assembly.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.lifetime_value)"
    },
    "new": {
-    "expression": "sum(customers_v2.lifetime_value)"
+    "metric": "sum(customers_v2.lifetime_value)"
    }
   },
   {

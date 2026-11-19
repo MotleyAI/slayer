@@ -201,8 +201,8 @@ class TestReingestMatching:
         # Seed the old-world legacy model whose sql_table is the OTHER live object.
         await storage.save_dataset(SlayerDataset(
             name="a_b", data_source="ds", sql_table="a__b",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="x", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="x", datatype=DataType.STRING)],
         ))
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
@@ -228,8 +228,8 @@ class TestReingestMatching:
         # Seed the old-world sanitized model pointing at the real object.
         await storage.save_dataset(SlayerDataset(
             name="a_b", data_source="ds", sql_table="a__b",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="x", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="x", datatype=DataType.STRING)],
         ))
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         assert await storage.get_dataset("a_b", data_source="ds") is not None

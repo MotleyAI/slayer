@@ -22,8 +22,8 @@ D = datetime
 NOTICE = "midnight"
 #: Orders 1 (2024-03-05 08:00) and 2 (2024-04-10 09:30) only.
 FIRST_TWO = "id <= 2"
-WINDOW = {"expression": "sum(amount, window='90d')", "name": "w"}
-PLAIN = {"expression": "sum(amount)", "name": "s"}
+WINDOW = {"metric": "sum(amount, window='90d')", "alias": "w"}
+PLAIN = {"metric": "sum(amount)", "alias": "s"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -206,7 +206,7 @@ class TestNotice:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_same_named_column_elsewhere_names_no_variable(self, backend: str, bound: str) -> None:
         events = events_dataset().model_copy(update={"relationships": [
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])]})
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])]})
         async with dev2215_engine(backend, datasets=[orders_dataset(), customers_dataset(), events]) as eng:
             resp = await eng.execute(q(
                 population="customers", dimensions=["id"],
@@ -224,14 +224,14 @@ class TestNotice:
     async def test_a_variable_in_an_extension_measure_is_named(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             metrics=["early"], variables={"cutoff": "2024-12-31"},
-            extensions=[{"source_name": "orders", "metrics": [
+            extensions=[{"dataset": "orders", "metrics": [
                 {"name": "early", "expression": "count(*) FILTER (WHERE created_at <= '{cutoff}')"}]}]))
         assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
 
     async def test_a_variable_in_a_joined_extension_measure_is_named(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             metrics=["customers.recent"], variables={"cutoff": "2024-12-31"},
-            extensions=[{"source_name": "customers", "metrics": [
+            extensions=[{"dataset": "customers", "metrics": [
                 {"name": "recent", "expression": "count(*) FILTER (WHERE updated_at <= '{cutoff}')"}]}]))
         assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
 

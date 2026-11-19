@@ -2,12 +2,12 @@
  "source": "tests/dialects/test_clickhouse.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   }
  ],

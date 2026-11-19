@@ -28,12 +28,12 @@ def _m(name: str, cols: list[str], joins: list[DatasetRelationship] | None = Non
 def _named_chain() -> dict[str, SlayerDataset]:
     """orders →(billing_customer)→ customers → regions, customers → plans."""
     orders = _m("orders", ["id", "bc_id"], [
-        DatasetRelationship(to="customers", join_pairs=[["bc_id", "id"]],
+        DatasetRelationship(to="customers", from_columns=["bc_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE, name="billing_customer")])
     customers = _m("customers", ["id", "region_id", "plan_id"], [
-        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE),
-        DatasetRelationship(to="plans", join_pairs=[["plan_id", "id"]],
+        DatasetRelationship(to="plans", from_columns=["plan_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     return {m.name: m for m in (orders, customers, _m("regions", ["id", "pop"]),
                                 _m("plans", ["id", "fee"]))}
@@ -44,9 +44,9 @@ def _edge_name_collision() -> dict[str, SlayerDataset]:
     (→ orders) — an unvalidated bundle save-time rules would forbid."""
     M = _named_chain()
     M["regions"] = _m("regions", ["id", "pop", "plan_id", "cust_id"], [
-        DatasetRelationship(to="plans", join_pairs=[["plan_id", "id"]],
+        DatasetRelationship(to="plans", from_columns=["plan_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE, name="customers"),
-        DatasetRelationship(to="orders", join_pairs=[["cust_id", "id"]],
+        DatasetRelationship(to="orders", from_columns=["cust_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE, name="loop")])
     return M
 
@@ -54,9 +54,9 @@ def _edge_name_collision() -> dict[str, SlayerDataset]:
 def _parallel_pair() -> dict[str, SlayerDataset]:
     """orders → customers on two parallel UNNAMED edges (ambiguous)."""
     orders = _m("orders", ["id", "bill_id", "ship_id"], [
-        DatasetRelationship(to="customers", join_pairs=[["bill_id", "id"]],
+        DatasetRelationship(to="customers", from_columns=["bill_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE),
-        DatasetRelationship(to="customers", join_pairs=[["ship_id", "id"]],
+        DatasetRelationship(to="customers", from_columns=["ship_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     return {m.name: m for m in (orders, _m("customers", ["id"]))}
 

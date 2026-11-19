@@ -102,9 +102,9 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
     )
 
@@ -115,10 +115,10 @@ def segments_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="segments", data_source="test", sql_table="segments",
         fields=[
-            DatasetField(name="code", datatype=DataType.TEXT),
-            DatasetField(name="label", datatype=DataType.TEXT),
-            DatasetField(name="boost", datatype=DataType.DOUBLE),
-            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="code", datatype=DataType.STRING),
+            DatasetField(name="label", datatype=DataType.STRING),
+            DatasetField(name="boost", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -128,17 +128,17 @@ def customers_dataset() -> SlayerDataset:
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="segment_code", datatype=DataType.TEXT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="segment_code", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
             DatasetRelationship(to="segments",
-                      join_pairs=[["segment_code", "code"]]),
+                      from_columns=["segment_code"], to_columns=["code"]),
         ],
     )
 
@@ -148,9 +148,9 @@ def tags_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="tags", data_source="test", sql_table="tags",
         fields=[
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="kind", datatype=DataType.TEXT),
-            DatasetField(name="factor", datatype=DataType.DOUBLE),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="kind", datatype=DataType.STRING),
+            DatasetField(name="factor", datatype=DataType.FLOAT),
         ],
     )
 
@@ -160,27 +160,27 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="city", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
             # Same-model filtered column (no isolation):
-            DatasetField(name="ok_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="status = 'ok'"),
             # Filtered-local probes (CASE-WHEN at aggregation time):
-            DatasetField(name="gold_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="gold_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="customers.tier = 'gold'"),
-            DatasetField(name="alpha_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="alpha_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="customers.segments.label = 'Alpha'"),
-            DatasetField(name="rush_amount", datatype=DataType.DOUBLE, sql="amount",
+            DatasetField(name="rush_amount", datatype=DataType.FLOAT, sql="amount",
                    filter="tags.kind = 'rush'"),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="tags", join_pairs=[["id", "order_id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="tags", from_columns=["id"], to_columns=["order_id"]),
         ],
         aggregations=[
             Aggregation(
@@ -222,7 +222,7 @@ def month_td(column: str = "ordered_at") -> List[TimeDimension]:
 
 #: Computed dimension banding the city totals at > 25 (row regroup attach).
 BAND25 = "CASE WHEN sum(amount, partition_by=city) > 25 THEN 1 ELSE 0 END"
-BAND = {"expression": BAND25, "name": "band"}
+BAND = {"field": BAND25, "alias": "band"}
 
 #: Cross-model banded dimension (customers-rooted producer, per-tier spend).
 SPEND_BAND = (

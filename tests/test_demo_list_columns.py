@@ -84,7 +84,7 @@ class TestDemoModels:
             assert model is not None
             column = model.get_field(column_name)
             assert column is not None
-            assert (column.datatype, column.element_type) == (DataType.ARRAY, DataType.TEXT)
+            assert (column.datatype, column.element_type) == (DataType.ARRAY, DataType.STRING)
             assert column.description
 
     def test_element_counts_match_the_items(self, doc_demo_storage: YAMLStorage) -> None:
@@ -92,11 +92,11 @@ class TestDemoModels:
         try:
             per_element = engine.execute_sync({
                 "population": "orders", "dimensions": ["item_skus.value"],
-                "metrics": [{"expression": "count(item_skus.*)", "name": "units"}],
+                "metrics": [{"metric": "count(item_skus.*)", "alias": "units"}],
             }).data
             per_item = engine.execute_sync({
                 "population": "items", "dimensions": ["sku"],
-                "metrics": [{"expression": "count(*)", "name": "units"}],
+                "metrics": [{"metric": "count(*)", "alias": "units"}],
             }).data
         finally:
             engine.close()

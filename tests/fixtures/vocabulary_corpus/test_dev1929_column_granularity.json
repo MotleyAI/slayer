@@ -10,7 +10,7 @@
    },
    "new": {
     "name": "created_at",
-    "datatype": "time",
+    "datatype": "DateTime",
     "granularity": "month"
    }
   },
@@ -27,11 +27,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,8 +56,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "time_dimensions": [
@@ -89,8 +89,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -121,7 +121,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -146,7 +146,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(created_at)"
+      "metric": "max(created_at)"
      }
     ]
    }
@@ -172,8 +172,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "time_dimensions": [
@@ -204,7 +204,7 @@
     "population": "monthly",
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ],
     "time_dimensions": [
@@ -241,7 +241,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev_sum)"
+      "metric": "sum(rev_sum)"
      }
     ]
    }
@@ -267,8 +267,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "time_dimensions": [
@@ -305,7 +305,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -336,7 +336,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -367,7 +367,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -399,8 +399,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -432,8 +432,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -465,8 +465,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -484,11 +484,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -519,8 +519,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -552,8 +552,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -571,11 +571,11 @@
    },
    "new": {
     "to": "s1",
-    "join_pairs": [
-     [
-      "id",
-      "created_at"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "created_at"
     ]
    }
   },
@@ -608,8 +608,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -639,7 +639,7 @@
     "population": "s1",
     "extensions": [
      {
-      "source_name": "s1"
+      "dataset": "s1"
      }
     ],
     "time_dimensions": [
@@ -650,7 +650,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -680,7 +680,7 @@
     "population": "s1",
     "extensions": [
      {
-      "source_name": "s1"
+      "dataset": "s1"
      }
     ],
     "time_dimensions": [
@@ -691,7 +691,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -731,8 +731,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -766,8 +766,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -798,7 +798,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -824,8 +824,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ],
     "time_dimensions": [
@@ -862,7 +862,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(rev)"
+      "metric": "sum(rev)"
      }
     ]
    }
@@ -888,7 +888,7 @@
     "fields": [
      {
       "name": "created_at",
-      "datatype": "time",
+      "datatype": "DateTime",
       "granularity": "month"
      }
     ]

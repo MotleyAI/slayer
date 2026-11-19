@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 from slayer.engine.query_engine import (
     _collect_broadcast_warnings,
 )
@@ -17,7 +17,6 @@ from slayer.engine.query_engine import (
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
-    DatasetMetric,
     SPEND_BAND,
     SPEND_BY_BAND,
     broadcast_warnings,
@@ -33,9 +32,9 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
-POP = DatasetMetric(expression="sum(customers.regions.pop)", name="pop")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
+POP = QueryMetric(metric="sum(customers.regions.pop)", alias="pop")
 
 
 #: Outside the conjunct pushdown scope for EVERY producer root here (the OR mixes
@@ -67,7 +66,7 @@ class TestPushedFilterEntryIdentity:
         metric counts the customers with an app order (c1, c3), unfanned."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, CM],
             filter=[_EXCLUDED_APP],
         ))
@@ -89,10 +88,10 @@ class TestPushedFilterEntryIdentity:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{
-                "expression": ("CASE WHEN sum(customers.regions.pop, "
+                "field": ("CASE WHEN sum(customers.regions.pop, "
                                "partition_by=customers.regions.name) > 150 "
                                "THEN 'hi' ELSE 'lo' END"),
-                "name": "pband",
+                "alias": "pband",
             }],
             metrics=[M],
             filter=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
@@ -128,7 +127,7 @@ class TestBroadcastDedup:
         computed dimension's producer chain must not shadow the outer one."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}, "status"],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}, "status"],
             metrics=[M, CM],
             to_many_handling="broadcast",
         ))
@@ -146,7 +145,7 @@ class TestBroadcastDedup:
         """Anchor for the nested case: without status, nothing broadcasts."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
             metrics=[M, CM],
         ))
         assert broadcast_warnings(resp) == []

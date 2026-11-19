@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from slayer.core.query import SlayerQuery
-from tests._dev1915_fixtures import DatasetMetric, dev1915_datasets, month_td
+from slayer.core.query import QueryMetric, SlayerQuery
+from tests._dev1915_fixtures import dev1915_datasets, month_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise, render_value
 
@@ -28,7 +28,7 @@ FIRST_LAST = {"first", "last", "last_explicit_time", "cross_model_last"}
 
 
 def _cm(expression, name):
-    return [DatasetMetric(expression=expression, name=name)]
+    return [QueryMetric(metric=expression, alias=name)]
 
 
 def _cases() -> dict:

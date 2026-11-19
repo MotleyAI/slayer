@@ -4,10 +4,10 @@ SQLite's declared column types are affinity hints: a column declared ``INTEGER``
 can store REAL, TEXT or BLOB values row by row. The probe samples the stored
 storage classes and returns:
 
-* ``DataType.INT`` when every sampled value is integer-shaped (sample not saturated);
-* ``DataType.DOUBLE`` when REAL or non-integral values appear, or every TEXT value
+* ``DataType.INTEGER`` when every sampled value is integer-shaped (sample not saturated);
+* ``DataType.FLOAT`` when REAL or non-integral values appear, or every TEXT value
   coerces to a finite float;
-* ``DataType.TEXT`` when BLOBs appear, a TEXT value does not coerce (or is not
+* ``DataType.STRING`` when BLOBs appear, a TEXT value does not coerce (or is not
   finite), or the distinct-text sample saturates;
 * ``None`` when a probe statement fails, or the row sample saturates on an INT
   verdict; callers keep the type they had. An unreachable database raises.
@@ -102,7 +102,7 @@ async def _classify_text_branch(
     # Saturated distinct-text sample → conservative TEXT (can't prove all
     # distinct values coerce).
     if len(distinct_rows) > COERCE_DISTINCT_LIMIT:
-        return DataType.TEXT
+        return DataType.STRING
 
     for raw in distinct_rows:
         if raw is None:
@@ -110,11 +110,11 @@ async def _classify_text_branch(
         try:
             f = float(str(raw).strip())
         except (TypeError, ValueError):
-            return DataType.TEXT
+            return DataType.STRING
         if not math.isfinite(f):
-            return DataType.TEXT
+            return DataType.STRING
     # Every distinct text value is a finite float.
-    return DataType.DOUBLE
+    return DataType.FLOAT
 
 
 async def probe_sqlite_integer_column(
@@ -130,23 +130,23 @@ async def probe_sqlite_integer_column(
     The decision order is:
 
     1. Main probe SQL fails → log WARNING, return ``None``.
-    2. ``n_blob > 0`` → :class:`DataType.TEXT` (BLOBs can't be safely cast
+    2. ``n_blob > 0`` → :class:`DataType.STRING` (BLOBs can't be safely cast
        numerically).
     3. ``n_text > 0`` (checked BEFORE the REAL branch):
        a. Coerce probe SQL fails → log WARNING, return ``None``.
-       b. Distinct-text result is saturated → :class:`DataType.TEXT`
+       b. Distinct-text result is saturated → :class:`DataType.STRING`
           (conservatively widened — we can't prove all distinct values
           coerce).
        c. Any text value's ``float()`` raises or result is not finite →
-          :class:`DataType.TEXT`.
+          :class:`DataType.STRING`.
        d. Every distinct text value coerces to a finite float →
-          :class:`DataType.DOUBLE`.
-    4. ``n_real > 0`` OR ``n_non_integral > 0`` → :class:`DataType.DOUBLE`.
+          :class:`DataType.FLOAT`.
+    4. ``n_real > 0`` OR ``n_non_integral > 0`` → :class:`DataType.FLOAT`.
     5. All-zero counts:
        a. Row sample saturated → log WARNING, return ``None``.
        b. No non-NULL evidence (empty / all-NULL) → ``None``.
        c. Otherwise (all sampled non-NULL values are INTEGER) →
-          :class:`DataType.INT`.
+          :class:`DataType.INTEGER`.
 
     The caller treats ``None`` as "keep the SA-derived type as-is" — saturated
     samples and probe failures are indistinguishable from the caller's
@@ -157,7 +157,7 @@ async def probe_sqlite_integer_column(
     if counts is None:
         return None
     if counts.n_blob > 0:
-        return DataType.TEXT
+        return DataType.STRING
     if counts.n_text > 0:
         return await _classify_text_branch(client=client, table=table, schema=schema, column=column)
     verdict = counts.numeric_verdict(cap=PROBE_SCAN_CAP)

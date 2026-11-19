@@ -114,7 +114,7 @@ Validation, explicit and query-time, SHALL NOT report a model as drifted when it
 ### Requirement: A join drop addresses exactly one edge
 Explicit validation SHALL report a dropped join by its edge reference (the target model's name when it
 is the only join from the model to that target, else the edge name) and SHALL additionally carry an
-exact reference (`to`, `name`, `join_pairs`) for every dropped join. Applying the drift SHALL
+exact reference (`to`, `name`, `from_columns`, `to_columns`) for every dropped join. Applying the drift SHALL
 remove exactly the joins whose live keys or target are gone, never another join to the same target.
 The exact references SHALL be accepted unchanged by the model-editing surface.
 

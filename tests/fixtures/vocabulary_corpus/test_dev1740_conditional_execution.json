@@ -156,7 +156,7 @@
     ]
    },
    "new": {
-    "source_name": "orders",
+    "dataset": "orders",
     "metrics": [
      {
       "expression": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
@@ -166,12 +166,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "big"
    },
    "new": {
-    "expression": "big"
+    "metric": "big"
    }
   },
   {

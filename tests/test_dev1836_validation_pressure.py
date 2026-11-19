@@ -78,21 +78,21 @@ class TestCrossDatasourceIsolation:
         model elsewhere must not flip a proven join to unproven."""
         customers_a = SlayerDataset(
             name="customers", sql_table="customers", data_source="ds_a",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         )
         orders_a = SlayerDataset(
             name="orders", sql_table="orders", data_source="ds_a",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]])],
+                             from_columns=["customer_id"], to_columns=["id"])],
         )
         # Same name, different datasource, and 'id' is NOT unique here.
         customers_b = SlayerDataset(
             name="customers", sql_table="customers", data_source="ds_b",
-            fields=[DatasetField(name="id", datatype=DataType.INT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER)],
         )
         findings = audit_relationship_safety(
             datasets=[orders_a, customers_a, customers_b],
@@ -108,7 +108,7 @@ class TestContradictedDeclarations:
     def _detection(self) -> RelationshipCardinalityReport:
         return RelationshipCardinalityReport(findings=[RelationshipCardinalityFinding(
             data_source="test", dataset="orders", to="customers",
-            join_pairs=[["customer_id", "id"]],
+            column_pairs=[("customer_id", "id")],
             stored=RelationshipCardinality.MANY_TO_ONE,
             detected=RelationshipCardinality.MANY_TO_MANY,
             source_side=SideStats(row_count=7, distinct_count=4,
@@ -171,17 +171,17 @@ class TestCliValidateModels:
             name="tags", data_source="ds", sql_table="tags",
             fields=[
                 # No PK/unique claim on `tag` — the hosts → tags hop is unproven.
-                DatasetField(name="tag", datatype=DataType.TEXT),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="tag", datatype=DataType.STRING),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         ), _validate=False))
         run_sync(storage.save_dataset(SlayerDataset(
             name="hosts", data_source="ds", sql_table="hosts",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="tag", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="tag", datatype=DataType.STRING),
             ],
-            relationships=[DatasetRelationship(to="tags", join_pairs=[["tag", "tag"]])],
+            relationships=[DatasetRelationship(to="tags", from_columns=["tag"], to_columns=["tag"])],
         ), _validate=False))
         return store
 

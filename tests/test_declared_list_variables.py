@@ -50,9 +50,9 @@ def _dataset(*, sql: str, meta: dict | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql=sql, data_source="ds", meta=meta,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -293,7 +293,7 @@ async def test_e2e_scalar_and_list_return_identical_rows():
         async def _total(regions):
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "variables": {"regions": regions},
             })
             resp = await engine.execute(q)

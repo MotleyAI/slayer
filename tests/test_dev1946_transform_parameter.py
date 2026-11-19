@@ -25,6 +25,7 @@ from slayer.core.syntax import parse_expr
 from slayer.ir.planned import PlainProducerKernel, PlannedQuery, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
+from slayer.core.query import QueryMetric
 
 from tests._dev1840_fixtures import (
     bundle as orders_bundle,
@@ -32,7 +33,7 @@ from tests._dev1840_fixtures import (
     gen as orders_gen,
     make_exec_engine as make_orders_engine,
 )
-from tests._dev1841_fixtures import DatasetMetric, associated_warnings, broadcast_warnings
+from tests._dev1841_fixtures import associated_warnings, broadcast_warnings
 from tests._dev1847_fixtures import (
     dev1847_datasets,
     gen as sales_gen,
@@ -91,11 +92,11 @@ from tests._dev1946_fixtures import (
     local_sales_global,
 )
 
-AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
+AMOUNT = QueryMetric(metric="sum(amount)", alias="a")
 
 
-def _m(expression: str) -> DatasetMetric:
-    return DatasetMetric(expression=expression, name="w")
+def _m(expression: str) -> QueryMetric:
+    return QueryMetric(metric=expression, alias="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

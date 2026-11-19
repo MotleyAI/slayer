@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -121,12 +121,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.revenue) / 100"
    },
    "new": {
-    "expression": "sum(customers.revenue) / 100"
+    "metric": "sum(customers.revenue) / 100"
    }
   },
   {
@@ -141,12 +141,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "max(customers__revenue_sum)"
    },
    "new": {
-    "expression": "max(customers__revenue_sum)"
+    "metric": "max(customers__revenue_sum)"
    }
   },
   {
@@ -183,12 +183,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(revenue)"
    },
    "new": {
-    "expression": "sum(revenue)"
+    "metric": "sum(revenue)"
    }
   },
   {
@@ -203,12 +203,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct(customers.id)"
    },
    "new": {
-    "expression": "count_distinct(customers.id)"
+    "metric": "count_distinct(customers.id)"
    }
   },
   {
@@ -246,11 +246,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -288,12 +288,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(customers.*)"
    },
    "new": {
-    "expression": "count(customers.*)"
+    "metric": "count(customers.*)"
    }
   },
   {
@@ -341,12 +341,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(revenue) / 100"
    },
    "new": {
-    "expression": "sum(revenue) / 100"
+    "metric": "sum(revenue) / 100"
    }
   },
   {
@@ -372,12 +372,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.revenue)"
    },
    "new": {
-    "expression": "sum(customers.revenue)"
+    "metric": "sum(customers.revenue)"
    }
   },
   {
@@ -460,12 +460,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct(customers.id)"
    },
    "new": {
-    "expression": "count_distinct(customers.id)"
+    "metric": "count_distinct(customers.id)"
    }
   },
   {

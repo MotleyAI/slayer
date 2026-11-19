@@ -35,10 +35,10 @@ def typed_dataset() -> SlayerDataset:
         return DatasetField(name=name, datatype=DataType.ARRAY, element_type=element)
 
     return SlayerDataset(name="typed", sql_table="typed", data_source="pg", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="team", datatype=DataType.TEXT),
-        array("skills", DataType.TEXT), array("levels", DataType.INT), array("required", DataType.TEXT),
-        array("ints", DataType.INT), DatasetField(name="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="uid", datatype=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="team", datatype=DataType.STRING),
+        array("skills", DataType.STRING), array("levels", DataType.INTEGER), array("required", DataType.STRING),
+        array("ints", DataType.INTEGER), DatasetField(name="amount", datatype=DataType.FLOAT),
+        DatasetField(name="uid", datatype=DataType.STRING),
     ])
 
 
@@ -91,6 +91,6 @@ async def test_lists_of_two_attached_collects(pg, fn: str) -> None:
     # uuid[] against text[]: each attached list keeps its element type, so both are read as TEXT[].
     hit = f"{fn}(collect(uid, partition_by=team), collect(uid || '', partition_by=team))"
     resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": [
-        "id", {"expression": hit, "name": "hit"}]}))
+        "id", {"field": hit, "alias": "hit"}]}))
     assert {int(r["typed.id"]): r["typed.hit"] for r in resp.data} == {
         1: True, 2: True, 3: True, 4: fn == "contains_all"}, resp.sql

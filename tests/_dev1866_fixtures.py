@@ -72,22 +72,22 @@ def chain_datasets() -> list[SlayerDataset]:
     regions = SlayerDataset(
         name="regions", data_source=DS_CHAIN, sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     customers = SlayerDataset(
         name="customers", data_source=DS_CHAIN, sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(
-                to="regions", join_pairs=[["region_id", "id"]],
+                to="regions", from_columns=["region_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -95,11 +95,11 @@ def chain_datasets() -> list[SlayerDataset]:
     orders = SlayerDataset(
         name="orders", data_source=DS_CHAIN, sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="ordered_at", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.STRING),
         ],
         metrics=[
             DatasetMetric(expression="sum(amount)", name="revenue"),
@@ -107,7 +107,7 @@ def chain_datasets() -> list[SlayerDataset]:
         ],
         relationships=[
             DatasetRelationship(
-                to="customers", join_pairs=[["customer_id", "id"]],
+                to="customers", from_columns=["customer_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -124,20 +124,20 @@ def pair_datasets() -> list[SlayerDataset]:
     acct = SlayerDataset(
         name="acct", data_source=DS_PAIR, sql_table="acct",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="email", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="email", datatype=DataType.STRING),
         ],
     )
     prof = SlayerDataset(
         name="prof", data_source=DS_PAIR, sql_table="prof",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="acct_id", datatype=DataType.INT, unique=True),
-            DatasetField(name="bio", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="acct_id", datatype=DataType.INTEGER, unique=True),
+            DatasetField(name="bio", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(
-                to="acct", join_pairs=[["acct_id", "id"]],
+                to="acct", from_columns=["acct_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.ONE_TO_ONE,
             ),
         ],
@@ -149,18 +149,18 @@ def fan_datasets() -> list[SlayerDataset]:
     """basket with two children — sibling dims have no to-one determiner."""
     basket = SlayerDataset(
         name="basket", data_source=DS_FAN, sql_table="basket",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     items = SlayerDataset(
         name="basket_items", data_source=DS_FAN, sql_table="basket_items",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="basket_id", datatype=DataType.INT),
-            DatasetField(name="sku", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="basket_id", datatype=DataType.INTEGER),
+            DatasetField(name="sku", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(
-                to="basket", join_pairs=[["basket_id", "id"]],
+                to="basket", from_columns=["basket_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -168,13 +168,13 @@ def fan_datasets() -> list[SlayerDataset]:
     pays = SlayerDataset(
         name="basket_pays", data_source=DS_FAN, sql_table="basket_pays",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="basket_id", datatype=DataType.INT),
-            DatasetField(name="method", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="basket_id", datatype=DataType.INTEGER),
+            DatasetField(name="method", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(
-                to="basket", join_pairs=[["basket_id", "id"]],
+                to="basket", from_columns=["basket_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -187,25 +187,25 @@ def ambig_datasets() -> list[SlayerDataset]:
     depot = SlayerDataset(
         name="depot", data_source=DS_AMBIG, sql_table="depot",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     shipment = SlayerDataset(
         name="shipment", data_source=DS_AMBIG, sql_table="shipment",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="origin_depot_id", datatype=DataType.INT),
-            DatasetField(name="dest_depot_id", datatype=DataType.INT),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="origin_depot_id", datatype=DataType.INTEGER),
+            DatasetField(name="dest_depot_id", datatype=DataType.INTEGER),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
         relationships=[
             DatasetRelationship(
-                to="depot", join_pairs=[["origin_depot_id", "id"]],
+                to="depot", from_columns=["origin_depot_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
             DatasetRelationship(
-                to="depot", join_pairs=[["dest_depot_id", "id"]],
+                to="depot", from_columns=["dest_depot_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -223,20 +223,20 @@ def unknown_datasets() -> list[SlayerDataset]:
     sess = SlayerDataset(
         name="sess", data_source=DS_UNKNOWN, sql_table="sess",
         fields=[
-            DatasetField(name="sess_key", datatype=DataType.INT),
-            DatasetField(name="token", datatype=DataType.TEXT),
+            DatasetField(name="sess_key", datatype=DataType.INTEGER),
+            DatasetField(name="token", datatype=DataType.STRING),
         ],
     )
     hits = SlayerDataset(
         name="hits", data_source=DS_UNKNOWN, sql_table="hits",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="sess_ref", datatype=DataType.INT),
-            DatasetField(name="page", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="sess_ref", datatype=DataType.INTEGER),
+            DatasetField(name="page", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(
-                to="sess", join_pairs=[["sess_ref", "sess_key"]],
+                to="sess", from_columns=["sess_ref"], to_columns=["sess_key"],
                 cardinality=None,
             ),
         ],
@@ -254,20 +254,20 @@ def keycov_datasets() -> list[SlayerDataset]:
     days = SlayerDataset(
         name="days", data_source=DS_KEYCOV, sql_table="days",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="label", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="label", datatype=DataType.STRING),
         ],
     )
     events = SlayerDataset(
         name="events", data_source=DS_KEYCOV, sql_table="events",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="day_id", datatype=DataType.INT),
-            DatasetField(name="kind", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="day_id", datatype=DataType.INTEGER),
+            DatasetField(name="kind", datatype=DataType.STRING),
         ],
         relationships=[
             DatasetRelationship(
-                to="days", join_pairs=[["day_id", "id"]],
+                to="days", from_columns=["day_id"], to_columns=["id"],
                 cardinality=None,
             ),
         ],
@@ -281,9 +281,9 @@ def named_datasets() -> list[SlayerDataset]:
     agents = SlayerDataset(
         name="agents", data_source=DS_NAMED, sql_table="agents",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="score", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="score", datatype=DataType.INTEGER),
         ],
         metrics=[DatasetMetric(expression="count(id)", name="handled")],
         aggregations=[Aggregation(name="score", expression="MAX({score})")],
@@ -291,14 +291,14 @@ def named_datasets() -> list[SlayerDataset]:
     tickets = SlayerDataset(
         name="tickets", data_source=DS_NAMED, sql_table="tickets",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="subject", datatype=DataType.TEXT),
-            DatasetField(name="agent_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="subject", datatype=DataType.STRING),
+            DatasetField(name="agent_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
                 name="reporter", to="agents",
-                join_pairs=[["agent_id", "id"]],
+                from_columns=["agent_id"], to_columns=["id"],
                 cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
@@ -314,8 +314,8 @@ def widgets_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="widgets", data_source=data_source, sql_table="widgets",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="x", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="x", datatype=DataType.STRING),
         ],
     )
 

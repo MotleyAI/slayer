@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -39,7 +39,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(scaled)"
+      "metric": "sum(scaled)"
      }
     ],
     "variables": {
@@ -61,7 +61,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "weighted_avg(amount, weight='length(sqlite_version())')"
+      "metric": "weighted_avg(amount, weight='length(sqlite_version())')"
      }
     ]
    }
@@ -87,14 +87,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "upper(customers.tier)",
-      "name": "tier_label"
+      "field": "upper(customers.tier)",
+      "alias": "tier_label"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }
@@ -117,8 +117,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(scaled)",
-      "name": "s"
+      "metric": "sum(scaled)",
+      "alias": "s"
      }
     ],
     "variables": {

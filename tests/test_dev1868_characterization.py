@@ -14,7 +14,9 @@ import pytest
 
 import slayer.engine.compile.stages as stages_mod
 
-from tests._dev1836_fixtures import DatasetMetric, make_exec_engine, month_td, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1836_fixtures import make_exec_engine, month_td, q
 from tests._dev1868_fixtures import (
     CM_PART_TIER,
     CUMSUM_PART_BY_TIER_MONTH,
@@ -38,7 +40,7 @@ class TestW1SubstrateIsComplete:
     async def test_ranked_measure_executes_end_to_end(self, bypassed_engine) -> None:
         resp = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(expression=LAST_TIER, name="l")],
+            metrics=[QueryMetric(metric=LAST_TIER, alias="l")],
         ))
         got = {r[TIER]: r["orders.l"] for r in resp.data}
         for tier, expected in LAST_SPEND_BY_TIER.items():
@@ -51,13 +53,13 @@ class TestW1SubstrateIsComplete:
         filtered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filter=[f"{LAST_TIER} > 100"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         ))
         assert [r[TIER] for r in filtered.data] == ["silver"]
         ordered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
             filter=["customers.tier is not null"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
             order=[{"field": LAST_TIER, "direction": "desc"}],
         ))
         assert [r[TIER] for r in ordered.data] == ["silver", "gold", "bronze"]
@@ -69,7 +71,7 @@ class TestW2SubstrateIsComplete:
     ) -> None:
         resp = await bypassed_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression=f"cumsum({CM_PART_TIER})", name="c")],
+            metrics=[QueryMetric(metric=f"cumsum({CM_PART_TIER})", alias="c")],
         ))
         by = keyed_by_month(resp, TIER)
         assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)

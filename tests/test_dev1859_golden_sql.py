@@ -39,59 +39,59 @@ def _cases() -> dict:
         "mixed/headline": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "metrics": [
-                {"expression": f"sum(quantity * {INNER_UP_PRODUCT})", "name": "m"}]}},
+                {"metric": f"sum(quantity * {INNER_UP_PRODUCT})", "alias": "m"}]}},
         "mixed/outer_partition": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region", "product"], "metrics": [
-                {"expression": f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=region)",
-                 "name": "m"}]}},
+                {"metric": f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=region)",
+                 "alias": "m"}]}},
         "param/associate": {
             "models": "orders", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"],
-                   "metrics": [{"expression": _HEADLINE, "name": "w"}]}},
+                   "metrics": [{"metric": _HEADLINE, "alias": "w"}]}},
         "param/broadcast": {
             "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
-                   "metrics": [{"expression": _HEADLINE, "name": "w"}]}},
+                   "metrics": [{"metric": _HEADLINE, "alias": "w"}]}},
         "mixed/cross_model_constituent": {
             "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
-                   "metrics": [{"expression": _MIXED_TWIN, "name": "w"}]}},
+                   "metrics": [{"metric": _MIXED_TWIN, "alias": "w"}]}},
         "param/ordinary": {
             "models": "sales_wsum", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "metrics": [
-                {"expression": f"weighted_avg(amount, weight={_REGION_SUM})",
-                 "name": "w"}]}},
+                {"metric": f"weighted_avg(amount, weight={_REGION_SUM})",
+                 "alias": "w"}]}},
         "param/mixed_plus": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "metrics": [
-                {"expression": (f"weighted_avg(quantity * {INNER_UP_PRODUCT}, "
-                             f"weight={_REGION_SUM})"), "name": "w"}]}},
+                {"metric": (f"weighted_avg(quantity * {INNER_UP_PRODUCT}, "
+                             f"weight={_REGION_SUM})"), "alias": "w"}]}},
         "param/literal": {
             "models": "sales_wsum", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "metrics": [
-                {"expression": f"wsum(1, weight={_REGION_SUM})", "name": "w"}]}},
+                {"metric": f"wsum(1, weight={_REGION_SUM})", "alias": "w"}]}},
         "param/ungrained_reagg": {
             "models": "sales_wsum", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"], "metrics": [
-                {"expression": ("wsum(sum(amount, partition_by=[city, region]), "
-                             "weight=count(id))"), "name": "w"}]}},
+                {"metric": ("wsum(sum(amount, partition_by=[city, region]), "
+                             "weight=count(id))"), "alias": "w"}]}},
         "param/ranked_transform": {
             "models": "orders", "source": "orders", "mode": "broadcast",
             "kw": {"dimensions": ["status"],
-                   "metrics": [{"expression": _RANKED_TRANSFORM, "name": "w"}]}},
+                   "metrics": [{"metric": _RANKED_TRANSFORM, "alias": "w"}]}},
         "param/local_ranked_transform": {
             "models": "sales", "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"],
-                   "metrics": [{"expression": _LOCAL_RANKED_TRANSFORM, "name": "w"}]}},
+                   "metrics": [{"metric": _LOCAL_RANKED_TRANSFORM, "alias": "w"}]}},
         "param/windowed": {
             "models": "orders", "source": "orders", "mode": None,
             "kw": {"time_dimensions": signup_month_td(),
-                   "metrics": [{"expression": WINDOWED_PARAM, "name": "w"}]}},
+                   "metrics": [{"metric": WINDOWED_PARAM, "alias": "w"}]}},
         "param/windowed_custom": {
             "models": "orders_wsum", "source": "orders", "mode": None,
             "kw": {"time_dimensions": signup_month_td(),
-                   "metrics": [{"expression": WINDOWED_CUSTOM_PARAM, "name": "w"}]}},
+                   "metrics": [{"metric": WINDOWED_CUSTOM_PARAM, "alias": "w"}]}},
     }
 
 

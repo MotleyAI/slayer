@@ -23,12 +23,12 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount) / count(*)",
-      "name": "avg_amount"
+      "metric": "sum(amount) / count(*)",
+      "alias": "avg_amount"
      },
      {
-      "expression": "count(id) / count(*)",
-      "name": "share"
+      "metric": "count(id) / count(*)",
+      "alias": "share"
      }
     ],
     "filter": [
@@ -51,8 +51,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount) / 2",
-      "name": "half"
+      "metric": "sum(amount) / 2",
+      "alias": "half"
      }
     ]
    }

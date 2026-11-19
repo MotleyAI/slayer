@@ -1,13 +1,13 @@
-version: 19
+version: 26
 name: products
 sql_table: products
 source_kind: table
 query_variables: {}
 data_source: jaffle_shop
-columns:
+fields:
 - name: sku
   sql: sku
-  type: TEXT
+  datatype: String
   primary_key: true
   unique: false
   description: Product identifier.
@@ -15,7 +15,7 @@ columns:
   hidden: false
 - name: name
   sql: name
-  type: TEXT
+  datatype: String
   primary_key: false
   unique: false
   description: Product name.
@@ -23,7 +23,7 @@ columns:
   hidden: false
 - name: type
   sql: type
-  type: TEXT
+  datatype: String
   primary_key: false
   unique: false
   description: Product category (jaffle or beverage).
@@ -31,7 +31,7 @@ columns:
   hidden: false
 - name: price
   sql: price
-  type: DOUBLE
+  datatype: Decimal
   db_type: DECIMAL(12,2)
   primary_key: false
   unique: false
@@ -44,7 +44,7 @@ columns:
     symbol: $
 - name: description
   sql: description
-  type: TEXT
+  datatype: String
   primary_key: false
   unique: false
   description: Product description.
@@ -52,27 +52,27 @@ columns:
   hidden: false
 - name: ingredients
   sql: ingredients
-  type: ARRAY
-  element_type: TEXT
+  datatype: Array
+  element_type: String
   db_type: VARCHAR[]
   primary_key: false
   unique: false
   description: The supplies the product is made from, a list sorted by name.
   label: Ingredients
   hidden: false
-measures:
-- formula: count_distinct(sku)
+metrics:
+- expression: count_distinct(sku)
   name: product_count
   label: Products
   description: Number of distinct products.
-  type: INT
-- formula: avg(price)
+  datatype: Integer
+- expression: avg(price)
   name: avg_price
   label: Average Price
   description: Average list price, in dollars.
-  type: DOUBLE
+  datatype: Float
 aggregations: []
-joins: []
+relationships: []
 filters: []
 description: "Menu items sold at the Jaffle Shop \u2014 jaffles and beverages."
 hidden: false

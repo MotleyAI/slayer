@@ -108,6 +108,6 @@ async def test_stored_name_reads_its_table(shop: tuple[DatasourceConfig, YAMLSto
                                            value: int) -> None:
     _, storage = shop
     await storage.save_dataset(SlayerDataset(name="m", data_source=DS, sql_table=sql_table,
-                                         fields=[DatasetField(name="qty", datatype=DataType.INT)]))
+                                         fields=[DatasetField(name="qty", datatype=DataType.INTEGER)]))
     assert await _qty(storage, "m") == [value]
     assert await _drift(storage) == []

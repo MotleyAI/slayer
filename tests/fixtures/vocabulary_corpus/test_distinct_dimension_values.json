@@ -2,12 +2,12 @@
  "source": "tests/test_distinct_dimension_values.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
@@ -55,12 +55,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
@@ -75,23 +75,22 @@
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "region",
     "model": "customers"
    },
    "new": {
-    "name": "region",
-    "dataset": "customers"
+    "field": "customers.region"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
@@ -112,12 +111,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   }
  ],

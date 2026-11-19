@@ -34,10 +34,10 @@ def _make_datasets() -> list[SlayerDataset]:
             data_source="warehouse",
             description="One row per checkout order. Includes shipping info.",
             fields=[
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount_paid", datatype=DataType.DOUBLE),
-                DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="hidden_col", datatype=DataType.TEXT, hidden=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount_paid", datatype=DataType.FLOAT),
+                DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+                DatasetField(name="hidden_col", datatype=DataType.STRING, hidden=True),
             ],
         ),
         SlayerDataset(
@@ -46,8 +46,8 @@ def _make_datasets() -> list[SlayerDataset]:
             data_source="warehouse",
             description="Customers and contact info.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="email", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="email", datatype=DataType.STRING),
             ],
         ),
         SlayerDataset(
@@ -55,7 +55,7 @@ def _make_datasets() -> list[SlayerDataset]:
             sql_table="x",
             data_source="warehouse",
             hidden=True,
-            fields=[DatasetField(name="vis", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="vis", datatype=DataType.STRING)],
         ),
     ]
 

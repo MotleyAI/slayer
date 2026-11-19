@@ -80,7 +80,7 @@ class TestSourceSide:
         doc = await raw_doc(storage, "orders")
         assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert _hidden(doc, "customer_id")["hidden"] is True
-        assert _hidden(doc, "customer_id")["datatype"] == "INT"
+        assert _hidden(doc, "customer_id")["datatype"] == "Integer"
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_query_returns_the_0_10_2_rows_with_cast_free_on(self, tmp_path, shop_ds: DatasourceConfig, backend):
@@ -112,7 +112,7 @@ class TestSourceSide:
                                   models=[orders_v10(declare_fk=False), customers])
         await storage.get_dataset("orders", data_source=DS)
         doc = await raw_doc(storage, "orders")
-        assert _hidden(doc, "customer_id").get("datatype", "TEXT") == "TEXT"
+        assert _hidden(doc, "customer_id").get("datatype", "String") == "String"
 
 
 class TestTargetSide:
@@ -126,7 +126,7 @@ class TestTargetSide:
         assert customers is not None
         col = column_of(customers, "id")
         assert col.hidden is True
-        assert _hidden(await raw_doc(storage, "customers"), "id")["datatype"] == "INT"
+        assert _hidden(await raw_doc(storage, "customers"), "id")["datatype"] == "Integer"
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
 

@@ -49,9 +49,9 @@ class TestPostgresMeaning:
         assert await _value(engine, "left(s, -2)") == "ABC"
 
     async def test_non_ascii_characters(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(lib_query({"expression": "reverse(s)", "name": "v1"},
-                                              {"expression": "ascii(s)", "name": "v2"},
-                                              {"expression": "left(s, 1)", "name": "v3"}, filter=["id = 2"]))
+        resp = await engine.execute(lib_query({"field": "reverse(s)", "alias": "v1"},
+                                              {"field": "ascii(s)", "alias": "v2"},
+                                              {"field": "left(s, 1)", "alias": "v3"}, filter=["id = 2"]))
         row = resp.data[0]
         assert (row["lib.v1"], int(row["lib.v2"]), row["lib.v3"]) == ("é€", 8364, "€")
 
@@ -59,9 +59,9 @@ class TestPostgresMeaning:
         assert await _value(engine, "chr(128512)") == "\U0001F600"
 
     async def test_split_part_index(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(lib_query({"expression": "split_part(s, '/', 2)", "name": "v1"},
-                                              {"expression": "split_part(s, '/', -1)", "name": "v2"},
-                                              {"expression": "split_part(s, '/', 9)", "name": "v3"},
+        resp = await engine.execute(lib_query({"field": "split_part(s, '/', 2)", "alias": "v1"},
+                                              {"field": "split_part(s, '/', -1)", "alias": "v2"},
+                                              {"field": "split_part(s, '/', 9)", "alias": "v3"},
                                               filter=["id = 3"]))
         row = resp.data[0]
         assert (row["lib.v1"], row["lib.v2"], row["lib.v3"]) == ("b", "c", "")
@@ -311,7 +311,7 @@ class TestSQLServerCodePoints:
     async def test_author_sql_is_not_rewritten(self) -> None:
         base = lib_dataset()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
-            name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", datatype=DataType.TEXT)]})
+            name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", datatype=DataType.STRING)]})
         sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", datasets=[model])).split())
         assert "SUBSTRING(lib.s, 1, 2)" in sql, sql
         assert "POWER(lib.a, 2)" in sql, sql

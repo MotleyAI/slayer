@@ -31,32 +31,32 @@ def _cases() -> dict:
         "measure/simple": _q(
             dimensions=["region"],
             metrics=[
-                {"expression": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
-                 "name": "big"},
+                {"metric": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+                 "alias": "big"},
             ],
         ),
         "measure/nested": _q(
             dimensions=["region"],
             metrics=[
-                {"expression": "CASE WHEN sum(amount) >= 14000 THEN 2 "
+                {"metric": "CASE WHEN sum(amount) >= 14000 THEN 2 "
                             "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
-                 "name": "tier"},
+                 "alias": "tier"},
             ],
         ),
         "measure/iif": _q(
             dimensions=["region"],
-            metrics=[{"expression": "iif(sum(amount) >= 10000, 1, 0)", "name": "big"}],
+            metrics=[{"metric": "iif(sum(amount) >= 10000, 1, 0)", "alias": "big"}],
         ),
         "measure/missing_else_null": _q(
             dimensions=["region"],
             metrics=[
-                {"expression": "CASE WHEN sum(amount) >= 10000 THEN 1 END", "name": "big"},
+                {"metric": "CASE WHEN sum(amount) >= 10000 THEN 1 END", "alias": "big"},
             ],
         ),
         "filter/case_predicate": _q(
             dimensions=["region"],
             filter=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
-            metrics=[{"expression": "sum(amount)", "name": "rev"}],
+            metrics=[{"metric": "sum(amount)", "alias": "rev"}],
         ),
     }
 

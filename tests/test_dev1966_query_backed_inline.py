@@ -56,7 +56,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 def _join(source: str, target: str, pairs: List[List[str]]) -> Dict[str, Any]:
     return {"population": source,
-            "extensions": [{"source_name": source, "relationships": [{"to": target, "join_pairs": pairs}]}]}
+            "extensions": [{"dataset": source, "relationships": [{"to": target, "from_columns": [p[0] for p in pairs], "to_columns": [p[1] for p in pairs]}]}]}
 
 
 async def _assert_parity(engine: SlayerQueryEngine, *, inline, splice, columns: List[str], rows: List[Dict[str, Any]]):
@@ -129,9 +129,9 @@ class TestParity:
         user_x = query(name="x", population="customers", dimensions=["id", "tier"],
                        metrics=[m("sum(spend)", "sp")])
         root = query(
-            population="x", extensions=[{"source_name": "x", "relationships": [
-                {"to": "cust_rev", "join_pairs": [["id", "customer_id"]]},
-                {"to": "ok_rev", "join_pairs": [["id", "customer_id"]]}]}],
+            population="x", extensions=[{"dataset": "x", "relationships": [
+                {"to": "cust_rev", "from_columns": ["id"], "to_columns": ["customer_id"]},
+                {"to": "ok_rev", "from_columns": ["id"], "to_columns": ["customer_id"]}]}],
             dimensions=["id", "tier", "cust_rev.rev", "ok_rev.ok_rev"], metrics=[m("sum(sp)", "spend")])
         spend = {1: 100.0, 2: 150.0, 3: 60.0, 4: 40.0, 5: 80.0}
         tier = {1: "gold", 2: "silver", 3: "gold", 4: "bronze", 5: "silver"}
@@ -294,9 +294,9 @@ class TestVariableLayering:
 # Extensions.
 # --------------------------------------------------------------------------- #
 _EXT = {
-    "source_name": "cust_rev",
-    "metrics": [m("sum(rev * 2)", "r2")],
-    "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
+    "dataset": "cust_rev",
+    "metrics": [{"name": "r2", "expression": "sum(rev * 2)"}],
+    "relationships": [{"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"]}],
 }
 
 
@@ -318,7 +318,7 @@ class TestExtensions:
 
     async def test_stage_level_measure_extension_executes(self, engine) -> None:
         mm = {"name": "mm", "expression": "sum(rev)"}
-        s = query(name="s", population="cust_rev", extensions=[{"source_name": "cust_rev", "metrics": [mm]}],
+        s = query(name="s", population="cust_rev", extensions=[{"dataset": "cust_rev", "metrics": [mm]}],
                   dimensions=["customer_id"], metrics=["mm"])
         outer = query(population="s", metrics=[m("sum(mm)", "t")])
         await _assert_parity(

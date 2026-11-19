@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -44,7 +44,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -69,7 +69,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(amount_sum)"
+      "metric": "max(amount_sum)"
      }
     ]
    }
@@ -96,7 +96,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -123,7 +123,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(amount_sum)"
+      "metric": "max(amount_sum)"
      }
     ]
    }
@@ -148,7 +148,7 @@
     ],
     "metrics": [
      {
-      "expression": "min(amount_sum_max)"
+      "metric": "min(amount_sum_max)"
      }
     ]
    }
@@ -175,7 +175,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }
@@ -200,7 +200,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(customers__revenue_sum)"
+      "metric": "max(customers__revenue_sum)"
      }
     ]
    }
@@ -230,10 +230,10 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      },
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }
@@ -261,10 +261,10 @@
     ],
     "metrics": [
      {
-      "expression": "max(amount_sum)"
+      "metric": "max(amount_sum)"
      },
      {
-      "expression": "max(customers__revenue_sum)"
+      "metric": "max(customers__revenue_sum)"
      }
     ]
    }
@@ -292,8 +292,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)",
-      "name": "rev"
+      "metric": "sum(customers.revenue)",
+      "alias": "rev"
      }
     ]
    }
@@ -318,7 +318,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(rev)"
+      "metric": "max(rev)"
      }
     ]
    }
@@ -345,7 +345,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -370,7 +370,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount_sum)"
+      "metric": "sum(amount_sum)"
      }
     ]
    }
@@ -397,7 +397,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -422,7 +422,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount_sum)"
+      "metric": "sum(amount_sum)"
      }
     ]
    }
@@ -449,7 +449,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -474,7 +474,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount_sum)"
+      "metric": "sum(amount_sum)"
      }
     ]
    }
@@ -520,7 +520,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(city)"
+      "metric": "count(city)"
      }
     ]
    }

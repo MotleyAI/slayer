@@ -24,7 +24,7 @@ import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import DatasetExtension, SlayerQuery
+from slayer.core.query import DatasetExtension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -40,18 +40,18 @@ def _orders_dataset() -> SlayerDataset:
         sql_table="orders_t",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
             DatasetField(
                 name="amount",
                 sql="amount",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 description="Total order amount in USD",
                 format=NumberFormat(type=NumberFormatType.CURRENCY),
             ),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
         ],
         default_time_dimension="created_at",
     )
@@ -63,10 +63,10 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="customers_t",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -123,19 +123,19 @@ class TestStoredSourceQueriesTopoSort:
                     "name": "main",
                     "population": "orders",
                     "extensions": [DatasetExtension.model_validate({
-                        "source_name": "orders",
+                        "dataset": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
-                        "relationships": [{"to": "kpi", "join_pairs": [["id", "id"]]}],
+                        "relationships": [{"to": "kpi", "from_columns": ["id"], "to_columns": ["id"]}],
                     })],
                     "dimensions": ["status"],
-                    "metrics": [{"expression": "sum(kpi._count)"}],
+                    "metrics": [{"metric": "sum(kpi._count)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "kpi",
                     "population": "orders",
-                    "metrics": [{"expression": "count(*)"}],
-                    "dimensions": [{"name": "id", "label": "kpi_id"}],
+                    "metrics": [{"metric": "count(*)"}],
+                    "dimensions": [{"field": "id", "label": "kpi_id"}],
                 }),
                 SlayerQuery(population="main"),
             ],
@@ -162,19 +162,19 @@ class TestStoredSourceQueriesTopoSort:
                     "name": "main",
                     "population": "orders",
                     "extensions": [DatasetExtension.model_validate({
-                        "source_name": "orders",
+                        "dataset": "orders",
                         # The reverse hop is traversable, so the pair names kpi's
                         # real exported column ("id"; "kpi_id" is only a label).
-                        "relationships": [{"to": "kpi", "join_pairs": [["id", "id"]]}],
+                        "relationships": [{"to": "kpi", "from_columns": ["id"], "to_columns": ["id"]}],
                     })],
                     "dimensions": ["status"],
-                    "metrics": [{"expression": "sum(kpi._count)"}],
+                    "metrics": [{"metric": "sum(kpi._count)"}],
                 }),
                 SlayerQuery.model_validate({
                     "name": "kpi",
                     "population": "orders",
-                    "metrics": [{"expression": "count(*)"}],
-                    "dimensions": [ {"name": "id", "label": "kpi_id"} ],
+                    "metrics": [{"metric": "count(*)"}],
+                    "dimensions": [ {"field": "id", "label": "kpi_id"} ],
                 }),
                 SlayerQuery(population="main"),
             ],
@@ -197,16 +197,16 @@ class TestStoredSourceQueriesTopoSort:
                         name="a",
                         population="orders",
                         extensions=[DatasetExtension.model_validate({
-                            "source_name": "orders",
-                            "relationships": [{"to": "b", "join_pairs": [["id", "id"]]}],
+                            "dataset": "orders",
+                            "relationships": [{"to": "b", "from_columns": ["id"], "to_columns": ["id"]}],
                         })],
                     ),
                     SlayerQuery(
                         name="b",
                         population="orders",
                         extensions=[DatasetExtension.model_validate({
-                            "source_name": "orders",
-                            "relationships": [{"to": "a", "join_pairs": [["id", "id"]]}],
+                            "dataset": "orders",
+                            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
                         })],
                     ),
                     SlayerQuery(population="a"),
@@ -284,7 +284,7 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "dimensions": ["status"],
             })],
         )
@@ -292,8 +292,8 @@ class TestVirtualModelColumns:
         try:
             saved = await engine.save_dataset(m)
             count_col = next(c for c in saved.fields if c.name == "_count")
-            assert count_col.datatype == DataType.INT, (
-                f"count(*) must yield DataType.INT, got {count_col.datatype!r}"
+            assert count_col.datatype == DataType.INTEGER, (
+                f"count(*) must yield DataType.INTEGER, got {count_col.datatype!r}"
             )
         finally:
             tmp.cleanup()
@@ -305,7 +305,7 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["status"],
             })],
         )
@@ -313,7 +313,7 @@ class TestVirtualModelColumns:
         try:
             saved = await engine.save_dataset(m)
             sum_col = next(c for c in saved.fields if c.name == "amount_sum")
-            assert sum_col.datatype == DataType.DOUBLE
+            assert sum_col.datatype == DataType.FLOAT
         finally:
             tmp.cleanup()
 
@@ -330,7 +330,7 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="count(*)", datatype=DataType.DOUBLE)],
+                metrics=[QueryMetric(metric="count(*)", datatype=DataType.FLOAT)],
                 dimensions=["status"],
             )],
         )
@@ -338,7 +338,7 @@ class TestVirtualModelColumns:
         try:
             saved = await engine.save_dataset(m)
             count_col = next(c for c in saved.fields if c.name == "_count")
-            assert count_col.datatype == DataType.DOUBLE, (
+            assert count_col.datatype == DataType.FLOAT, (
                 f"User-supplied type=DOUBLE must override INT inference, "
                 f"got {count_col.datatype!r}"
             )
@@ -364,8 +364,8 @@ class TestVirtualModelColumns:
                     # rank uses *:count as a hidden inner; intern order
                     # hoists *:count hidden first, then the public
                     # *:count entry promotes the same slot.
-                    {"expression": "rank(count(*), direction='desc')", "name": "ranked"},
-                    {"expression": "count(*)"},
+                    {"metric": "rank(count(*), direction='desc')", "alias": "ranked"},
+                    {"metric": "count(*)"},
                 ],
             )],
         )
@@ -373,7 +373,7 @@ class TestVirtualModelColumns:
         try:
             saved = await engine.save_dataset(m)
             count_col = next(c for c in saved.fields if c.name == "_count")
-            assert count_col.datatype == DataType.INT, (
+            assert count_col.datatype == DataType.INTEGER, (
                 f"Promoted hidden slot must inherit INT from the public "
                 f"intern, got {count_col.datatype!r}"
             )
@@ -389,7 +389,7 @@ class TestVirtualModelColumns:
                 DatasetMetric(
                     expression="sum(amount) * 1.0",
                     name="adjusted_total",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         })
@@ -401,13 +401,13 @@ class TestVirtualModelColumns:
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"expression": "adjusted_total"}],
+                    "metrics": [{"metric": "adjusted_total"}],
                     "dimensions": ["status"],
                 })],
             )
             saved = await engine.save_dataset(m)
             col = next(c for c in saved.fields if c.name == "adjusted_total")
-            assert col.datatype == DataType.DOUBLE
+            assert col.datatype == DataType.FLOAT
         finally:
             tmp.cleanup()
 
@@ -419,7 +419,7 @@ class TestVirtualModelColumns:
         but drops the measure's type metadata; the type-priority chain
         re-looks-up the saved measure here.
 
-        Repro: ``ModelMeasure(formula="amount:sum", type=DataType.INT)``
+        Repro: ``ModelMeasure(formula="amount:sum", type=DataType.INTEGER)``
         on the source model — inference for ``sum(amount)`` over a DOUBLE
         ``amount`` would normally pick DOUBLE, but the explicit
         ``type=INT`` must win.
@@ -429,7 +429,7 @@ class TestVirtualModelColumns:
                 DatasetMetric(
                     expression="sum(amount)",
                     name="rounded_total",
-                    datatype=DataType.INT,  # ← explicit override
+                    datatype=DataType.INTEGER,  # ← explicit override
                 ),
             ],
         })
@@ -444,14 +444,14 @@ class TestVirtualModelColumns:
                     # Bare-ref + explicit ``name="rounded_total"`` keeps
                     # the column alias as the user-chosen name so the
                     # test can look it up unambiguously.
-                    "metrics": [{"expression": "rounded_total", "name": "rounded_total"}],
+                    "metrics": [{"metric": "rounded_total", "alias": "rounded_total"}],
                     "dimensions": ["status"],
                 })],
             )
             saved = await engine.save_dataset(m)
             col = next(c for c in saved.fields if c.name == "rounded_total")
-            assert col.datatype == DataType.INT, (
-                f"Saved ModelMeasure.datatype=INT must override inference "
+            assert col.datatype == DataType.INTEGER, (
+                f"Saved ModelMeasure.datatype=Integer must override inference "
                 f"(which would pick DOUBLE for sum(amount)); got {col.datatype!r}"
             )
         finally:
@@ -466,7 +466,7 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["status"],
             })],
         )
@@ -485,7 +485,7 @@ class TestVirtualModelColumns:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["status"],
             })],
         )
@@ -537,7 +537,7 @@ class TestVirtualModelColumns:
             source_queries=[SlayerQuery(
                 population="orders",
                 dimensions=["status"],
-                metrics=[DatasetMetric(expression="rank(sum(amount), direction='desc')", name="rank_by_amt")],
+                metrics=[QueryMetric(metric="rank(sum(amount), direction='desc')", alias="rank_by_amt")],
             )],
         )
         engine, tmp = await _engine()
@@ -570,7 +570,7 @@ class TestSourceModelOriginDropped:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["status"],
             })],
         )
@@ -619,9 +619,9 @@ class TestGetResultColumnTypesTypedPipeline:
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
@@ -629,7 +629,7 @@ class TestGetResultColumnTypesTypedPipeline:
             data_source="prod",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["status"],
             })],
         ))
@@ -640,7 +640,7 @@ class TestGetResultColumnTypesTypedPipeline:
         # a TEXT column whose default agg may or may not be probed
         # depending on type allowlist).
         assert "amount_sum" in types, types
-        assert types["amount_sum"].type in (DataType.INT, DataType.DOUBLE), types["amount_sum"]
+        assert types["amount_sum"].type in (DataType.INTEGER, DataType.FLOAT), types["amount_sum"]
 
     async def test_get_result_column_types_renders_via_build_planned_statement(self) -> None:
         """The query-backed probe path builds through ``build_planned_statement``."""
@@ -650,7 +650,7 @@ class TestGetResultColumnTypesTypedPipeline:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["status"],
             })],
         )
@@ -719,7 +719,7 @@ class TestNestedQueryBackedSavePath:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "customers",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "dimensions": ["region"],
             })],
         )
@@ -731,14 +731,14 @@ class TestNestedQueryBackedSavePath:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "extensions": [DatasetExtension.model_validate({
-                    "source_name": "orders",
+                    "dataset": "orders",
                     "relationships": [{
                         "to": "qb_b_customers_kpi",
-                        "join_pairs": [["region", "region"]],
+                        "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
                 "dimensions": ["status"],
-                "metrics": [{"expression": "sum(qb_b_customers_kpi._count)"}],
+                "metrics": [{"metric": "sum(qb_b_customers_kpi._count)"}],
             })],
         )
         engine, tmp = await _engine(_customers_dataset(), qb_b)
@@ -760,7 +760,7 @@ class TestSavePath:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
                 "dimensions": ["status"],
                 "filter": ["amount > {threshold}"],
             })],
@@ -792,7 +792,7 @@ class TestSavePath:
                 SlayerQuery.model_validate({
                     "name": "filtered",
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                     "dimensions": ["status"],
                     "filter": ["amount > {threshold}"],
                 }),
@@ -842,7 +842,7 @@ class TestSavePath:
                 data_source="ds",
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders_a",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                     "dimensions": ["status"],
                 })],
             )
@@ -853,7 +853,7 @@ class TestSavePath:
                 data_source="ds",  # deliberately stale
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders_b",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                     "dimensions": ["status"],
                 })],
             )
@@ -872,7 +872,7 @@ class TestSavePath:
             built = await engine.create_dataset_from_query(
                 query=SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                     "dimensions": ["status"],
                 }),
                 name="built_no_save",
@@ -901,7 +901,7 @@ class TestNestedQueryBackedExpansion:
             data_source="ds",
             source_queries=[SlayerQuery.model_validate({
                 "population": "customers",
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "dimensions": ["region"],
             })],
         )
@@ -913,13 +913,13 @@ class TestNestedQueryBackedExpansion:
             outer = SlayerQuery.model_validate({
                 "population": "orders",
                 "extensions": [DatasetExtension.model_validate({
-                    "source_name": "orders",
+                    "dataset": "orders",
                     "relationships": [{
                         "to": "customers_kpi",
-                        "join_pairs": [["region", "region"]],
+                        "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
-                "metrics": [{"expression": "sum(customers_kpi._count)"}],
+                "metrics": [{"metric": "sum(customers_kpi._count)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(outer, dry_run=True)
@@ -940,7 +940,7 @@ class TestNestedQueryBackedExpansion:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         engine, tmp = await _engine(qb)
@@ -948,7 +948,7 @@ class TestNestedQueryBackedExpansion:
             q = SlayerQuery.model_validate({
                 "population": "qb_base",
                 "extensions": [DatasetExtension(
-                    source_name="qb_base",
+                    dataset="qb_base",
                     metrics=[DatasetMetric(name="extra", expression="sum(amount_sum)")],
                 )],
                 "dimensions": ["status"],
@@ -971,7 +971,7 @@ class TestNestedQueryBackedExpansion:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         engine, tmp = await _engine(qb)
@@ -982,7 +982,7 @@ class TestNestedQueryBackedExpansion:
                     "name": "s",
                     "population": "qb_inner",
                     "dimensions": ["status"],
-                    "metrics": [{"expression": "sum(amount_sum)"}],
+                    "metrics": [{"metric": "sum(amount_sum)"}],
                 }),
                 SlayerQuery(population="s", dimensions=["status"]),
             ]
@@ -1020,10 +1020,10 @@ class TestCrossDatasourceJoin:
             source_queries=[SlayerQuery(
                 population="orders",
                 extensions=[DatasetExtension.model_validate({
-                    "source_name": "orders",
+                    "dataset": "orders",
                     "relationships": [{
                         "to": "customers",
-                        "join_pairs": [["region", "region"]],
+                        "from_columns": ["region"], "to_columns": ["region"],
                     }],
                 })],
                 dimensions=["status", "customers.name"],
@@ -1055,7 +1055,7 @@ class TestWrapperAliasShapes:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         engine, tmp = await _engine()
@@ -1081,12 +1081,12 @@ class TestWrapperAliasShapes:
         orders_with_join = _orders_dataset().model_copy(update={
             "relationships": [DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
         customers_with_rev = _customers_dataset().model_copy(update={
             "fields": list(_customers_dataset().fields) + [
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
             ],
         })
         m = SlayerDataset(
@@ -1095,7 +1095,7 @@ class TestWrapperAliasShapes:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
@@ -1120,12 +1120,12 @@ class TestWrapperAliasShapes:
         orders_with_join = _orders_dataset().model_copy(update={
             "relationships": [DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
         customers_with_rev = _customers_dataset().model_copy(update={
             "fields": list(_customers_dataset().fields) + [
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
             ],
         })
         m = SlayerDataset(
@@ -1134,7 +1134,7 @@ class TestWrapperAliasShapes:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "percentile(customers.revenue, p=0.5)"}],
+                "metrics": [{"metric": "percentile(customers.revenue, p=0.5)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
@@ -1154,7 +1154,7 @@ class TestWrapperAliasShapes:
         orders_with_join = _orders_dataset().model_copy(update={
             "relationships": [DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
         m = SlayerDataset(
@@ -1163,7 +1163,7 @@ class TestWrapperAliasShapes:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customers.name", "customers.signup_at"],
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
@@ -1180,11 +1180,11 @@ class TestWrapperAliasShapes:
             # TARGET column's type. Before the fix ``_type_for_dimension``
             # returned None for dotted refs and ``_query_as_model`` coerced
             # the slot to DOUBLE, mistyping joined string / temporal dims.
-            assert by_name["customers__name"].datatype == DataType.TEXT, (
+            assert by_name["customers__name"].datatype == DataType.STRING, (
                 f"joined TEXT dim must persist as TEXT, not DOUBLE; "
                 f"got {by_name['customers__name'].datatype!r}"
             )
-            assert by_name["customers__signup_at"].datatype == DataType.TIMESTAMP, (
+            assert by_name["customers__signup_at"].datatype == DataType.DATETIME, (
                 f"joined TIMESTAMP dim must persist as TIMESTAMP; "
                 f"got {by_name['customers__signup_at'].datatype!r}"
             )
@@ -1211,12 +1211,12 @@ class TestP4ClosureBehavior:
         orders_with_join = _orders_dataset().model_copy(update={
             "relationships": [DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
             )],
         })
         customers_with_rev = _customers_dataset().model_copy(update={
             "fields": list(_customers_dataset().fields) + [
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
             ],
         })
         qb = SlayerDataset(
@@ -1225,7 +1225,7 @@ class TestP4ClosureBehavior:
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })],
         )
         tmp = tempfile.TemporaryDirectory()
@@ -1239,14 +1239,14 @@ class TestP4ClosureBehavior:
             # The flat-name form MUST work.
             flat_q = SlayerQuery.model_validate({
                 "population": "qb_already_aggregated",
-                "metrics": [{"expression": "sum(customers__revenue_sum)"}],
+                "metrics": [{"metric": "sum(customers__revenue_sum)"}],
                 "dimensions": ["status"],
             })
             resp_flat = await engine.execute(flat_q, dry_run=True)
             assert resp_flat.sql is not None
             dotted_q = SlayerQuery.model_validate({
                 "population": "qb_already_aggregated",
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(dotted_q, dry_run=True)

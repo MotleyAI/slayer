@@ -78,12 +78,12 @@ async def test_save_warns_about_no_model_outside_the_view(store: AccessStore, sa
 
 async def test_save_warns_about_no_hidden_dependent_it_breaks(store: AccessStore) -> None:
     pub_link = await must_get(store.storage, "pub_link")
-    extra = DatasetRelationship(to="pub", name="extra", join_pairs=[["id", "id"]])
+    extra = DatasetRelationship(to="pub", name="extra", from_columns=["id"], to_columns=["id"])
     await store.storage.save_dataset(pub_link.model_copy(update={"relationships": [*pub_link.relationships, extra]}), _validate=False)
     secret = SlayerDataset(
         name="secret", sql_table="pub_items", data_source=DS, access_tags=["hr"],
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="lbl", sql="pub_link.extra.label")],
-        relationships=[DatasetRelationship(to="pub_link", join_pairs=[["id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="lbl", sql="pub_link.extra.label")],
+        relationships=[DatasetRelationship(to="pub_link", from_columns=["id"], to_columns=["id"])],
     )
     await store.storage.save_dataset(secret, _validate=False)
     fin = view(store, "fin")
@@ -114,7 +114,7 @@ class TestMergedModelWrites:
         fin = view(store, "fin")
         model = await must_get(fin, "fin")
         assert model.relationships == []
-        doubled = DatasetField(name="doubled", datatype=DataType.DOUBLE, sql="amount * 2")
+        doubled = DatasetField(name="doubled", datatype=DataType.FLOAT, sql="amount * 2")
         await save(fin, model.model_copy(update={"fields": [*model.fields, doubled]}), saver=saver)
         stored = await must_get(store.storage, "fin")
         assert stored.get_field("doubled") is not None
@@ -132,21 +132,21 @@ class TestMergedModelWrites:
 
 def _new_dataset_named_hr(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
     return SlayerDataset(name="hr", sql_table="pub_items", data_source=DS,
-                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
 
 
 def _edge_named_like_hidden_dataset(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
-    return fin.model_copy(update={"relationships": [DatasetRelationship(to="pub", name="hr", join_pairs=[["staff_id", "id"]])]})
+    return fin.model_copy(update={"relationships": [DatasetRelationship(to="pub", name="hr", from_columns=["staff_id"], to_columns=["id"])]})
 
 
 def _new_dataset_with_edge_named_like_hidden_dataset(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
     return SlayerDataset(name="pub_edge", sql_table="pub_items", data_source=DS,
-                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
-                       relationships=[DatasetRelationship(to="pub", name="hr", join_pairs=[["id", "id"]])])
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
+                       relationships=[DatasetRelationship(to="pub", name="hr", from_columns=["id"], to_columns=["id"])])
 
 
 def _edge_named_like_pruned_edge(_: SlayerDataset, pub_link: SlayerDataset) -> SlayerDataset:
-    return pub_link.model_copy(update={"relationships": [DatasetRelationship(to="fin", name=PRUNED_EDGE, join_pairs=[["id", "id"]])]})
+    return pub_link.model_copy(update={"relationships": [DatasetRelationship(to="fin", name=PRUNED_EDGE, from_columns=["id"], to_columns=["id"])]})
 
 
 def _without_key_column(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
@@ -189,7 +189,7 @@ async def test_join_to_hidden_model_fails_like_join_to_missing_one(store: Access
     before = await store.storage.get_dataset("pub", data_source=DS)
 
     def joined_to(target: str) -> SlayerDataset:
-        return pub.model_copy(update={"relationships": [DatasetRelationship(to=target, join_pairs=[["id", "id"]])]})
+        return pub.model_copy(update={"relationships": [DatasetRelationship(to=target, from_columns=["id"], to_columns=["id"])]})
 
     hidden = await outcome(save(fin, joined_to("hr"), saver=saver))
     missing = await outcome(save(fin, joined_to("nosuch"), saver=saver))
@@ -203,7 +203,7 @@ async def test_join_to_hidden_model_fails_like_join_to_missing_one(store: Access
 @pytest.mark.parametrize("unwrapped", [True, False], ids=["unwrapped", "bypass"])
 async def test_editors_still_save_dangling_joins(store: AccessStore, saver: str, unwrapped: bool) -> None:
     pub = await must_get(store.storage, "pub")
-    dangling = pub.model_copy(update={"relationships": [DatasetRelationship(to="nosuch", join_pairs=[["id", "id"]])]})
+    dangling = pub.model_copy(update={"relationships": [DatasetRelationship(to="nosuch", from_columns=["id"], to_columns=["id"])]})
     target = store.storage if unwrapped else view(store, bypass=True)
     if saver == "storage":
         await target.save_dataset(dangling)
@@ -236,7 +236,7 @@ class TestAccessTags:
 
     async def test_tagged_create_is_refused(self, store: AccessStore, saver: str) -> None:
         fresh = SlayerDataset(name="fresh", sql_table="pub_items", data_source=DS, access_tags=["fin"],
-                            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
+                            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
         fin = view(store, "fin")
         with pytest.raises(AccessTagsEditError):
             await save(fin, fresh, saver=saver)
@@ -244,7 +244,7 @@ class TestAccessTags:
 
     async def test_tagged_copy_into_another_datasource_is_refused(self, store: AccessStore, saver: str) -> None:
         ledger = SlayerDataset(name="ledger", sql_table="fin_ledger", data_source=DS, access_tags=["fin"],
-                             fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
+                             fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
         await store.storage.save_dataset(ledger, _validate=False)
         ds = await store.storage.get_datasource(DS)
         assert ds is not None

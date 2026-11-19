@@ -27,9 +27,9 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
-from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.cache import (
     CacheConfig,
     NormalizedTable,
@@ -117,10 +117,10 @@ def _orders_dataset(ds: str = "ds") -> SlayerDataset:
         sql_table="orders",
         data_source=ds,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="updated_at", sql="updated_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -140,7 +140,7 @@ async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_su
 
 
 def _sum_query() -> SlayerQuery:
-    return SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])
+    return SlayerQuery(population="orders", metrics=[QueryMetric(metric="sum(amount)")])
 
 
 def _mutate(db_path, sql: str) -> None:
@@ -704,11 +704,11 @@ class TestMultiStageAndByName:
         inner = SlayerQuery(
             population="orders",
             name="raw",
-            dimensions=[FieldRef(name="status"), FieldRef(name="amount")],
+            dimensions=[QueryDimension(field="status"), QueryDimension(field="amount")],
             distinct_dimension_values=False,
         )
         outer = SlayerQuery(
-            population="raw", metrics=[DatasetMetric(expression="sum(amount)")]
+            population="raw", metrics=[QueryMetric(metric="sum(amount)")]
         )
         r1 = await engine.execute([inner, outer], cache=True)
         assert engine.cache_size == 1
@@ -725,8 +725,8 @@ class TestMultiStageAndByName:
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="sum(amount)")],
-                dimensions=[FieldRef(name="status")],
+                metrics=[QueryMetric(metric="sum(amount)")],
+                dimensions=[QueryDimension(field="status")],
             ),
             name="orders_by_status",
         )
@@ -745,8 +745,8 @@ class TestMultiStageAndByName:
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="sum(amount)")],
-                dimensions=[FieldRef(name="status")],
+                metrics=[QueryMetric(metric="sum(amount)")],
+                dimensions=[QueryDimension(field="status")],
             ),
             name="obs",
         )
@@ -760,8 +760,8 @@ class TestMultiStageAndByName:
                 source_queries=[
                     SlayerQuery(
                         population="orders",
-                        metrics=[DatasetMetric(expression="sum(amount)")],
-                        dimensions=[FieldRef(name="status")],
+                        metrics=[QueryMetric(metric="sum(amount)")],
+                        dimensions=[QueryDimension(field="status")],
                         filter=["status != 'pending'"],
                     )
                 ],
@@ -785,8 +785,8 @@ class TestRefinedByName:
         await engine.create_dataset_from_query(
             query=SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="sum(amount)")],
-                dimensions=[FieldRef(name="status")],
+                metrics=[QueryMetric(metric="sum(amount)")],
+                dimensions=[QueryDimension(field="status")],
             ),
             name="obs",
         )
@@ -845,8 +845,8 @@ class TestEvictAndManagement:
         q1 = _sum_query()
         q2 = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="status")],
         )
         await engine.execute(q1, cache=True)
         await engine.execute(q2, cache=True)

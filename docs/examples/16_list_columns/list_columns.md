@@ -19,7 +19,7 @@ These functions test what an array-valued field contains: `contains(list, x)` (a
 ```json
 {
   "population": "products",
-  "dimensions": ["name", {"expression": "length(ingredients)", "name": "ingredient_count"}],
+  "dimensions": ["name", {"field": "length(ingredients)", "alias": "ingredient_count"}],
   "filter": ["contains_all(ingredients, ['bread', 'cheese'])"]
 }
 ```
@@ -37,8 +37,8 @@ A whole list can also be grouped by, compared with another list and counted dist
   "population": "orders",
   "dimensions": ["item_skus.value"],
   "metrics": [
-    {"expression": "count(orders.*)", "name": "orders_with_sku"},
-    {"expression": "count(item_skus.*)", "name": "units"}
+    {"metric": "count(orders.*)", "alias": "orders_with_sku"},
+    {"metric": "count(item_skus.*)", "alias": "units"}
   ]
 }
 ```
@@ -50,7 +50,7 @@ A whole list can also be grouped by, compared with another list and counted dist
 ```json
 [
   {"name": "baskets", "population": "orders", "dimensions": ["customer_id"],
-   "metrics": [{"expression": "collect(item_skus.value)", "name": "skus"}]},
+   "metrics": [{"metric": "collect(item_skus.value)", "alias": "skus"}]},
   {"population": "baskets", "metrics": ["count(*)"], "filter": ["contains(skus, 'JAF-005')"]}
 ]
 ```
@@ -61,7 +61,7 @@ The `collect` function also works on regular fields, for example to list the pro
 {
   "population": "products",
   "dimensions": ["type"],
-  "metrics": [{"expression": "collect(name)", "name": "product_names"}]
+  "metrics": [{"metric": "collect(name)", "alias": "product_names"}]
 }
 ```
 
@@ -72,8 +72,8 @@ It also collects a field of a joined dataset, one list per parent row. Here are 
   "population": "customers",
   "dimensions": ["name"],
   "metrics": [
-    {"expression": "count(orders.*)", "name": "order_count"},
-    {"expression": "collect(orders.status)", "name": "statuses"}
+    {"metric": "count(orders.*)", "alias": "order_count"},
+    {"metric": "collect(orders.status)", "alias": "statuses"}
   ],
   "order": [{"field": "order_count", "direction": "asc"}, {"field": "name"}],
   "limit": 5

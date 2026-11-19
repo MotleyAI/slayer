@@ -31,41 +31,41 @@ def _q(**kw) -> SlayerQuery:
 def _cases() -> dict:
     return {
         "regroup/flagship": _q(
-            dimensions=["region", {"expression": BAND, "name": "band"}],
-            metrics=[{"expression": "sum(amount)", "name": "band_total"}],
+            dimensions=["region", {"field": BAND, "alias": "band"}],
+            metrics=[{"metric": "sum(amount)", "alias": "band_total"}],
         ),
         "regroup/cross_model_partition": _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount, partition_by=customers.region_id) "
-                               "> 10000 THEN 1 ELSE 0 END", "name": "band"},
+                {"field": "CASE WHEN sum(amount, partition_by=customers.region_id) "
+                               "> 10000 THEN 1 ELSE 0 END", "alias": "band"},
             ],
-            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}],
         ),
         "regroup/filter_on_band": _q(
-            dimensions=["region", {"expression": BAND, "name": "band"}],
+            dimensions=["region", {"field": BAND, "alias": "band"}],
             filter=["band == 1"],
-            metrics=[{"expression": "sum(amount)", "name": "band_total"}],
+            metrics=[{"metric": "sum(amount)", "alias": "band_total"}],
         ),
         "guard/missing_partition_by": _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
-                 "name": "band"},
+                {"field": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
+                 "alias": "band"},
             ],
-            metrics=[{"expression": "sum(amount)", "name": "t"}],
+            metrics=[{"metric": "sum(amount)", "alias": "t"}],
         ),
         "guard/transform_in_dim": _q(
             dimensions=[
                 "region",
-                {"expression": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
-                 "name": "x"},
+                {"field": "CASE WHEN cumsum(sum(amount)) > 5000 THEN 1 ELSE 0 END",
+                 "alias": "x"},
             ],
             time_dimensions=month_td(),
-            metrics=[{"expression": "sum(amount)", "name": "t"}],
+            metrics=[{"metric": "sum(amount)", "alias": "t"}],
         ),
         "guard/ddv_false": _q(
-            dimensions=[{"expression": BAND, "name": "band"}],
+            dimensions=[{"field": BAND, "alias": "band"}],
             distinct_dimension_values=False,
         ),
     }

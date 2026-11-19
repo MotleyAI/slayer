@@ -80,7 +80,7 @@ def _parallel_datasets():
     models = dev1954_datasets()
     customers = next(m for m in models if m.name == "customers")
     customers.relationships.append(DatasetRelationship(
-        to="regions", join_pairs=[["region_id", "id"]], name="hr2"))
+        to="regions", from_columns=["region_id"], to_columns=["id"], name="hr2"))
     return models
 
 
@@ -405,9 +405,9 @@ class TestModelSqlSpelledByModelName:
 class TestDefinitionDefaultSpelledByModelName:
     async def test_default_equals_the_edge_name_spelling(self, engine: SlayerQueryEngine) -> None:
         default = orders_q(dimensions=["customers.hr.rname"],
-                           metrics=[{"expression": "wpop(amount)", "name": "w"}])
+                           metrics=[{"metric": "wpop(amount)", "alias": "w"}])
         explicit = orders_q(dimensions=["customers.hr.rname"], metrics=[
-            {"expression": "wpop(amount, weight=customers.hr.pop)", "name": "w"}])
+            {"metric": "wpop(amount, weight=customers.hr.pop)", "alias": "w"}])
         resp = await engine.execute(default)
         assert by_key(resp, RNAME, "orders.w") == WPOP_BY_RNAME
         assert not broadcast_warnings(resp)
@@ -446,7 +446,7 @@ class TestSavedMeasures:
     async def test_explicit_name_wins(self, engine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["customers.hr.rname"],
-            metrics=[{"expression": "customers.regions.maxpop", "name": "m"}]))
+            metrics=[{"metric": "customers.regions.maxpop", "alias": "m"}]))
         assert by_key(resp, RNAME, "orders.m") == POP_MAX_BY_RNAME
 
     async def test_bare_measure_with_a_model_name_body(self, engine) -> None:

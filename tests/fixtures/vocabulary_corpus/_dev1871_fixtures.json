@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "plants",
-    "join_pairs": [
-     [
-      "plant_ref",
-      "code"
-     ]
+    "cardinality": null,
+    "from_columns": [
+     "plant_ref"
     ],
-    "cardinality": null
+    "to_columns": [
+     "code"
+    ]
    }
   }
  ],

@@ -52,10 +52,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
@@ -83,7 +82,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -106,7 +105,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -124,7 +123,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_gdp"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -141,7 +140,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.ltv_third"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -159,7 +158,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.deep_pop)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.deep_pop)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -174,7 +173,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            metrics=[DatasetMetric(expression="count_distinct(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="count_distinct(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -189,8 +188,8 @@ class TestForwardDerivedGrainShape:
             population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
             metrics=[
-                DatasetMetric(expression="sum(customers_v2.lifetime_value)"),
-                DatasetMetric(expression="max(customers_v2.region_id)"),
+                QueryMetric(metric="sum(customers_v2.lifetime_value)"),
+                QueryMetric(metric="max(customers_v2.region_id)"),
             ],
         )
         sql = await _gen(query)
@@ -210,7 +209,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
             filter=["customers_v2.deep_pop > 50"],
         )
         sql = await _gen(query)
@@ -234,7 +233,7 @@ class TestForwardDerivedGrainShape:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.regions.population)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.regions.population)")],
             to_many_handling="broadcast",
         )
         sql = await _gen(query)
@@ -260,7 +259,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -286,7 +285,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -315,7 +314,7 @@ class TestFirstLastDerivedGrain:
             time_dimensions=[TimeDimension(
                 field="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -341,7 +340,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop_x2"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -365,7 +364,7 @@ class TestFirstLastDerivedGrain:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value)")],
         )
         sql1 = await _gen(query)
         sql2 = await _gen(query)
@@ -377,11 +376,11 @@ class TestFirstLastDerivedGrain:
         materialisation must NOT mint that same name (it would make the outer
         ``_val_0`` reference ambiguous). The allocator reserves the target's
         physical column names, so the minted alias walks past ``_val_0``."""
-        customers_extra = [DatasetField(name="_val_0", sql="1", datatype=DataType.INT)]
+        customers_extra = [DatasetField(name="_val_0", sql="1", datatype=DataType.INTEGER)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
@@ -397,11 +396,11 @@ class TestFirstLastDerivedGrain:
         ``Column(name="renamed", sql="_val_0")`` exports ``_val_0`` through
         ``target.*``, so the allocator must reserve the physical name too — not
         just ``c.name`` (Codex)."""
-        customers_extra = [DatasetField(name="renamed", sql="_val_0", datatype=DataType.INT)]
+        customers_extra = [DatasetField(name="renamed", sql="_val_0", datatype=DataType.INTEGER)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, customers_extra=customers_extra)
         assert_scope_closed(sql)
@@ -422,7 +421,7 @@ class TestSiblingPathsDerivedGrain:
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop", "customers_v2.regions.name"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -442,12 +441,12 @@ class TestSiblingPathsDerivedGrain:
         gate, so it is a regression guard — must pass before AND after the fix."""
         # amt_hi's filter references a joined table → filtered-local isolation.
         orders_extra = [DatasetField(
-            name="amt_hi", sql="amount", datatype=DataType.DOUBLE,
+            name="amt_hi", sql="amount", datatype=DataType.FLOAT,
             filter="customers_v2.lifetime_value > 15")]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="sum(amt_hi)")],
+            metrics=[QueryMetric(metric="sum(amt_hi)")],
         )
         sql = await _gen(query, orders_extra=orders_extra)
         assert_scope_closed(sql)
@@ -473,11 +472,11 @@ class TestUnchangedBehaviourGuards:
         """A HOST-LOCAL derived dim (``path == ()``) still broadcasts via CROSS
         JOIN — the shared-grain rendering is scoped to path-bearing dims."""
         orders_extra = [DatasetField(
-            name="amt_bucket", sql="amount * 2", datatype=DataType.DOUBLE)]
+            name="amt_bucket", sql="amount * 2", datatype=DataType.FLOAT)]
         query = SlayerQuery(
             population="orders_x",
             dimensions=["amt_bucket"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
             to_many_handling="broadcast",
         )
         sql = await _gen(query, orders_extra=orders_extra)
@@ -489,7 +488,7 @@ class TestUnchangedBehaviourGuards:
         renders, unchanged by the gate removal."""
         query = SlayerQuery(
             population="orders_x",
-            metrics=[DatasetMetric(expression="sum(customers_v2.deep_pop)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.deep_pop)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -500,7 +499,7 @@ class TestUnchangedBehaviourGuards:
         """A derived crossing FILTER (no derived grain) still renders."""
         query = SlayerQuery(
             population="orders_x",
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
             filter=["customers_v2.deep_pop > 1"],
         )
         sql = await _gen(query)
@@ -516,7 +515,7 @@ class TestUnchangedBehaviourGuards:
             time_dimensions=[TimeDimension(
                 field="customers_v2.region_opened_eff",
                 granularity=TimeGranularity.MONTH)],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query)
         assert_scope_closed(sql)
@@ -573,38 +572,38 @@ def _sqlite_datasets() -> "list[SlayerDataset]":
         SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
-                DatasetField(name="population", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="population", datatype=DataType.FLOAT),
             ],
         ),
         SlayerDataset(
             name="customers_v2", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region_id", datatype=DataType.INT),
-                DatasetField(name="lifetime_value", datatype=DataType.DOUBLE),
-                DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.DOUBLE),
-                DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INT),
-                DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="lifetime_value", datatype=DataType.FLOAT),
+                DatasetField(name="signup_at", datatype=DataType.DATETIME),
+                DatasetField(name="ltv_x2", sql="lifetime_value * 2", datatype=DataType.FLOAT),
+                DatasetField(name="ltv_third", sql="lifetime_value / 3.0", datatype=DataType.INTEGER),
+                DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
             default_time_dimension="signup_at",
         ),
         SlayerDataset(
             name="orders_x", sql_table="orders", data_source="test",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
                 # Filter references a JOINED table → filtered-local
                 # isolation (used by the filtered-local + derived-grain test).
-                DatasetField(name="amt_hi", sql="amount", datatype=DataType.DOUBLE,
+                DatasetField(name="amt_hi", sql="amount", datatype=DataType.FLOAT,
                        filter="customers_v2.lifetime_value > 15"),
             ],
-            relationships=[DatasetRelationship(to="customers_v2", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers_v2", from_columns=["customer_id"], to_columns=["id"])],
             default_time_dimension="created_at",
         ),
     ]
@@ -631,7 +630,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.ltv_x2"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
         by_grain = {r["orders_x.customers_v2.ltv_x2"]: r for r in resp.data}
         # Four distinct grains, one per customer — no group swallowed.
@@ -648,7 +647,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         assert by_pop[100.0]["orders_x.customers_v2.lifetime_value_sum"] == 40.0, resp.data
@@ -660,7 +659,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         assert None in by_pop, resp.data
@@ -674,7 +673,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.ltv_third"],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
         ))
         by_grain = {r["orders_x.customers_v2.ltv_third"]: r for r in resp.data}
         # ltv 10 → 10/3.0 = 3.33 → INT 3; the group must survive the join-back.
@@ -691,7 +690,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.customers_v2.lifetime_value_last_customers_v2_signup_at"
@@ -708,7 +707,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="first(customers_v2.lifetime_value, customers_v2.signup_at)")],
+            metrics=[QueryMetric(metric="first(customers_v2.lifetime_value, customers_v2.signup_at)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.customers_v2.lifetime_value_first_customers_v2_signup_at"
@@ -726,7 +725,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="sum(amt_hi)")],
+            metrics=[QueryMetric(metric="sum(amt_hi)")],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}
         key = "orders_x.amt_hi_sum"
@@ -748,7 +747,7 @@ class TestDerivedGrainExecution:
         resp = await sqlite_engine.execute(SlayerQuery(
             population="orders_x",
             dimensions=["customers_v2.deep_pop"],
-            metrics=[DatasetMetric(expression="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
+            metrics=[QueryMetric(metric="last(customers_v2.lifetime_value, customers_v2.signup_at)")],
             filter=["customers_v2.lifetime_value < 25"],
         ))
         by_pop = {r["orders_x.customers_v2.deep_pop"]: r for r in resp.data}

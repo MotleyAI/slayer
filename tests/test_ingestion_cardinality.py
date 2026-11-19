@@ -154,7 +154,7 @@ class TestCompositeFk:
         org_joins = _join_to(mem, "org_units")
         # Exactly ONE join, carrying BOTH key pairs — not two single-col joins.
         assert len(org_joins) == 1
-        assert {tuple(p) for p in org_joins[0].join_pairs} == {
+        assert {tuple(p) for p in org_joins[0].column_pairs} == {
             ("org_id", "org_id"),
             ("code", "code"),
         }
@@ -179,7 +179,7 @@ class TestCompositeFk:
             )
             org_joins = [j for j in joins if j.to == "org_units"]
             assert len(org_joins) == 1
-            assert {tuple(p) for p in org_joins[0].join_pairs} == {
+            assert {tuple(p) for p in org_joins[0].column_pairs} == {
                 ("org_id", "org_id"),
                 ("code", "code"),
             }

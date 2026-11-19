@@ -44,8 +44,8 @@ async def _seed_orders_with_memory(
         sql_table="orders",
         data_source="mydb",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     ))
     mem = await storage.save_memory(

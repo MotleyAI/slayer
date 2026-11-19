@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.database import engine_factory
 from slayer.storage.document_keys import CURRENT_KEYS, LEGACY_KEYS, dataset_in
 from tests._stored_upgrade_fixtures import (
@@ -70,7 +70,8 @@ def shop_ds(tmp_path: Path) -> Iterator[DatasourceConfig]:
 
 def orders_v26() -> dict[str, Any]:
     """``orders_v10`` as this release stores it."""
-    return {"version": 26, **dataset_in({k: v for k, v in orders_v10().items() if k != "version"}, CURRENT_KEYS)}
+    stored = SlayerDataset.model_validate(orders_v10()).model_dump(mode="json", exclude={"version"}, exclude_none=True)
+    return {"version": 26, **stored}
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

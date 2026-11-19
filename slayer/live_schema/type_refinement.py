@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, TypeKind, kind_of, stored_datatype
 from slayer.core.models import DatasourceConfig, is_base_field_sql, physical_column_sql
 from slayer.live_schema.introspect_utils import table_location
 from slayer.live_schema.schema_scope import UNREACHABLE, schema_ref_from_token, sql_table_location, table_schema_ref
@@ -58,9 +58,14 @@ def _is_auto_default_integer_format_dict(fmt: dict | None) -> bool:
 
 
 def _format_for_widened_type_dict(verdict: DataType) -> dict | None:
-    if verdict is DataType.DOUBLE:
+    if verdict is DataType.FLOAT:
         return {"type": "float"}
     return None  # TEXT clears format
+
+
+def _is_double(value: object) -> bool:
+    """A stored datatype of the double kind."""
+    return kind_of(stored_datatype(value)) is TypeKind.DOUBLE
 
 
 def has_refineable_fields(d: dict) -> bool:
@@ -75,7 +80,7 @@ def has_refineable_fields(d: dict) -> bool:
         return False
     return any(
         isinstance(c, dict)
-        and c.get("datatype") == DataType.DOUBLE.value
+        and _is_double(c.get("datatype"))
         and _field_is_base(c.get("sql"))
         for c in fields
     )
@@ -93,7 +98,7 @@ def has_sqlite_widenable_fields(d: dict) -> bool:
         return False
     return any(
         isinstance(c, dict)
-        and c.get("datatype") == DataType.INT.value
+        and stored_datatype(c.get("datatype")) is DataType.INTEGER
         and _field_is_base(c.get("sql"))
         for c in columns
     )
@@ -146,10 +151,10 @@ def _verdict_changes_persisted_type(
     """Returns True when the probe verdict warrants flipping the persisted
     type. INT persisted: any non-INT verdict widens. DOUBLE persisted:
     only an INT verdict narrows (probe-verified)."""
-    if persisted_type == DataType.INT.value:
-        return verdict is not DataType.INT
-    if persisted_type == DataType.DOUBLE.value:
-        return verdict is DataType.INT
+    if stored_datatype(persisted_type) is DataType.INTEGER:
+        return verdict is not DataType.INTEGER
+    if _is_double(persisted_type):
+        return verdict is DataType.INTEGER
     return False
 
 
@@ -166,7 +171,7 @@ def _apply_format_flip(
         else:
             col["format"] = new_format
         return
-    if persisted_type == DataType.INT.value:
+    if stored_datatype(persisted_type) is DataType.INTEGER:
         # Only log the "custom format preserved" hint for the widening
         # direction; on the DOUBLE → INT narrowing the format is typically
         # already a numeric default.
@@ -215,7 +220,7 @@ async def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig, clien
     refineable: list[dict] = [
         c for c in columns
         if isinstance(c, dict)
-        and c.get("datatype") in (DataType.INT.value, DataType.DOUBLE.value)
+        and (_is_double(c.get("datatype")) or stored_datatype(c.get("datatype")) is DataType.INTEGER)
         and _field_is_base(c.get("sql"))
     ]
     if not refineable:
@@ -250,7 +255,7 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
     refinable: list[dict] = [
         c for c in columns
         if isinstance(c, dict)
-        and c.get("datatype") == DataType.DOUBLE.value
+        and _is_double(c.get("datatype"))
         and _field_is_base(c.get("sql"))
     ]
     if not refinable:
@@ -263,7 +268,7 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
         live = await client.reflect_columns(location)
     except ObjectNotFound:
         return False  # persisted types are the safe fallback for a table the database lacks
-    live_columns = {c.name: c.type for c in live}
+    live_columns = {c.name: c.narrowed_type for c in live}
 
     changed = False
     for col in refinable:
@@ -271,7 +276,7 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
         if bare is None:
             continue
         live_type = live_columns.get(bare)
-        if live_type is DataType.INT:
-            col["datatype"] = DataType.INT.value
+        if live_type is DataType.INTEGER:
+            col["datatype"] = DataType.INTEGER.value
             changed = True
     return changed

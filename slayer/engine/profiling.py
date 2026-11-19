@@ -19,7 +19,7 @@ from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel, Field
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, NUMERIC_DATATYPES, TEMPORAL_DATATYPES
 from slayer.core.models import DatasetField, SlayerDataset, is_identifier
 from slayer.core.query import SlayerQuery
 from slayer.engine.binding import range_read
@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 _MAX_CATEGORICAL_VALUES = 50
 _TEXT_SAMPLE_CAP = 20
-_CATEGORICAL_TYPES = (DataType.TEXT, DataType.BOOLEAN)
-_NUMERIC_TEMPORAL_TYPES = (DataType.INT, DataType.DOUBLE, DataType.DATE, DataType.TIMESTAMP)
+_CATEGORICAL_TYPES = (DataType.STRING, DataType.BOOLEAN)
+_NUMERIC_TEMPORAL_TYPES = NUMERIC_DATATYPES | TEMPORAL_DATATYPES
 _ALL_NULL = "all NULL"
 _TTL_SECONDS = 3600.0
 _BREAKER_THRESHOLD = 3
@@ -155,7 +155,7 @@ async def _profile_categorical(
     q = SlayerQuery.model_validate({
         "population": dataset.name,
         "dimensions": [ref],
-        "metrics": [{"expression": counted, "name": _COUNT}],
+        "metrics": [{"metric": counted, "alias": _COUNT}],
         "order": [
             {"field": _COUNT, "direction": "desc"},
             {"field": ref, "direction": "asc"},
@@ -186,7 +186,7 @@ async def _profile_numeric_temporal(
 ) -> list[_Sample]:
     """One batched min/max query (a list's over its elements); raises on query failure."""
     metrics = [
-        {"expression": f"{agg}({_values_ref(c)})", "name": f"_slayer_range_{c.name}_{agg}"}
+        {"metric": f"{agg}({_values_ref(c)})", "alias": f"_slayer_range_{c.name}_{agg}"}
         for c in fields for agg in ("min", "max")
     ]
     q = SlayerQuery.model_validate({"population": dataset.name, "metrics": metrics})
@@ -203,7 +203,7 @@ async def _profile_numeric_temporal(
 
 async def _probe(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> Exception | None:
     """Row-count the dataset; the exception when it fails, else ``None``."""
-    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": [{"expression": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": ["count(*)"]})
     try:
         await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception as exc:  # NOSONAR(S112) — the probe's failure IS the classification

@@ -55,7 +55,7 @@ CUSTOMER_MEASURES: List[DatasetMetric] = [
     DatasetMetric(name="spend_by_tier", expression="sum(spend, partition_by=tier)"),
     DatasetMetric(name="spend_grand", expression="sum(spend, partition_by=[])"),
     DatasetMetric(name="spend_run", expression="cumsum(sum(spend))"),
-    DatasetMetric(name="typed_aov", expression="sum(spend) / count(*)", datatype=DataType.DOUBLE),
+    DatasetMetric(name="typed_aov", expression="sum(spend) / count(*)", datatype=DataType.FLOAT),
     DatasetMetric(name="order_total", expression="sum(orders.amount)"),
     DatasetMetric(name="cyc_c", expression="orders.cyc_o"),
 ]
@@ -73,7 +73,7 @@ ORDERS_MEASURES: List[DatasetMetric] = [
 #: A filtered column whose predicate crosses the PROVEN customers → regions hop
 #: (safe cross-model input, so ``sum(north_spend)`` executes; cf. ``vip_spend``).
 _NORTH_SPEND = DatasetField(
-    name="north_spend", datatype=DataType.DOUBLE, sql="spend",
+    name="north_spend", datatype=DataType.FLOAT, sql="spend",
     filter="regions.name = 'North'",
 )
 

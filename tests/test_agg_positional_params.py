@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     INNER_CR,
-    DatasetMetric,
     make_exec_engine,
     region_key,
     sales_q,
@@ -44,12 +45,12 @@ class TestPositionalEqualsNamed:
     async def test_reaggregation_outer(self, exec_engine):
         pos = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=f"percentile({INNER_CR}, 0.9)",
-                                   name="p")]))
+            metrics=[QueryMetric(metric=f"percentile({INNER_CR}, 0.9)",
+                                   alias="p")]))
         named = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=f"percentile({INNER_CR}, p=0.9)",
-                                   name="p")]))
+            metrics=[QueryMetric(metric=f"percentile({INNER_CR}, p=0.9)",
+                                   alias="p")]))
         assert region_key(pos) == region_key(named)
 
 

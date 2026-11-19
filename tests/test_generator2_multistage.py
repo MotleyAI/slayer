@@ -76,9 +76,9 @@ async def harness() -> AsyncIterator[Tuple[SlayerQueryEngine, YAMLStorage, str]]
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -88,15 +88,15 @@ async def harness() -> AsyncIterator[Tuple[SlayerQueryEngine, YAMLStorage, str]]
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
                 DatasetRelationship(
                     to="customers",
-                    join_pairs=[["customer_id", "id"]],
+                    from_columns=["customer_id"], to_columns=["id"],
                 )
             ],
         )
@@ -142,12 +142,12 @@ async def test_two_stage_local_aggregate_matches_legacy(harness: Tuple[SlayerQue
         "name": "stage1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"expression": "sum(amount)"}],
+        "metrics": [{"metric": "sum(amount)"}],
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["status"],
-        "metrics": [{"expression": "max(amount_sum)"}],
+        "metrics": [{"metric": "max(amount_sum)"}],
     })
     legacy = await engine.execute([stage1, root])
     new_sql = await _new_sql(storage=storage, stages=[stage1, root])
@@ -167,18 +167,18 @@ async def test_three_stage_chain_matches_legacy(harness: Tuple[SlayerQueryEngine
         "name": "s1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"expression": "sum(amount)"}],
+        "metrics": [{"metric": "sum(amount)"}],
     })
     s2 = SlayerQuery.model_validate({
         "name": "s2",
         "population": "s1",
         "dimensions": ["status"],
-        "metrics": [{"expression": "max(amount_sum)"}],
+        "metrics": [{"metric": "max(amount_sum)"}],
     })
     root = SlayerQuery.model_validate({
         "population": "s2",
         "dimensions": ["status"],
-        "metrics": [{"expression": "min(amount_sum_max)"}],
+        "metrics": [{"metric": "min(amount_sum_max)"}],
     })
     legacy = await engine.execute([s1, s2, root])
     new_sql = await _new_sql(storage=storage, stages=[s1, s2, root])
@@ -197,12 +197,12 @@ async def test_cross_model_intermediate_stage_matches_legacy(harness: Tuple[Slay
         "name": "stage1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"expression": "sum(customers.revenue)"}],
+        "metrics": [{"metric": "sum(customers.revenue)"}],
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["status"],
-        "metrics": [{"expression": "max(customers__revenue_sum)"}],
+        "metrics": [{"metric": "max(customers__revenue_sum)"}],
     })
     legacy = await engine.execute([stage1, root])
     new_sql = await _new_sql(storage=storage, stages=[stage1, root])
@@ -226,16 +226,16 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness: 
         population="orders",
         dimensions=["status"],
         metrics=[
-            {"expression": "sum(amount)"},
-            {"expression": "sum(customers.revenue)"},
+            {"metric": "sum(amount)"},
+            {"metric": "sum(customers.revenue)"},
         ],
     )
     root = SlayerQuery(
         population="stage1",
         dimensions=["status"],
         metrics=[
-            {"expression": "max(amount_sum)"},
-            {"expression": "max(customers__revenue_sum)"},
+            {"metric": "max(amount_sum)"},
+            {"metric": "max(customers__revenue_sum)"},
         ],
     )
     legacy = await engine.execute([stage1, root])
@@ -257,12 +257,12 @@ async def test_dev1448_named_join_measure_alias(harness: Tuple[SlayerQueryEngine
         "name": "stage1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+        "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["status"],
-        "metrics": [{"expression": "max(rev)"}],
+        "metrics": [{"metric": "max(rev)"}],
     })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
@@ -289,13 +289,13 @@ async def test_dev1449_flat_name_resolves(harness: Tuple[SlayerQueryEngine, YAML
         "name": "stage1",
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(amount)"}],
+        "metrics": [{"metric": "sum(amount)"}],
     })
     # Downstream references the multi-hop dimension by its FLAT name.
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers__region"],
-        "metrics": [{"expression": "sum(amount_sum)"}],
+        "metrics": [{"metric": "sum(amount_sum)"}],
     })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
@@ -312,13 +312,13 @@ async def test_dev1449_dotted_form_raises(harness: Tuple[SlayerQueryEngine, YAML
         "name": "stage1",
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(amount)"}],
+        "metrics": [{"metric": "sum(amount)"}],
     })
     # The dotted form reads a model no join path reaches from the flat upstream stage.
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(amount_sum)"}],
+        "metrics": [{"metric": "sum(amount_sum)"}],
     })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
@@ -342,12 +342,12 @@ async def _two_stage_bundle_and_plan(storage):
         "name": "stage1",
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(amount)"}],
+        "metrics": [{"metric": "sum(amount)"}],
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers__region"],
-        "metrics": [{"expression": "sum(amount_sum)"}],
+        "metrics": [{"metric": "sum(amount_sum)"}],
     })
     bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
         query=root, storage=storage, named_queries={"stage1": stage1}
@@ -414,9 +414,9 @@ async def test_opaque_dim_grouped_in_downstream_stage_rejected(tmp_path):
             sql_table="places",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="city", datatype=DataType.TEXT),
-                DatasetField(name="loc", datatype=DataType.UNKNOWN, db_type="point"),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="city", datatype=DataType.STRING),
+                DatasetField(name="loc", datatype=DataType.OPAQUE, db_type="point"),
             ],
         )
     )
@@ -429,7 +429,7 @@ async def test_opaque_dim_grouped_in_downstream_stage_rejected(tmp_path):
     root = SlayerQuery.model_validate({
         "population": "s1",
         "dimensions": ["loc"],
-        "metrics": [{"expression": "count(city)"}],
+        "metrics": [{"metric": "count(city)"}],
     })
     with pytest.raises(ValueError, match="cannot be used as a dimension"):
         await _new_sql(storage=storage, stages=[stage1, root])

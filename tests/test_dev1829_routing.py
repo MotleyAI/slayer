@@ -16,8 +16,9 @@ from slayer.engine.plan import plan_stages
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
+from slayer.core.query import QueryDimension, QueryMetric
+
 from tests._dev1739_fixtures import (
-    DatasetMetric,
     SlayerQuery,
     gen,
     make_exec_engine,
@@ -57,7 +58,7 @@ class TestOrderOnlyPartitionedAggregate:
         # which silently sorts by the plain per-city total instead).
         sql = await gen(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="cell")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
             order=[{"field": "sum(amount, partition_by=region)", "direction": "asc"}],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -65,7 +66,7 @@ class TestOrderOnlyPartitionedAggregate:
     async def test_order_only_sorts_by_region_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="cell")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
             order=[{"field": "sum(amount, partition_by=region)", "direction": "asc"}],
         ))
         totals = [REGION_TOTAL[r["orders.region"]] for r in resp.data]
@@ -78,7 +79,7 @@ class TestOrderOnlyPartitionedAggregate:
     async def test_composite_only_in_order_by_isolates(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="cell")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
             order=[{
                 "field": "sum(amount) / sum(amount, partition_by=region)",
                 "direction": "asc",
@@ -91,7 +92,7 @@ class TestOrderOnlyPartitionedAggregate:
         # attached partitioned leaf, so rows come back in share order.
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="cell")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
             order=[{
                 "field": "sum(amount) / sum(amount, partition_by=region)",
                 "direction": "asc",
@@ -113,7 +114,7 @@ class TestInFilterOverComposite:
         q = _q(
             dimensions=["region", "city"],
             filter=["sum(amount) / sum(amount, partition_by=region) > 0.5"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="cell")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -123,8 +124,8 @@ class TestDuplicateAliases:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             metrics=[
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="a"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="b"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="a"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="b"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -143,7 +144,7 @@ class TestPaginationWithHiddenOrdering:
         # the plain per-city total) instead pages into two North rows → [100, 100].
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="cell")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="cell")],
             order=[{"field": "sum(amount, partition_by=region)", "direction": "asc"}],
             limit=2, offset=1,
         ))
@@ -159,8 +160,8 @@ class TestResponseContractNoLeak:
     async def test_no_placeholder_or_producer_column_leaks(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(
-                expression="sum(amount, partition_by=region)", name="region_rev",
+            metrics=[QueryMetric(
+                metric="sum(amount, partition_by=region)", alias="region_rev",
             )],
         ))
         data_keys = set(resp.data[0].keys())
@@ -198,8 +199,8 @@ class TestReservedPrefixAcrossStages:
             SlayerDataset(
                 name="orders", sql_table="orders", data_source="prod",
                 fields=[
-                    DatasetField(name="region", datatype=DataType.TEXT),
-                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="region", datatype=DataType.STRING),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
                 ],
             ),
             _validate=False,
@@ -209,8 +210,8 @@ class TestReservedPrefixAcrossStages:
         stage1 = SlayerQuery(
             name="stage1", population="orders", dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="__regroup__0__amount_sum"),
-                DatasetMetric(expression="sum(amount)", name="total"),
+                QueryMetric(metric="sum(amount)", alias="__regroup__0__amount_sum"),
+                QueryMetric(metric="sum(amount)", alias="total"),
             ],
         )
         # stage2's computed dimension activates the regroup desugar, whose
@@ -218,15 +219,10 @@ class TestReservedPrefixAcrossStages:
         root = SlayerQuery(
             population="stage1",
             dimensions=[
-                "region",
-                {
-                    "expression":
-                        "CASE WHEN sum(total, partition_by=region) > 5 "
-                        "THEN 1 ELSE 0 END",
-                    "name": "band",
-                },
+                QueryDimension(field="region"),
+                QueryDimension(field="CASE WHEN sum(total, partition_by=region) > 5 THEN 1 ELSE 0 END", alias="band"),
             ],
-            metrics=[DatasetMetric(expression="sum(total)", name="s")],
+            metrics=[QueryMetric(metric="sum(total)", alias="s")],
         )
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage, named_queries={"stage1": stage1},

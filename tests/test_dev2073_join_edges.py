@@ -70,14 +70,14 @@ class TestMcpEditModelAddressesOneEdge:
 
     async def test_upsert_names_the_matching_unnamed_edge(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*unnamed_pair()))
-        spec = {"to": "addresses", "join_pairs": SHIPPING_PAIRS, "name": "shipping_address"}
+        spec = {"to": "addresses", "from_columns": [p[0] for p in SHIPPING_PAIRS], "to_columns": [p[1] for p in SHIPPING_PAIRS], "name": "shipping_address"}
         assert _succeeded(await _edit(mcp_server, relationships=[spec]))
         assert await stored_joins(storage) == [(None, BILLING_PAIRS), ("shipping_address", SHIPPING_PAIRS)]
 
     async def test_upsert_matches_by_name_before_pairs(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*reversed(named_pair())))
         # The name selects billing; the pairs alone would select shipping.
-        spec = {"to": "addresses", "join_pairs": SHIPPING_PAIRS, "name": "billing_address"}
+        spec = {"to": "addresses", "from_columns": [p[0] for p in SHIPPING_PAIRS], "to_columns": [p[1] for p in SHIPPING_PAIRS], "name": "billing_address"}
         assert _succeeded(await _edit(mcp_server, relationships=[spec]))
         assert await stored_joins(storage) == [
             ("shipping_address", SHIPPING_PAIRS), ("billing_address", SHIPPING_PAIRS),
@@ -85,13 +85,13 @@ class TestMcpEditModelAddressesOneEdge:
 
     async def test_exact_reference_removes_exactly_one_edge(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*unnamed_pair()))
-        ref = {"to": "addresses", "join_pairs": SHIPPING_PAIRS}
+        ref = {"to": "addresses", "from_columns": [p[0] for p in SHIPPING_PAIRS], "to_columns": [p[1] for p in SHIPPING_PAIRS]}
         assert _succeeded(await _edit(mcp_server, remove={"relationship_edges": [ref]}))
         assert await stored_joins(storage) == [(None, BILLING_PAIRS)]
 
     async def test_unnamed_join_to_an_already_parallel_target_is_rejected(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_dataset(orders_with(*named_pair()))
-        text = await _edit(mcp_server, relationships=[{"to": "addresses", "join_pairs": [["legacy_addr", "id"]]}])
+        text = await _edit(mcp_server, relationships=[{"to": "addresses", "from_columns": ["legacy_addr"], "to_columns": ["id"]}])
         assert not _succeeded(text)
         assert "name" in text
         assert len(await stored_joins(storage)) == 2

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "products",
-    "join_pairs": [
-     [
-      "product_id",
-      "id"
-     ]
+    "from_columns": [
+     "product_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,129 +56,129 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(quantity)"
    },
    "new": {
-    "expression": "sum(quantity)"
+    "metric": "sum(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(quantity)"
    },
    "new": {
-    "expression": "sum(quantity)"
+    "metric": "sum(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(quantity)"
    },
    "new": {
-    "expression": "sum(quantity)"
+    "metric": "sum(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "median(quantity)"
    },
    "new": {
-    "expression": "median(quantity)"
+    "metric": "median(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "percentile(quantity, p=0.5)"
    },
    "new": {
-    "expression": "percentile(quantity, p=0.5)"
+    "metric": "percentile(quantity, p=0.5)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "stddev_samp(quantity)"
    },
    "new": {
-    "expression": "stddev_samp(quantity)"
+    "metric": "stddev_samp(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "var_samp(quantity)"
    },
    "new": {
-    "expression": "var_samp(quantity)"
+    "metric": "var_samp(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "corr(quantity, other=customer_id)"
    },
    "new": {
-    "expression": "corr(quantity, other=customer_id)"
+    "metric": "corr(quantity, other=customer_id)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "covar_samp(quantity, other=customer_id)"
    },
    "new": {
-    "expression": "covar_samp(quantity, other=customer_id)"
+    "metric": "covar_samp(quantity, other=customer_id)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(quantity)"
    },
    "new": {
-    "expression": "sum(quantity)"
+    "metric": "sum(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(quantity)"
    },
    "new": {
-    "expression": "sum(quantity)"
+    "metric": "sum(quantity)"
    }
   },
   {
@@ -193,12 +193,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(quantity)"
    },
    "new": {
-    "expression": "sum(quantity)"
+    "metric": "sum(quantity)"
    }
   },
   {
@@ -235,21 +235,21 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(quantity)"
    },
    "new": {
-    "expression": "sum(quantity)"
+    "metric": "sum(quantity)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {

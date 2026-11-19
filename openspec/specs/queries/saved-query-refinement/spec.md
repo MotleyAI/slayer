@@ -21,7 +21,7 @@ status, amount, ordered_at)` with rows (1, c1, US, paid, 100, 2025-01-05), (2, c
 2025-01-20), (3, c2, EU, paid, 70, 2025-02-03), (4, c3, EU, paid, 35, 2025-02-17), (5, c2, US, paid,
 50, 2025-03-09); model `orders` over it with default time dimension `ordered_at`. Saved query
 `monthly_revenue` = `{"population": "orders", "time_dimensions": [{"field": "ordered_at",
-"granularity": "month"}], "metrics": [{"expression": "sum(amount)", "name": "revenue"}], "filter":
+"granularity": "month"}], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter":
 ["status = 'paid'"]}`, which runs by name to 2025-01 → 100, 2025-02 → 105, 2025-03 → 50 under keys
 `orders.ordered_at`, `orders.revenue`.
 
@@ -83,11 +83,11 @@ supplies them, an explicit empty `order` or `null` clearing the saved value, and
 unchanged otherwise.
 
 #### Scenario: Identical duplicates collapse
-- **WHEN** `monthly_revenue` runs with refinement `{"dimensions": ["orders.region"], "metrics": [{"expression": "sum(amount)", "name": "revenue"}]}`
+- **WHEN** `monthly_revenue` runs with refinement `{"dimensions": ["orders.region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}]}`
 - **THEN** the result equals the extra-dimension scenario's, with no name-collision error
 
 #### Scenario: A root-qualified formula is the saved formula
-- **WHEN** `monthly_revenue` runs with refinement measures `[{"expression": "sum(orders.amount)", "name": "revenue"}]`, or with a refinement time dimension `date_trunc('month', orders.ordered_at)`
+- **WHEN** `monthly_revenue` runs with refinement measures `[{"metric": "sum(orders.amount)", "alias": "revenue"}]`, or with a refinement time dimension `date_trunc('month', orders.ordered_at)`
 - **THEN** each collapses into the saved entry, and the result equals the plain run by name
 
 #### Scenario: Literals are never conflated
@@ -95,15 +95,15 @@ unchanged otherwise.
 - **THEN** the refinement measure is appended as a distinct entry
 
 #### Scenario: Restating a saved measure by name
-- **WHEN** `monthly_revenue` runs with refinement measures `[{"expression": "revenue", "name": "revenue"}, "count(*)"]`, `[{"expression": "revenue"}, "count(*)"]`, `["revenue", "count(*)"]` or `["orders.revenue", "count(*)"]`
+- **WHEN** `monthly_revenue` runs with refinement measures `[{"metric": "revenue", "alias": "revenue"}, "count(*)"]`, `[{"metric": "revenue"}, "count(*)"]`, `["revenue", "count(*)"]` or `["orders.revenue", "count(*)"]`
 - **THEN** each result equals that of refinement measures `["count(*)"]`
 
 #### Scenario: Restatement with differing metadata conflicts
-- **WHEN** a refinement restates `revenue` as `{"expression": "revenue", "label": "Rev"}` and the saved entry's label differs (including a saved label with an explicit `null` restatement)
+- **WHEN** a refinement restates `revenue` as `{"metric": "revenue", "label": "Rev"}` and the saved entry's label differs (including a saved label with an explicit `null` restatement)
 - **THEN** a refinement conflict error names `metrics` and `revenue`
 
 #### Scenario: Restatement under another name is not a restatement
-- **WHEN** a refinement measure is `{"expression": "revenue", "name": "r2"}`
+- **WHEN** a refinement measure is `{"metric": "revenue", "alias": "r2"}`
 - **THEN** it is appended as a new entry, as before
 
 #### Scenario: Same date range on the saved window
@@ -137,7 +137,7 @@ SHALL be to add a filter on the time column or to save the window as a filter wi
 Nothing SHALL execute.
 
 #### Scenario: Same measure name, different formula
-- **WHEN** `monthly_revenue` runs with refinement `{"metrics": [{"expression": "count(*)", "name": "revenue"}]}`
+- **WHEN** `monthly_revenue` runs with refinement `{"metrics": [{"metric": "count(*)", "alias": "revenue"}]}`
 - **THEN** a refinement conflict error names `metrics`, `revenue`, `sum(amount)` and `count(*)`
 
 #### Scenario: Same measure, different metadata
@@ -158,7 +158,7 @@ stages exactly as the saved final stage does; a reference the final stage cannot
 with the ordinary resolution error.
 
 #### Scenario: Refining the final stage
-- **WHEN** the saved query `[{"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "region"], "metrics": [{"expression": "sum(amount)", "name": "revenue"}], "filter": ["status = 'paid'"]}, {"population": "per_customer", "metrics": [{"expression": "avg(revenue)", "name": "avg_revenue"}]}]` runs by name
+- **WHEN** the saved query `[{"name": "per_customer", "population": "orders", "dimensions": ["customer_id", "region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["status = 'paid'"]}, {"population": "per_customer", "metrics": [{"metric": "avg(revenue)", "alias": "avg_revenue"}]}]` runs by name
 - **THEN** `per_customer.avg_revenue` is 63.75
 - **WHEN** it runs with refinement `{"dimensions": ["region"]}`
 - **THEN** the rows are (US, 75.0), (EU, 52.5)
@@ -175,7 +175,7 @@ filter containing `{placeholders}` SHALL be substituted with the same precedence
 stage's own filters.
 
 #### Scenario: Refinement with runtime variables
-- **WHEN** the saved query `{"population": "orders", "dimensions": ["region"], "metrics": [{"expression": "sum(amount)", "name": "revenue"}], "filter": ["status = '{status}'"]}` saved with variables `{"status": "paid"}` runs by name
+- **WHEN** the saved query `{"population": "orders", "dimensions": ["region"], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["status = '{status}'"]}` saved with variables `{"status": "paid"}` runs by name
 - **THEN** the rows are US → 150, EU → 105
 - **WHEN** it runs with variables `{"status": "refunded"}`
 - **THEN** the single row is US → 40

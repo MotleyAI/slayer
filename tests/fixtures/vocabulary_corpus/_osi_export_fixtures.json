@@ -31,8 +31,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "revenue"
+      "metric": "sum(amount)",
+      "alias": "revenue"
      }
     ],
     "filter": [

@@ -22,7 +22,7 @@ from tests._gateway_harness import (
     shop_storage,
 )
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 
 
 class _Args(BaseModel):

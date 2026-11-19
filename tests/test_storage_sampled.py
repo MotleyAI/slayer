@@ -30,10 +30,10 @@ def _make_dataset() -> SlayerDataset:
         sql_table="orders",
         data_source="ds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT,
                    description="Total amount."),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 

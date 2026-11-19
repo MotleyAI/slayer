@@ -37,10 +37,10 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
-            DatasetField(name="weight", sql="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
+            DatasetField(name="weight", sql="weight", datatype=DataType.FLOAT),
         ],
     )
 
@@ -49,25 +49,25 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
 def _orders(*, extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-        DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", fields=cols,
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -77,11 +77,11 @@ def _reserved_host() -> SlayerDataset:
     return SlayerDataset(
         name="order", sql_table="orders_tbl", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="user_id", sql="user_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="user_id", sql="user_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="user", join_pairs=[["user_id", "id"]])],
+        relationships=[DatasetRelationship(to="user", from_columns=["user_id"], to_columns=["id"])],
     )
 
 
@@ -89,8 +89,8 @@ def _reserved_target() -> SlayerDataset:
     return SlayerDataset(
         name="user", sql_table="users_tbl", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="grade", sql="grade", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="grade", sql="grade", datatype=DataType.FLOAT),
         ],
     )
 
@@ -131,7 +131,7 @@ class TestResolveRegistersJoins:
     def test_derived_columnsqlkey_crossing_registers_prefixes(self) -> None:
         orders = _orders(extra=[
             DatasetField(name="region_weight", sql="customers.regions.weight",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
         ])
         scope = _scope(orders, _customers(), _regions())
         expr = scope.resolve(FieldSqlKey(dataset="orders", field_name="region_weight"))
@@ -205,11 +205,11 @@ class TestResolveReservedQuoting:
         host = SlayerDataset(
             name="order", sql_table="orders_tbl", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="user_id", sql="user_id", datatype=DataType.DOUBLE),
-                DatasetField(name="user_grade", sql="user.grade", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="user_id", sql="user_id", datatype=DataType.FLOAT),
+                DatasetField(name="user_grade", sql="user.grade", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="user", join_pairs=[["user_id", "id"]])],
+            relationships=[DatasetRelationship(to="user", from_columns=["user_id"], to_columns=["id"])],
         )
         scope = _scope(host, _reserved_target())
         expr = scope.resolve(FieldSqlKey(dataset="order", field_name="user_grade"))
@@ -224,7 +224,7 @@ class TestResolvePredicateParens:
     @staticmethod
     def _derived_orders():
         return _orders(extra=[
-            DatasetField(name="total", sql="amount + balance", datatype=DataType.DOUBLE),
+            DatasetField(name="total", sql="amount + balance", datatype=DataType.FLOAT),
         ])
 
     def test_derived_expansion_parenthesised_preserves_precedence(self) -> None:
@@ -397,12 +397,12 @@ class TestResolvePathedColumnSqlKey:
         return SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-                DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
-                DatasetField(name="tier", sql="upper(balance)", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
+                DatasetField(name="tier", sql="upper(balance)", datatype=DataType.STRING),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
 
     def test_single_hop_derived_anchors_at_path_alias(self) -> None:
@@ -435,11 +435,11 @@ class TestResolvePathedColumnSqlKey:
         customers = SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-                DatasetField(name="deep", sql="regions.population", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+                DatasetField(name="deep", sql="regions.population", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         scope = _scope(_orders(), customers, _regions())
         expr = scope.resolve(

@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from inspect import cleandoc
 from typing import TYPE_CHECKING, Annotated, Any
 
-from pydantic import Discriminator, Field, Tag
+from pydantic import Discriminator, Field, Tag, ValidationError
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
@@ -34,7 +34,8 @@ from slayer.core.granularity import CustomGranularity
 from slayer.core.relationship_edges import RelationshipEdgeRef, edge_reference, resolve_relationship_refs, without_relationships
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import render_recommendation_markdown
-from slayer.core.vocabulary import DATASET_KEYS, deprecated_spelling, renamed_arguments
+from slayer.core import vocabulary
+from slayer.core.vocabulary import DATASET_KEYS, Spellings, converted_document, current_spellings, deprecated_spelling, renamed_arguments
 from slayer.core.warnings import DeprecatedInputWarning, ResponseTruncationWarning, SlayerWarning
 from slayer import async_utils
 from slayer.live_schema import ingestion as engine_ingestion
@@ -228,9 +229,10 @@ def _reported_text(text: str, lines: list[str]) -> str:
     except ValueError:
         payload = None
     if isinstance(payload, dict):
-        payload["warnings"] = [*payload.get("warnings", []), *lines]
+        existing = payload.get("warnings", [])
+        payload["warnings"] = [*existing, *(line for line in lines if line not in existing)]
         return json.dumps(payload, indent=2)
-    return text + "".join(f"\nWarning: {line}" for line in lines)
+    return text + "".join(f"\nWarning: {line}" for line in lines if line not in text)
 
 
 def _with_deprecations(result: Any, renamed: list[DeprecatedInputWarning]) -> Any:
@@ -261,8 +263,11 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             session = self._observe_session()
             with usage_reporting.action() as action:
                 try:
-                    arguments, renamed = _converted_arguments(tool=name, arguments=arguments)
-                    result = _with_deprecations(await super().call_tool(name, arguments), renamed)
+                    # One request is one input document: its pre-2.0 spellings each warn once.
+                    with converted_document(stored=False) as (spellings, _):
+                        arguments, renamed = _converted_arguments(tool=name, arguments=arguments)
+                        result = await super().call_tool(name, arguments)
+                        result = _with_deprecations(result, [*renamed, *spellings.report()])
                 except BaseException as exc:
                     usage_reporting.record(
                         surface="mcp", token=name, error=_counted_error(exc), dry_run=action.dry_run, session=session,
@@ -763,7 +768,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved metrics, {"name": "aov", "expression": "sum(revenue) / count(*)"} plus optional '
-                'label, description, meta; queries reference them by bare name ({"expression": "aov"}).'
+                'label, description, meta; queries reference them by bare name ("aov").'
             ),
         )] = None,
         aggregations: Annotated[list[dict[str, Any]] | None, Field(
@@ -790,7 +795,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Host a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: create_dataset(name="orders", sql_table="public.orders", data_source="mydb", fields=[{"name": "amount", "sql": "amount", "datatype": "DOUBLE"}], metrics=[{"name": "aov", "expression": "sum(amount) / count(*)"}])
+        Example: create_dataset(name="orders", sql_table="public.orders", data_source="mydb", fields=[{"name": "amount", "sql": "amount", "datatype": "Float"}], metrics=[{"name": "aov", "expression": "sum(amount) / count(*)"}])
 
         A custom aggregation named sum_sq is called like a built-in: sum_sq(field). Authoring guide: inspect(reference="memory:help.datasets", entity_type="memory").
         """
@@ -844,7 +849,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             aggregations=aggregations,
             access_tags=access_tags,
         )
-        dataset = SlayerDataset.model_validate(data)
+        try:
+            dataset = SlayerDataset.model_validate(data)
+        except ValidationError as exc:
+            return f"Invalid dataset '{name}': {exc}"
         existed = (
             await storage.get_dataset(name, data_source=dataset.data_source)
             is not None
@@ -903,11 +911,14 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if not target:
             return "Missing 'to' in relationship specification."
         name = spec.get("name")
-        pairs = {tuple(p) for p in spec.get("join_pairs") or [] if isinstance(p, list)}
+        sources, targets = spec.get("from_columns"), spec.get("to_columns")
+        pairs = set(zip(sources, targets)) if isinstance(sources, list) and isinstance(targets, list) else set()
         to_target = [j for j in relationships if j.to == target]
         existing = (
             next((j for j in relationships if name and j.name == name), None)
-            or next((j for j in to_target if pairs and {tuple(p) for p in j.join_pairs} == pairs), None)
+            # A differently named edge on the same keys is a parallel edge, never this one.
+            or next((j for j in to_target if pairs and set(j.column_pairs) == pairs
+                     and not (name and j.name and j.name != name)), None)
             # A differently named sole relationship is another edge, never this one.
             or (to_target[0] if len(to_target) == 1 and not (name and to_target[0].name) else None)
         )
@@ -983,10 +994,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         )] = None,
         relationships: Annotated[list[dict[str, Any]] | None, Field(
             description=(
-                'Relationships to upsert, {"to": "customers", "join_pairs": [["customer_id", "id"]], '
+                'Relationships to upsert, {"to": "customers", "from_columns": ["customer_id"], "to_columns": ["id"], '
                 '"name", "cardinality": "many_to_one", "description", "meta"}, matched by name, else '
-                "target and join_pairs, else the sole relationship to the target; a second relationship to a target needs a name. "
-                "Keys name fields by name; a composite key is one relationship with several pairs. "
+                "target and key columns, else the sole relationship to the target; a second relationship to a target needs a name. "
+                "Keys name fields by name; a composite key lists several columns on each side, in pair order. "
                 "cardinality (one_to_one / one_to_many / many_to_one / many_to_many, read "
                 "source->target) is descriptive only; omit it when unknown."
             ),
@@ -999,7 +1010,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             description=(
                 'Entities to delete before the upserts: {"fields": [...], "metrics": [...], '
                 '"aggregations": [...], "relationships": [target dataset or edge name, ...], '
-                '"relationship_edges": [{"to", "name", "join_pairs"}, ...]}.'
+                '"relationship_edges": [{"to", "name", "from_columns", "to_columns"}, ...]}.'
             ),
         )] = None,
         meta: Annotated[dict[str, Any] | None, Field(
@@ -1011,7 +1022,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Host a field or metric on the dataset whose row grain is 1:1 with what it describes, not merely one where its inputs live. Choose relationship keys by field Description (author intent); on ties take the shortest declared relationship path (long chains through lookup or log tables fan out rows). Define entities in dependency order and reference already-defined ones by name; in row-level SQL parenthesise weighted sums in comparisons ((a*w1 + b*w2) > t).
 
-        Example: edit_dataset(dataset_name="orders", fields=[{"name": "status", "datatype": "TEXT"}], metrics=[{"name": "aov", "expression": "sum(revenue) / count(*)"}], remove={"metrics": ["old_metric"]})
+        Example: edit_dataset(dataset_name="orders", fields=[{"name": "status", "datatype": "String"}], metrics=[{"name": "aov", "expression": "sum(revenue) / count(*)"}], remove={"metrics": ["old_metric"]})
         """
         try:
             dataset = await storage.get_dataset(dataset_name, data_source=data_source)
@@ -1020,6 +1031,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if dataset is None:
             return f"Dataset '{dataset_name}' not found."
 
+        spellings = current_spellings() or Spellings(stored=False)
+        fields = [vocabulary.field(spec, spellings) for spec in fields] if fields else fields
+        metrics = [vocabulary.metric(spec, spellings) for spec in metrics] if metrics else metrics
+        aggregations = [vocabulary.aggregation(spec, spellings) for spec in aggregations] if aggregations else aggregations
+        relationships = [vocabulary.relationship(spec, spellings) for spec in relationships] if relationships else relationships
         original_data_source = dataset.data_source
         changes: list[str] = []
         # Track field-level vs dataset-level changes so the post-save hook
@@ -1747,7 +1763,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Examples:
         save_memory(learning="orders.is_returned in {0,1,NULL}; treat NULL as not returned", linked_entities=["orders.is_returned"])
-        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": [{"expression": "sum(amount)"}], "filter": ["status = 'paid'"]}, id="kb.paid-revenue")
+        save_memory(learning="Paid revenue by status", linked_entities={"population": "orders", "metrics": ["sum(amount)"], "filter": "status = 'paid'"}, id="kb.paid-revenue")
         """
         try:
             response = await memory_service.save_memory(

@@ -70,8 +70,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -97,14 +97,14 @@
     "population": "s1",
     "dimensions": [
      {
-      "expression": "date_part('year', created_at)",
-      "name": "y"
+      "field": "date_part('year', created_at)",
+      "alias": "y"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(n)",
-      "name": "n_total"
+      "metric": "sum(n)",
+      "alias": "n_total"
      }
     ]
    }
@@ -132,8 +132,8 @@
     ],
     "metrics": [
      {
-      "expression": "max(created_at)",
-      "name": "last_at"
+      "metric": "max(created_at)",
+      "alias": "last_at"
      }
     ]
    }
@@ -165,8 +165,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -194,8 +194,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -221,8 +221,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(n)",
-      "name": "n_total"
+      "metric": "sum(n)",
+      "alias": "n_total"
      }
     ]
    }
@@ -260,26 +260,26 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "date_part('month', created_at)",
-      "name": "m"
+      "field": "date_part('month', created_at)",
+      "alias": "m"
      },
      {
-      "expression": "date_add(order_date, 1, 'month')",
-      "name": "due"
+      "field": "date_add(order_date, 1, 'month')",
+      "alias": "due"
      },
      {
-      "expression": "date_add(order_date, 2, 'hour')",
-      "name": "due_at"
+      "field": "date_add(order_date, 2, 'hour')",
+      "alias": "due_at"
      }
     ],
     "metrics": [
      {
-      "expression": "date_diff('day', min(created_at), max(created_at))",
-      "name": "span"
+      "metric": "date_diff('day', min(created_at), max(created_at))",
+      "alias": "span"
      },
      {
-      "expression": "date_add(max(order_date), 1, 'month')",
-      "name": "next_due"
+      "metric": "date_add(max(order_date), 1, 'month')",
+      "alias": "next_due"
      }
     ]
    }
@@ -309,8 +309,8 @@
     ],
     "metrics": [
      {
-      "expression": "date_add(max(customers.signup_date), 1, 'day')",
-      "name": "joined_due"
+      "metric": "date_add(max(customers.signup_date), 1, 'day')",
+      "alias": "joined_due"
      }
     ]
    }
@@ -344,22 +344,22 @@
     "population": "s1",
     "dimensions": [
      {
-      "expression": "date_part('year', created_at)",
-      "name": "y"
+      "field": "date_part('year', created_at)",
+      "alias": "y"
      }
     ],
     "metrics": [
      {
-      "expression": "max(joined_due)",
-      "name": "due"
+      "metric": "max(joined_due)",
+      "alias": "due"
      },
      {
-      "expression": "date_diff('day', max(joined_due), max(created_at))",
-      "name": "lag_days"
+      "metric": "date_diff('day', max(joined_due), max(created_at))",
+      "alias": "lag_days"
      },
      {
-      "expression": "date_add(max(created_at), 1, 'hour')",
-      "name": "next_at"
+      "metric": "date_add(max(created_at), 1, 'hour')",
+      "alias": "next_at"
      }
     ]
    }
@@ -393,12 +393,12 @@
     ],
     "metrics": [
      {
-      "expression": "max(order_date)",
-      "name": "od"
+      "metric": "max(order_date)",
+      "alias": "od"
      },
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -428,12 +428,12 @@
     ],
     "metrics": [
      {
-      "expression": "max(od)",
-      "name": "o"
+      "metric": "max(od)",
+      "alias": "o"
      },
      {
-      "expression": "sum(n)",
-      "name": "total"
+      "metric": "sum(n)",
+      "alias": "total"
      }
     ]
    }
@@ -463,8 +463,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -494,12 +494,12 @@
     ],
     "metrics": [
      {
-      "expression": "max(date_add(order_date, 1, 'day'))",
-      "name": "next_day"
+      "metric": "max(date_add(order_date, 1, 'day'))",
+      "alias": "next_day"
      },
      {
-      "expression": "min(coalesce(order_date, current_date()))",
-      "name": "first_day"
+      "metric": "min(coalesce(order_date, current_date()))",
+      "alias": "first_day"
      }
     ]
    }
@@ -527,8 +527,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(n)",
-      "name": "total"
+      "metric": "sum(n)",
+      "alias": "total"
      }
     ]
    }
@@ -556,14 +556,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "date_add(order_date, 1, 'month')",
-      "name": "due"
+      "field": "date_add(order_date, 1, 'month')",
+      "alias": "due"
      }
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -591,14 +591,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "date_part('month', created_at)",
-      "name": "m"
+      "field": "date_part('month', created_at)",
+      "alias": "m"
      }
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }

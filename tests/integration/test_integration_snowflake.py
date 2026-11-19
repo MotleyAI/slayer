@@ -31,10 +31,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.live_schema.schema_drift import IdempotentIngestResult
@@ -298,16 +297,16 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         data_source="sf_test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="product_id", sql="product_id", datatype=DataType.INT),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.INT),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="product_id", sql="product_id", datatype=DataType.INTEGER),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.INTEGER),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="products", join_pairs=[["product_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="products", from_columns=["product_id"], to_columns=["id"]),
         ],
     )
     customers = SlayerDataset(
@@ -315,13 +314,13 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="customers",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="email", sql="email", datatype=DataType.TEXT),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.INT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="email", sql="email", datatype=DataType.STRING),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.INTEGER),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
     )
     products = SlayerDataset(
@@ -329,10 +328,10 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="products",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="category", sql="category", datatype=DataType.TEXT),
-            DatasetField(name="price", sql="price", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="category", sql="category", datatype=DataType.STRING),
+            DatasetField(name="price", sql="price", datatype=DataType.FLOAT),
         ],
     )
     regions = SlayerDataset(
@@ -340,8 +339,8 @@ def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
         sql_table="regions",
         data_source="sf_test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
     for m in (orders, customers, products, regions):
@@ -359,7 +358,7 @@ def test_basic_query(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(quantity)")],
     )))
     rows = result.data
     assert len(rows) == 1
@@ -376,7 +375,7 @@ def test_functional_aggregation(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     func = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(quantity)")],
     )))
     assert int(next(iter(func.data[0].values()))) == 16
 
@@ -386,8 +385,8 @@ def test_query_with_dimension(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="count(*)")],
     )))
     rows = result.data
     statuses = {row.get("orders.status") for row in rows}
@@ -404,12 +403,12 @@ def test_dev1933_regex_literal_model_column(sf_storage_with_datasets: StorageBac
         *orders.fields,
         DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
                               "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
-               datatype=DataType.DOUBLE),
+               datatype=DataType.FLOAT),
     ]})))
     result = run_sync(engine.execute(SlayerQuery(
         population="orders_rx",
-        dimensions=[FieldRef(name="rx")],
-        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[QueryDimension(field="rx")],
+        metrics=[QueryMetric(metric="count(*)")],
     )))
     by_rx = {int(r["orders_rx.rx"]): r["orders_rx._count"] for r in result.data}
     assert by_rx == {1: 2, 0: 4}
@@ -425,8 +424,8 @@ def test_rollup_join_via_explicit_joins(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="customers.regions.name")],
-        metrics=[DatasetMetric(expression="sum(quantity)")],
+        dimensions=[QueryDimension(field="customers.regions.name")],
+        metrics=[QueryMetric(metric="sum(quantity)")],
     )))
     rows = result.data
     region_names = {row.get("orders.customers.regions.name") for row in rows}
@@ -444,8 +443,8 @@ def test_median_percentile_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            DatasetMetric(expression="median(quantity)"),
-            DatasetMetric(expression="percentile(quantity, p=0.5)"),
+            QueryMetric(metric="median(quantity)"),
+            QueryMetric(metric="percentile(quantity, p=0.5)"),
         ],
     )))
     rows = result.data
@@ -463,8 +462,8 @@ def test_stddev_var_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            DatasetMetric(expression="stddev_samp(quantity)"),
-            DatasetMetric(expression="var_samp(quantity)"),
+            QueryMetric(metric="stddev_samp(quantity)"),
+            QueryMetric(metric="var_samp(quantity)"),
         ],
     )))
     rows = result.data
@@ -480,8 +479,8 @@ def test_corr_covar_native(sf_storage_with_datasets) -> None:
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
-            DatasetMetric(expression="corr(quantity, other=customer_id)"),
-            DatasetMetric(expression="covar_samp(quantity, other=customer_id)"),
+            QueryMetric(metric="corr(quantity, other=customer_id)"),
+            QueryMetric(metric="covar_samp(quantity, other=customer_id)"),
         ],
     )))
     rows = result.data
@@ -500,7 +499,7 @@ def test_date_trunc_quarter(sf_storage_with_datasets) -> None:
             field="created_at",
             granularity=TimeGranularity.QUARTER,
         )],
-        metrics=[DatasetMetric(expression="sum(quantity)")],
+        metrics=[QueryMetric(metric="sum(quantity)")],
     )))
     rows = result.data
     # All orders are in Q1 2024 → exactly one row.
@@ -517,8 +516,8 @@ def test_time_shift_dateadd(sf_storage_with_datasets) -> None:
             granularity=TimeGranularity.MONTH,
         )],
         metrics=[
-            DatasetMetric(expression="sum(quantity)"),
-            DatasetMetric(expression="time_shift(sum(quantity), -1, 'month')", name="prev_month"),
+            QueryMetric(metric="sum(quantity)"),
+            QueryMetric(metric="time_shift(sum(quantity), -1, 'month')", alias="prev_month"),
         ],
     )))
     rows = result.data
@@ -531,12 +530,12 @@ def test_rank_transforms(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         metrics=[
-            DatasetMetric(expression="sum(quantity)"),
-            DatasetMetric(expression="rank(sum(quantity), direction='desc')", name="qty_rank"),
-            DatasetMetric(expression="dense_rank(sum(quantity), direction='desc')", name="qty_dense_rank"),
-            DatasetMetric(expression="ntile(sum(quantity), n=2)", name="qty_bucket"),
+            QueryMetric(metric="sum(quantity)"),
+            QueryMetric(metric="rank(sum(quantity), direction='desc')", alias="qty_rank"),
+            QueryMetric(metric="dense_rank(sum(quantity), direction='desc')", alias="qty_dense_rank"),
+            QueryMetric(metric="ntile(sum(quantity), n=2)", alias="qty_bucket"),
         ],
     )))
     rows = result.data
@@ -650,12 +649,12 @@ def test_column_types_round_trip(sf_engine) -> None:
         db_type="snowflake",
         engine=sf_engine,
     )
-    assert types["as_number"] == ResultColumnType(type=DataType.INT, db_type="NUMBER(38,0)")
-    assert types["as_double"].type == DataType.DOUBLE
-    assert types["as_text"].type == DataType.TEXT
+    assert types["as_number"] == ResultColumnType(type=DataType.INTEGER, db_type="NUMBER(38,0)")
+    assert types["as_double"].type == DataType.FLOAT
+    assert types["as_text"].type == DataType.STRING
     assert types["as_bool"].type == DataType.BOOLEAN
     assert types["as_date"].type == DataType.DATE
-    assert types["as_ts"].type == DataType.TIMESTAMP
+    assert types["as_ts"].type == DataType.DATETIME
 
 
 def test_session_overrides_apply_to_metadata_reads(sf_transient_schema) -> None:
@@ -730,7 +729,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
     # [[source_col, target_col], ...]; flatten the first pair for the
     # standard single-column FK case.
     def _first_pair(j: DatasetRelationship) -> tuple[str, str]:
-        pair = j.join_pairs[0]
+        pair = j.column_pairs[0]
         return (pair[0].lower(), pair[1].lower())
 
     orders_joins = {
@@ -779,7 +778,7 @@ def test_explain_query_uses_explain_using_json(sf_storage_with_datasets) -> None
     result = run_sync(engine.execute(
         query=SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(quantity)")],
+            metrics=[QueryMetric(metric="sum(quantity)")],
         ),
         explain=True,
     ))
@@ -868,8 +867,8 @@ def test_query_result_keys_use_lowercase(sf_storage_with_datasets) -> None:
     engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="count(*)")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="count(*)")],
     )))
     rows = result.data
     assert rows
@@ -910,7 +909,7 @@ def sf_dev1645_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
             sql_table="dev1645_accounts",
             data_source="sf_test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
                 # Written UNQUOTED — the fix must emit "StateFlag".
                 DatasetField(name="is_inactive", datatype=DataType.BOOLEAN,
                        sql="CASE WHEN StateFlag = 'Dormant' THEN TRUE ELSE FALSE END"),
@@ -934,7 +933,7 @@ def test_dev1645_mixed_case_column_executes(sf_dev1645_storage) -> None:
     engine = SlayerQueryEngine(storage=sf_dev1645_storage)
     result = run_sync(engine.execute(SlayerQuery(
         population="dev1645_accounts",
-        metrics=[DatasetMetric(expression="count(*)", name="cnt")],
+        metrics=[QueryMetric(metric="count(*)", alias="cnt")],
         filter=["is_inactive == True"],
     )))
     assert result.data[0]["dev1645_accounts.cnt"] == 2
@@ -1052,9 +1051,9 @@ def test_mixed_numeric_lists(sf_lists) -> None:
 
 def test_untyped_array_elements_inferred(sf_lists, sf_datasource: DatasourceConfig) -> None:
     assert _elements(sf_datasource, "inferred") == {
-        "ints": (DataType.ARRAY, DataType.INT), "mixed": (DataType.ARRAY, DataType.TEXT),
-        "objs": (DataType.ARRAY, DataType.UNKNOWN), "empty": (DataType.ARRAY, DataType.UNKNOWN)}
-    assert _elements(sf_datasource, "contractors")["scores"] == (DataType.ARRAY, DataType.INT)
+        "ints": (DataType.ARRAY, DataType.INTEGER), "mixed": (DataType.ARRAY, DataType.STRING),
+        "objs": (DataType.ARRAY, DataType.OPAQUE), "empty": (DataType.ARRAY, DataType.OPAQUE)}
+    assert _elements(sf_datasource, "contractors")["scores"] == (DataType.ARRAY, DataType.INTEGER)
 
 
 def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: DatasourceConfig) -> None:
@@ -1065,7 +1064,7 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
 
     event.listen(sa.engine.Engine, "before_cursor_execute", record)
     try:
-        assert _elements(sf_datasource, "structured") == {"typed": (DataType.ARRAY, DataType.TEXT)}
+        assert _elements(sf_datasource, "structured") == {"typed": (DataType.ARRAY, DataType.STRING)}
     finally:
         event.remove(sa.engine.Engine, "before_cursor_execute", record)
     assert not [s for s in statements if "FLATTEN" in s.upper()], statements
@@ -1100,7 +1099,7 @@ def test_reingest_reinfers_only_unknown_elements(sf_lists: tuple[YAMLStorage, An
     finally:
         cur.execute("DROP TABLE IF EXISTS reingested")
     typed = {c.name: c.element_type for c in model.fields if c.name in ("ints", "empty")}
-    assert typed == {"ints": DataType.INT, "empty": DataType.INT}
+    assert typed == {"ints": DataType.INTEGER, "empty": DataType.INTEGER}
 
 
 # ---------------------------------------------------------------------------
@@ -1209,7 +1208,7 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
             caller.close()
         source = live.source(sql_table=sql_table)
         assert isinstance(source, LiveSource)
-        assert source.field("qty") == (DataType.INT, None)
+        assert source.field("qty") == (DataType.INTEGER, None)
         storage = YAMLStorage(base_dir=str(tmp_path))
         run_sync(storage.save_datasource(sf_datasource))
         _ingest_idempotent(datasource=sf_datasource, storage=storage, schema=sf_transient_schema,
@@ -1219,7 +1218,7 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         assert model.sql_table == f'{sf_transient_schema}."lower_items"'
         tags = model.get_field("tags")
         assert tags is not None
-        assert tags.element_type is DataType.INT
+        assert tags.element_type is DataType.INTEGER
         assert tags.sql == '"tags"'
         engine = SlayerQueryEngine(storage=storage)
         try:

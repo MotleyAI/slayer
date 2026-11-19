@@ -193,7 +193,7 @@ def test_typed_slot_is_cast_wrapped() -> None:
         aliases_by_slot_id={},
         available_alias_by_slot_id={},
         source_relation="orders",
-        slot_entries=[("sid", _slot("s", type_=DataType.DOUBLE))],
+        slot_entries=[("sid", _slot("s", type_=DataType.FLOAT))],
         render=lambda s: exp.Abs(this=exp.column("v", quoted=True)),
     )
     assert "CAST" in ctes[-1].query.sql(dialect="postgres").upper()

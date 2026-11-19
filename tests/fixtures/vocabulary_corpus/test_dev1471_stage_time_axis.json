@@ -37,8 +37,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "rev"
+      "metric": "sum(amount)",
+      "alias": "rev"
      }
     ]
    }

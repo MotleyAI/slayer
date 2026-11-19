@@ -70,13 +70,13 @@ def orders_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="org", sql="org", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="org", sql="org", datatype=DataType.STRING),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -84,9 +84,9 @@ def customers_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="org", sql="org", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="org", sql="org", datatype=DataType.STRING),
         ],
     )
 
@@ -95,20 +95,20 @@ def paid_sql_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
     return SlayerDataset(
         name="paid", sql="SELECT id, amount FROM orders WHERE status = 'paid'", data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
 
-COUNT_ORDERS_MEM = {"population": "t", "metrics": [{"expression": "count(*)", "name": "n"}]}
+COUNT_ORDERS_MEM = {"population": "t", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 
 
 def mem_count_dataset() -> SlayerDataset:
     """Model ``t`` over table ``t`` of the in-memory datasource ``mem``."""
     return SlayerDataset(
         name="t", sql_table="t", data_source="mem",
-        fields=[DatasetField(name="v", sql="v", datatype=DataType.INT)],
+        fields=[DatasetField(name="v", sql="v", datatype=DataType.INTEGER)],
     )
 
 

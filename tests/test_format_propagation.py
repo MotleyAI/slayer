@@ -45,20 +45,20 @@ class TestInferAggregatedFormat:
             sql_table="orders",
             data_source="test_ds",
             fields=[
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
                 DatasetField(
                     name="revenue",
                     sql="amount",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
                 ),
                 DatasetField(
                     name="margin",
                     sql="margin",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.PERCENT),
                 ),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
+                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
             ],
         )
 
@@ -184,11 +184,11 @@ class TestSharedClassifier:
             fields=[
                 DatasetField(
                     name="revenue",
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.CURRENCY, symbol="€"),
                 ),
-                DatasetField(name="quantity", datatype=DataType.DOUBLE),
-                DatasetField(name="qty_int", datatype=DataType.INT),
+                DatasetField(name="quantity", datatype=DataType.FLOAT),
+                DatasetField(name="qty_int", datatype=DataType.INTEGER),
             ],
         )
 
@@ -234,7 +234,7 @@ class TestSharedClassifier:
             classify_aggregation(metric_name="revenue", aggregation="my_custom", source_type=None)
             == AggregationValueClass.PRESERVING
         )
-        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation="my_custom") == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation="my_custom") == DataType.FLOAT
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation="my_custom")
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
@@ -258,14 +258,14 @@ class TestSharedClassifier:
     @pytest.mark.parametrize("measure", ["revenue", "quantity", "qty_int"])
     @pytest.mark.parametrize("aggregation", sorted(INTEGER_AGGREGATIONS))
     def test_count_bucket(self, dataset, aggregation, measure):
-        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.INT
+        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.INTEGER
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name=measure, aggregation=aggregation).type
             == NumberFormatType.INTEGER
         )
 
     def test_star_count_bucket(self, dataset):
-        assert aggregated_type(dataset=dataset, metric_name="*", aggregation="count") == DataType.INT
+        assert aggregated_type(dataset=dataset, metric_name="*", aggregation="count") == DataType.INTEGER
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name="*", aggregation="count").type
             == NumberFormatType.INTEGER
@@ -275,27 +275,27 @@ class TestSharedClassifier:
 
     @pytest.mark.parametrize("aggregation", sorted(PRESERVING_AGGREGATIONS))
     def test_preserving_currency_source(self, dataset, aggregation):
-        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation=aggregation) == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation=aggregation) == DataType.FLOAT
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation=aggregation)
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
 
     @pytest.mark.parametrize("aggregation", sorted(PRESERVING_AGGREGATIONS))
     def test_preserving_unformatted_double_source(self, dataset, aggregation):
-        assert aggregated_type(dataset=dataset, metric_name="quantity", aggregation=aggregation) == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name="quantity", aggregation=aggregation) == DataType.FLOAT
         assert _infer_aggregated_format(dataset=dataset, metric_name="quantity", aggregation=aggregation) is None
 
     @pytest.mark.parametrize("aggregation", sorted(PRESERVING_AGGREGATIONS))
     def test_preserving_int_source_inherits_int(self, dataset, aggregation):
         # The type axis: PRESERVING inherits the source's INT type ...
-        assert aggregated_type(dataset=dataset, metric_name="qty_int", aggregation=aggregation) == DataType.INT
+        assert aggregated_type(dataset=dataset, metric_name="qty_int", aggregation=aggregation) == DataType.INTEGER
         assert _infer_aggregated_format(dataset=dataset, metric_name="qty_int", aggregation=aggregation) is None
 
     # --- FLOAT_SOURCE_UNITS bucket: DOUBLE type always; format inherits, else FLOAT ---
 
     @pytest.mark.parametrize("aggregation", sorted(FLOAT_SOURCE_UNIT_AGGREGATIONS))
     def test_float_source_units_currency(self, dataset, aggregation):
-        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation=aggregation) == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name="revenue", aggregation=aggregation) == DataType.FLOAT
         fmt = _infer_aggregated_format(dataset=dataset, metric_name="revenue", aggregation=aggregation)
         assert fmt.type == NumberFormatType.CURRENCY
         assert fmt.symbol == "€"
@@ -304,7 +304,7 @@ class TestSharedClassifier:
     @pytest.mark.parametrize("aggregation", sorted(FLOAT_SOURCE_UNIT_AGGREGATIONS))
     def test_float_source_units_unformatted_falls_back_to_float(self, dataset, aggregation, measure):
         # ... whereas FLOAT_SOURCE_UNITS FORCES DOUBLE, even over an INT source.
-        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name=measure, aggregation=aggregation).type
             == NumberFormatType.FLOAT
@@ -315,7 +315,7 @@ class TestSharedClassifier:
     @pytest.mark.parametrize("measure", ["revenue", "quantity", "qty_int"])
     @pytest.mark.parametrize("aggregation", sorted(FLOAT_PLAIN_AGGREGATIONS))
     def test_float_plain_bucket(self, dataset, aggregation, measure):
-        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name=measure, aggregation=aggregation) == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name=measure, aggregation=aggregation).type
             == NumberFormatType.FLOAT
@@ -328,14 +328,14 @@ class TestSharedClassifier:
         assert _infer_aggregated_format(dataset=dataset, metric_name="nope", aggregation="sum") is None
 
     def test_float_source_units_missing_column_falls_back_to_float(self, dataset):
-        assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="avg") == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="avg") == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name="nope", aggregation="avg").type
             == NumberFormatType.FLOAT
         )
 
     def test_float_plain_missing_column(self, dataset):
-        assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="corr") == DataType.DOUBLE
+        assert aggregated_type(dataset=dataset, metric_name="nope", aggregation="corr") == DataType.FLOAT
         assert (
             _infer_aggregated_format(dataset=dataset, metric_name="nope", aggregation="corr").type
             == NumberFormatType.FLOAT
@@ -346,10 +346,10 @@ class TestSharedClassifier:
     @pytest.mark.parametrize(
         "aggregation,exp_type,exp_fmt",
         [
-            ("count", DataType.INT, NumberFormatType.INTEGER),
-            ("sum", DataType.DOUBLE, NumberFormatType.CURRENCY),  # inherit revenue's currency
-            ("avg", DataType.DOUBLE, NumberFormatType.CURRENCY),  # FLOAT_SOURCE_UNITS inherits currency
-            ("var_samp", DataType.DOUBLE, NumberFormatType.FLOAT),  # FLOAT_PLAIN drops currency
+            ("count", DataType.INTEGER, NumberFormatType.INTEGER),
+            ("sum", DataType.FLOAT, NumberFormatType.CURRENCY),  # inherit revenue's currency
+            ("avg", DataType.FLOAT, NumberFormatType.CURRENCY),  # FLOAT_SOURCE_UNITS inherits currency
+            ("var_samp", DataType.FLOAT, NumberFormatType.FLOAT),  # FLOAT_PLAIN drops currency
         ],
     )
     def test_public_callers_agree_per_bucket(self, dataset, aggregation, exp_type, exp_fmt):
@@ -360,7 +360,7 @@ class TestSharedClassifier:
 
     def test_public_callers_star_count(self, dataset):
         key = AggregateKey(source=StarKey(), agg="count")
-        assert metric_key_type(dataset=dataset, key=key) == DataType.INT
+        assert metric_key_type(dataset=dataset, key=key) == DataType.INTEGER
         fmt, desc = metric_key_format_description(dataset=dataset, key=key)
         assert fmt.type == NumberFormatType.INTEGER
         assert desc is None

@@ -188,7 +188,7 @@ class TestFacade:
     def test_facade_join_model_accepts_cardinality(self) -> None:
         fj = FacadeRelationship(
             to="customers",
-            join_pairs=[["customer_id", "id"]],
+            column_pairs=[("customer_id", "id")],
             cardinality=RelationshipCardinality.ONE_TO_ONE,
         )
         assert fj.cardinality is RelationshipCardinality.ONE_TO_ONE
@@ -196,7 +196,7 @@ class TestFacade:
     def test_facade_join_from_carries_cardinality(self) -> None:
         j = DatasetRelationship(
             to="customers",
-            join_pairs=[["customer_id", "id"]],
+            from_columns=["customer_id"], to_columns=["id"],
             cardinality=RelationshipCardinality.MANY_TO_ONE,
         )
         fj = _facade_relationship_from(relationship=j)
@@ -210,9 +210,9 @@ def _dyn_catalog():
         data_source="jaffle",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
         ],
         relationships=[],
     )
@@ -221,9 +221,9 @@ def _dyn_catalog():
         data_source="jaffle",
         sql_table="stores",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="tax_rate", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="tax_rate", datatype=DataType.FLOAT),
         ],
     )
     return build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})
@@ -269,8 +269,8 @@ class TestFacadeDynamicJoin:
             data_source="jaffle",
             sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="store_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="store_id", datatype=DataType.INTEGER),
             ],
             relationships=[],
         )
@@ -280,9 +280,9 @@ class TestFacadeDynamicJoin:
             data_source="jaffle",
             sql_table="stores",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         )
         catalog = build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})
@@ -308,8 +308,8 @@ class TestFacadeDynamicJoin:
             data_source="jaffle",
             sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="store_code", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="store_code", datatype=DataType.STRING),
             ],
             relationships=[],
         )
@@ -318,9 +318,9 @@ class TestFacadeDynamicJoin:
             data_source="jaffle",
             sql_table="stores",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="code", datatype=DataType.TEXT, unique=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="code", datatype=DataType.STRING, unique=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         )
         catalog = build_catalog(datasets_by_datasource={"jaffle": [orders, stores]})

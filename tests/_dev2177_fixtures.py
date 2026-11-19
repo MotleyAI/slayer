@@ -18,8 +18,8 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarOperandTypeError
-from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._mcp_idiom_fixtures import idiom_datasets
@@ -47,7 +47,7 @@ def dev2177_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
                     params=[AggregationParam(name="flag", sql="TRUE")]),
     ]})
     regions = regions.model_copy(update={"fields": [
-        *regions.fields, DatasetField(name="rank", sql="id", datatype=DataType.INT),
+        *regions.fields, DatasetField(name="rank", sql="id", datatype=DataType.INTEGER),
     ], "aggregations": [
         Aggregation(name="weighted_avg", expression="SUM({value} * {weight}) * 1.0 / SUM({weight})",
                     params=[AggregationParam(name="weight", sql="1")]),
@@ -59,8 +59,8 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def num(value: Any) -> float | None:
@@ -168,7 +168,7 @@ CONCAT_BRANCHES = [
 
 
 def dimension_query(expression: str) -> SlayerQuery:
-    return q(dimensions=[{"expression": expression, "name": "x"}])
+    return q(dimensions=[{"field": expression, "alias": "x"}])
 
 
 async def assert_branch_mismatch(engine: SlayerQueryEngine, query: SlayerQuery | list, *types: str,
@@ -186,4 +186,4 @@ async def assert_branch_mismatch(engine: SlayerQueryEngine, query: SlayerQuery |
 
 async def check_concat_branches_rejected(engine: SlayerQueryEngine) -> None:
     for expression in CONCAT_BRANCHES:
-        await assert_branch_mismatch(engine, dimension_query(expression), "TEXT", "INT")
+        await assert_branch_mismatch(engine, dimension_query(expression), "String", "Integer")

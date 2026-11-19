@@ -44,7 +44,7 @@ async def engine(tmp_path: Path) -> AsyncIterator[SlayerQueryEngine]:
 
 def _cols(*names):
     return [
-        ReflectedColumn(name=n, type=DataType.TEXT, is_float=False, db_type=None, comment=None)
+        ReflectedColumn(name=n, type=DataType.STRING, is_float=False, db_type=None, comment=None)
         for n in names
     ]
 

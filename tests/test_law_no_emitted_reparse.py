@@ -250,7 +250,7 @@ class TestLiveEngine:
             async with file_engine("duckdb") as (engine, _):
                 with law.recorded_renders() as renders:
                     types = await engine.get_result_column_types("spend")
-        assert types["amount_sum"].type in (DataType.INT, DataType.DOUBLE)
+        assert types["amount_sum"].type in (DataType.INTEGER, DataType.FLOAT)
         assert [text for kind, text in renders if kind == "finish"] == spy.probed
         assert [kind for kind, _ in renders] == ["render", "finish"]
 

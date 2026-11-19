@@ -52,8 +52,8 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
     )
 
@@ -64,12 +64,12 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="spend", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="spend", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -81,9 +81,9 @@ def line_items_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="line_items", data_source="test", sql_table="line_items",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="factor", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="factor", datatype=DataType.FLOAT),
         ],
     )
 
@@ -97,15 +97,15 @@ def orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"]),
         ],
         aggregations=[
             Aggregation(

@@ -18,9 +18,9 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -32,7 +32,7 @@ def _query(date_range) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "time_dimensions": [td],
-        "metrics": [{"expression": "sum(amount)", "name": "m0"}],
+        "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
     })
 
 

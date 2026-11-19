@@ -37,11 +37,11 @@ def order_lines(*, line_no_aggs=None) -> SlayerDataset:
     return SlayerDataset(
         name="order_lines", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="order_id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="line_no", sql="customer_id", datatype=DataType.INT, primary_key=True,
+            DatasetField(name="order_id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="line_no", sql="customer_id", datatype=DataType.INTEGER, primary_key=True,
                    allowed_aggregations=line_no_aggs),
-            DatasetField(name="status", datatype=DataType.TEXT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -51,15 +51,15 @@ def codes() -> SlayerDataset:
     return SlayerDataset(
         name="codes", data_source="test", sql_table="segments",
         fields=[
-            DatasetField(name="code", datatype=DataType.TEXT, primary_key=True),
-            DatasetField(name="label", datatype=DataType.TEXT),
+            DatasetField(name="code", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="label", datatype=DataType.STRING),
         ],
     )
 
 
 def _plan(*, dataset: SlayerDataset, expression: str) -> None:
     query = SlayerQuery.model_validate({
-        "population": dataset.name, "metrics": [{"expression": expression, "name": "m"}],
+        "population": dataset.name, "metrics": [{"metric": expression, "alias": "m"}],
     })
     plan_query(query=query, bundle=ResolvedSourceBundle(population=dataset, referenced_datasets=[dataset], dialect="postgres"))
 
@@ -102,19 +102,19 @@ class TestAllowedAggregationsValidator:
     def test_sole_primary_key_may_declare_max(self) -> None:
         model = SlayerDataset(
             name="t", data_source="test", sql_table="t",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True, allowed_aggregations=["max"])],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True, allowed_aggregations=["max"])],
         )
         assert _col(dataset=model, name="id").allowed_aggregations == ["max"]
 
     def test_sole_primary_key_still_refuses_sum(self) -> None:
-        columns = [DatasetField(name="id", datatype=DataType.INT, primary_key=True, allowed_aggregations=["sum"])]
+        columns = [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True, allowed_aggregations=["sum"])]
         with pytest.raises(ValidationError):
             SlayerDataset(name="t", data_source="test", sql_table="t", fields=columns)
 
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_sole_primary_key_may_declare_collect(self, tmp_path, backend: str) -> None:
         doc = {"version": CURRENT_VERSIONS["SlayerModel"], "name": "stored", "sql_table": "t", "data_source": DS,
-               "fields": [{"name": "id", "datatype": "INT", "primary_key": True,
+               "fields": [{"name": "id", "datatype": "Integer", "primary_key": True,
                             "allowed_aggregations": ["count", "collect"]}]}
         storage = await raw_store(backend=backend, base=str(tmp_path), models=[doc],
                                   datasource=DatasourceConfig(name=DS, type="duckdb", database=":memory:"))
@@ -122,7 +122,7 @@ class TestAllowedAggregationsValidator:
         assert loaded is not None
         assert _col(dataset=loaded, name="id").allowed_aggregations == ["count", "collect"]
         saved = SlayerDataset(name="saved", data_source=DS, sql_table="t", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True, allowed_aggregations=["count", "collect"])])
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True, allowed_aggregations=["count", "collect"])])
         await storage.save_dataset(saved)
         assert await storage.get_dataset("saved", data_source=DS) is not None
 
@@ -146,19 +146,19 @@ class TestCatalogEligibility:
 class TestInspectSampling:
     def test_composite_member_is_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(order_lines())
-        assert {"name": "status"} in dims
+        assert "status" in dims
 
     def test_sole_primary_key_is_not_a_sample_dimension(self) -> None:
         dims, _ = _choose_sample_dims(codes())
-        assert dims == [{"name": "label"}]
+        assert dims == ["label"]
 
     def test_composite_members_are_sample_measures(self) -> None:
-        formulas = [m["expression"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["metrics"]]
+        formulas = [m["metric"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["metrics"]]
         assert any("(order_id)" in f for f in formulas)
         assert any("(line_no)" in f for f in formulas)
 
     def test_sole_primary_key_is_not_a_sample_measure(self) -> None:
-        formulas = [m["expression"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["metrics"]]
+        formulas = [m["metric"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["metrics"]]
         assert not any("(id)" in f for f in formulas)
 
     def test_composite_member_sample_cache_is_checked(self) -> None:

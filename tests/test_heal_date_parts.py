@@ -53,8 +53,8 @@ def every_position(expr: str) -> dict[str, Any]:
     """``expr`` as a dimension, a filter, an aggregation input and inside an order key."""
     return {
         "population": "orders",
-        "dimensions": [{"expression": expr, "name": "p"}],
-        "metrics": [{"expression": f"max({expr})", "name": "m"}, {"expression": "count(*)", "name": "n"}],
+        "dimensions": [{"field": expr, "alias": "p"}],
+        "metrics": [{"metric": f"max({expr})", "alias": "m"}, {"metric": "count(*)", "alias": "n"}],
         "filter": [f"{expr} > 1"],
         "order": [{"field": f"min({expr})", "direction": "desc"}, {"field": "p"}],
     }
@@ -183,7 +183,7 @@ class TestAmbiguousWeekdays:
     async def test_function_names_both_conventions(self, engine: SlayerQueryEngine, name: str) -> None:
         message = await rejection(engine, {
             "population": "orders",
-            "dimensions": [{"expression": f"{name}(created_at)", "name": "d"}], "metrics": ["count(*)"],
+            "dimensions": [{"field": f"{name}(created_at)", "alias": "d"}], "metrics": ["count(*)"],
         })
         for remedy in BOTH_CONVENTIONS:
             assert remedy in message
@@ -216,20 +216,20 @@ class TestReservedNames:
 class TestExecutedEquivalence:
     async def test_alias_function_as_named_dimension(self, engine: SlayerQueryEngine) -> None:
         def query(expr: str) -> dict[str, Any]:
-            return {"population": "orders", "dimensions": [{"expression": expr, "name": "dow"}], "metrics": ["count(*)"]}
+            return {"population": "orders", "dimensions": [{"field": expr, "alias": "dow"}], "metrics": ["count(*)"]}
 
         resp = await assert_equivalent(engine, query("isodow(created_at)"), query(canonical("day_of_week")))
         assert {r["orders.dow"]: r["orders._count"] for r in resp.data} == {1: 2, 3: 1, 4: 1, 6: 1, 7: 2}
 
     async def test_extract_with_alias_part(self, engine: SlayerQueryEngine) -> None:
         def query(expr: str) -> dict[str, Any]:
-            return {"population": "orders", "dimensions": [{"expression": expr, "name": "p"}], "metrics": ["count(*)"]}
+            return {"population": "orders", "dimensions": [{"field": expr, "alias": "p"}], "metrics": ["count(*)"]}
 
         await assert_equivalent(engine, query("extract(isodow from created_at)"), query(canonical("day_of_week")))
 
     async def test_extract_over_nested_operand(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
-            return {"population": "orders", "dimensions": ["region"], "metrics": [{"expression": formula, "name": "m"}]}
+            return {"population": "orders", "dimensions": ["region"], "metrics": [{"metric": formula, "alias": "m"}]}
 
         await assert_equivalent(
             engine, query("max(EXTRACT(day FROM coalesce(shipped_at, created_at)))"),

@@ -15,8 +15,9 @@ from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import bundle, dev1840_datasets, make_exec_engine
-from tests._dev1841_fixtures import DatasetMetric
 from tests._dev1900_fixtures import unparseable_derived_datasets
 from tests._dev1919_fixtures import (
     HEADLINE,
@@ -53,7 +54,7 @@ CASES = [
 def _north_datasets() -> List[SlayerDataset]:
     models = dev1840_datasets()
     models[0].fields.append(DatasetField(
-        name="north_amount", datatype=DataType.DOUBLE, sql="amount",
+        name="north_amount", datatype=DataType.FLOAT, sql="amount",
         filter="customers.regions.name = 'North'"))
     return models
 
@@ -78,7 +79,7 @@ async def unparse_engine(request):
 
 def _q(expression: str, mode=None):
     return mode_q(mode, dimensions=["status"],
-                  metrics=[DatasetMetric(expression=expression, name="w")])
+                  metrics=[QueryMetric(metric=expression, alias="w")])
 
 
 def _plan(expression: str, datasets=None, mode=None):

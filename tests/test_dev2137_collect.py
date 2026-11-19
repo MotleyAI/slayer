@@ -66,7 +66,7 @@ class TestEligibility:
         assert "collect" in BUILTIN_AGGREGATIONS
         assert Aggregation(name="collect").expression is None
 
-    @pytest.mark.parametrize("type_", ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"])
+    @pytest.mark.parametrize("type_", ["String", "Integer", "Float", "Boolean", "Date", "DateTime"])
     async def test_eligible_on_scalar_columns(self, type_: str) -> None:
         await emit_contractors(query(dimensions=["team"], metrics=[metric("collect(x)", "c")]),
                                dialect="duckdb", datasets=[_typed_dataset(DataType(type_))])
@@ -78,7 +78,7 @@ class TestEligibility:
 
     async def test_collect_of_an_opaque_column(self) -> None:
         q = query(dimensions=["team"], metrics=[metric("collect(x)", "c")])
-        models = [_typed_dataset(DataType.UNKNOWN)]
+        models = [_typed_dataset(DataType.OPAQUE)]
         with pytest.raises(SlayerError):
             await emit_contractors(q, dialect="duckdb", datasets=models)
 
@@ -94,7 +94,7 @@ class TestListResults:
         assert {r["contractors.team"]: int(r["contractors.n"]) for r in resp.data} == {"A": 2, "B": 1}
 
     async def test_collect_as_a_dimension(self, engine) -> None:
-        q = query(dimensions=[{"expression": "collect(city, partition_by=team)", "name": "c"}])
+        q = query(dimensions=[{"field": "collect(city, partition_by=team)", "alias": "c"}])
         resp = await engine.execute(q)
         teams = {r["team"] for r in stored_contractors()}
         expected = {tuple(sorted({r["city"] for r in stored_contractors() if r["team"] == t and r["city"] is not None}))
@@ -105,7 +105,7 @@ class TestListResults:
         server = create_mcp_server(storage=engine.storage)
         blocks, _ = await server.call_tool(name="query", arguments={
             "query": {"population": "contractors", "dimensions": ["team"],
-                      "metrics": [{"expression": "collect(city)", "name": "c"}]},
+                      "metrics": [{"metric": "collect(city)", "alias": "c"}]},
             "format": "json"})
         block = next(iter(blocks))
         assert isinstance(block, TextContent), block

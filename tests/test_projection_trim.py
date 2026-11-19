@@ -18,8 +18,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 import slayer.engine.query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -97,12 +97,12 @@ def funds_dataset() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="geozone", sql="geozone", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="expensenet", sql="expensenet", datatype=DataType.DOUBLE),
-            DatasetField(name="benchmarkexp", sql="benchmarkexp", datatype=DataType.DOUBLE),
-            DatasetField(name="average_daily_value_traded_3m", sql="adv3m", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="geozone", sql="geozone", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="expensenet", sql="expensenet", datatype=DataType.FLOAT),
+            DatasetField(name="benchmarkexp", sql="benchmarkexp", datatype=DataType.FLOAT),
+            DatasetField(name="average_daily_value_traded_3m", sql="adv3m", datatype=DataType.FLOAT),
         ],
     )
 
@@ -116,13 +116,13 @@ def orders_dataset() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
         ],
     )
 
@@ -144,21 +144,21 @@ async def orders_customers_engine(tmp_path):
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.FLOAT),
         ],
     ))
     orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
     await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage), orders
@@ -174,7 +174,7 @@ class TestProjectionTrimRepros:
         aggregate must not leak into the outer projection."""
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
+            dimensions=[QueryDimension(field="geozone")],
             order=[OrderItem.model_validate({"field": "sum(expensenet)", "direction": "desc"})],
             limit=3,
         )
@@ -197,8 +197,8 @@ class TestProjectionTrimRepros:
         ``expensenet_sum`` stays inside a CTE, never in the outer projection."""
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
-            metrics=[DatasetMetric(expression="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            dimensions=[QueryDimension(field="geozone")],
+            metrics=[QueryMetric(metric="rank(sum(expensenet), direction='desc')", alias="expense_rank")],
             limit=3,
         )
         sql = await _generate(query, funds_dataset)
@@ -224,8 +224,8 @@ class TestProjectionTrimRepros:
         hoisted sub-aggregates stay in CTEs."""
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
-            metrics=[DatasetMetric(expression="avg(expensenet) + avg(benchmarkexp)", name="combined_avg")],
+            dimensions=[QueryDimension(field="geozone")],
+            metrics=[QueryMetric(metric="avg(expensenet) + avg(benchmarkexp)", alias="combined_avg")],
             limit=3,
         )
         sql = await _generate(query, funds_dataset)
@@ -248,10 +248,10 @@ class TestProjectionOrder:
         query = SlayerQuery(
             population="orders",
             # Intentionally non-alphabetical
-            dimensions=[FieldRef(name="status"), FieldRef(name="region")],
+            dimensions=[QueryDimension(field="status"), QueryDimension(field="region")],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="z_total"),
-                DatasetMetric(expression="count(*)", name="a_count"),
+                QueryMetric(metric="sum(revenue)", alias="z_total"),
+                QueryMetric(metric="count(*)", alias="a_count"),
             ],
         )
         sql = await _generate(query, orders_dataset)
@@ -275,12 +275,12 @@ class TestProjectionOrder:
         ``dimensions + time_dimensions + measures`` declared order."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             time_dimensions=[TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)", name="rows")],
+            metrics=[QueryMetric(metric="count(*)", alias="rows")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -337,8 +337,8 @@ class TestWindowArgReuse:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="total"),
-                DatasetMetric(expression=transform_formula, name=measure_name),
+                QueryMetric(metric="sum(revenue)", alias="total"),
+                QueryMetric(metric=transform_formula, alias=measure_name),
             ],
         )
         sql = await _generate(query, orders_dataset)
@@ -370,12 +370,12 @@ class TestWindowArgReuse:
         internal."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             time_dimensions=[TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="consecutive_periods(sum(revenue) > 0)", name="streak")],
+            metrics=[QueryMetric(metric="consecutive_periods(sum(revenue) > 0)", alias="streak")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -398,9 +398,9 @@ class TestOrderByPolicy:
         renders via that measure's alias."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="total")],
-            order=[OrderItem(field=FieldRef(name="total"), direction="desc")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="total")],
+            order=[OrderItem(field="total", direction="desc")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -421,7 +421,7 @@ class TestOrderByPolicy:
         aggregate."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             order=[OrderItem(field="sum(revenue)", direction="desc")],
             limit=5,
         )
@@ -451,9 +451,9 @@ class TestOrderByPolicy:
         """ORDER BY a declared dim alias works unchanged."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(*)")],
-            order=[OrderItem(field=FieldRef(name="status"), direction="asc")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(*)")],
+            order=[OrderItem(field="status", direction="asc")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -478,8 +478,8 @@ class TestResponseAttributesAlignment:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
-            metrics=[DatasetMetric(expression="avg(expensenet) + avg(benchmarkexp)", name="combined_avg")],
+            dimensions=[QueryDimension(field="geozone")],
+            metrics=[QueryMetric(metric="avg(expensenet) + avg(benchmarkexp)", alias="combined_avg")],
             limit=3,
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -502,8 +502,8 @@ class TestResponseAttributesAlignment:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
-            metrics=[DatasetMetric(expression="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            dimensions=[QueryDimension(field="geozone")],
+            metrics=[QueryMetric(metric="rank(sum(expensenet), direction='desc')", alias="expense_rank")],
             limit=3,
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -535,7 +535,7 @@ class TestResponseAttributesAlignment:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="total")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="total")],
             filter=["change(sum(revenue)) > 0"],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -570,7 +570,7 @@ class TestEdgeCases:
         the declared dims."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status"), FieldRef(name="region")],
+            dimensions=[QueryDimension(field="status"), QueryDimension(field="region")],
             limit=100,
         )
         sql = await _generate(query, orders_dataset)
@@ -590,8 +590,8 @@ class TestEdgeCases:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="total"),
-                DatasetMetric(expression="count(*)", name="n"),
+                QueryMetric(metric="sum(revenue)", alias="total"),
+                QueryMetric(metric="count(*)", alias="n"),
             ],
         )
         sql = await _generate(query, orders_dataset)
@@ -610,7 +610,7 @@ class TestEdgeCases:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="total")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="total")],
             filter=["change(sum(revenue)) > 0"],
         )
         sql = await _generate(query, orders_dataset)
@@ -630,8 +630,8 @@ class TestEdgeCases:
         """Explicit ``name`` on a measure → projection uses the user's name."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="rev")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -645,8 +645,8 @@ class TestEdgeCases:
         """``{"formula": "*:count", "name": "rows"}`` projects as ``orders.rows``."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(*)", name="rows")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(*)", alias="rows")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -665,8 +665,8 @@ class TestEdgeCases:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="total"),
-                DatasetMetric(expression="rank(sum(revenue), direction='desc') + 1", name="rank_plus_one"),
+                QueryMetric(metric="sum(revenue)", alias="total"),
+                QueryMetric(metric="rank(sum(revenue), direction='desc') + 1", alias="rank_plus_one"),
             ],
         )
         sql = await _generate(query, orders_dataset)
@@ -686,8 +686,8 @@ class TestEdgeCases:
         engine, orders = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.revenue")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="customers.revenue")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
         )
         resp = await engine.execute(query, dry_run=True)
         sql = resp.sql or ""
@@ -718,13 +718,13 @@ class TestMultiStageSourceQueries:
         inner = SlayerQuery(
             name="inner_stage",
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="rank(sum(revenue), direction='desc')", name="rev_rank")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="rank(sum(revenue), direction='desc')", alias="rev_rank")],
         )
         outer = SlayerQuery(
             population="inner_stage",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="max(rev_rank)", name="top_rank")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="max(rev_rank)", alias="top_rank")],
         )
         resp = await engine.execute(query=[inner, outer], dry_run=True)
         sql_str = resp.sql or ""
@@ -755,8 +755,8 @@ class TestMultiDialectProjectionTrim:
         ``len(dimensions) + len(measures)`` for repro (2)."""
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
-            metrics=[DatasetMetric(expression="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            dimensions=[QueryDimension(field="geozone")],
+            metrics=[QueryMetric(metric="rank(sum(expensenet), direction='desc')", alias="expense_rank")],
             limit=3,
         )
         sql = await _generate(query, funds_dataset, dialect=dialect)
@@ -789,8 +789,8 @@ class TestStagedProjectionTrim:
         # routes through the typed query-backed expansion.
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
-            metrics=[DatasetMetric(expression="rank(sum(expensenet), direction='desc')", name="expense_rank")],
+            dimensions=[QueryDimension(field="geozone")],
+            metrics=[QueryMetric(metric="rank(sum(expensenet), direction='desc')", alias="expense_rank")],
         )
         model = await engine.create_dataset_from_query(query=query, name="ranked_funds", save=True)
         # The model's `columns` (derived from the wrapped query's projection)
@@ -820,13 +820,13 @@ class TestStagedProjectionTrim:
         inner = SlayerQuery(
             name="ranked",
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="rank(sum(revenue), direction='desc')", name="r")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="rank(sum(revenue), direction='desc')", alias="r")],
         )
         outer = SlayerQuery(
             population="ranked",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="max(r)", name="top_r")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="max(r)", alias="top_r")],
         )
         resp = await engine.execute(query=[inner, outer], dry_run=True)
         sql_str = resp.sql or ""
@@ -855,8 +855,8 @@ class TestProvenance:
         filter-extracted hidden aggregates do NOT."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="total")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="total")],
             order=[OrderItem.model_validate({"field": "sum(quantity)", "direction": "desc"})],
             filter=["change(sum(revenue)) > 0"],
             time_dimensions=[TimeDimension(
@@ -879,8 +879,8 @@ class TestProvenance:
         the outer SELECT under its user alias."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(revenue) / count(*)", name="aov")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(revenue) / count(*)", alias="aov")],
         )
         sql = await _generate(query, orders_dataset)
         assert "orders.aov" in _outer_select_columns(sql)
@@ -897,7 +897,7 @@ class TestProvenance:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="cumsum(sum(revenue))", name="cum")],
+            metrics=[QueryMetric(metric="cumsum(sum(revenue))", alias="cum")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -914,8 +914,8 @@ class TestProvenance:
         engine, _orders = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         resp = await engine.execute(query, dry_run=True)
         outer_cols = _outer_select_columns(resp.sql or "")
@@ -932,14 +932,14 @@ class TestProvenance:
         auto-extracted order-by aggregate."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status"), FieldRef(name="region")],
+            dimensions=[QueryDimension(field="status"), QueryDimension(field="region")],
             time_dimensions=[TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="total"),
-                DatasetMetric(expression="count(*)", name="n"),
+                QueryMetric(metric="sum(revenue)", alias="total"),
+                QueryMetric(metric="count(*)", alias="n"),
             ],
             order=[OrderItem.model_validate({"field": "sum(quantity)", "direction": "desc"})],
         )
@@ -967,8 +967,8 @@ class TestProvenance:
         (``orders.total``) is reused, no phantom ``orders.revenue_sum``."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="total")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="total")],
             order=[OrderItem(field="sum(revenue)", direction="desc")],
             limit=5,
         )
@@ -1001,8 +1001,8 @@ class TestDryRunAlignment:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
-            metrics=[DatasetMetric(expression="avg(expensenet) + avg(benchmarkexp)", name="combined_avg")],
+            dimensions=[QueryDimension(field="geozone")],
+            metrics=[QueryMetric(metric="avg(expensenet) + avg(benchmarkexp)", alias="combined_avg")],
             limit=3,
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -1022,7 +1022,7 @@ class TestDryRunAlignment:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="funds",
-            dimensions=[FieldRef(name="geozone")],
+            dimensions=[QueryDimension(field="geozone")],
             order=[OrderItem.model_validate({"field": "sum(expensenet)", "direction": "desc"})],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -1051,7 +1051,7 @@ class TestWrapperLayering:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="total")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="total")],
             filter=["change(sum(revenue)) > 0"],
             order=[OrderItem(field="sum(revenue)", direction="desc")],
             limit=5,
@@ -1102,7 +1102,7 @@ class TestCrossModelOrderBy:
         engine, _orders = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             order=[OrderItem.model_validate({"field": "sum(customers.revenue)", "direction": "desc"})],
             limit=3,
         )
@@ -1159,8 +1159,8 @@ class TestWindowChainReuse:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="total"),
-                DatasetMetric(expression="rank(sum(revenue), direction='desc')", name="r"),
+                QueryMetric(metric="sum(revenue)", alias="total"),
+                QueryMetric(metric="rank(sum(revenue), direction='desc')", alias="r"),
             ],
         )
         sql = await _generate(query, orders_dataset)
@@ -1190,7 +1190,7 @@ class TestWindowChainReuse:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="rank(rank(sum(revenue), direction='desc'), direction='desc')", name="r2")],
+            metrics=[QueryMetric(metric="rank(rank(sum(revenue), direction='desc'), direction='desc')", alias="r2")],
         )
         sql = await _generate(query, orders_dataset)
         outer_cols = _outer_select_columns(sql)
@@ -1245,8 +1245,8 @@ class TestCallSitesAndContractPins:
         ORDER BY / LIMIT / OFFSET clause."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="total")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="total")],
             order=[OrderItem.model_validate({"field": "sum(quantity)", "direction": "desc"})],
             limit=10,
             offset=20,
@@ -1279,12 +1279,12 @@ class TestDimAndTimeDimClash:
         """
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="created_at")],
+            dimensions=[QueryDimension(field="created_at")],
             time_dimensions=[TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            metrics=[DatasetMetric(expression="count(*)")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         with pytest.raises(ValueError) as exc:
             await _generate(query, orders_dataset)
@@ -1312,10 +1312,10 @@ class TestDuplicateUserDeclaredCanonical:
         backed by a single ``SUM(amount)``."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="revenue1"),
-                DatasetMetric(expression="sum(revenue)", name="revenue2"),
+                QueryMetric(metric="sum(revenue)", alias="revenue1"),
+                QueryMetric(metric="sum(revenue)", alias="revenue2"),
             ],
         )
         sql = await _generate(query, orders_dataset)
@@ -1331,10 +1331,10 @@ class TestDuplicateUserDeclaredCanonical:
         project, backed by one aggregate."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(revenue)"),
-                DatasetMetric(expression="sum(revenue)", name="other"),
+                QueryMetric(metric="sum(revenue)"),
+                QueryMetric(metric="sum(revenue)", alias="other"),
             ],
         )
         sql = await _generate(query, orders_dataset)
@@ -1362,8 +1362,8 @@ class TestOuterOrderByQualifierStripping:
         # ORDER BY aggregate adds a hidden hoist that forces the wrap.
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
             order=[OrderItem.model_validate({"field": "sum(revenue)", "direction": "desc"})],
             limit=5,
         )

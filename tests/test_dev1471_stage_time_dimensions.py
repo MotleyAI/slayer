@@ -82,34 +82,34 @@ class TestStageBinder:
     def test_bucketed_stage_column_binds_with_facts(self) -> None:
         stage = _stage(StageField(
             name="created_at", sql_alias="created_at",
-            datatype=DataType.TIMESTAMP, granularity=TG.MONTH,
+            datatype=DataType.DATETIME, granularity=TG.MONTH,
         ))
         td = TimeDimension(field="created_at", granularity=TG.YEAR)
         bound = bind_time_dimension(td, scope=stage, bundle=_bundle())
         assert isinstance(bound.bound.value_key, TimeTruncKey)
         assert bound.bound.value_key.source == FieldKey(path=(), leaf="created_at")
         assert bound.bound.value_key.granularity == "year"
-        assert bound.field_type == DataType.TIMESTAMP
+        assert bound.field_type == DataType.DATETIME
         assert bound.bucketed_leaves == (("created_at", TG.MONTH),)
 
     def test_raw_stage_column_has_no_upstream_granularity(self) -> None:
         stage = _stage(StageField(
-            name="created_at", sql_alias="created_at", datatype=DataType.TIMESTAMP,
+            name="created_at", sql_alias="created_at", datatype=DataType.DATETIME,
         ))
         td = TimeDimension(field="created_at", granularity=TG.DAY)
         bound = bind_time_dimension(td, scope=stage, bundle=_bundle())
         assert bound.bucketed_leaves == ()
-        assert bound.field_type == DataType.TIMESTAMP
+        assert bound.field_type == DataType.DATETIME
 
     def test_unknown_stage_column_raises_unknown_reference(self) -> None:
-        stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.TIMESTAMP))
+        stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.DATETIME))
         td = TimeDimension(field="not_a_column", granularity=TG.MONTH)
         bundle = _bundle()
         with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's columns
             bind_time_dimension(td, scope=stage, bundle=bundle)
 
     def test_dotted_name_on_stage_raises_illegal_scope(self) -> None:
-        stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.TIMESTAMP))
+        stage = _stage(StageField(name="created_at", sql_alias="created_at", datatype=DataType.DATETIME))
         td = TimeDimension(field="customers.created_at", granularity=TG.MONTH)
         bundle = _bundle()
         with pytest.raises(IllegalScopeReferenceError):
@@ -123,11 +123,11 @@ class TestReBucketingChecker:
     def test_non_temporal_column_rejected(self) -> None:
         with pytest.raises(TimeDimensionFieldError) as exc:
             check_time_dimension_field(
-                name="s1.region", field_type=DataType.TEXT,
+                name="s1.region", field_type=DataType.STRING,
                 requested_granularity=TG.MONTH,
             )
         assert "temporal" in str(exc.value)
-        assert "TEXT" in str(exc.value)
+        assert "String" in str(exc.value)
 
     def test_untyped_column_fails_closed(self) -> None:
         with pytest.raises(TimeDimensionFieldError) as exc:
@@ -140,7 +140,7 @@ class TestReBucketingChecker:
     def test_finer_granularity_rejected(self) -> None:
         with pytest.raises(TimeDimensionFieldError) as exc:
             check_time_dimension_field(
-                name="s1.created_at", field_type=DataType.TIMESTAMP,
+                name="s1.created_at", field_type=DataType.DATETIME,
                 bucketed_leaves=(("s1.created_at", TG.MONTH),), requested_granularity=TG.DAY,
             )
         msg = str(exc.value)
@@ -155,7 +155,7 @@ class TestReBucketingChecker:
     def test_non_nesting_rejected_both_ways(self, upstream, requested) -> None:
         with pytest.raises(TimeDimensionFieldError) as exc:
             check_time_dimension_field(
-                name="s1.created_at", field_type=DataType.TIMESTAMP,
+                name="s1.created_at", field_type=DataType.DATETIME,
                 bucketed_leaves=(("s1.created_at", upstream),), requested_granularity=requested,
             )
         msg = str(exc.value)
@@ -170,7 +170,7 @@ class TestReBucketingChecker:
     def test_valid_rebucketing_passes(self, upstream, requested) -> None:
         # Same, nesting-coarser, or any granularity on an un-truncated column.
         check_time_dimension_field(
-            name="s1.created_at", field_type=DataType.TIMESTAMP,
+            name="s1.created_at", field_type=DataType.DATETIME,
             bucketed_leaves=() if upstream is None else (("s1.created_at", upstream),),
             requested_granularity=requested,
         )
@@ -185,12 +185,12 @@ class TestStageBindingErrorsEndToEnd:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.DAY)],
-            "metrics": [{"expression": "sum(rev)", "name": "rev"}],
+            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
         })
         with pytest.raises(TimeDimensionFieldError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -203,16 +203,16 @@ class TestStageBindingErrorsEndToEnd:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         s2 = SlayerQuery.model_validate({
             "name": "s2", "population": "s1", "dimensions": ["created_at"],
-            "metrics": [{"expression": "sum(rev)"}],
+            "metrics": [{"metric": "sum(rev)"}],
         })
         s3 = SlayerQuery.model_validate({
             "population": "s2",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.DAY)],
-            "metrics": [{"expression": "sum(rev_sum)"}],
+            "metrics": [{"metric": "sum(rev_sum)"}],
         })
         with pytest.raises(TimeDimensionFieldError):
             await engine.execute(query=[s1, s2, s3], dry_run=True)
@@ -221,12 +221,12 @@ class TestStageBindingErrorsEndToEnd:
         engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["region"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="region", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(rev)", "name": "rev"}],
+            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
         })
         with pytest.raises(TimeDimensionFieldError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -236,12 +236,12 @@ class TestStageBindingErrorsEndToEnd:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="nope", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(rev)", "name": "rev"}],
+            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
         })
         with pytest.raises(UnknownReferenceError, match="created_at"):  # lists the stage's columns
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -251,12 +251,12 @@ class TestStageBindingErrorsEndToEnd:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="customers.created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(rev)", "name": "rev"}],
+            "metrics": [{"metric": "sum(rev)", "alias": "rev"}],
         })
         with pytest.raises(IllegalScopeReferenceError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -287,14 +287,14 @@ class TestStageReBucketExecuted:
             "time_dimensions": [TimeDimension(
                 field="customers.regions.last_activity_at", granularity=TG.MONTH,
             )],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(
                 field="customers__regions__last_activity_at", granularity=TG.MONTH,
             )],
-            "metrics": [{"expression": "sum(n)"}],
+            "metrics": [{"metric": "sum(n)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=tables, datasets=region_chain_datasets(), stages=[inner, outer])
@@ -306,12 +306,12 @@ class TestStageReBucketExecuted:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.YEAR)],
-            "metrics": [{"expression": "sum(rev)"}],
+            "metrics": [{"metric": "sum(rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[inner, outer])
@@ -321,12 +321,12 @@ class TestStageReBucketExecuted:
     async def test_raw_temporal_column(self, backend: str) -> None:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["created_at"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(rev)"}],
+            "metrics": [{"metric": "sum(rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[inner, outer])
@@ -337,13 +337,13 @@ class TestStageReBucketExecuted:
         col = "created_at_max_partition_by_customer_id"
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "max(created_at, partition_by=customer_id)"}],
+            "metrics": [{"metric": "max(created_at, partition_by=customer_id)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field=col, granularity=TG.MONTH)],
             "filter": [f"{col} >= '2025-01-01'"],
-            "metrics": [{"expression": "count(*)", "name": "cohort_size"}],
+            "metrics": [{"metric": "count(*)", "alias": "cohort_size"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             engine = await make_engine(
@@ -364,17 +364,17 @@ class TestStageReBucketExecuted:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         s2 = SlayerQuery.model_validate({
             "name": "s2", "population": "s1",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(rev)"}],
+            "metrics": [{"metric": "sum(rev)"}],
         })
         s3 = SlayerQuery.model_validate({
             "population": "s2",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.YEAR)],
-            "metrics": [{"expression": "sum(rev_sum)"}],
+            "metrics": [{"metric": "sum(rev_sum)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[s1, s2, s3])
@@ -384,12 +384,12 @@ class TestStageReBucketExecuted:
     async def test_stage_dimension_joins_stage_bucket_grain(self, backend: str) -> None:
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["region", "created_at"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1", "dimensions": ["region"],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-            "metrics": [{"expression": "sum(rev)"}],
+            "metrics": [{"metric": "sum(rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
             data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_GRAIN)], datasets=[orders_dataset()], stages=[inner, outer])

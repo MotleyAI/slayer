@@ -15,17 +15,17 @@ from slayer.engine.compile.projection import free_metric_name
 
 from tests._engine_helpers import _engine_generate
 
-_COLLIDING = {"expression": "sum(credit)", "name": "credit"}
+_COLLIDING = {"metric": "sum(credit)", "alias": "credit"}
 
 
 def _customers(*extra_columns: str) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="credit", datatype=DataType.INT),
-            *(DatasetField(name=c, datatype=DataType.INT) for c in extra_columns),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="credit", datatype=DataType.INTEGER),
+            *(DatasetField(name=c, datatype=DataType.INTEGER) for c in extra_columns),
         ],
     )
 
@@ -50,7 +50,7 @@ async def test_suggests_the_derived_name() -> None:
 
 
 async def test_derived_name_taken_by_an_explicit_name() -> None:
-    assert _names(await _suggestion([_COLLIDING, {"expression": "count(*)", "name": "credit_sum"}]), "credit_2")
+    assert _names(await _suggestion([_COLLIDING, {"metric": "count(*)", "alias": "credit_sum"}]), "credit_2")
 
 
 @pytest.mark.parametrize("unnamed_first", [False, True])

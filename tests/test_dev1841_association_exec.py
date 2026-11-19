@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
     ASSOC_COUNT_BY_STATUS,
     ASSOC_GOLD_SPEND_BY_STATUS,
@@ -19,7 +21,6 @@ from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
     BCAST_SPEND_CROSS,
     SPEND_BY_TIER,
-    DatasetMetric,
     SlayerQuery,
     assoc_q,
     associated_warnings,
@@ -31,8 +32,8 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -72,7 +73,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="count(customers.*)", name="nc")]))
+            metrics=[QueryMetric(metric="count(customers.*)", alias="nc")]))
         by = status_key(resp)
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(by[(status,)]["orders.nc"]) == n
@@ -89,7 +90,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend_ext
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="count(customers.gold_spend)", name="gc")]))
+            metrics=[QueryMetric(metric="count(customers.gold_spend)", alias="gc")]))
         by = status_key(resp)
         # gold (c1,c3,c6) with an ok order: c1,c3,c6 → 3; with a new order: c1 → 1.
         for status, n in {"ok": 3, "new": 1}.items():
@@ -101,7 +102,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="median(customers.spend)", name="med")]))
+            metrics=[QueryMetric(metric="median(customers.spend)", alias="med")]))
         by = status_key(resp)
         for status, med in ASSOC_MEDIAN_BY_STATUS.items():
             assert float(by[(status,)]["orders.med"]) == pytest.approx(med)
@@ -112,8 +113,8 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(customers.regions.pop)",
-                                   name="pop")]))
+            metrics=[QueryMetric(metric="sum(customers.regions.pop)",
+                                   alias="pop")]))
         by = status_key(resp)
         for status, pop in ASSOC_POP_BY_STATUS.items():
             assert float(by[(status,)]["orders.pop"]) == pytest.approx(pop)
@@ -131,7 +132,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression=f"{agg}(customers.spend)", name="v")]))
+            metrics=[QueryMetric(metric=f"{agg}(customers.spend)", alias="v")]))
         by = status_key(resp)
         for status, val in expected.items():
             assert float(by[(status,)]["orders.v"]) == pytest.approx(val)
@@ -178,8 +179,8 @@ class TestMeasureLocalFilter:
         _, engine = exec_backend_ext
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(customers.gold_spend)",
-                                   name="gs")]))
+            metrics=[QueryMetric(metric="sum(customers.gold_spend)",
+                                   alias="gs")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
         for status, spend in ASSOC_GOLD_SPEND_BY_STATUS.items():

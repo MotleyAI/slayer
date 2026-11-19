@@ -82,9 +82,9 @@ def sqlite_setup():
                 sql_table="orders",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="amount", datatype=DataType.DOUBLE),
-                    DatasetField(name="status", datatype=DataType.TEXT),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
+                    DatasetField(name="status", datatype=DataType.STRING),
                 ],
             ))
 
@@ -210,9 +210,9 @@ def freq_setup():
                 sql_table="items",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="category", datatype=DataType.TEXT),
-                    DatasetField(name="label", datatype=DataType.TEXT),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="category", datatype=DataType.STRING),
+                    DatasetField(name="label", datatype=DataType.STRING),
                     DatasetField(name="flag", datatype=DataType.BOOLEAN),
                 ],
             ))
@@ -306,8 +306,8 @@ def all_null_setup():
                 sql_table="empties",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="notes", datatype=DataType.TEXT),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="notes", datatype=DataType.STRING),
                 ],
             ))
 
@@ -364,8 +364,8 @@ def overflow_setup():
                 sql_table="hi_card",
                 data_source="ds",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="name", datatype=DataType.TEXT),
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="name", datatype=DataType.STRING),
                 ],
             ))
 
@@ -452,8 +452,8 @@ async def test_overflow_classification_unaffected_by_one_null_row() -> None:
             sql_table="just_over",
             data_source="ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -491,8 +491,8 @@ async def test_non_overflow_at_50_boundary() -> None:
             sql_table="at_cap",
             data_source="ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -545,8 +545,8 @@ async def test_tiebreak_deterministic_at_limit_boundary(monkeypatch: pytest.Monk
             sql_table="ties",
             data_source="ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="label", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="label", datatype=DataType.STRING),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -603,8 +603,8 @@ async def test_values_with_commas_preserved_in_structured_list() -> None:
             sql_table="income",
             data_source="ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="bracket", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="bracket", datatype=DataType.STRING),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -672,7 +672,7 @@ async def test_refresh_skips_hidden_columns(sqlite_setup: tuple[SlayerQueryEngin
     model = await storage.get_dataset("orders", data_source="ds")
     assert model is not None
     model.fields.append(
-        DatasetField(name="hidden_one", datatype=DataType.TEXT, hidden=True),
+        DatasetField(name="hidden_one", datatype=DataType.STRING, hidden=True),
     )
     await storage.save_dataset(model)
     stored = await storage.get_dataset("orders", data_source="ds")
@@ -713,7 +713,7 @@ async def test_refresh_skips_sql_mode_models(sqlite_setup) -> None:
         name="sql_orders",
         sql="SELECT * FROM orders",
         data_source="ds",
-        fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
     )
     errors = await refresh_table_backed_dataset_sampled(
         dataset=sql_model, engine=engine, storage=storage,
@@ -728,7 +728,7 @@ async def test_refresh_continues_after_per_column_failure(sqlite_setup: tuple[Sl
     model = await storage.get_dataset("orders", data_source="ds")
     assert model is not None
     model.fields = [
-        DatasetField(name="amount", sql="no_such_fn(status)", datatype=DataType.DOUBLE) if c.name == "amount" else c
+        DatasetField(name="amount", sql="no_such_fn(status)", datatype=DataType.FLOAT) if c.name == "amount" else c
         for c in model.fields
     ]
     await storage.save_dataset(model)
@@ -943,7 +943,7 @@ async def test_ensure_fresh_refreshes_uncached_temporal(tmp_path) -> None:
     await storage.save_dataset(SlayerDataset(
         name="events", sql_table="events", data_source="ds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="ts", datatype=DataType.DATE),
         ],
     ))
@@ -1009,7 +1009,7 @@ async def test_ensure_fresh_skips_hidden_and_primary_key(
     assert queries == [], "PK columns must never be profiled"
     assert "id" not in persist_calls
 
-    hidden = DatasetField(name="hidden_one", datatype=DataType.TEXT, hidden=True)
+    hidden = DatasetField(name="hidden_one", datatype=DataType.STRING, hidden=True)
     model.fields.append(hidden)
     await storage.save_dataset(model)
     refreshed_model = await storage.get_dataset("orders", data_source="ds")
@@ -1034,7 +1034,7 @@ async def test_ensure_fresh_does_not_hard_gate_sql_mode(
         name="sql_orders",
         sql="SELECT * FROM orders",
         data_source="ds",
-        fields=[DatasetField(name="status", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="status", datatype=DataType.STRING)],
     )
     await storage.save_dataset(sql_model)
     col = sql_model.get_field("status")

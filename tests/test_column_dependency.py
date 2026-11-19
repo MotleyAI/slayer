@@ -44,11 +44,11 @@ def _dataset_a_to_b(*, foo_sql: str) -> SlayerDataset:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
-            DatasetField(name="foo", sql=foo_sql, datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="foo", sql=foo_sql, datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
 
 
@@ -66,16 +66,16 @@ def _abc_chain(
     closes a back-edge needed to make a cycle through C.x reachable.
     """
     c_columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="x", sql=c_x_sql, datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="x", sql=c_x_sql, datatype=DataType.FLOAT),
     ]
     c_joins = []
     if c_joins_back_to_a:
         c_columns.insert(
-            1, DatasetField(name="a_id", sql="a_id", datatype=DataType.DOUBLE),
+            1, DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
         )
         c_joins.append(
-            DatasetRelationship(to="A", join_pairs=[["a_id", "id"]]),
+            DatasetRelationship(to="A", from_columns=["a_id"], to_columns=["id"]),
         )
     model_c = SlayerDataset(
         name="C",
@@ -89,21 +89,21 @@ def _abc_chain(
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c_id", sql="c_id", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c_id", sql="c_id", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="C", join_pairs=[["c_id", "id"]])],
+        relationships=[DatasetRelationship(to="C", from_columns=["c_id"], to_columns=["id"])],
     )
     model_a = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
-            DatasetField(name="foo", sql=a_foo_sql, datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="foo", sql=a_foo_sql, datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
     return model_a, model_b, model_c
 
@@ -120,9 +120,9 @@ async def test_save_model_rejects_same_model_cycle(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError) as exc_info:
@@ -141,10 +141,10 @@ async def test_save_model_rejects_three_deep_cycle(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c3 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c3", sql="c1 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c3 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c3", sql="c1 + 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError) as exc_info:
@@ -164,8 +164,8 @@ async def test_save_model_rejects_self_referential_derived(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c1", sql="c1 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", sql="c1 + 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError) as exc_info:
@@ -182,11 +182,11 @@ async def test_save_model_accepts_acyclic_derived_dag(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="a", sql="a", datatype=DataType.DOUBLE),
-            DatasetField(name="b", sql="a + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c", sql="a + 2", datatype=DataType.DOUBLE),
-            DatasetField(name="d", sql="b + c", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a", sql="a", datatype=DataType.FLOAT),
+            DatasetField(name="b", sql="a + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c", sql="a + 2", datatype=DataType.FLOAT),
+            DatasetField(name="d", sql="b + c", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model)
@@ -203,9 +203,9 @@ async def test_save_model_accepts_base_columns_only(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="a", sql="a", datatype=DataType.DOUBLE),
-            DatasetField(name="b", sql="b", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a", sql="a", datatype=DataType.FLOAT),
+            DatasetField(name="b", sql="b", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model)
@@ -222,7 +222,7 @@ async def test_save_model_accepts_quoted_self_identity_column(tmp_path) -> None:
         data_source="ds",
         sql_table="merchant",
         fields=[
-            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.TEXT),
+            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.STRING),
         ],
     )
     await storage.save_dataset(model)
@@ -250,9 +250,9 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="a_id", sql="a_id", datatype=DataType.DOUBLE),
-            DatasetField(name="y", sql="A.x + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
+            DatasetField(name="y", sql="A.x + 1", datatype=DataType.FLOAT),
         ],
         # No declared B→A edge: the ref resolves over the reverse hop
         # (DEV-1853); a second declared edge would make the pair ambiguous.
@@ -265,11 +265,11 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
-            DatasetField(name="x", sql="B.y + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.FLOAT),
+            DatasetField(name="x", sql="B.y + 1", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", from_columns=["b_id"], to_columns=["id"])],
     )
     with pytest.raises(DatasetFieldCycleError) as exc_info:
         await storage.save_dataset(model_a)
@@ -292,9 +292,9 @@ async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="a_id", sql="a_id", datatype=DataType.DOUBLE),
-            DatasetField(name="bar", sql="A.foo + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="a_id", sql="a_id", datatype=DataType.FLOAT),
+            DatasetField(name="bar", sql="A.foo + 1", datatype=DataType.FLOAT),
         ],
     )
     await storage.save_dataset(model_b)
@@ -316,8 +316,8 @@ async def test_save_model_rejects_cycle_when_joinless_model_saves_last(
         data_source="ds",
         sql_table="B",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="bar", sql="A.foo + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="bar", sql="A.foo + 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError):
@@ -389,21 +389,21 @@ async def test_save_model_skips_subquery_scope_refs_in_cycle_detection(
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.FLOAT),
             # c1 references c2 inside a subquery — out of scope for cycle
             # detection (the subquery's bare ``c2`` is not c2-on-this-model).
             # The root-scope expression uses only base raw_a, so no cycle.
             DatasetField(
                 name="c1",
                 sql="(SELECT MAX(c2) FROM other_table) + raw_a",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
             # c2 references c1 inside a subquery — same treatment.
             DatasetField(
                 name="c2",
                 sql="(SELECT MAX(c1) FROM other_table) + raw_a",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
     )
@@ -428,9 +428,9 @@ async def test_save_model_template_method_runs_for_yaml_and_sqlite_backends(
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.FLOAT),
         ],
     )
     with pytest.raises(DatasetFieldCycleError):
@@ -500,9 +500,9 @@ async def test_save_model_explicit_skip_validate_kwarg(tmp_path) -> None:
         data_source="ds",
         sql_table="A",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
-            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.FLOAT),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.FLOAT),
         ],
     )
     # No exception — explicit _validate=False bypasses validation.

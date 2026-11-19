@@ -94,8 +94,8 @@ class TestPhysicalReferences:
 
 class TestDeclaredDataType:
     @pytest.mark.parametrize(("data_type", "element"), [
-        ("array<string>", DataType.TEXT), ("text[]", DataType.TEXT), ("ARRAY<INT64>", DataType.INT),
-        ("array<array<string>>", DataType.UNKNOWN), ("array<geography>", DataType.UNKNOWN),
+        ("array<string>", DataType.STRING), ("text[]", DataType.STRING), ("ARRAY<INT64>", DataType.INTEGER),
+        ("array<array<string>>", DataType.OPAQUE), ("array<geography>", DataType.OPAQUE),
     ])
     def test_list_data_types(self, data_type: str, element: DataType) -> None:
         result = import_dbt([sm(dimensions=[dim("tags")])], regular_datasets=typed(("tags", data_type)))
@@ -103,8 +103,8 @@ class TestDeclaredDataType:
         assert (col.datatype, col.element_type) == (DataType.ARRAY, element)
 
     @pytest.mark.parametrize(("data_type", "expected"), [
-        ("bigint", DataType.INT), ("numeric(10,2)", DataType.DOUBLE), ("varchar(255)", DataType.TEXT),
-        ("boolean", DataType.BOOLEAN), ("date", DataType.DATE), ("timestamp with time zone", DataType.TIMESTAMP),
+        ("bigint", DataType.INTEGER), ("numeric(10,2)", DataType.DECIMAL), ("varchar(255)", DataType.STRING),
+        ("boolean", DataType.BOOLEAN), ("date", DataType.DATE), ("timestamp with time zone", DataType.DATETIME_TZ),
     ])
     def test_scalar_data_types(self, data_type: str, expected: DataType) -> None:
         result = import_dbt([sm(dimensions=[dim("note")])], regular_datasets=typed(("note", data_type)))
@@ -119,19 +119,19 @@ class TestDeclaredDataType:
         result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("tag_cnt", "count", "tags")])],
                             regular_datasets=typed(("id", "bigint"), ("amount", "numeric(10,2)"), ("tags", "text[]")))
         model = datasets_of(result)["orders"]
-        assert column(model, "id").datatype == DataType.INT
-        assert source_column(model, "total").datatype == DataType.DOUBLE
+        assert column(model, "id").datatype == DataType.INTEGER
+        assert source_column(model, "total").datatype == DataType.DECIMAL
         tags = source_column(model, "tag_cnt")
-        assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
 
     def test_unrecognised_data_type(self) -> None:
         result = import_dbt([sm(measures=[meas("geo_sum", "sum", "geo")])], regular_datasets=typed(("geo", "geography")))
-        assert source_column(datasets_of(result)["orders"], "geo_sum").datatype == DataType.DOUBLE
+        assert source_column(datasets_of(result)["orders"], "geo_sum").datatype == DataType.FLOAT
         assert entries(result, "geography", severity="info"), result.warnings
 
     @pytest.mark.parametrize(("data_type", "expected", "element"), [
-        ("INT64", DataType.INT, None), ("STRING", DataType.TEXT, None),
-        ("ARRAY<STRING>", DataType.ARRAY, DataType.TEXT),
+        ("INT64", DataType.INTEGER, None), ("STRING", DataType.STRING, None),
+        ("ARRAY<STRING>", DataType.ARRAY, DataType.STRING),
     ])
     def test_read_in_the_datasource_dialect(self, data_type: str, expected: DataType,
                                             element: DataType | None) -> None:
@@ -148,11 +148,11 @@ class TestDeclaredDataType:
         project = parse_dbt_project(str(tmp_path))
         result = DbtToSlayerConverter(project=project, data_source=DS).convert()
         col = column(datasets_of(result)["orders"], "tags")
-        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
     async def test_declared_type_contradicted_by_the_database(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("amount")])], regular_datasets=typed(("amount", "text")), db=db)
-        assert column(datasets_of(result)["orders"], "amount").datatype == DataType.INT
+        assert column(datasets_of(result)["orders"], "amount").datatype == DataType.INTEGER
         assert entries(result, "amount", severity="info"), result.warnings
 
 
@@ -161,9 +161,9 @@ class TestTypingOrder:
         result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("n_notes", "count", "note"),
                                           meas("paid", "sum_boolean", "status = 'paid'")])])
         model = datasets_of(result)["orders"]
-        assert source_column(model, "total").datatype == DataType.DOUBLE
-        assert source_column(model, "n_notes").datatype == DataType.TEXT
-        assert source_column(model, "paid").datatype == DataType.INT
+        assert source_column(model, "total").datatype == DataType.FLOAT
+        assert source_column(model, "n_notes").datatype == DataType.STRING
+        assert source_column(model, "paid").datatype == DataType.INTEGER
 
     @pytest.mark.parametrize("target", ["mysql", "mssql"])
     def test_median_refused_by_the_target_is_dropped(self, target: str) -> None:
@@ -200,19 +200,19 @@ class TestTypingOrder:
                   "filter": "{{ Dimension('order__status') }} = 'paid'"}
         result = import_dbt([sm(dimensions=[dim("status")], measures=[meas("latest", "max", "created_at")])],
                             regular_datasets=typed(("created_at", "timestamp")), metrics=[metric])
-        assert source_column(datasets_of(result)["orders"], "late_paid").datatype is DataType.TIMESTAMP
+        assert source_column(datasets_of(result)["orders"], "late_paid").datatype is DataType.DATETIME
 
     def test_model_sql_with_a_trailing_semicolon_is_typed_live(self, db: Path) -> None:
         orders_q = {**sm(measures=[meas("tag_cnt", "count", "tags")]), "model": "orders_q"}
         result = import_dbt([orders_q], regular_datasets=[{"name": "orders_q", "raw_code": "SELECT * FROM orders;"}],
                             db=db)
         col = source_column(datasets_of(result)["orders"], "tag_cnt")
-        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
 
     async def test_list_measure_source_typed_from_the_database(self, db: Path) -> None:
         result = import_dbt([sm(measures=[meas("tag_cnt", "count", "tags")])], db=db)
         col = source_column(datasets_of(result)["orders"], "tag_cnt")
-        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)
         assert await value(datasets=result.datasets, db=db, dataset="orders", expression="tag_cnt") == 2
 
     @pytest.mark.parametrize("agg", ["count_distinct", "min", "max", "sum", "average"])
@@ -240,4 +240,4 @@ def test_cli_types_without_hidden_models(db: Path, tmp_path: Path) -> None:
         engine_factory.invalidate_engine(DatasourceConfig(name=DS, type="duckdb", database=str(db)))
     assert code == 0
     col = source_column(stored_dataset(store, "orders"), "tag_cnt")
-    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.STRING)

@@ -13,6 +13,8 @@ from slayer.dbt.models import DbtProject
 from slayer.engine.field_dependency import _unproven_arity_message
 from slayer.core.syntax import split_entity_agg_ref
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
+from slayer.core.query import QueryMetric
+
 from tests._dev1832_fixtures import gen, orders_q
 from tests._engine_helpers import orders_agg_sql
 
@@ -39,7 +41,7 @@ def test_unproven_arity_remedy() -> None:
 
 async def test_cross_hop_source_remedy() -> None:
     query = orders_q(metrics=[
-        DatasetMetric(expression="sum(amount - customers.regions.bad_pop)", name="m")])
+        QueryMetric(metric="sum(amount - customers.regions.bad_pop)", alias="m")])
     with pytest.raises(ValueError, match="Aggregate the target field directly") as ei:
         await gen(query)
     msg = str(ei.value)
@@ -88,8 +90,8 @@ def test_colon_in_name_reason() -> None:
 def test_cross_model_bare_measure_remedy(formula: str) -> None:
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="customer_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="customer_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         metrics=[DatasetMetric(name="m", expression=formula)],
     )
     conv = DbtToSlayerConverter(project=DbtProject(semantic_models=[], metrics=[]), data_source="test")

@@ -50,12 +50,12 @@ def orders_dataset(*, filters: Optional[list[str]] = None) -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at", filters=filters or [],
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="qty", sql="qty", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="qty", sql="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -72,7 +72,7 @@ def month_td() -> list[dict]:
 def cumsum_chain(**kw) -> SlayerQuery:
     """``cumsum(sum(amount))`` by month (a one-step transform chain)."""
     kw.setdefault("time_dimensions", month_td())
-    kw.setdefault("metrics", [{"expression": "cumsum(sum(amount))", "name": "running"}])
+    kw.setdefault("metrics", [{"metric": "cumsum(sum(amount))", "alias": "running"}])
     return q(**kw)
 
 

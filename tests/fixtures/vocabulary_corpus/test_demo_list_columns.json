@@ -22,8 +22,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(item_skus.*)",
-      "name": "units"
+      "metric": "count(item_skus.*)",
+      "alias": "units"
      }
     ]
    }
@@ -49,8 +49,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "units"
+      "metric": "count(*)",
+      "alias": "units"
      }
     ]
    }

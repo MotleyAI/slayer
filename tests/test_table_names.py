@@ -202,7 +202,7 @@ async def test_stored_dotted_table_name_validates_on_sqlite(tmp_path: Path) -> N
     await storage.save_datasource(ds)
     try:
         await storage.save_dataset(SlayerDataset(name="items", data_source=DS, sql_table='"order.items"',
-                                             fields=[DatasetField(name="qty", datatype=DataType.INT)]))
+                                             fields=[DatasetField(name="qty", datatype=DataType.INTEGER)]))
         assert [r["items.qty"] for r in await _query(storage, "items")] == [1]
         assert await _validate(storage) == []
     finally:
@@ -269,7 +269,7 @@ class _SnowflakeDatabaseClient(DelegatingSqlClient):
 
     async def reflect_columns(self, location: TableLocation) -> list[ReflectedColumn]:
         self.located.append(location)
-        return [ReflectedColumn(name="qty", type=DataType.INT)]
+        return [ReflectedColumn(name="qty", type=DataType.INTEGER)]
 
 
 async def test_a_catalog_matches_the_current_database_by_the_name_it_denotes() -> None:
@@ -285,7 +285,7 @@ async def test_a_catalog_matches_the_current_database_by_the_name_it_denotes() -
 async def test_type_refinement_reads_a_quoted_schema_in_the_current_database() -> None:
     client = _SnowflakeDatabaseClient()
     model = {"name": "t", "sql_table": 'slayer_ci."lower_schema".t', "data_source": DS,
-             "fields": [{"name": "qty", "datatype": "DOUBLE"}]}
+             "fields": [{"name": "qty", "datatype": "Float"}]}
     assert await refine_dict_with_live_schema(model, client.datasource, client)
     (location,) = client.located
     assert (location.catalog, location.schema_name, is_quoted_name(location.schema_name)) == (
@@ -315,11 +315,11 @@ def test_table_location_keeps_the_quoting_of_its_names() -> None:
 
 def _keyed(*, cardinality: RelationshipCardinality) -> list[SlayerDataset]:
     customers = SlayerDataset(name="customers", data_source=DS, sql_table="customers", fields=[
-        DatasetField(name="id", sql='"id"', datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
-        relationships=[DatasetRelationship(to="orders", join_pairs=[["id", "cust"]], cardinality=cardinality)])
+        DatasetField(name="id", sql='"id"', datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)],
+        relationships=[DatasetRelationship(to="orders", from_columns=["id"], to_columns=["cust"], cardinality=cardinality)])
     orders = SlayerDataset(name="orders", data_source=DS, sql_table="orders", fields=[
-        DatasetField(name="oid", datatype=DataType.INT, primary_key=True), DatasetField(name="cust", sql='"cust_key"', datatype=DataType.INT),
-        DatasetField(name="status", datatype=DataType.TEXT)])
+        DatasetField(name="oid", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="cust", sql='"cust_key"', datatype=DataType.INTEGER),
+        DatasetField(name="status", datatype=DataType.STRING)])
     return [customers, orders]
 
 
@@ -346,6 +346,6 @@ async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality
 
 def test_ingested_quoted_column_reads_itself_exactly() -> None:
     model = _fields_to_dataset(name="t", data_source=DS, sql_table="t", fields=[
-        IntrospectedColumn(name="foo", type=DataType.INT, quoted=True), IntrospectedColumn(name="bar", type=DataType.INT)])
+        IntrospectedColumn(name="foo", type=DataType.INTEGER, quoted=True), IntrospectedColumn(name="bar", type=DataType.INTEGER)])
     assert [(c.name, c.sql, c.physical_name, c.physical_quoted) for c in model.fields] == [
         ("foo", '"foo"', "foo", True), ("bar", "bar", "bar", False)]

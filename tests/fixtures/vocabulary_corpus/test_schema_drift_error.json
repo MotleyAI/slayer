@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -37,8 +37,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -58,8 +58,8 @@
     "population": "broken",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -79,8 +79,8 @@
     "population": "orders_view",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -100,8 +100,8 @@
     "population": "orders_by_batch",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -121,8 +121,8 @@
     "population": "orders_cte",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -142,8 +142,8 @@
     "population": "orders_view",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -163,8 +163,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -184,8 +184,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -208,8 +208,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ],
     "dimensions": [

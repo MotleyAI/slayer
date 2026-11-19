@@ -352,9 +352,9 @@ class TestNesting:
     async def test_boundary_containment(self, engine, stored, requested, ok) -> None:
         model = SlayerDataset.model_validate({
             "name": "hand", "sql_table": "events", "data_source": "test",
-            "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
-                        {"name": "ts", "datatype": "TIMESTAMP", "granularity": stored},
-                        {"name": "amount", "datatype": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                        {"name": "ts", "datatype": "DateTime", "granularity": stored},
+                        {"name": "amount", "datatype": "Float"}],
         })
         await _save(engine, model)
         query = SlayerQuery.model_validate({

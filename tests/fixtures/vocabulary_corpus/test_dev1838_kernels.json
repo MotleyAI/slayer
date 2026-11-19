@@ -165,8 +165,8 @@
     ],
     "metrics": [
      {
-      "expression": "last(amount)",
-      "name": "l"
+      "metric": "last(amount)",
+      "alias": "l"
      }
     ]
    }

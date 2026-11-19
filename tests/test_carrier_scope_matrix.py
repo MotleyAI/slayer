@@ -31,14 +31,14 @@ import pytest
 import sqlglot
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.policy import (
     ColumnFilterRuleset,
     JoinFilterRule,
     JoinFilterRuleset,
     SessionPolicy,
 )
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.dialects import get_dialect
 from slayer.sql.scope_check import assert_scope_closed
 from slayer.sql.session_policy import apply_session_policy
@@ -54,41 +54,41 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
         ],
     )
 
 
 def _customers(extra=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-        DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+        DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test", fields=cols,
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
 def _orders(*, extra=None, filters=None) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-        DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-        DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="status", sql="status", datatype=DataType.STRING),
+        DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+        DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.DATETIME),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+        DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+        DatasetField(name="balance", sql="balance", datatype=DataType.FLOAT),
     ]
     cols += extra or []
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at", fields=cols,
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         filters=filters or [],
     )
 
@@ -125,8 +125,8 @@ class TestScopeClosureInvariant:
     async def test_host_base_agg_source_columnkey(self) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(amount)")],
+            dimensions=[QueryDimension(field="status")],
         )
         sql = await _gen(query, _orders())
         assert "GROUP BY" in sql
@@ -136,7 +136,7 @@ class TestScopeClosureInvariant:
     async def test_host_base_where_filter_typed(self) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
             filter=["amount > 100"],
         )
         sql = await _gen(query, _orders())
@@ -148,7 +148,7 @@ class TestScopeClosureInvariant:
         # LEFT JOIN into the host base scope; still closed.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
             filter=["customers.region_id > 0"],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
@@ -157,7 +157,7 @@ class TestScopeClosureInvariant:
 
     async def test_host_base_model_filter(self) -> None:
         query = SlayerQuery(
-            population="orders", metrics=[DatasetMetric(expression="sum(amount)")],
+            population="orders", metrics=[QueryMetric(metric="sum(amount)")],
         )
         sql = await _gen(query, _orders(filters=["amount > 0"]))
         assert "WHERE" in sql
@@ -166,8 +166,8 @@ class TestScopeClosureInvariant:
     async def test_cross_model_cm_cte_agg_source(self) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="status")],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "_cm_" in sql  # forward cross-model CTE scope
@@ -178,7 +178,7 @@ class TestScopeClosureInvariant:
             population="orders",
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[DatasetMetric(expression="last(balance, ordered_at)")],
+            metrics=[QueryMetric(metric="last(balance, ordered_at)")],
         )
         sql = await _gen(query, _orders())
         assert "_cm_" in sql  # ranked producer under the uniform _cm_ scope
@@ -192,8 +192,8 @@ class TestScopeClosureInvariant:
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[
-                DatasetMetric(expression="sum(amount)"),
-                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
+                QueryMetric(metric="sum(amount)"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders())
@@ -203,8 +203,8 @@ class TestScopeClosureInvariant:
     async def test_order_ref_by_measure(self) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="rev")],
+            dimensions=[QueryDimension(field="status")],
             order=[OrderItem(field="rev", direction="desc")],
         )
         sql = await _gen(query, _orders())
@@ -215,12 +215,12 @@ class TestScopeClosureInvariant:
         # A per-measure Column.filter (local) on the host base scope.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(active_amount)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(active_amount)")],
+            dimensions=[QueryDimension(field="status")],
         )
         model = _orders(extra=[
             DatasetField(name="active_amount", sql="amount", filter="status = 'active'",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
         ])
         sql = await _gen(query, model)
         assert "CASE" in sql  # filtered aggregate renders CASE WHEN
@@ -230,8 +230,8 @@ class TestScopeClosureInvariant:
     async def test_cross_model_closed_across_dialects(self, dialect: str) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="status")],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()],
                          dialect=dialect)
@@ -249,7 +249,7 @@ class TestSemanticPinsSqlShape:
         # cardinality-changing join of the CTE body.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
             filter=["status = 'paid'"],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
@@ -267,8 +267,8 @@ class TestSemanticPinsSqlShape:
         # pinned in test_integration_duckdb.py::TestF1F4SemanticValues.
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="status")],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
@@ -287,8 +287,8 @@ class TestRlsIsolationCte:
     async def _cross_dataset_sql(self) -> str:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.balance)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="sum(customers.balance)")],
+            dimensions=[QueryDimension(field="status")],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "_cm_" in sql
@@ -341,18 +341,18 @@ class TestScopeDefectPins:
             population="orders",
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="rev_w")],
+            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="rev_w")],
         )
         sql = await _gen(query, _orders())
         assert "_cm_" in sql  # windowed producer under the uniform _cm_ scope
 
     async def test_cross_model_source_crosses_further_join(self) -> None:
         customers = _customers(extra=[
-            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.DOUBLE),
+            DatasetField(name="deep_pop", sql="regions.population", datatype=DataType.FLOAT),
         ])
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.deep_pop)")],
+            metrics=[QueryMetric(metric="sum(customers.deep_pop)")],
         )
         sql = await _gen(query, _orders(), extra_datasets=[customers, _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
@@ -366,10 +366,10 @@ class TestScopeDefectPins:
             population="orders",
             time_dimensions=[TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH)],
-            dimensions=[FieldRef(name="customers.region_id")],
+            dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[
-                DatasetMetric(expression="sum(amount)"),
-                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
+                QueryMetric(metric="sum(amount)"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
             ],
         )
         sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])

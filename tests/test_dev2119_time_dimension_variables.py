@@ -55,7 +55,7 @@ class TestExecution:
         assert by_bucket(resp, KEY, "orders.v") == expected
 
     async def test_named_time_dimension_keeps_its_name(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_query(time_dimensions=[td(SHIFTED, name="effective_at")],
+        resp = await engine.execute(_query(time_dimensions=[td(SHIFTED, alias="effective_at")],
                                            variables={"days": 30}))
         assert by_bucket(resp, "orders.effective_at", "orders.v")["2025-03"] == 3.0
 

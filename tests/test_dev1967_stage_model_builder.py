@@ -18,8 +18,8 @@ def _schema(grain: Optional[List[str]]) -> StageSchema:
     return StageSchema(
         relation_name="s1",
         fields=[
-            StageField(name="id", sql_alias="id", public_alias="id", datatype=DataType.INT),
-            StageField(name="tier", sql_alias="tier", public_alias="tier", datatype=DataType.TEXT),
+            StageField(name="id", sql_alias="id", public_alias="id", datatype=DataType.INTEGER),
+            StageField(name="tier", sql_alias="tier", public_alias="tier", datatype=DataType.STRING),
             StageField(name="rev", sql_alias="rev", public_alias="rev"),
         ],
         grain=grain,
@@ -54,13 +54,13 @@ class TestGrainStamping:
         assert not any(pk or uq for pk, uq in _flags(_build(None)).values())
 
     def test_single_member_grain_proves_a_join_onto_it(self) -> None:
-        edge = DatasetRelationship(to="s1", join_pairs=[["customer_id", "id"]])
+        edge = DatasetRelationship(to="s1", from_columns=["customer_id"], to_columns=["id"])
         assert provably_to_one(edge=edge, target_dataset=_build(["id"]))
 
     def test_partial_composite_grain_join_stays_unproven(self) -> None:
         model = _build(["id", "tier"])
-        partial = DatasetRelationship(to="s1", join_pairs=[["customer_id", "id"]])
-        full = DatasetRelationship(to="s1", join_pairs=[["customer_id", "id"], ["tier", "tier"]])
+        partial = DatasetRelationship(to="s1", from_columns=["customer_id"], to_columns=["id"])
+        full = DatasetRelationship(to="s1", from_columns=["customer_id", "tier"], to_columns=["id", "tier"])
         assert not provably_to_one(edge=partial, target_dataset=model)
         assert provably_to_one(edge=full, target_dataset=model)
 
@@ -85,7 +85,7 @@ class TestInputs:
     def test_default_time_dimension_passed_through(self) -> None:
         schema = StageSchema(
             relation_name="s1",
-            fields=[StageField(name="ordered_at", sql_alias="ordered_at", datatype=DataType.TIMESTAMP)],
+            fields=[StageField(name="ordered_at", sql_alias="ordered_at", datatype=DataType.DATETIME)],
             grain=["ordered_at"],
         )
         model = dataset_from_stage_schema(
@@ -101,12 +101,12 @@ class TestColumnFacts:
             relation_name="s1",
             fields=[
                 StageField(
-                    name="created_at", sql_alias="created_at", datatype=DataType.TIMESTAMP,
+                    name="created_at", sql_alias="created_at", datatype=DataType.DATETIME,
                     granularity=TimeGranularity.MONTH, label="Created",
                     description="Order creation month",
                 ),
                 StageField(
-                    name="rev", sql_alias="rev", datatype=DataType.DOUBLE, label="Revenue",
+                    name="rev", sql_alias="rev", datatype=DataType.FLOAT, label="Revenue",
                     format=MONEY, description="Total revenue",
                 ),
             ],
@@ -115,11 +115,11 @@ class TestColumnFacts:
         model = dataset_from_stage_schema(name="s1", schema=schema, data_source="ds")
         created, rev = _col(model, "created_at"), _col(model, "rev")
         assert (created.datatype, created.granularity, created.label, created.description) == (
-            DataType.TIMESTAMP, TimeGranularity.MONTH, "Created", "Order creation month",
+            DataType.DATETIME, TimeGranularity.MONTH, "Created", "Order creation month",
         )
         assert (rev.datatype, rev.granularity, rev.label, rev.format, rev.description) == (
-            DataType.DOUBLE, None, "Revenue", MONEY, "Total revenue",
+            DataType.FLOAT, None, "Revenue", MONEY, "Total revenue",
         )
 
     def test_untyped_column_defaults_to_double(self) -> None:
-        assert _col(_build(None), "rev").datatype == DataType.DOUBLE
+        assert _col(_build(None), "rev").datatype == DataType.FLOAT

@@ -67,8 +67,8 @@ GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])", "INSERT INTO grids
 class TestOpaqueElements:
     async def test_never_profiled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         grids = SlayerDataset(name="grids", sql_table="grids", data_source="test", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)])
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.OPAQUE)])
         async with contractors_engine(datasets=[contractors_dataset(), grids], extra=GRIDS) as e:
             grid, _, log = await _profile(e, "grid", monkeypatch, dataset=grids)
         assert log == []

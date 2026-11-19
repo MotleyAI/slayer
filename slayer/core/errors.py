@@ -63,7 +63,7 @@ class AmbiguousRelationshipPathError(SlayerError):
             f"name resolves it."
         ]
         for c in self.candidates:
-            pairs = ", ".join(f"{a}={b}" for a, b in c.join_pairs)
+            pairs = ", ".join(f"{a}={b}" for a, b in c.column_pairs)
             named = f" name={c.name!r}" if c.name else ""
             lines.append(
                 f"  - declared on {c.declaring_dataset!r}{named}: "
@@ -580,6 +580,44 @@ class SpellingConflictError(SlayerError):
 
 def _rebuild_spelling_conflict(old: str, new: str) -> SpellingConflictError:
     return SpellingConflictError(old=old, new=new)
+
+
+class UnknownKeyError(SlayerError):
+    """An input object carries ``key`` (at ``path``, in ``dataset`` when known), which SLayer does not read; ``keys``
+    says what the object takes."""
+
+    def __init__(self, *, key: str, path: str, dataset: str | None = None, keys: str | None = None) -> None:
+        self.key = key
+        self.path = path
+        self.dataset = dataset
+        self.keys = keys
+        at = f" at {path!r}" if path != key else ""
+        where = f" of dataset {dataset!r}" if dataset is not None else ""
+        takes = f"; {keys}" if keys else ""
+        super().__init__(f"Unknown key {key!r}{at}{where}{takes}.")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_unknown_key, (self.key, self.path, self.dataset, self.keys)
+
+
+def _rebuild_unknown_key(key: str, path: str, dataset: str | None, keys: str | None) -> UnknownKeyError:
+    return UnknownKeyError(key=key, path=path, dataset=dataset, keys=keys)
+
+
+class FieldTextError(SlayerError):
+    """A query entry's ``field`` is an object where it takes a reference or expression as text."""
+
+    def __init__(self, *, where: str, value: Any) -> None:
+        self.where = where
+        self.value = value
+        super().__init__(f"The {where} `field` takes a reference or an expression as text, got {value!r}.")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_field_text, (self.where, self.value)
+
+
+def _rebuild_field_text(where: str, value: Any) -> FieldTextError:
+    return FieldTextError(where=where, value=value)
 
 
 class DefaultTimeDimensionTypeError(SlayerError):

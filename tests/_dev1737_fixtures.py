@@ -89,18 +89,18 @@ def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
             DatasetField(name="order_date", datatype=DataType.DATE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="sla_days", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="sla_days", datatype=DataType.FLOAT),
             DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
             DatasetField(name="raw_dt"),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -108,8 +108,8 @@ def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
             DatasetField(name="signup_date", datatype=DataType.DATE),
         ],
     )
@@ -119,8 +119,8 @@ def recent_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="recent", sql_table="recent", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -166,12 +166,12 @@ def dt_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="dt", sql_table="dt", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="d1", datatype=DataType.DATE),
             DatasetField(name="d2", datatype=DataType.DATE),
-            DatasetField(name="t1", datatype=DataType.TIMESTAMP),
-            DatasetField(name="t2", datatype=DataType.TIMESTAMP),
-            DatasetField(name="n", datatype=DataType.DOUBLE),
+            DatasetField(name="t1", datatype=DataType.DATETIME),
+            DatasetField(name="t2", datatype=DataType.DATETIME),
+            DatasetField(name="n", datatype=DataType.FLOAT),
         ],
     )
 
@@ -318,7 +318,7 @@ def matrix_cases() -> list[DateCase]:
 def matrix_query(case: DateCase) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "dt",
-        "dimensions": ["id", {"expression": case.expr, "name": "v"}],
+        "dimensions": ["id", {"field": case.expr, "alias": "v"}],
     })
 
 
@@ -467,12 +467,12 @@ async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
     """Spec scenarios whose values need a real backend (clock, joins, literals)."""
     async def by_id(expr: str, model: str = "orders") -> dict[int, Any]:
         resp = await engine.execute(SlayerQuery.model_validate(
-            {"population": model, "dimensions": ["id", {"expression": expr, "name": "v"}]}))
+            {"population": model, "dimensions": ["id", {"field": expr, "alias": "v"}]}))
         return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
 
     async def count(filt: str, model: str = "orders") -> int:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": model, "metrics": [{"expression": "count(*)", "name": "n"}], "filter": [filt]}))
+            "population": model, "metrics": [{"metric": "count(*)", "alias": "n"}], "filter": [filt]}))
         return int(resp.data[0][f"{model}.n"])
 
     assert await count("created_at >= date_add(current_date(), -30, 'day')", model="recent") == 1

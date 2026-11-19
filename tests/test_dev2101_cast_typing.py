@@ -17,15 +17,15 @@ ORDERS = orders_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[customers_dataset()])
 
 TYPE_CASES = [
-    ("INT", DataType.INT), ("INTEGER", DataType.INT), ("BIGINT", DataType.INT), ("SMALLINT", DataType.INT),
-    ("TINYINT", DataType.INT),
-    ("FLOAT", DataType.DOUBLE), ("DOUBLE", DataType.DOUBLE), ("DOUBLE PRECISION", DataType.DOUBLE),
-    ("REAL", DataType.DOUBLE), ("DECIMAL(10,2)", DataType.DOUBLE), ("NUMERIC", DataType.DOUBLE),
-    ("TEXT", DataType.TEXT), ("VARCHAR(3)", DataType.TEXT), ("CHAR(2)", DataType.TEXT),
+    ("INT", DataType.INTEGER), ("INTEGER", DataType.INTEGER), ("BIGINT", DataType.INTEGER), ("SMALLINT", DataType.INTEGER),
+    ("TINYINT", DataType.INTEGER),
+    ("FLOAT", DataType.FLOAT), ("DOUBLE", DataType.FLOAT), ("DOUBLE PRECISION", DataType.FLOAT),
+    ("REAL", DataType.FLOAT), ("DECIMAL(10,2)", DataType.FLOAT), ("NUMERIC", DataType.FLOAT),
+    ("TEXT", DataType.STRING), ("VARCHAR(3)", DataType.STRING), ("CHAR(2)", DataType.STRING),
     ("BOOLEAN", DataType.BOOLEAN),
     ("DATE", DataType.DATE),
-    ("TIMESTAMP", DataType.TIMESTAMP), ("DATETIME", DataType.TIMESTAMP),
-    ("JSON", DataType.UNKNOWN), ("UUID", DataType.UNKNOWN), ("BYTEA", DataType.UNKNOWN),
+    ("TIMESTAMP", DataType.DATETIME), ("DATETIME", DataType.DATETIME),
+    ("JSON", DataType.OPAQUE), ("UUID", DataType.OPAQUE), ("BYTEA", DataType.OPAQUE),
 ]
 
 
@@ -60,8 +60,8 @@ class TestInferredType:
                                                        bundle=BUNDLE)
         assert dim_type == expected
 
-    @pytest.mark.parametrize(("target", "expected"), [c for c in TYPE_CASES if c[1] is not DataType.UNKNOWN],
-                             ids=[t for t, e in TYPE_CASES if e is not DataType.UNKNOWN])
+    @pytest.mark.parametrize(("target", "expected"), [c for c in TYPE_CASES if c[1] is not DataType.OPAQUE],
+                             ids=[t for t, e in TYPE_CASES if e is not DataType.OPAQUE])
     def test_measure_type(self, target: str, expected: DataType) -> None:
         assert metric_key_type(dataset=ORDERS, key=_bind(f"max(CAST(code AS {target}))")) == expected
 
@@ -73,4 +73,4 @@ class TestInferredType:
     def test_cast_to_date_feeds_a_date_function(self) -> None:
         key = _bind("date_diff('day', CAST(created_txt AS DATE), DATE '2025-01-01')")
         dim_type, _fmt, _desc = dimension_key_metadata(dataset=ORDERS, key=key, bundle=BUNDLE)
-        assert dim_type == DataType.INT
+        assert dim_type == DataType.INTEGER

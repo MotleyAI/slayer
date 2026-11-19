@@ -2,21 +2,21 @@
  "source": "tests/test_search_unified.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount_paid)"
    },
    "new": {
-    "expression": "sum(amount_paid)"
+    "metric": "sum(amount_paid)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   }
  ],

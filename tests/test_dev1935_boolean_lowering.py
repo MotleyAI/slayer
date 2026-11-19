@@ -21,6 +21,8 @@ from slayer.ir.planned import PlannedQuery, SemiJoinHop
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1935_fixtures import (
     ASSOC_OR,
     ASSOC_OR_ABSENT,
@@ -39,7 +41,6 @@ from tests._dev1935_fixtures import (
     REDUCED_PUSH_OR,
     REDUCED_PUSH_ORDER_CELLS,
     MATERIALISED_ORDER_CELLS,
-    DatasetMetric,
     NEW_OR_EVENT,
     NEW_OR_EVENT_SPEND,
     NO_ORDERS,
@@ -69,9 +70,9 @@ from tests._dev1935_fixtures import (
 
 MODES = ["broadcast", "associate", "error"]
 
-SPEND = DatasetMetric(expression="sum(spend)", name="sp")
-SPEND_X = DatasetMetric(expression="sum(customers.spend)", name="csp")
-PARTITIONED = DatasetMetric(expression="sum(spend, partition_by=tier)", name="pt")
+SPEND = QueryMetric(metric="sum(spend)", alias="sp")
+SPEND_X = QueryMetric(metric="sum(customers.spend)", alias="csp")
+PARTITIONED = QueryMetric(metric="sum(spend, partition_by=tier)", alias="pt")
 
 #: Python-warning carriers the boolean-total push must never emit.
 _SLAYER_WARNS = (
@@ -483,7 +484,7 @@ class TestNullExtendedFlag:
                 query=SlayerQuery(
                     population=root,
                     metrics=[SPEND if root == "customers" else
-                              DatasetMetric(expression="sum(amount)", name="amt")],
+                              QueryMetric(metric="sum(amount)", alias="amt")],
                     filter=[flt]),
                 bundle=_bundle(datasets=dev1900_datasets(), root=root))
             hops = _base_hops(planned)

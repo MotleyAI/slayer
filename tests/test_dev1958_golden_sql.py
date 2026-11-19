@@ -35,12 +35,12 @@ _EVENT = "customers.regions.region_events.value"
 def _monthly(expression: str, *, dr: bool = False, dims=("region",), **kw) -> dict:
     return {"population": "monthly", "dimensions": list(dims),
             "time_dimensions": [_TD_DR if dr else _TD],
-            "metrics": [{"expression": expression, "name": "t"}], **kw}
+            "metrics": [{"metric": expression, "alias": "t"}], **kw}
 
 
 def _orders(expression: str, *, dims, **kw) -> dict:
     return {"population": "orders", "dimensions": list(dims), "time_dimensions": [_TD],
-            "metrics": [{"expression": expression, "name": "t"}], **kw}
+            "metrics": [{"metric": expression, "alias": "t"}], **kw}
 
 
 def _cases() -> dict:
@@ -68,8 +68,8 @@ def _cases() -> dict:
             "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
             filter=["ordered_at >= '2024-02-01' and region = 'North'"]),
         "join/two_offsets": {**_monthly(""), "metrics": [
-            {"expression": f"time_shift({_SHARE}, -1)", "name": "t1"},
-            {"expression": f"time_shift({_SHARE}, -2)", "name": "t2"}]},
+            {"metric": f"time_shift({_SHARE}, -1)", "alias": "t1"},
+            {"metric": f"time_shift({_SHARE}, -2)", "alias": "t2"}]},
         "join/unaligned_day": _monthly("time_shift(sum(amount), -1, 'day')"),
         "population/association_filter": _orders(
             f"time_shift({_SHARE}, -1)", dims=["status"], filter=[f"{_EVENT} > 40"]),
@@ -83,10 +83,10 @@ def _cases() -> dict:
             dims=["status"]),
         "stage/share": [
             {"name": "s1", "population": "monthly", "dimensions": ["region"],
-             "time_dimensions": [_TD], "metrics": [{"expression": "sum(amount)", "name": "rev"}]},
+             "time_dimensions": [_TD], "metrics": [{"metric": "sum(amount)", "alias": "rev"}]},
             {"population": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
-             "metrics": [{"expression": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
-                           "name": "t"}]}],
+             "metrics": [{"metric": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
+                           "alias": "t"}]}],
     }
 
 

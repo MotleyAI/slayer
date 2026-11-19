@@ -59,15 +59,14 @@ from slayer.core.relationship_edges import RelationshipEdgeRef, resolve_relation
 from slayer.core.models import (
     DatasourceConfig,
     name_collision_warnings,
-    DatasetMetric,
     SlayerDataset,
     is_identifier,
     _check_relationship_keys,
     relationship_key_error,
 )
 from slayer.core.query import (
-    ComputedDimension,
     OrderItem,
+    QueryMetric,
     QueryRefinement,
     SlayerQuery,
     deprecated_inputs_of,
@@ -252,9 +251,9 @@ def _check_fresh_result_names(run_input: Any) -> None:
     for query in run_input if isinstance(run_input, list) else [run_input]:
         if isinstance(query, SlayerQuery):
             check_result_names_case(names=[
-                *(m.name for m in query.metrics or [] if m.name),
-                *(d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name),
-                *(td.name for td in query.time_dimensions or [] if td.name),
+                *(m.alias for m in query.metrics or [] if m.alias),
+                *(d.name for d in query.dimensions or [] if d.is_computed),
+                *(td.alias for td in query.time_dimensions or [] if td.alias),
             ])
 
 
@@ -383,7 +382,7 @@ def _with_default_order(query: SlayerQuery) -> SlayerQuery:
     if query.order or query.distinct_dimension_values is False:
         return query
     dimensions = [
-        d.spelling if not isinstance(d, ComputedDimension) else d.name or d.expression for d in query.dimensions or []
+        ref.spelling if (ref := d.ref) is not None and not d.is_computed else d.name for d in query.dimensions or []
     ]
     time_dimensions = [
         f"date_trunc('{td.granularity.value if isinstance(td.granularity, TimeGranularity) else td.granularity}', "
@@ -1444,6 +1443,11 @@ class SlayerQueryEngine:
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
+        # Stored datasets the statement reads that dropped keys SLayer does not read.
+        warnings.extend(
+            dropped for name in sorted(reads)
+            if (read := bundle.datasets_by_name.get(name)) is not None and (dropped := read.unknown_stored_keys)
+        )
         # Stored query-backed datasets the statement reads: their stages' input deprecations.
         warnings.extend(deprecated_inputs_of(
             stage for name in sorted(reads) if name in bundle.query_backed
@@ -2061,7 +2065,7 @@ class SlayerQueryEngine:
 
     def _build_type_probe_query(self, dataset: SlayerDataset) -> SlayerQuery:
         """SlayerQuery type-probing a dataset's fields (prefers ``max``, skips identifiers)."""
-        metrics: List[DatasetMetric] = []
+        metrics: List[QueryMetric] = []
         for c in dataset.fields:
             if c.hidden or is_identifier(field=c, fields=dataset.fields):
                 continue
@@ -2072,7 +2076,7 @@ class SlayerQueryEngine:
             if not allowed:
                 continue
             agg = "max" if "max" in allowed else allowed[0]
-            metrics.append(DatasetMetric(expression=f"{agg}({c.name})"))
+            metrics.append(QueryMetric(metric=f"{agg}({c.name})"))
         return SlayerQuery(population=dataset.name, metrics=metrics)
 
     async def _plan_type_probe(
@@ -2739,9 +2743,9 @@ class SlayerQueryEngine:
         self, *, dataset, relationship: DatasetRelationship, by_name, client, sqlglot_name, data_source,
         datasource_cfg,
     ) -> "tuple[RelationshipCardinalityFinding, RelationshipCardinality | None]":
-        pairs = [[p[0], p[1]] for p in relationship.join_pairs]
-        src_cols = [p[0] for p in relationship.join_pairs]
-        tgt_cols = [p[1] for p in relationship.join_pairs]
+        pairs = list(relationship.column_pairs)
+        src_cols = [p[0] for p in relationship.column_pairs]
+        tgt_cols = [p[1] for p in relationship.column_pairs]
         target = by_name.get(relationship.to)
 
         note = _detection_skip_reason(
@@ -2750,7 +2754,7 @@ class SlayerQueryEngine:
         if note is not None:
             return RelationshipCardinalityFinding(
                 data_source=data_source, dataset=dataset.name,
-                to=relationship.to, join_pairs=pairs,
+                to=relationship.to, column_pairs=pairs,
                 stored=relationship.cardinality, detected=None,
                 verdict=CardinalityVerdict.SKIPPED_UNSUPPORTED, note=note,
             ), None
@@ -2775,7 +2779,7 @@ class SlayerQueryEngine:
         if empty_sides:
             return RelationshipCardinalityFinding(
                 data_source=data_source, dataset=dataset.name,
-                to=relationship.to, join_pairs=pairs,
+                to=relationship.to, column_pairs=pairs,
                 stored=relationship.cardinality, detected=None,
                 source_side=src_side, target_side=tgt_side,
                 verdict=CardinalityVerdict.NO_EVIDENCE,
@@ -2800,7 +2804,7 @@ class SlayerQueryEngine:
         )
         return RelationshipCardinalityFinding(
             data_source=data_source, dataset=dataset.name,
-            to=relationship.to, join_pairs=pairs,
+            to=relationship.to, column_pairs=pairs,
             stored=relationship.cardinality, detected=detected,
             source_side=src_side, target_side=tgt_side,
             verdict=verdict, unique_contradictions=contradictions,
@@ -2816,7 +2820,7 @@ class SlayerQueryEngine:
         for col in cols:
             term = exp.Not(this=exp.Is(this=col.copy(), expression=exp.null()))
             predicate = term if predicate is None else exp.and_(predicate, term)
-        # join_pairs is validated non-empty.
+        # A relationship's key lists are validated non-empty.
         assert predicate is not None
 
         count_star = exp.func("COUNT", exp.Star()).as_("c")
@@ -3410,7 +3414,7 @@ def _entry_client_key(entry: _CacheEntry) -> ClientCacheKey:
 
 def _relationship_signature(relationship: DatasetRelationship) -> tuple:
     """Stable identity for a relationship: (to, sorted key pairs)."""
-    return (relationship.to, tuple(sorted((p[0], p[1]) for p in relationship.join_pairs)))
+    return (relationship.to, tuple(sorted((p[0], p[1]) for p in relationship.column_pairs)))
 
 
 def _scan_failed_finding(*, data_source, dataset, relationship: DatasetRelationship, exc) -> RelationshipCardinalityFinding:
@@ -3423,7 +3427,7 @@ def _scan_failed_finding(*, data_source, dataset, relationship: DatasetRelations
         data_source=data_source,
         dataset=dataset.name,
         to=relationship.to,
-        join_pairs=[[p[0], p[1]] for p in relationship.join_pairs],
+        column_pairs=list(relationship.column_pairs),
         stored=relationship.cardinality,
         detected=None,
         verdict=CardinalityVerdict.SCAN_FAILED,
@@ -3469,7 +3473,7 @@ def _validate_relationship_keys(
         target = loaded.get(relationship.to)
         if target is None:
             continue
-        for _, key in relationship.join_pairs:
+        for _, key in relationship.column_pairs:
             err = relationship_key_error(dataset=dataset.name, target=relationship.to, key=key,
                                  side=target.name, fields=target.fields)
             if err is not None:

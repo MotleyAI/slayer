@@ -52,7 +52,7 @@ class TestPushdownWithoutDeclaredReverseJoin:
         resp = await fwd_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "filter": ["status = 'ok'"],
-            "metrics": [{"expression": "sum(customers.spend)", "name": "cs"}],
+            "metrics": [{"metric": "sum(customers.spend)", "alias": "cs"}],
         }))
         assert len(resp.data) == 1
         assert resp.data[0]["orders.cs"] == pytest.approx(CHAIN_PUSHDOWN_OK_SPEND)
@@ -62,7 +62,7 @@ class TestAmbiguousCorrelationFailsClosed:
     def _query(self, *, to_many_handling: str = "broadcast") -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "customers",
-            "metrics": [{"expression": "sum(regions.pop)", "name": "rp"}],
+            "metrics": [{"metric": "sum(regions.pop)", "alias": "rp"}],
             "filter": ["orders.status = 'ok'"],
             "to_many_handling": to_many_handling,
         })
@@ -92,8 +92,8 @@ class TestNamedEdgeTargetPathPushesDown:
         # (which is ambiguous across the billing/shipping pair).
         resp = await named_engine.execute(SlayerQuery(
             population="orders", filter=["status = 'ok'"],
-            metrics=[{"expression": "sum(billing_customer.spend)",
-                       "name": "cs"}]))
+            metrics=[{"metric": "sum(billing_customer.spend)",
+                       "alias": "cs"}]))
         assert len(resp.data) == 1
         # Billing customers with an ok order: Alice (o1) 100 + Bob (o3) 150.
         assert resp.data[0]["orders.cs"] == pytest.approx(250.0)
@@ -105,8 +105,8 @@ class TestNamedEdgeTargetPathPushesDown:
         # bind to the reverse chain node, not resolve the token as a model.
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
-            metrics=[{"expression": "sum(billing_customer.regions.pop)",
-                       "name": "rp"}],
+            metrics=[{"metric": "sum(billing_customer.regions.pop)",
+                       "alias": "rp"}],
             filter=["billing_customer.tier = 'gold'"]))
         assert len(resp.data) == 1
         # Gold billing customers with orders: Alice — North counts once.
@@ -121,7 +121,7 @@ class TestNamedEdgeCarriesTheCorrelation:
         # North's pop counts once (never join-multiplied); South is excluded.
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
-            "metrics": [{"expression": "sum(regions.pop)", "name": "rp"}],
+            "metrics": [{"metric": "sum(regions.pop)", "alias": "rp"}],
             "filter": ["billing_customer.status = 'ok'"],
         }))
         assert len(resp.data) == 1
@@ -143,7 +143,7 @@ class TestReverseRoundTripComposes:
             await storage.save_dataset(customers)
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"expression": "customers.order_total", "name": "x"}]})
+                "metrics": [{"metric": "customers.order_total", "alias": "x"}]})
             # A second ``orders`` occurrence over every order, orphan included (mirror parity).
             resp = await engine.execute(query)
             assert resp.data[0]["orders.x"] == CHAIN_REVERSE_AGG_TOTAL

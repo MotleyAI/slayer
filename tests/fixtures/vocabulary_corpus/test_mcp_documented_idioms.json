@@ -36,8 +36,8 @@
     ],
     "metrics": [
      {
-      "expression": "time_shift(sum(amount), 1)",
-      "name": "next"
+      "metric": "time_shift(sum(amount), 1)",
+      "alias": "next"
      }
     ]
    }
@@ -61,8 +61,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(customers.id)",
-      "name": "n_customers"
+      "metric": "count(customers.id)",
+      "alias": "n_customers"
      }
     ]
    }
@@ -158,8 +158,8 @@
     ],
     "metrics": [
      {
-      "expression": "rank(sum(amount), direction='desc')",
-      "name": "rnk"
+      "metric": "rank(sum(amount), direction='desc')",
+      "alias": "rnk"
      }
     ]
    }
@@ -208,8 +208,8 @@
     ],
     "metrics": [
      {
-      "expression": "ntile(sum(orders.amount), n=4)",
-      "name": "quartile"
+      "metric": "ntile(sum(orders.amount), n=4)",
+      "alias": "quartile"
      }
     ]
    }

@@ -31,12 +31,12 @@ async def decimal_engine(tmp_path):
     model = next(model for model in models if model.name == "orders")
     amount = model.get_field("amount")
     assert amount is not None
-    assert amount.datatype is DataType.DOUBLE
+    assert amount.datatype is DataType.DECIMAL
     assert amount.db_type == "DECIMAL(18,2)"
 
     await storage.save_datasource(datasource)
     customers = model.model_copy(update={"name": "customers", "relationships": []})
-    model.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    model.relationships = [DatasetRelationship(to="customers", from_columns=["id"], to_columns=["id"])]
     await storage.save_dataset(model)
     await storage.save_dataset(customers)
     return engine
@@ -47,12 +47,12 @@ async def decimal_engine(tmp_path):
     argvalues=[
         ("sum(amount)", {}, [Decimal("90071992547409.93")]),
         (
-            {"expression": "sum(amount, window='2d')", "name": "total"},
+            {"metric": "sum(amount, window='2d')", "alias": "total"},
             {"time_dimensions": [{"field": "created_at", "granularity": "day"}]},
             [Decimal("90071992547409.91"), Decimal("90071992547409.93")],
         ),
         (
-            {"expression": "sum(amount, partition_by=created_at)", "name": "total"},
+            {"metric": "sum(amount, partition_by=created_at)", "alias": "total"},
             {"dimensions": ["id", "created_at"]},
             [Decimal("0.02"), Decimal("90071992547409.91")],
         ),
@@ -77,7 +77,7 @@ async def test_inferred_decimal_aggregates_preserve_native_precision(
 async def test_explicit_double_measure_still_casts(decimal_engine):
     query = {
         "population": "orders",
-        "metrics": [{"expression": "sum(amount)", "datatype": "DOUBLE"}],
+        "metrics": [{"metric": "sum(amount)", "datatype": "Float"}],
     }
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql

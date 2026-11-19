@@ -2,12 +2,12 @@
  "source": "tests/test_dev1769_routed_filter_path_validation.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers_v2.regions.population)"
    },
    "new": {
-    "expression": "sum(customers_v2.regions.population)"
+    "metric": "sum(customers_v2.regions.population)"
    }
   }
  ],

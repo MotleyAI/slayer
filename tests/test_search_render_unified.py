@@ -61,11 +61,11 @@ def _dataset_with_full_subtree() -> SlayerDataset:
         data_source="warehouse",
         description="Checkout orders.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(
                 name="internal_token",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
                 hidden=True,
             ),
         ],
@@ -83,7 +83,7 @@ def _hidden_dataset() -> SlayerDataset:
         name="internal_audit",
         sql_table="public.audit",
         data_source="warehouse",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         hidden=True,
     )
 

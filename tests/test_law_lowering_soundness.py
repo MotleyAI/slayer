@@ -16,9 +16,10 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1739_fixtures import dev1739_datasets
 from tests._law_harness import (
-    DatasetMetric,
     make_law_engine,
     month_key,
     month_td,
@@ -58,7 +59,7 @@ class TestAssocInline:
         resp = await engine.execute(q(
             **kwargs,
             filter=["customers.tier = 'gold'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         ))
         month_col = f", {_MONTH_EXPR[dialect]}" if with_month else ""
         oracle = raw_rows(dialect=dialect, db_path=db_path, sql=(
@@ -94,7 +95,7 @@ class TestFusionParity:
         )
         query = q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         return plan_query(query=query, bundle=bundle), bundle
 

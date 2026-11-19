@@ -18,8 +18,8 @@
     "dimensions": [
      "id",
      {
-      "expression": "length(grid)",
-      "name": "n"
+      "field": "length(grid)",
+      "alias": "n"
      }
     ]
    }
@@ -89,7 +89,7 @@
    },
    "new": {
     "name": "skills",
-    "datatype": "ARRAY"
+    "datatype": "Array"
    }
   },
   {
@@ -152,11 +152,11 @@
     "fields": [
      {
       "name": "id",
-      "datatype": "INT"
+      "datatype": "Integer"
      },
      {
       "name": "tags",
-      "datatype": "ARRAY"
+      "datatype": "Array"
      }
     ]
    }

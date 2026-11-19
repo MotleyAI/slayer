@@ -92,56 +92,56 @@ def jaffle_datasets(jaffle_duckdb_path: str) -> dict[str, SlayerDataset]:
 # ``_columns_to_model`` and so are not listed here.
 _EXPECTED_COLUMNS: dict[str, dict[str, tuple]] = {
     "customers": {
-        "id": (DataType.TEXT, True, None),
-        "name": (DataType.TEXT, False, None),
+        "id": (DataType.STRING, True, None),
+        "name": (DataType.STRING, False, None),
     },
     "regions": {
-        "id": (DataType.TEXT, True, None),
-        "name": (DataType.TEXT, False, None),
+        "id": (DataType.STRING, True, None),
+        "name": (DataType.STRING, False, None),
     },
     "stores": {
-        "id": (DataType.TEXT, True, None),
-        "name": (DataType.TEXT, False, None),
+        "id": (DataType.STRING, True, None),
+        "name": (DataType.STRING, False, None),
         "opened_at": (DataType.DATE, False, None),
-        "tax_rate": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
-        "region_id": (DataType.TEXT, False, None),
+        "tax_rate": (DataType.FLOAT, False, NumberFormatType.FLOAT),
+        "region_id": (DataType.STRING, False, None),
     },
     "products": {
-        "sku": (DataType.TEXT, True, None),
-        "name": (DataType.TEXT, False, None),
-        "type": (DataType.TEXT, False, None),
-        "price": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
-        "description": (DataType.TEXT, False, None),
+        "sku": (DataType.STRING, True, None),
+        "name": (DataType.STRING, False, None),
+        "type": (DataType.STRING, False, None),
+        "price": (DataType.DECIMAL, False, NumberFormatType.FLOAT),
+        "description": (DataType.STRING, False, None),
         "ingredients": (DataType.ARRAY, False, None),
     },
     "orders": {
-        "id": (DataType.TEXT, True, None),
-        "customer_id": (DataType.TEXT, False, None),
+        "id": (DataType.STRING, True, None),
+        "customer_id": (DataType.STRING, False, None),
         "ordered_at": (DataType.DATE, False, None),
-        "store_id": (DataType.TEXT, False, None),
-        "subtotal": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
-        "tax_paid": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
-        "order_total": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
-        "status": (DataType.TEXT, False, None),
+        "store_id": (DataType.STRING, False, None),
+        "subtotal": (DataType.DECIMAL, False, NumberFormatType.FLOAT),
+        "tax_paid": (DataType.DECIMAL, False, NumberFormatType.FLOAT),
+        "order_total": (DataType.DECIMAL, False, NumberFormatType.FLOAT),
+        "status": (DataType.STRING, False, None),
         "item_skus": (DataType.ARRAY, False, None),
     },
     "items": {
-        "id": (DataType.TEXT, True, None),
-        "order_id": (DataType.TEXT, False, None),
-        "sku": (DataType.TEXT, False, None),
+        "id": (DataType.STRING, True, None),
+        "order_id": (DataType.STRING, False, None),
+        "sku": (DataType.STRING, False, None),
     },
     "supplies": {
-        "id": (DataType.TEXT, True, None),
-        "name": (DataType.TEXT, False, None),
-        "cost": (DataType.DOUBLE, False, NumberFormatType.FLOAT),
-        "perishable": (DataType.TEXT, False, None),
-        "sku": (DataType.TEXT, True, None),
+        "id": (DataType.STRING, True, None),
+        "name": (DataType.STRING, False, None),
+        "cost": (DataType.DECIMAL, False, NumberFormatType.FLOAT),
+        "perishable": (DataType.STRING, False, None),
+        "sku": (DataType.STRING, True, None),
     },
     "tweets": {
-        "id": (DataType.TEXT, True, None),
-        "user_id": (DataType.TEXT, False, None),
+        "id": (DataType.STRING, True, None),
+        "user_id": (DataType.STRING, False, None),
         "tweeted_at": (DataType.DATE, False, None),
-        "content": (DataType.TEXT, False, None),
+        "content": (DataType.STRING, False, None),
     },
 }
 
@@ -217,8 +217,8 @@ def test_jaffle_model_joins(jaffle_datasets: dict[str, SlayerDataset], model_nam
     actual: set = set()
     for j in model.relationships:
         # Each join in auto-ingestion has exactly one column pair (direct FKs only).
-        assert len(j.join_pairs) == 1, f"{model_name} → {j.to}: expected one pair"
-        src_col, tgt_col = j.join_pairs[0]
+        assert len(j.column_pairs) == 1, f"{model_name} → {j.to}: expected one pair"
+        src_col, tgt_col = j.column_pairs[0]
         actual.add((j.to, src_col, tgt_col))
 
     assert actual == expected

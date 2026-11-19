@@ -26,8 +26,8 @@ def test_engine_shim_delegates() -> None:
         name="b",
         population="orders",
         extensions=[DatasetExtension.model_validate({
-            "source_name": "orders",
-            "relationships": [{"to": "a", "join_pairs": [["id", "id"]]}],
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
     root = SlayerQuery(population="b")
@@ -52,8 +52,8 @@ def test_reorders_simple_forward_reference() -> None:
         name="b",
         population="orders",
         extensions=[DatasetExtension.model_validate({
-            "source_name": "orders",
-            "relationships": [{"to": "a", "join_pairs": [["id", "id"]]}],
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
     root = SlayerQuery(population="b")
@@ -68,8 +68,8 @@ def test_non_root_input_order_is_invariant() -> None:
         name="b",
         population="orders",
         extensions=[DatasetExtension.model_validate({
-            "source_name": "orders",
-            "relationships": [{"to": "a", "join_pairs": [["id", "id"]]}],
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
     root = SlayerQuery(population="b")
@@ -87,16 +87,16 @@ def test_cycle_raises() -> None:
         name="a",
         population="orders",
         extensions=[DatasetExtension.model_validate({
-            "source_name": "orders",
-            "relationships": [{"to": "b", "join_pairs": [["id", "id"]]}],
+            "dataset": "orders",
+            "relationships": [{"to": "b", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
     b = SlayerQuery(
         name="b",
         population="orders",
         extensions=[DatasetExtension.model_validate({
-            "source_name": "orders",
-            "relationships": [{"to": "a", "join_pairs": [["id", "id"]]}],
+            "dataset": "orders",
+            "relationships": [{"to": "a", "from_columns": ["id"], "to_columns": ["id"]}],
         })],
     )
     root = SlayerQuery(population="a")
@@ -139,10 +139,10 @@ def test_typed_modelextension_nested_join_contributes_to_edges() -> None:
         name="b",
         population="orders",
         extensions=[DatasetExtension(
-            source_name="orders",
+            dataset="orders",
             relationships=[DatasetRelationship(
                 to="a",
-                join_pairs=[["id", "id"]],
+                from_columns=["id"], to_columns=["id"],
             )],
         )],
     )
@@ -159,10 +159,10 @@ def test_dict_modelextension_nested_join_contributes_to_edges() -> None:
         "name": "b",
         "population": "orders",
         "extensions": [{
-            "source_name": "orders",
+            "dataset": "orders",
             "relationships": [{
                 "to": "a",
-                "join_pairs": [["id", "id"]],
+                "from_columns": ["id"], "to_columns": ["id"],
             }],
         }],
     })

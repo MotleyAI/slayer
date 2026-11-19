@@ -8,8 +8,8 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.dialects.mysql import MysqlDialect
 
 from tests._dev1965_fixtures import assert_single_top_level_with, cumsum_chain, gen, parse
@@ -156,7 +156,7 @@ def test_mysql_build_date_add_quarter_is_native() -> None:
     d = MysqlDialect()
     col = exp.column("created_at")
     out = d.build_date_add(
-        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.TIMESTAMP,
+        expr=col, count=exp.Literal.number(1), unit=TimeGranularity.QUARTER, operand=DataType.DATETIME,
     )
     assert out.sql(dialect="mysql").upper() == "DATE_ADD(CREATED_AT, INTERVAL 1 QUARTER)"
 
@@ -198,10 +198,10 @@ def _orders_dataset() -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="total", sql="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -216,10 +216,10 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
             date_range=["2024-03-01", "2024-03-31"],
         )],
         metrics=[
-            DatasetMetric(expression="sum(total)"),
-            DatasetMetric(expression="change_pct(sum(total))", name="pct"),
+            QueryMetric(metric="sum(total)"),
+            QueryMetric(metric="change_pct(sum(total))", alias="pct"),
         ],
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     )
     sql = await _mysql_generate(q, _orders_dataset())
     # No ANSI-quoted identifiers ANYWHERE — those would be MySQL string
@@ -265,7 +265,7 @@ def _monthly_orders_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-        metrics=[DatasetMetric(expression="count(*)")],
+        metrics=[QueryMetric(metric="count(*)")],
         order=[OrderItem.model_validate({"field": "date_trunc('month', created_at)"})],
     )
 
@@ -274,8 +274,8 @@ async def test_mysql_nulls_last_emulation_orders_by_the_alias() -> None:
     """``ONLY_FULL_GROUP_BY`` fails to match some inlined projections (``DATE_ADD … INTERVAL``)."""
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="created_at", datatype=DataType.TIMESTAMP)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="created_at", datatype=DataType.DATETIME)],
     )
     sql = await _engine_generate(query=_monthly_orders_query(), dataset=model, dialect="mysql")
     order_clause = sql[sql.rindex("ORDER BY"):]

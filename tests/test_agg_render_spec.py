@@ -86,25 +86,25 @@ def _orders_dataset() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="net_amount",
                 sql="amount - tax",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
-            DatasetField(name="tax", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.INT),
+            DatasetField(name="tax", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.INTEGER),
             # Derived time columns covering the two ColumnSqlKey shapes
             # the explicit-time-arg resolver must handle (DEV-1452 Codex
             # fix): bare-identifier rename and a non-trivial expression.
             DatasetField(
                 name="created_at_alias",
                 sql="created_at",
-                datatype=DataType.TIMESTAMP,
+                datatype=DataType.DATETIME,
             ),
             DatasetField(
                 name="created_at_day",
@@ -215,14 +215,14 @@ class TestAggRenderSpecConstruction:
             expression="AVG({value})",
             alias="orders.amount_custom",
             time_field="orders.created_at",
-            type=DataType.DOUBLE,
-            field_type=DataType.DOUBLE,
+            type=DataType.FLOAT,
+            field_type=DataType.FLOAT,
         )
         assert spec.sql == "amount"
         assert spec.expression == "AVG({value})"
         assert spec.time_field == "orders.created_at"
-        assert spec.type is DataType.DOUBLE
-        assert spec.field_type is DataType.DOUBLE
+        assert spec.type is DataType.FLOAT
+        assert spec.field_type is DataType.FLOAT
 
     def test_frozen(self):
         spec = AggRenderSpec(
@@ -248,7 +248,7 @@ class TestBuilderStarKey:
             key,
             declared_name="_count",
             public_name="_count",
-            slot_type=DataType.INT,
+            slot_type=DataType.INTEGER,
         )
         spec = _invoke(
             slot=slot,
@@ -263,7 +263,7 @@ class TestBuilderStarKey:
         assert spec.dataset_name == "orders"
         assert spec.aggregation == "count"
         assert spec.alias == "orders._count"
-        assert spec.type is DataType.INT
+        assert spec.type is DataType.INTEGER
         assert spec.field_type is None
         assert spec.agg_kwargs == {}
 
@@ -323,7 +323,7 @@ class TestBuilderColumnKey:
             key,
             declared_name="amount_sum",
             public_name="amount_sum",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -340,8 +340,8 @@ class TestBuilderColumnKey:
         assert spec.dataset_name == "orders"
         assert spec.aggregation == "sum"
         assert spec.alias == "orders.amount_sum"
-        assert spec.type is DataType.DOUBLE
-        assert spec.field_type is DataType.DOUBLE
+        assert spec.type is DataType.FLOAT
+        assert spec.field_type is DataType.FLOAT
         assert spec.time_field is None
         assert spec.agg_kwargs == {}
         assert spec.expression is None
@@ -358,7 +358,7 @@ class TestBuilderColumnKey:
             key,
             declared_name="net_amount_sum",
             public_name="net_amount_sum",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -369,7 +369,7 @@ class TestBuilderColumnKey:
         )
         assert spec.sql == "amount - tax"
         assert spec.name == "net_amount"
-        assert spec.field_type is DataType.DOUBLE
+        assert spec.field_type is DataType.FLOAT
 
     def test_column_not_found_raises(self):
         key = AggregateKey(
@@ -413,7 +413,7 @@ class TestBuilderCustomAggregation:
             key,
             declared_name="amount_rolling_avg",
             public_name="amount_rolling_avg",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -455,7 +455,7 @@ class TestBuilderCustomAggregation:
         assert dict(key.kwargs) == {"weight": FieldKey(path=(), leaf="quantity")}
         spec = _invoke(
             slot=_slot(key, declared_name="amount_weighted_avg",
-                       public_name="amount_weighted_avg", slot_type=DataType.DOUBLE),
+                       public_name="amount_weighted_avg", slot_type=DataType.FLOAT),
             key=key,
             source_dataset=orders,
             source_relation="orders",
@@ -478,7 +478,7 @@ class TestBuilderCustomAggregation:
             key,
             declared_name="amount_sum",
             public_name="amount_sum",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -507,7 +507,7 @@ class TestBuilderParametric:
             key,
             declared_name="amount_percentile_p_0_5",
             public_name="amount_percentile_p_0_5",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -532,7 +532,7 @@ class TestBuilderParametric:
             key,
             declared_name="amount_corr",
             public_name="amount_corr",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -568,7 +568,7 @@ class TestBuilderCrossModelKwargPath:
             key,
             declared_name="amount_weighted_avg",
             public_name="amount_weighted_avg",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -599,15 +599,15 @@ class TestBuilderCrossModelKwargPath:
             key,
             declared_name="amount_weighted_avg",
             public_name="amount_weighted_avg",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         orders = _orders_dataset()
         customers = SlayerDataset(
             name="customers", data_source="prod", sql_table="customers",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="quantity", datatype=DataType.INT),
-                DatasetField(name="net_quantity", sql="quantity - 1", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="quantity", datatype=DataType.INTEGER),
+                DatasetField(name="net_quantity", sql="quantity - 1", datatype=DataType.INTEGER),
             ],
         )
         spec = SQLGenerator(dialect="postgres")._build_agg_render_spec_from_planned(
@@ -636,7 +636,7 @@ class TestBuilderCrossModelKwargPath:
             key,
             declared_name="amount_weighted_avg",
             public_name="amount_weighted_avg",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         orders = _orders_dataset()
         with pytest.raises(
@@ -660,8 +660,8 @@ class TestBuilderCrossModelKwargPath:
             data_source="prod",
             sql_table="customers",
             fields=[
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="quantity", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", datatype=DataType.INTEGER),
             ],
         )
         local_key = AggregateKey(
@@ -675,7 +675,7 @@ class TestBuilderCrossModelKwargPath:
             local_key,
             declared_name="customers_amount_weighted_avg",
             public_name="customers_amount_weighted_avg",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -708,7 +708,7 @@ class TestBuilderTypePropagation:
             key,
             declared_name="amount_count",
             public_name="amount_count",
-            slot_type=DataType.INT,
+            slot_type=DataType.INTEGER,
         )
         spec = _invoke(
             slot=slot,
@@ -717,8 +717,8 @@ class TestBuilderTypePropagation:
             source_relation="orders",
             full_alias="orders.amount_count",
         )
-        assert spec.type is DataType.INT
-        assert spec.field_type is DataType.DOUBLE
+        assert spec.type is DataType.INTEGER
+        assert spec.field_type is DataType.FLOAT
 
     def test_slot_type_carried_as_outer_cast_type(self):
         # ``slot.type`` (the resolved outer aggregation type) propagates
@@ -729,7 +729,7 @@ class TestBuilderTypePropagation:
             key,
             declared_name="amount_sum",
             public_name="amount_sum",
-            slot_type=DataType.DOUBLE,
+            slot_type=DataType.FLOAT,
         )
         spec = _invoke(
             slot=slot,
@@ -738,7 +738,7 @@ class TestBuilderTypePropagation:
             source_relation="orders",
             full_alias="orders.amount_sum",
         )
-        assert spec.type is DataType.DOUBLE
+        assert spec.type is DataType.FLOAT
 
     def test_slot_none_passes_through(self):
         # HAVING-only synth has ``slot=None`` (no declared projection slot).
@@ -752,7 +752,7 @@ class TestBuilderTypePropagation:
             full_alias="orders.amount_sum",
         )
         assert spec.type is None
-        assert spec.field_type is DataType.DOUBLE  # column_type still resolved
+        assert spec.field_type is DataType.FLOAT  # column_type still resolved
 
 
 # ---------------------------------------------------------------------------

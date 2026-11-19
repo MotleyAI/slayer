@@ -22,7 +22,7 @@ ORDERS = orders_dataset()
 
 
 def _dim(expr: str):
-    return q(dimensions=["id", {"expression": expr, "name": "x"}])
+    return q(dimensions=["id", {"field": expr, "alias": "x"}])
 
 
 def _casts(sql: str, *, dialect: str) -> list[exp.Cast]:
@@ -197,9 +197,9 @@ class TestArrayCasts:
 
 class TestArrayTyping:
     @pytest.mark.parametrize(("text", "element"), [
-        ("CAST(code AS INT[])", DataType.INT), ("code::BIGINT[]", DataType.INT), ("CAST(code AS TEXT[])", DataType.TEXT),
-        ("CAST(code AS DOUBLE PRECISION[])", DataType.DOUBLE), ("CAST(code AS DATE[])", DataType.DATE),
-        ("CAST(code AS UUID[])", DataType.UNKNOWN),
+        ("CAST(code AS INT[])", DataType.INTEGER), ("code::BIGINT[]", DataType.INTEGER), ("CAST(code AS TEXT[])", DataType.STRING),
+        ("CAST(code AS DOUBLE PRECISION[])", DataType.FLOAT), ("CAST(code AS DATE[])", DataType.DATE),
+        ("CAST(code AS UUID[])", DataType.OPAQUE),
     ])
     def test_array_cast_is_a_list_of_its_element_type(self, text: str, element: DataType) -> None:
         assert _planned_type(text, dialect="postgres") is DataType.ARRAY
@@ -211,24 +211,24 @@ class TestArrayTyping:
         assert is_list_call(key, field_type=lambda _k: None)
 
     def test_scalar_cast_is_not_a_list(self) -> None:
-        assert _planned_type("CAST(code AS INT)", dialect="postgres") is DataType.INT
+        assert _planned_type("CAST(code AS INT)", dialect="postgres") is DataType.INTEGER
 
     def test_unsigned_integer_is_an_integer(self) -> None:
-        assert _planned_type("CAST(amount AS INT UNSIGNED)", dialect="mysql") is DataType.INT
+        assert _planned_type("CAST(amount AS INT UNSIGNED)", dialect="mysql") is DataType.INTEGER
 
     @pytest.mark.parametrize(("dialect", "type_text", "expected"), [
-        ("duckdb", "UBIGINT", DataType.INT), ("duckdb", "UINTEGER", DataType.INT), ("clickhouse", "UInt32", DataType.INT),
-        ("clickhouse", "Int16", DataType.INT), ("clickhouse", "Float32", DataType.DOUBLE),
+        ("duckdb", "UBIGINT", DataType.INTEGER), ("duckdb", "UINTEGER", DataType.INTEGER), ("clickhouse", "UInt32", DataType.INTEGER),
+        ("clickhouse", "Int16", DataType.INTEGER), ("clickhouse", "Float32", DataType.FLOAT),
     ])
     def test_vendor_type_names(self, dialect: str, type_text: str, expected: DataType) -> None:
         assert _planned_type(f"CAST(amount AS {type_text})", dialect=dialect) is expected
 
     def test_unsigned_decimal_is_a_double(self) -> None:
-        assert _planned_type("CAST(amount AS DECIMAL(10,2) UNSIGNED)", dialect="mysql") is DataType.DOUBLE
+        assert _planned_type("CAST(amount AS DECIMAL(10,2) UNSIGNED)", dialect="mysql") is DataType.FLOAT
 
     def test_zoned_timestamp_is_a_timestamp(self) -> None:
         assert _planned_type("CAST(created_at AS TIMESTAMP(6) WITH TIME ZONE)", dialect="postgres") \
-            is DataType.TIMESTAMP
+            is DataType.DATETIME
 
 
 @pytest.fixture

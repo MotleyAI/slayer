@@ -28,12 +28,12 @@
     ],
     "metrics": [
      {
-      "expression": "sum(flag)",
-      "name": "fs"
+      "metric": "sum(flag)",
+      "alias": "fs"
      },
      {
-      "expression": "max(flag)",
-      "name": "fm"
+      "metric": "max(flag)",
+      "alias": "fm"
      }
     ]
    }
@@ -57,12 +57,12 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(fs)",
-      "name": "a"
+      "metric": "sum(fs)",
+      "alias": "a"
      },
      {
-      "expression": "max(fm)",
-      "name": "b"
+      "metric": "max(fm)",
+      "alias": "b"
      }
     ]
    }

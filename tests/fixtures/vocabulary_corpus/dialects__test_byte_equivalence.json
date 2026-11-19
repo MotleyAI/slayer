@@ -2,57 +2,57 @@
  "source": "tests/dialects/test_byte_equivalence.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(revenue)"
    },
    "new": {
-    "expression": "sum(revenue)"
+    "metric": "sum(revenue)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(revenue)"
    },
    "new": {
-    "expression": "sum(revenue)"
+    "metric": "sum(revenue)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "median(revenue)"
    },
    "new": {
-    "expression": "median(revenue)"
+    "metric": "median(revenue)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "percentile(revenue, p=0.95)"
    },
    "new": {
-    "expression": "percentile(revenue, p=0.95)"
+    "metric": "percentile(revenue, p=0.95)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "corr(revenue, other=quantity)"
    },
    "new": {
-    "expression": "corr(revenue, other=quantity)"
+    "metric": "corr(revenue, other=quantity)"
    }
   },
   {
@@ -78,12 +78,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   }
  ],

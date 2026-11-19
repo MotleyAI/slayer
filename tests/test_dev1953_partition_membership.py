@@ -14,9 +14,10 @@ from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import bundle as orders_bundle, q as orders_q
 from tests._dev1847_fixtures import (
-    DatasetMetric,
     _SALES_ROWS_WIDE,
     dev1847_datasets,
     make_exec_engine,
@@ -95,8 +96,8 @@ def _sales_bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
-def _metric(expression: str) -> DatasetMetric:
-    return DatasetMetric(expression=expression, name="r")
+def _metric(expression: str) -> QueryMetric:
+    return QueryMetric(metric=expression, alias="r")
 
 
 class TestOracleSelfCheck:
@@ -121,16 +122,16 @@ class TestNonMemberRejected:
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
 
     async def test_dimension_position_plain_column(self, engine):
-        dim = {"expression": "rank(sum(amount, partition_by=[city, product]), "
-                             "partition_by=region, direction='desc')", "name": "r"}
+        dim = {"field": "rank(sum(amount, partition_by=[city, product]), "
+                             "partition_by=region, direction='desc')", "alias": "r"}
         query = sales_q(dimensions=["region", dim], metrics=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'region'", grain="city, product")
 
     async def test_dimension_position_computed_dimension(self, engine):
-        dim = {"expression": "rank(sum(amount, partition_by=[city, region]), "
-                             "partition_by=ureg, direction='desc')", "name": "r"}
+        dim = {"field": "rank(sum(amount, partition_by=[city, region]), "
+                             "partition_by=ureg, direction='desc')", "alias": "r"}
         query = sales_q(dimensions=[UREG, dim], metrics=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
@@ -140,7 +141,7 @@ class TestNonMemberRejected:
 
     async def test_aggregation_parameter(self, engine):
         query = sales_q(dimensions=CRP, metrics=[
-            DatasetMetric(expression=f"weighted_avg(amount, weight={NONMEMBER})", name="w")])
+            QueryMetric(metric=f"weighted_avg(amount, weight={NONMEMBER})", alias="w")])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")
@@ -222,7 +223,7 @@ class TestPrecedence:
         assert "operand grain" not in msg, msg
 
     async def test_residue_error_precedes_membership(self, engine):
-        dim = {"expression": UNGRAINED, "name": "r"}
+        dim = {"field": UNGRAINED, "alias": "r"}
         query = sales_q(dimensions=["region", dim], metrics=[AMOUNT])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)

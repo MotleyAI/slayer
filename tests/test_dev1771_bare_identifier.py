@@ -69,11 +69,11 @@ def test_diff_skips_non_ascii_leading_alias():
         data_source="db",
         sql_table="orders",
         fields=[
-            DatasetField(name="year", sql="год", datatype=DataType.INT),
-            DatasetField(name="year_ascii", sql="yr_phys", datatype=DataType.INT),
+            DatasetField(name="year", sql="год", datatype=DataType.INTEGER),
+            DatasetField(name="year_ascii", sql="yr_phys", datatype=DataType.INTEGER),
         ],
     )
-    live = LiveTable(columns={"amount": DataType.INT})  # both physical names absent
+    live = LiveTable(columns={"amount": DataType.INTEGER})  # both physical names absent
     dropped, _reasons = _diff_sql_table_columns(dataset=model, live_table=live)
     assert dropped == ["year_ascii"]
 
@@ -85,7 +85,7 @@ def test_first_dropped_ref_scans_non_ascii_leading_alias():
         name="orders",
         data_source="db",
         sql_table="orders",
-        fields=[DatasetField(name="year", sql="год", datatype=DataType.INT)],
+        fields=[DatasetField(name="year", sql="год", datatype=DataType.INTEGER)],
     )
     state = _CascadeState(
         datasets_by_name={"orders": model},

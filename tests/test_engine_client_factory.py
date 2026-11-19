@@ -17,7 +17,7 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
-from slayer.core.models import DatasourceConfig, DatasetMetric
+from slayer.core.models import DatasourceConfig
 from slayer.engine.cache import CacheConfig
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -26,6 +26,8 @@ from slayer.pg_facade.connection import PgConnection
 from slayer.database.client import ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements, ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import dev1840_datasets, q
 from tests._gateway_harness import (
     DS_NAME,
@@ -42,9 +44,9 @@ from tests._gateway_harness import (
 )
 from tests.pg_facade.test_connection import _FakeWriter, _messages, _query, _startup, _terminate
 
-COUNT_ORDERS = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}]}
+COUNT_ORDERS = {"population": "orders", "metrics": [{"metric": "count(*)", "alias": "n"}]}
 REVENUE_BY_STATUS = {
-    "population": "orders", "dimensions": ["status"], "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+    "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
 }
 
 
@@ -144,7 +146,7 @@ class TestStatementsReachTheFactoryClient:
 
 _PUSHED = q(
     dimensions=["customers.tier"],
-    metrics=[DatasetMetric(expression="sum(amount)", name="m"), DatasetMetric(expression="sum(customers.spend)", name="cm")],
+    metrics=[QueryMetric(metric="sum(amount)", alias="m"), QueryMetric(metric="sum(customers.spend)", alias="cm")],
     filter=["channel = 'app'"],
 )
 
@@ -286,7 +288,7 @@ class TestEngineOwnsItsClients:
 
         assert asyncio.run(_inside_a_loop()) == 4
         with pytest.raises(SlayerError):
-            client.query_sync({"population": "no_such_model", "metrics": [{"expression": "count(*)"}]})
+            client.query_sync({"population": "no_such_model", "metrics": [{"metric": "count(*)"}]})
         assert acloses() == 0
 
     def test_run_sync_leaves_custom_clients_open_when_cancelled(self, shop: Shop) -> None:

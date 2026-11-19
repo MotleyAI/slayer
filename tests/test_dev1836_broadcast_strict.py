@@ -15,10 +15,9 @@ import warnings as _warnings
 import pytest
 
 from slayer.core.errors import BroadcastGrainWarning, SlayerError
-from slayer.core.query import OrderItem
+from slayer.core.query import OrderItem, QueryMetric
 
 from tests._dev1836_fixtures import (
-    DatasetMetric,
     SPEND_BY_TIER,
     SPEND_TOTAL,
     broadcast_warnings,
@@ -34,8 +33,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 
 class TestBroadcastMetadata:
@@ -88,7 +87,7 @@ class TestBroadcastMetadata:
             dimensions=["status"],
             metrics=[
                 CM,
-                DatasetMetric(expression="sum(customers.regions.pop)", name="pop"),
+                QueryMetric(metric="sum(customers.regions.pop)", alias="pop"),
             ],
         ))
         assert len(broadcast_warnings(resp)) == 2
@@ -117,8 +116,8 @@ class TestBroadcastMetadata:
         control = await engine.execute(q(dimensions=["status"], metrics=[M]))
         resp = await engine.execute(q(
             dimensions=["status"],
-            metrics=[M, DatasetMetric(
-                expression="sum(customers.spend, partition_by=[])", name="total",
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=[])", alias="total",
             )],
         ))
         assert broadcast_warnings(resp) == []
@@ -148,8 +147,8 @@ class TestBroadcastMetadata:
         via_reverse = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["customers.tier"],
-            metrics=[DatasetMetric(expression="sum(customers.regions.pop)",
-                                   name="pop")],
+            metrics=[QueryMetric(metric="sum(customers.regions.pop)",
+                                   alias="pop")],
         ))
         (w_rev,) = broadcast_warnings(via_reverse)
         hop_reasons = " ".join(d.reason for d in w_hop.dimensions).lower()
@@ -219,8 +218,8 @@ class TestStrictMode:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="sum(customers.spend, partition_by=[])", name="total",
+            metrics=[QueryMetric(
+                metric="sum(customers.spend, partition_by=[])", alias="total",
             )],
         ))
         for row in resp.data:

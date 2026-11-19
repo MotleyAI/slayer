@@ -29,8 +29,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -52,8 +52,8 @@
     "population": "Monthly",
     "metrics": [
      {
-      "expression": "sum(n)",
-      "name": "t"
+      "metric": "sum(n)",
+      "alias": "t"
      }
     ]
    }
@@ -73,8 +73,8 @@
     "population": "monthly",
     "metrics": [
      {
-      "expression": "sum(t)",
-      "name": "u"
+      "metric": "sum(t)",
+      "alias": "u"
      }
     ]
    }
@@ -98,12 +98,12 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "Total"
+      "metric": "sum(amount)",
+      "alias": "Total"
      },
      {
-      "expression": "count(*)",
-      "name": "total"
+      "metric": "count(*)",
+      "alias": "total"
      }
     ]
    }
@@ -137,12 +137,12 @@
       "population": "orders",
       "metrics": [
        {
-        "expression": "sum(amount)",
-        "name": "Total"
+        "metric": "sum(amount)",
+        "alias": "Total"
        },
        {
-        "expression": "count(*)",
-        "name": "total"
+        "metric": "count(*)",
+        "alias": "total"
        }
       ]
      }

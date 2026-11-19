@@ -10,8 +10,7 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.keys import TransformKey
-from slayer.core.models import DatasetMetric
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.ir.planned import PlannedQuery, ValueSlot, TrailingWindowProducerKernel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -61,10 +60,10 @@ def _cm_declared_first_query() -> SlayerQuery:
     """A cross-model measure declared BEFORE a local one; B7 keeps its position."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         metrics=[
-            DatasetMetric(expression="sum(customers_v2.lifetime_value)", name="cm_first"),
-            DatasetMetric(expression="sum(amount)", name="local_second"),
+            QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="cm_first"),
+            QueryMetric(metric="sum(amount)", alias="local_second"),
         ],
     )
 
@@ -73,14 +72,14 @@ def _windowed_declared_first_query() -> SlayerQuery:
     """A windowed measure declared BEFORE a local one."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         time_dimensions=[TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
         metrics=[
-            DatasetMetric(expression="sum(amount, window='90d')", name="w_first"),
-            DatasetMetric(expression="sum(amount)", name="local_second"),
+            QueryMetric(metric="sum(amount, window='90d')", alias="w_first"),
+            QueryMetric(metric="sum(amount)", alias="local_second"),
         ],
     )
 
@@ -90,11 +89,11 @@ def _interleaved_query() -> SlayerQuery:
     because any such scheme emits all host slots before all ``_cm_`` ones."""
     return SlayerQuery(
         population="orders_x",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         metrics=[
-            DatasetMetric(expression="sum(amount)", name="a_local"),
-            DatasetMetric(expression="sum(customers_v2.lifetime_value)", name="b_cross"),
-            DatasetMetric(expression="avg(amount)", name="c_local"),
+            QueryMetric(metric="sum(amount)", alias="a_local"),
+            QueryMetric(metric="sum(customers_v2.lifetime_value)", alias="b_cross"),
+            QueryMetric(metric="avg(amount)", alias="c_local"),
         ],
     )
 
@@ -181,10 +180,10 @@ class TestB7DeclarationOrderProjection:
         """``response.columns`` is read off the emitted outer SELECT, so its order follows the projection."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(customers.spend)", name="cm_first"),
-                DatasetMetric(expression="sum(amount)", name="local_second"),
+                QueryMetric(metric="sum(customers.spend)", alias="cm_first"),
+                QueryMetric(metric="sum(amount)", alias="local_second"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -206,12 +205,12 @@ class TestB7DeclarationOrderProjection:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(
-                    expression="sum(customers_v2.lifetime_value)", name="ltv",
+                QueryMetric(
+                    metric="sum(customers_v2.lifetime_value)", alias="ltv",
                 ),
-                DatasetMetric(
-                    expression="cumsum(sum(customers_v2.lifetime_value))",
-                    name="running",
+                QueryMetric(
+                    metric="cumsum(sum(customers_v2.lifetime_value))",
+                    alias="running",
                 ),
             ],
         )
@@ -279,9 +278,9 @@ class TestB7DeclarationOrderProjection:
         """The combined ORDER BY must go through the dialect's ``build_ordered`` to pin ``nulls_first`` and suppress the T-SQL NULLS-emulation CASE wrapper (whose alias mis-resolves); the wrapper appears on ASC only."""
         query = SlayerQuery(
             population="orders_x",
-            dimensions=[FieldRef(name="customers_v2.status")],
-            metrics=[DatasetMetric(
-                expression="sum(customers_v2.lifetime_value)", name="ltv",
+            dimensions=[QueryDimension(field="customers_v2.status")],
+            metrics=[QueryMetric(
+                metric="sum(customers_v2.lifetime_value)", alias="ltv",
             )],
             order=[OrderItem.model_validate({
                 "field": "sum(customers_v2.lifetime_value)", "direction": direction,
@@ -297,8 +296,8 @@ class TestB7DeclarationOrderProjection:
         """Unified trimming: an order-only aggregate never reaches the public projection — it is simply not in ``projection``."""
         query = SlayerQuery(
             population="orders_x",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
             order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})],
         )
         sql = await _gen(query, dialect="postgres")
@@ -314,8 +313,8 @@ class TestB7DeclarationOrderProjection:
         """A hidden cross-model aggregate must drive ORDER BY while absent from the projection."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.tier")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="customers.tier")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
             order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         )
         resp = await exec_engine.execute(query)
@@ -359,8 +358,8 @@ class TestProjectionInvariant:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(amount, window='90d')", name="wa"),
-                DatasetMetric(expression="sum(amount, window='90d')", name="wb"),
+                QueryMetric(metric="sum(amount, window='90d')", alias="wa"),
+                QueryMetric(metric="sum(amount, window='90d')", alias="wb"),
             ],
         )
         planned = plan_query(query=query, bundle=_chain_bundle())
@@ -460,8 +459,8 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="cumsum(sum(amount))", name="zz_running"),
-                DatasetMetric(expression="avg(amount)", name="aa_total"),
+                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
+                QueryMetric(metric="avg(amount)", alias="aa_total"),
             ],
         )
 
@@ -473,9 +472,9 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="cumsum(sum(amount))", name="zz_running"),
-                DatasetMetric(
-                    expression="sum(customers_v2.lifetime_value)", name="aa_cross",
+                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
+                QueryMetric(
+                    metric="sum(customers_v2.lifetime_value)", alias="aa_cross",
                 ),
             ],
         )
@@ -488,8 +487,8 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="time_shift(sum(amount), -1)", name="zz_prev"),
-                DatasetMetric(expression="avg(amount)", name="aa_total"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="zz_prev"),
+                QueryMetric(metric="avg(amount)", alias="aa_total"),
             ],
         )
 
@@ -501,10 +500,10 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(
-                    expression="consecutive_periods(sum(amount) > 0)", name="zz_streak",
+                QueryMetric(
+                    metric="consecutive_periods(sum(amount) > 0)", alias="zz_streak",
                 ),
-                DatasetMetric(expression="avg(amount)", name="aa_total"),
+                QueryMetric(metric="avg(amount)", alias="aa_total"),
             ],
         )
 
@@ -568,8 +567,8 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="cumsum(sum(amount))", name="zz_running"),
-                DatasetMetric(expression="sum(amount)", name="aa_total"),
+                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
+                QueryMetric(metric="sum(amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -591,8 +590,8 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="cumsum(sum(amount))", name="zz_running"),
-                DatasetMetric(expression="sum(customers.spend)", name="aa_cross"),
+                QueryMetric(metric="cumsum(sum(amount))", alias="zz_running"),
+                QueryMetric(metric="sum(customers.spend)", alias="aa_cross"),
             ],
             to_many_handling="broadcast",
         )
@@ -616,8 +615,8 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="time_shift(sum(amount), -1)", name="zz_prev"),
-                DatasetMetric(expression="sum(amount)", name="aa_total"),
+                QueryMetric(metric="time_shift(sum(amount), -1)", alias="zz_prev"),
+                QueryMetric(metric="sum(amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -645,10 +644,10 @@ class TestB8InnerStagePlanOrder:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(
-                    expression="consecutive_periods(sum(amount) > 0)", name="zz_streak",
+                QueryMetric(
+                    metric="consecutive_periods(sum(amount) > 0)", alias="zz_streak",
                 ),
-                DatasetMetric(expression="sum(amount)", name="aa_total"),
+                QueryMetric(metric="sum(amount)", alias="aa_total"),
             ],
         )
         resp = await exec_engine.execute(query)
@@ -663,8 +662,8 @@ class TestB11JoinOrdering:
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",
-                dimensions=[FieldRef(name="customers_v2.status")],
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[QueryDimension(field="customers_v2.status")],
+                metrics=[QueryMetric(metric="sum(amount)")],
             ),
             dialect="postgres",
         )
@@ -675,8 +674,8 @@ class TestB11JoinOrdering:
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(amount)")],
                 filter=["customers_v2.status == 'active'"],
             ),
             dialect="postgres",
@@ -692,8 +691,8 @@ class TestB11JoinOrdering:
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(amount)")],
                 filter=["customers_v2.deep_pop > 0"],
             ),
             dialect="postgres",
@@ -710,8 +709,8 @@ class TestB11JoinOrdering:
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",
-                dimensions=[FieldRef(name="customers_v2.deep_gdp")],
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[QueryDimension(field="customers_v2.deep_gdp")],
+                metrics=[QueryMetric(metric="sum(amount)")],
             ),
             dialect="postgres",
         )
@@ -732,10 +731,10 @@ class TestB11JoinOrdering:
         query = SlayerQuery(
             population="orders_x",
             dimensions=[
-                FieldRef(name="customers_v2.status"),
-                FieldRef(name="customers_v2.deep_pop"),
+                QueryDimension(field="customers_v2.status"),
+                QueryDimension(field="customers_v2.deep_pop"),
             ],
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            metrics=[QueryMetric(metric="sum(amount)")],
             filter=["customers_v2.status != 'x'"],
         )
         first = await _gen(query, dialect="postgres")
@@ -747,8 +746,8 @@ class TestB11JoinOrdering:
         sql = await _gen(
             SlayerQuery(
                 population="orders_x",
-                dimensions=[FieldRef(name="customers_v2.deep_pop")],
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[QueryDimension(field="customers_v2.deep_pop")],
+                metrics=[QueryMetric(metric="sum(amount)")],
                 filter=["customers_v2.status != 'x'"],
             ),
             dialect="postgres",
@@ -764,8 +763,8 @@ class TestB11JoinOrdering:
         """Executed: join reordering is only safe if rows are unchanged; region 2's NULL name covers a nullable two-hop dimension."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.regions.name")],
-            metrics=[DatasetMetric(expression="sum(amount)", name="revenue")],
+            dimensions=[QueryDimension(field="customers.regions.name")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="revenue")],
         )
         resp = await exec_engine.execute(query)
         by_region = {
@@ -779,8 +778,8 @@ class TestB11JoinOrdering:
         """Relative join order does not depend on the dialect, only quoting; the sequence is read from the parsed JOIN nodes, not string membership."""
         query = SlayerQuery(
             population="orders_x",
-            dimensions=[FieldRef(name="customers_v2.deep_pop")],
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            dimensions=[QueryDimension(field="customers_v2.deep_pop")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         sequences = {}
         for dialect in ("postgres", "sqlite", "duckdb"):
@@ -815,8 +814,8 @@ class TestB11JoinOrdering:
         )
         query = SlayerQuery(
             population="orders_x",
-            dimensions=[FieldRef(name="customers_v2.status")],
-            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
+            dimensions=[QueryDimension(field="customers_v2.status")],
+            metrics=[QueryMetric(metric="sum(customers_v2.lifetime_value)")],
             filter=["customers_v2.status != 'x'"],
         )
         sql = await _gen(query, dialect="postgres")

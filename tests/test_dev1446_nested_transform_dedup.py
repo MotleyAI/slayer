@@ -60,10 +60,10 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
         )
     )
@@ -100,7 +100,7 @@ def _query() -> SlayerQuery:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )
-        ], "metrics": [{"expression": "sum(amount)", "name": "revenue"}], "filter": ["change(sum(amount)) > 0"]})
+        ], "metrics": [{"metric": "sum(amount)", "alias": "revenue"}], "filter": ["change(sum(amount)) > 0"]})
 
 
 async def test_dev1446_change_filter_keeps_correct_rows(engine: Tuple[SlayerQueryEngine, str]):

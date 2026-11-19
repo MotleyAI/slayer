@@ -51,13 +51,13 @@ If you'd rather not type `order_total_sum` everywhere, give the inner metric an 
   {
     "name": "monthly_store_revenue",
     "population": "orders",
-    "metrics": [{"expression": "sum(order_total)", "name": "rev"}],
+    "metrics": [{"metric": "sum(order_total)", "alias": "rev"}],
     "dimensions": ["stores.name"],
     "time_dimensions": [{"field": "ordered_at", "granularity": "month"}]
   },
   {
     "population": "monthly_store_revenue",
-    "metrics": [{"expression": "avg(rev)"}],
+    "metrics": ["avg(rev)"],
     "dimensions": ["stores__name"]
   }
 ]
@@ -82,11 +82,11 @@ As we want to use a result of a child query as a dimension, we use a [dynamic re
   {
     "population": "orders",
     "extensions": [{
-      "source_name": "orders",
-      "relationships": [{"to": "customer_activity", "join_pairs": [["customer_id", "customer_id"]]}]
+      "dataset": "orders",
+      "relationships": [{"to": "customer_activity", "from_columns": ["customer_id"], "to_columns": ["customer_id"]}]
     }],
     "metrics": ["count(*)", "sum(order_total)"],
-    "dimensions": [{"expression": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "name": "activity_bucket"}]
+    "dimensions": [{"field": "CASE WHEN customer_activity._count >= 500 THEN 'High' WHEN customer_activity._count >= 200 THEN 'Medium' ELSE 'Low' END", "alias": "activity_bucket"}]
   }
 ]
 ```
@@ -109,8 +109,8 @@ Stages in a query list are not restricted to a linear pipeline. Any stage may us
     "name": "tagged",
     "population": "customers",
     "extensions": [{
-      "source_name": "customers",
-      "relationships": [{"to": "kpis", "join_pairs": [["id", "customer_id"]]}]
+      "dataset": "customers",
+      "relationships": [{"to": "kpis", "from_columns": ["id"], "to_columns": ["customer_id"]}]
     }],
     "dimensions": ["name", "kpis.order_total_sum"]
   },

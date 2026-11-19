@@ -41,7 +41,7 @@ from slayer.core.models import (
 DS = "test"
 
 
-def _col(name: str, type_: DataType = DataType.TEXT, *, pk: bool = False) -> DatasetField:
+def _col(name: str, type_: DataType = DataType.STRING, *, pk: bool = False) -> DatasetField:
     return DatasetField(name=name, datatype=type_, primary_key=pk)
 
 
@@ -51,7 +51,7 @@ def _col(name: str, type_: DataType = DataType.TEXT, *, pk: bool = False) -> Dat
 def chain_regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source=DS, sql_table="regions",
-        fields=[_col("id", DataType.INT, pk=True), _col("name")],
+        fields=[_col("id", DataType.INTEGER, pk=True), _col("name")],
     )
 
 
@@ -59,11 +59,11 @@ def chain_customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
         fields=[
-            _col("id", DataType.INT, pk=True),
-            _col("region_id", DataType.INT),
+            _col("id", DataType.INTEGER, pk=True),
+            _col("region_id", DataType.INTEGER),
             _col("name"),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -71,11 +71,11 @@ def chain_orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            _col("id", DataType.INT, pk=True),
-            _col("customer_id", DataType.INT),
-            _col("amount", DataType.DOUBLE),
+            _col("id", DataType.INTEGER, pk=True),
+            _col("customer_id", DataType.INTEGER),
+            _col("amount", DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -95,7 +95,7 @@ def dunder_target() -> SlayerDataset:
     """
     return SlayerDataset(
         name="customer__region", data_source=DS, sql_table="customer_region_dim",
-        fields=[_col("id", DataType.INT, pk=True), _col("label")],
+        fields=[_col("id", DataType.INTEGER, pk=True), _col("label")],
     )
 
 
@@ -103,12 +103,12 @@ def dunder_target_host() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
         fields=[
-            _col("id", DataType.INT, pk=True),
-            _col("cr_id", DataType.INT),
-            _col("amount", DataType.DOUBLE),
+            _col("id", DataType.INTEGER, pk=True),
+            _col("cr_id", DataType.INTEGER),
+            _col("amount", DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="customer__region", join_pairs=[["cr_id", "id"]]),
+            DatasetRelationship(to="customer__region", from_columns=["cr_id"], to_columns=["id"]),
         ],
     )
 
@@ -123,15 +123,15 @@ def dunder_target_datasets() -> List[SlayerDataset]:
 def ai_b() -> SlayerDataset:
     return SlayerDataset(
         name="b", data_source=DS, sql_table="b",
-        fields=[_col("id", DataType.INT, pk=True), _col("val")],
+        fields=[_col("id", DataType.INTEGER, pk=True), _col("val")],
     )
 
 
 def ai_a() -> SlayerDataset:
     return SlayerDataset(
         name="a", data_source=DS, sql_table="a",
-        fields=[_col("id", DataType.INT, pk=True), _col("b_id", DataType.INT)],
-        relationships=[DatasetRelationship(to="b", join_pairs=[["b_id", "id"]])],
+        fields=[_col("id", DataType.INTEGER, pk=True), _col("b_id", DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="b", from_columns=["b_id"], to_columns=["id"])],
     )
 
 
@@ -140,7 +140,7 @@ def ai_a__b() -> SlayerDataset:
     chain ``a → b`` mints (``a__b``), but is a different relation."""
     return SlayerDataset(
         name="a__b", data_source=DS, sql_table="a_b_direct",
-        fields=[_col("id", DataType.INT, pk=True), _col("val")],
+        fields=[_col("id", DataType.INTEGER, pk=True), _col("val")],
     )
 
 
@@ -148,19 +148,19 @@ def ai_host() -> SlayerDataset:
     return SlayerDataset(
         name="host", data_source=DS, sql_table="host",
         fields=[
-            _col("id", DataType.INT, pk=True),
-            _col("a_id", DataType.INT),
-            _col("ab_id", DataType.INT),
+            _col("id", DataType.INTEGER, pk=True),
+            _col("a_id", DataType.INTEGER),
+            _col("ab_id", DataType.INTEGER),
             # Distinctly-named derived columns so a query can project BOTH the
             # chain leaf and the direct model in one SELECT without tripping the
             # (orthogonal) flat public-name namespace — isolating the D4
             # join-alias-distinctness concern.
-            DatasetField(name="chain_val", datatype=DataType.TEXT, sql="a.b.val"),
-            DatasetField(name="direct_val", datatype=DataType.TEXT, sql="a__b.val"),
+            DatasetField(name="chain_val", datatype=DataType.STRING, sql="a.b.val"),
+            DatasetField(name="direct_val", datatype=DataType.STRING, sql="a__b.val"),
         ],
         relationships=[
-            DatasetRelationship(to="a", join_pairs=[["a_id", "id"]]),
-            DatasetRelationship(to="a__b", join_pairs=[["ab_id", "id"]]),
+            DatasetRelationship(to="a", from_columns=["a_id"], to_columns=["id"]),
+            DatasetRelationship(to="a__b", from_columns=["ab_id"], to_columns=["id"]),
         ],
     )
 
@@ -186,7 +186,7 @@ _L4 = "household_entity_record"
 def long_household() -> SlayerDataset:
     return SlayerDataset(
         name=_L4, data_source=DS, sql_table=_L4,
-        fields=[_col("id", DataType.INT, pk=True), _col("bucket")],
+        fields=[_col("id", DataType.INTEGER, pk=True), _col("bucket")],
     )
 
 
@@ -194,10 +194,10 @@ def long_consumer() -> SlayerDataset:
     return SlayerDataset(
         name=_L3, data_source=DS, sql_table=_L3,
         fields=[
-            _col("id", DataType.INT, pk=True),
-            _col("household_id", DataType.INT),
+            _col("id", DataType.INTEGER, pk=True),
+            _col("household_id", DataType.INTEGER),
         ],
-        relationships=[DatasetRelationship(to=_L4, join_pairs=[["household_id", "id"]])],
+        relationships=[DatasetRelationship(to=_L4, from_columns=["household_id"], to_columns=["id"])],
     )
 
 
@@ -205,10 +205,10 @@ def long_customer() -> SlayerDataset:
     return SlayerDataset(
         name=_L2, data_source=DS, sql_table=_L2,
         fields=[
-            _col("id", DataType.INT, pk=True),
-            _col("consumer_id", DataType.INT),
+            _col("id", DataType.INTEGER, pk=True),
+            _col("consumer_id", DataType.INTEGER),
         ],
-        relationships=[DatasetRelationship(to=_L3, join_pairs=[["consumer_id", "id"]])],
+        relationships=[DatasetRelationship(to=_L3, from_columns=["consumer_id"], to_columns=["id"])],
     )
 
 
@@ -216,11 +216,11 @@ def long_subscription() -> SlayerDataset:
     return SlayerDataset(
         name=_L1, data_source=DS, sql_table=_L1,
         fields=[
-            _col("id", DataType.INT, pk=True),
-            _col("customer_id", DataType.INT),
-            _col("amount", DataType.DOUBLE),
+            _col("id", DataType.INTEGER, pk=True),
+            _col("customer_id", DataType.INTEGER),
+            _col("amount", DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to=_L2, join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to=_L2, from_columns=["customer_id"], to_columns=["id"])],
     )
 
 

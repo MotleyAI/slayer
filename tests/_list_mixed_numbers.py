@@ -52,9 +52,9 @@ def mixed_numbers_statements(*, dialect: str, prefix: str = "") -> list[str]:
 
 
 def mixed_numbers_dataset(*, data_source: str, explicit_sql: bool = False) -> SlayerDataset:
-    columns = [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-               DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT),
-               DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.DOUBLE)]
+    columns = [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+               DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INTEGER),
+               DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.FLOAT)]
     if explicit_sql:
         columns = [c.model_copy(update={"sql": c.name}) for c in columns]
     return SlayerDataset(name="mixed", sql_table="mixed", data_source=data_source, fields=columns)

@@ -21,7 +21,7 @@ _JSON_LANGS = frozenset({"json", "jsonc"})
 _YAML_LANGS = frozenset({"yaml", "yml"})
 #: Keys only a dataset or a dataset extension carries.
 _DATASET_KEYS = frozenset({
-    "sql_table", "sql", "fields", "data_source", "relationships", "source_name", "default_time_dimension",
+    "sql_table", "sql", "fields", "data_source", "relationships", "dataset", "default_time_dimension",
     "source_queries", "aggregations",
 })
 #: Mode-A subtrees of a dataset: raw SQL, field filters, custom-aggregation templates.
@@ -108,8 +108,8 @@ def _metrics(value: Any) -> Iterator[str]:
 
 
 _FIELD_READERS = {
-    "metrics": _metrics,
-    "dimensions": lambda v: _entries(v, keys=("expression",)),
+    "metrics": lambda v: _entries(v, keys=("metric",)),
+    "dimensions": lambda v: _entries(v, keys=("field",)),
     "time_dimensions": lambda v: _entries(v, keys=("field",)),
     "filter": _strings,
     "order": lambda v: _entries(v, keys=("field",)),

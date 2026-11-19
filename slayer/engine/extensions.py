@@ -20,7 +20,7 @@ from slayer.core.relationship_edges import EdgeMerge
 from slayer.core.relationship_walker import OrientedRelationship, resolve_hop, walk
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.names import match_name
-from slayer.core.query import ComputedDimension, DatasetExtension, SlayerQuery, extension_dataset_names
+from slayer.core.query import DatasetExtension, SlayerQuery, extension_dataset_names
 from slayer.core.scope import DatasetScope, StageSchema
 from slayer.core.syntax import drop_root_hop, drop_root_qualifier, text_paths
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
@@ -53,7 +53,7 @@ _Lookup = Callable[[str, Dict[str, SlayerDataset]], Optional[SlayerDataset]]
 
 def extension_of(query: SlayerQuery, name: str) -> Optional[DatasetExtension]:
     """``query``'s extension of dataset ``name``, if any."""
-    return next((e for e in query.extensions or [] if e.source_name == name), None)
+    return next((e for e in query.extensions or [] if e.dataset == name), None)
 
 
 def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQuery:
@@ -72,8 +72,8 @@ def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQu
         return [j.model_copy(update={"to": spell(j.to)}) for j in written or []]
 
     def extension(e: DatasetExtension) -> DatasetExtension:
-        name, own = spell(e.source_name), relationships(e.relationships)
-        return e if name == e.source_name and own is e.relationships else e.model_copy(update={"source_name": name, "relationships": own})
+        name, own = spell(e.dataset), relationships(e.relationships)
+        return e if name == e.dataset and own is e.relationships else e.model_copy(update={"dataset": name, "relationships": own})
 
     update: Dict[str, object] = {}
     spec = query.population
@@ -111,17 +111,19 @@ def query_field_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
     """Every reference-bearing text of ``query`` — dimensions, time dimensions, metrics, filters, order — and its kind."""
     yield from _dimension_texts(query)
     for metric in query.metrics or []:
-        if metric.expression:
-            yield "expression", metric.expression
-    for f in query.filter or []:
+        if metric.metric:
+            yield "expression", metric.metric
+    for f in query.filter_conditions:
         yield "filter", f
     for item in query.order or []:
-        yield ("expression", item.raw_expression) if item.raw_expression else ("ref", item.field.full_name)
+        ref = item.ref
+        yield ("ref", ref.full_name) if ref is not None else ("expression", item.raw_expression or item.field)
 
 
 def _dimension_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
     for dim in query.dimensions or []:
-        yield ("expression", dim.expression) if isinstance(dim, ComputedDimension) else ("ref", dim.full_name)
+        ref = dim.ref
+        yield ("expression", dim.field) if dim.is_computed or ref is None else ("ref", ref.full_name)
     for td in query.time_dimensions or []:
         yield "expression", td.field
 
@@ -145,15 +147,15 @@ def extend_datasets(
     """
     out = dict(datasets)
     for extension in query.extensions or []:
-        dataset = lookup(extension.source_name, out)
+        dataset = lookup(extension.dataset, out)
         if dataset is not None:
             out[dataset.name] = overlay_metrics(dataset, extension)
     merge = EdgeMerge(datasets=out, reserved_names=reserved_names, stored_edge_names=stored_edge_names)
     inner = [
-        (extension.source_name, relationship)
-        for extension in query.extensions or [] if extension.source_name in merge.datasets
+        (extension.dataset, relationship)
+        for extension in query.extensions or [] if extension.dataset in merge.datasets
         for relationship in extension.relationships or []
-        if _merged(declaring=extension.source_name, relationship=relationship, merge=merge, lookup=lookup, on_conflict=on_conflict)
+        if _merged(declaring=extension.dataset, relationship=relationship, merge=merge, lookup=lookup, on_conflict=on_conflict)
         and relationship.join_type is JoinType.INNER
     ]
     # Tokens come from the final graph: a later declaration may name an edge an earlier one created.
@@ -180,7 +182,7 @@ def _restriction(*, declaring: str, relationship: DatasetRelationship, merge: Ed
     merged = merge.add(declaring=declaring, relationship=relationship)
     source, target = merge.datasets[declaring], merge.datasets[relationship.to]
     return InnerRestriction(
-        dataset=source.spelling, token=merged.token, key=merged.edge.join_pairs[0][1],
+        dataset=source.spelling, token=merged.token, key=merged.edge.column_pairs[0][1],
         label=f"INNER join from {source.spelling!r} to {target.spelling!r}" + (f" in {where}" if where else ""),
     )
 
@@ -363,9 +365,9 @@ def _scope(
 def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerDataset:
     """Sibling stage ``name`` as ``query`` reads it: the output fields its extension relationships name, on either side."""
     keys = [
-        pair[0 if e.source_name == name else 1]
-        for e in query.extensions or [] for j in e.relationships or [] if name in (e.source_name, j.to)
-        for pair in j.join_pairs
+        pair[0 if e.dataset == name else 1]
+        for e in query.extensions or [] for j in e.relationships or [] if name in (e.dataset, j.to)
+        for pair in j.column_pairs
     ]
     return SlayerDataset.model_construct(
         name=name, data_source=data_source, fields=[DatasetField(name=k) for k in dict.fromkeys(keys)])

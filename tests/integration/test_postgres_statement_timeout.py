@@ -84,13 +84,13 @@ class TestPostgresStatementTimeout:
 
     async def test_async_probe_infers_types(self, pg_client: SlayerSQLClient) -> None:
         types = await pg_client.get_result_column_types(_probe("SELECT 1 AS n, 'a' AS s"))
-        assert _types(types) == {"n": DataType.INT, "s": DataType.TEXT}
+        assert _types(types) == {"n": DataType.INTEGER, "s": DataType.STRING}
 
     def test_sync_probe_infers_types(self, pg_client: SlayerSQLClient) -> None:
         types = get_result_column_types_sync(
             _probe("SELECT 1 AS n, 'a' AS s"), engine=pg_client._get_sync_engine_for_client(), db_type="postgres",
         )
-        assert _types(types) == {"n": DataType.INT, "s": DataType.TEXT}
+        assert _types(types) == {"n": DataType.INTEGER, "s": DataType.STRING}
 
     async def test_async_probe_keeps_read_only_guard(self, pg_client: SlayerSQLClient) -> None:
         probe = _probe("SELECT bump() AS n")

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "products",
-    "join_pairs": [
-     [
-      "product_id",
-      "id"
-     ]
+    "from_columns": [
+     "product_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -63,7 +63,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -88,7 +88,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -113,7 +113,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -132,7 +132,7 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(total)"
+      "metric": "sum(total)"
      }
     ]
    }
@@ -160,8 +160,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -186,7 +186,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)"
+      "metric": "sum(orders.amount)"
      }
     ]
    }
@@ -208,7 +208,7 @@
     "population": "customers",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -239,8 +239,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -268,8 +268,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -289,8 +289,8 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(total)",
-      "name": "grand"
+      "metric": "sum(total)",
+      "alias": "grand"
      }
     ]
    }
@@ -308,8 +308,8 @@
    "new": {
     "metrics": [
      {
-      "expression": "sum(bad)",
-      "name": "total"
+      "metric": "sum(bad)",
+      "alias": "total"
      }
     ]
    }
@@ -328,7 +328,7 @@
     "population": "qb_pruned",
     "metrics": [
      {
-      "expression": "sum(grand)"
+      "metric": "sum(grand)"
      }
     ]
    }
@@ -356,8 +356,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -377,8 +377,8 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(total)",
-      "name": "grand"
+      "metric": "sum(total)",
+      "alias": "grand"
      }
     ]
    }
@@ -397,7 +397,7 @@
     "population": "qb",
     "metrics": [
      {
-      "expression": "sum(grand)"
+      "metric": "sum(grand)"
      }
     ]
    }
@@ -422,7 +422,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -447,7 +447,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -466,7 +466,7 @@
     "population": "t3",
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -485,7 +485,7 @@
     "population": "sq_orders",
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -504,7 +504,7 @@
     "population": "orders_view",
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -523,7 +523,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -542,7 +542,7 @@
     "population": "sq_orders",
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -567,7 +567,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -586,7 +586,7 @@
     "population": "sq_broken",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -605,7 +605,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -624,7 +624,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -643,7 +643,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(bad)"
+      "metric": "sum(bad)"
      }
     ]
    }
@@ -662,7 +662,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -687,7 +687,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -706,7 +706,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -734,8 +734,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }
@@ -755,8 +755,8 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(total)",
-      "name": "grand"
+      "metric": "sum(total)",
+      "alias": "grand"
      }
     ]
    }
@@ -781,7 +781,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -800,7 +800,7 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(total)"
+      "metric": "sum(total)"
      }
     ]
    }
@@ -819,7 +819,7 @@
     "population": "qb",
     "metrics": [
      {
-      "expression": "sum(grand)"
+      "metric": "sum(grand)"
      }
     ]
    }
@@ -838,7 +838,7 @@
     "population": "qb_pruned",
     "metrics": [
      {
-      "expression": "sum(grand)"
+      "metric": "sum(grand)"
      }
     ]
    }
@@ -863,7 +863,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(orders.amount)"
+      "metric": "sum(orders.amount)"
      }
     ]
    }
@@ -885,7 +885,7 @@
     "population": "customers",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -907,7 +907,7 @@
     "population": "sq_orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ]
    }
@@ -935,8 +935,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }

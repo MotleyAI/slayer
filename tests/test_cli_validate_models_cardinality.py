@@ -49,12 +49,12 @@ def _seed_db(db_path: str) -> None:
 
 def _customers_dataset(*, data_source: str, drift: bool) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region", sql="region", datatype=DataType.STRING),
     ]
     if drift:
         # Not in the live table -> validate_models emits an EditModelDelete.
-        columns.append(DatasetField(name="ghost_c", sql="ghost_c", datatype=DataType.TEXT))
+        columns.append(DatasetField(name="ghost_c", sql="ghost_c", datatype=DataType.STRING))
     return SlayerDataset(
         name="customers", sql_table="customers",
         data_source=data_source, fields=columns,
@@ -63,15 +63,15 @@ def _customers_dataset(*, data_source: str, drift: bool) -> SlayerDataset:
 
 def _orders_dataset(*, data_source: str, drift: bool) -> SlayerDataset:
     columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
     ]
     if drift:
-        columns.append(DatasetField(name="ghost_o", sql="ghost_o", datatype=DataType.TEXT))
+        columns.append(DatasetField(name="ghost_o", sql="ghost_o", datatype=DataType.STRING))
     return SlayerDataset(
         name="orders", sql_table="orders",
         data_source=data_source, fields=columns,
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -234,12 +234,12 @@ def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None
     run_sync(YAMLStorage(base_dir=store).save_dataset(SlayerDataset(
         name="risky", sql_table="orders", data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
         ],
         # region is neither a PK nor unique on customers → unproven hop.
         relationships=[DatasetRelationship(to="customers",
-                         join_pairs=[["customer_id", "region"]])],
+                         from_columns=["customer_id"], to_columns=["region"])],
     )))
     _run_validate_datasets(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
@@ -256,7 +256,7 @@ def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:
     # A model whose whole table is gone -> WholeModelDelete.
     run_sync(YAMLStorage(base_dir=store).save_dataset(SlayerDataset(
         name="vanished", sql_table="vanished", data_source="ds",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER)],
     )))
     _run_validate_datasets(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
@@ -337,7 +337,7 @@ def test_model_present_in_only_one_datasource_does_not_fail(
     storage = YAMLStorage(base_dir=store)
     run_sync(storage.save_dataset(SlayerDataset(
         name="solo", sql_table="customers", data_source="ds2",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
     )))
     _run_validate_datasets(
         _args(store, datasource=None, dataset="solo", cardinality=True, format="json")

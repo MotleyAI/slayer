@@ -14,8 +14,7 @@ from sqlglot import exp
 
 from slayer.core.errors import AggregationNotAllowedError
 from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, SqlFragmentKey
-from slayer.core.models import DatasetMetric
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
 from slayer.engine.population.home import home_path_for
 from slayer.engine.reference_closure import aggregate_input_closure
@@ -105,7 +104,7 @@ def test_cross_model_kwarg_gate() -> None:
 async def _sql(expression: str) -> str:
     models = dev1901_datasets()
     return await _engine_generate(
-        query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=expression, name="w")]),
+        query=SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression, alias="w")]),
         dataset=models[0], extra_datasets=models[1:], dialect="duckdb", validate=False)
 
 

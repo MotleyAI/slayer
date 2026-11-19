@@ -17,7 +17,16 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.enums import RANK_FAMILY_TRANSFORMS, DataType, TimeGranularity, TIME_TRANSFORMS
+from slayer.core.enums import (
+    DataType,
+    NUMERIC_DATATYPES,
+    RANK_FAMILY_TRANSFORMS,
+    TEMPORAL_DATATYPES,
+    TIME_TRANSFORMS,
+    TimeGranularity,
+    TypeKind,
+    kind_of,
+)
 from slayer.core.errors import (
     AmbiguousRelationshipPathError,
     AmbiguousReferenceError,
@@ -1048,7 +1057,7 @@ def check_time_dimension_field(
     is_expression: bool = False,
 ) -> None:
     """A time dimension must be temporal (DATE / TIMESTAMP); every bucketed leaf — stage, query-backed cache, or hand-set ``DatasetField.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
-    if field_type not in (DataType.DATE, DataType.TIMESTAMP):
+    if field_type not in TEMPORAL_DATATYPES:
         kind = "expression" if is_expression else "field"
         raise TimeDimensionFieldError(
             summary=f"A time dimension must reference a temporal {kind} "
@@ -1102,9 +1111,8 @@ def check_time_dimension_home(*, name: str, crossing: Optional[Tuple[str, Option
     )
 
 
-_NON_NUMERIC_TYPES = frozenset({
-    DataType.TEXT, DataType.BOOLEAN, DataType.DATE, DataType.TIMESTAMP, DataType.UNKNOWN,
-})
+_NON_NUMERIC_TYPES = frozenset(t for t in DataType if t.kind in (
+    TypeKind.TEXT, TypeKind.BOOLEAN, TypeKind.DATE, TypeKind.TIMESTAMP, TypeKind.UNKNOWN))
 
 
 def _operand_display(k: object) -> str:
@@ -1130,7 +1138,7 @@ def _operand_display(k: object) -> str:
 
 
 _LITERAL_TYPES: Mapping[type, DataType] = MappingProxyType({
-    bool: DataType.BOOLEAN, str: DataType.TEXT,
+    bool: DataType.BOOLEAN, str: DataType.STRING,
 })
 
 
@@ -1144,7 +1152,7 @@ def _leaf_count_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataTy
     if isinstance(key, ScalarCallKey):
         spec = SCALAR_SPECS.get(key.name)
         return None if spec is None else spec.result
-    if isinstance(key, CastKey) and key.data_type is not DataType.UNKNOWN:
+    if isinstance(key, CastKey) and kind_of(key.data_type) is not TypeKind.UNKNOWN:
         return key.data_type
     return None
 
@@ -1290,7 +1298,7 @@ def date_only_notices(
             continue
         date_text = key.point.strip()
         _, t, gran = _time_operand(key.operand, field_type=field_type)
-        if t is not DataType.TIMESTAMP or not is_date_only(date_text) or (
+        if kind_of(t) is not TypeKind.TIMESTAMP or not is_date_only(date_text) or (
                 gran is not None and nests_into(TimeGranularity.DAY, gran)):
             continue
         operand = _operand_display(key.operand)
@@ -1313,7 +1321,7 @@ def saved_date_only_notices(
     texts = [*(m.expression for m in dataset.metrics), *(c.filter for c in dataset.fields if c.filter)]
     for text in texts:
         for site in scan_date_only(text).sites:
-            if _saved_field_type(dataset, parts=site.parts, datasets_by_name=datasets) is not DataType.TIMESTAMP:
+            if kind_of(_saved_field_type(dataset, parts=site.parts, datasets_by_name=datasets)) is not TypeKind.TIMESTAMP:
                 continue
             notice = date_only_notice(
                 comparison=text[site.start:site.end], operand=site.operand, date=site.date, whole_day=site.twin,
@@ -1520,15 +1528,15 @@ def _text_valued(key: object, *, field_type: FieldTypeFn) -> bool:
     if isinstance(key, LiteralKey):
         return isinstance(key.value, str)
     if isinstance(key, (FieldKey, FieldSqlKey)):
-        return field_type(key) is DataType.TEXT
+        return field_type(key) is DataType.STRING
     if isinstance(key, CastKey):
-        return key.data_type is DataType.TEXT
+        return key.data_type is DataType.STRING
     if isinstance(key, AggregateKey):
         return key.agg.lower() in _TEXT_PRESERVING_AGGS and _text_valued(key.source, field_type=field_type)
     if isinstance(key, ScalarCallKey):
         spec = SCALAR_SPECS.get(key.name)
         if spec is not None and spec.result is not None:
-            return spec.result is DataType.TEXT
+            return spec.result is DataType.STRING
         values = [key.args[i] for i in value_arg_positions(key.name, len(key.args))]
         known = [a for a in values if not (isinstance(a, LiteralKey) and a.value is None)]
         return bool(known) and all(_text_valued(a, field_type=field_type) for a in known)
@@ -1539,7 +1547,7 @@ def _as_number(key: ValueKey, *, beside: ValueKey) -> ValueKey:
     """A TEXT operand read as a number: a literal converted now, anything else ``TRY_CAST(… AS DOUBLE)``."""
     if isinstance(key, LiteralKey) and isinstance(key.value, str):
         return LiteralKey(value=_number_literal(key.value, beside=beside))
-    return CastKey(source=key, type_text="DOUBLE", data_type=DataType.DOUBLE, try_=True)
+    return CastKey(source=key, type_text="DOUBLE", data_type=DataType.FLOAT, try_=True)
 
 
 _BARE_YEAR = re.compile(r"\s*\d{4}\s*")
@@ -1611,7 +1619,7 @@ def coerce_zoned_comparisons(
     def naive(k: ValueKey) -> bool:
         # A temporal literal renders as ISO text, which already reads as the field's type.
         literal = isinstance(k, LiteralKey) and isinstance(k.value, date)
-        return not literal and not zoned(k) and temporal_type(k, field_type=field_type) is DataType.TIMESTAMP
+        return not literal and not zoned(k) and kind_of(temporal_type(k, field_type=field_type)) is TypeKind.TIMESTAMP
 
     if zoned(left) and naive(right):
         return rebuilt.model_copy(update={"operands": (left, _as_zoned(right))})
@@ -1621,7 +1629,7 @@ def coerce_zoned_comparisons(
 
 
 def _as_zoned(key: ValueKey) -> ValueKey:
-    return CastKey(source=key, type_text="TIMESTAMP", data_type=DataType.TIMESTAMP)
+    return CastKey(source=key, type_text="TIMESTAMP", data_type=DataType.DATETIME)
 
 
 def _coerce_binary(key: ArithmeticKey, *, text: Callable[[object], bool], number: Callable[[object], bool]) -> ValueKey:
@@ -1668,7 +1676,7 @@ def _text_concat_args(
                 summary=f"Text concatenation has no portable spelling for the BOOLEAN `{display}`.",
                 suggestion=f"Spell it explicitly: CASE WHEN {display} THEN 'true' ELSE 'false' END.",
             )
-    return [CastKey(source=cast(ValueKey, a), type_text="TEXT", data_type=DataType.TEXT) if number(a) else a
+    return [CastKey(source=cast(ValueKey, a), type_text="TEXT", data_type=DataType.STRING) if number(a) else a
             for a in key.args]
 
 
@@ -1705,10 +1713,12 @@ _SET_COMPARISONS = frozenset({"==", "!=", *NULL_SAFE_COMPARISON_OPS})
 _WRITTEN_OPS: Mapping[str, str] = MappingProxyType({"==": "=", "!=": "<>"})
 #: The aggregations a list-valued source takes.
 _LIST_SOURCE_AGGREGATIONS = frozenset({"count", "count_distinct"})
-_TYPE_FAMILIES: Mapping[DataType, str] = MappingProxyType({
-    DataType.TEXT: "text", DataType.INT: "number", DataType.DOUBLE: "number", DataType.BOOLEAN: "boolean",
-    DataType.DATE: "time", DataType.TIMESTAMP: "time",
+_KIND_FAMILIES: Mapping[TypeKind, str] = MappingProxyType({
+    TypeKind.TEXT: "text", TypeKind.INT: "number", TypeKind.DOUBLE: "number", TypeKind.BOOLEAN: "boolean",
+    TypeKind.DATE: "time", TypeKind.TIMESTAMP: "time",
 })
+_TYPE_FAMILIES: Mapping[DataType, str] = MappingProxyType({
+    t: _KIND_FAMILIES[t.kind] for t in DataType if t.kind in _KIND_FAMILIES})
 
 
 class ListTyping(BaseModel):
@@ -1816,7 +1826,7 @@ def _check_comparable_sets(left: ValueKey, right: ValueKey, *, typing: ListTypin
         raise ListTypeError(
             summary=f"`{_operand_display(left)}` and `{_operand_display(right)}` hold {a} and {b} elements, which "
             f"cannot be compared.",
-            suggestion=f"Compare lists of one element type, or cast one list's elements (CAST(x AS {a}[])).",
+            suggestion=f"Compare lists of one element type, or cast one list's elements (CAST(x AS {left_type.kind.value}[])).",
         )
 
 
@@ -1824,7 +1834,7 @@ def _check_known_elements(key: ValueKey, *, typing: ListTyping, reading: str) ->
     element = typing.element(key)
     if element is not None and element.is_opaque:
         raise ListTypeError(
-            summary=f"`{_operand_display(key)}` holds opaque (UNKNOWN) elements, which cannot be {reading}.",
+            summary=f"`{_operand_display(key)}` holds opaque (Opaque) elements, which cannot be {reading}.",
             suggestion="Declare the field's element_type.",
         )
 
@@ -1843,7 +1853,7 @@ def _same_family(element: Optional[DataType], other: Optional[DataType]) -> bool
     if element is None or other is None:
         return True
     return _TYPE_FAMILIES.get(element) == _TYPE_FAMILIES.get(other) or (
-        element in (DataType.INT, DataType.DOUBLE) and other is DataType.TEXT
+        element in NUMERIC_DATATYPES and other is DataType.STRING
     )
 
 
@@ -1865,7 +1875,7 @@ def _check_list_call(key: ScalarCallKey, *, typing: ListTyping) -> None:
         )
     if element is not None and element.is_opaque:
         raise ListTypeError(
-            summary=f"`{_operand_display(values)}` holds opaque (UNKNOWN) elements, which {key.name}() cannot read.",
+            summary=f"`{_operand_display(values)}` holds opaque (Opaque) elements, which {key.name}() cannot read.",
             suggestion="Declare the field's element_type.",
         )
     if key.name == "length":
@@ -1917,7 +1927,7 @@ def _check_list_aggregation(key: AggregateKey, *, typing: ListTyping) -> None:
         source_type = value_type(source, field_type=typing.field_type)
         if source_type is not None and source_type.is_opaque:
             raise ListTypeError(
-                summary=f"{key.agg}() cannot collect the opaque (UNKNOWN) values of `{_operand_display(source)}`.",
+                summary=f"{key.agg}() cannot collect the opaque (Opaque) values of `{_operand_display(source)}`.",
                 suggestion="Collect a field with a scalar type.",
             )
 
@@ -1991,11 +2001,11 @@ def canonical_list_dimension(key: ValueKey, *, typing: ListTyping, will_group_by
 def _numbers_as_doubles(left: ValueKey, right: ValueKey, *, typing: ListTyping) -> Tuple[ValueKey, ValueKey]:
     """An INT list compared with a DOUBLE list is read as a DOUBLE list."""
     types = typing.element(left), typing.element(right)
-    if set(types) != {DataType.INT, DataType.DOUBLE}:
+    if {kind_of(t) for t in types} != {TypeKind.INT, TypeKind.DOUBLE}:
         return left, right
     widened = [
-        CastKey(source=k, type_text="DOUBLE[]", data_type=DataType.ARRAY, element_type=DataType.DOUBLE)
-        if t is DataType.INT else k
+        CastKey(source=k, type_text="DOUBLE[]", data_type=DataType.ARRAY, element_type=DataType.FLOAT)
+        if t is DataType.INTEGER else k
         for k, t in zip((left, right), types)
     ]
     return widened[0], widened[1]
@@ -2020,7 +2030,7 @@ def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:
             and is_list_call(rebuilt, field_type=typing.field_type)):
         return rebuilt
     element = typing.element(rebuilt.args[0])
-    if element not in (DataType.INT, DataType.DOUBLE):
+    if element not in NUMERIC_DATATYPES:
         return rebuilt
     values, other = rebuilt.args
     beside = cast(ValueKey, values)
@@ -2033,7 +2043,7 @@ def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:
     elif rebuilt.name == "contains" and _text_valued(other, field_type=typing.field_type):
         coerced = _as_number(cast(ValueKey, other), beside=beside)
     if rebuilt.name != "contains" and _other_elements(coerced, typing=typing) - {element}:
-        coerced = elements_as_numbers(cast(ValueKey, coerced), text=typing.element(coerced) is DataType.TEXT)
+        coerced = elements_as_numbers(cast(ValueKey, coerced), text=typing.element(coerced) is DataType.STRING)
     return rebuilt if coerced is other else rebuilt.model_copy(update={"args": (values, coerced)})
 
 

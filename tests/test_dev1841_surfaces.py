@@ -20,12 +20,12 @@ from tests._deprecated_input_helpers import deprecated_in, mcp_payload, recorded
 from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
-_STRICT_BODY = {"population": "orders", "metrics": [{"expression": "count(*)"}], "strict": True}
+_STRICT_BODY = {"population": "orders", "metrics": [{"metric": "count(*)"}], "strict": True}
 
 _ASSOCIATE_BODY = {
     "population": "orders",
     "dimensions": ["status"],
-    "metrics": [{"expression": "sum(customers.spend)", "name": "cm"}],
+    "metrics": [{"metric": "sum(customers.spend)", "alias": "cm"}],
     "to_many_handling": "associate",
 }
 
@@ -87,7 +87,7 @@ class TestRestSurface:
         (400), not a 500."""
         client = TestClient(create_app(storage=storage))
         body = {"population": "orders", "dimensions": ["status"],
-                "metrics": [{"expression": "weighted_avg(customers.spend, "
+                "metrics": [{"metric": "weighted_avg(customers.spend, "
                               "weight=sum(amount, partition_by=status))"}],
                 "to_many_handling": "associate"}
         resp = client.post("/query", json=body)

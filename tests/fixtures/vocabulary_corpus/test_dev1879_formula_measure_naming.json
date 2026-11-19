@@ -24,25 +24,25 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(logo_churn) / sum(logo_bop)",
     "type": "DOUBLE"
    },
    "new": {
-    "expression": "sum(logo_churn) / sum(logo_bop)",
-    "datatype": "DOUBLE"
+    "metric": "sum(logo_churn) / sum(logo_bop)",
+    "datatype": "Float"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(logo_churn) / sum(logo_bop)",
     "type": "INT"
    },
    "new": {
-    "expression": "sum(logo_churn) / sum(logo_bop)",
-    "datatype": "INT"
+    "metric": "sum(logo_churn) / sum(logo_bop)",
+    "datatype": "Integer"
    }
   },
   {

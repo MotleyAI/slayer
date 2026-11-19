@@ -126,23 +126,23 @@ def contractor_statements(backend: str) -> list[str]:
 
 def contractors_dataset() -> SlayerDataset:
     return SlayerDataset(name="contractors", sql_table="contractors", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="name", datatype=DataType.TEXT),
-        DatasetField(name="team", datatype=DataType.TEXT),
-        DatasetField(name="rate", datatype=DataType.INT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", datatype=DataType.STRING),
+        DatasetField(name="team", datatype=DataType.STRING),
+        DatasetField(name="rate", datatype=DataType.INTEGER),
         DatasetField(name="hired", datatype=DataType.DATE),
-        DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT),
-        DatasetField(name="required", datatype=DataType.ARRAY, element_type=DataType.TEXT),
-        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT),
+        DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING),
+        DatasetField(name="required", datatype=DataType.ARRAY, element_type=DataType.STRING),
+        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INTEGER),
     ])
 
 
 def assignments_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="assignments", sql_table="assignments", data_source="test",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="contractor_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to="contractors", join_pairs=[["contractor_id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="contractor_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="contractors", from_columns=["contractor_id"], to_columns=["id"])],
     )
 
 
@@ -242,7 +242,7 @@ async def count_rows(engine: SlayerQueryEngine, filter_: str, **body: Any) -> Op
 
 
 async def values(engine: SlayerQueryEngine, expr: str) -> dict[str, Any]:
-    resp = await engine.execute(query(dimensions=["name", {"expression": expr, "name": "v"}]))
+    resp = await engine.execute(query(dimensions=["name", {"field": expr, "alias": "v"}]))
     return {r["contractors.name"]: r["contractors.v"] for r in resp.data}
 
 
@@ -289,10 +289,10 @@ class TestGrouping:
     @pytest.mark.parametrize("expr", sorted(LIST_EXPRESSIONS))
     async def test_list_valued_expression_raw_and_grouped(self, engine: SlayerQueryEngine, expr: str) -> None:
         fn = LIST_EXPRESSIONS[expr]
-        raw = await engine.execute(query(dimensions=["id", {"name": "s", "expression": expr}],
+        raw = await engine.execute(query(dimensions=["id", {"alias": "s", "field": expr}],
                                          distinct_dimension_values=False))
         assert {int(cell(r, "id")): as_stored(cell(r, "s")) for r in raw.data} == {r["id"]: fn(r) for r in ROWS}
-        grouped = await engine.execute(query(dimensions=[{"name": "s", "expression": expr}],
+        grouped = await engine.execute(query(dimensions=[{"alias": "s", "field": expr}],
                                              metrics=[metric("count(*)", "n")]))
         assert cells(grouped, "s", value="n") == Counter(elset(fn(r)) for r in ROWS)
 
@@ -467,7 +467,7 @@ class TestListVariables:
     async def test_an_unnamed_measure_keeps_its_key_across_values(self, duck: SlayerQueryEngine,
                                                                   formula: str) -> None:
         keys = [
-            list((await duck.execute(query(metrics=[{"expression": formula}], variables={"v": v}))).data[0])
+            list((await duck.execute(query(metrics=[{"metric": formula}], variables={"v": v}))).data[0])
             for v in (["A"], ["B", "C"])
         ]
         assert keys[0] == keys[1]
@@ -516,8 +516,8 @@ class TestRefusals:
         assert _names_the_list_type(str(info.value)), str(info.value)
 
     @pytest.mark.parametrize(("filter_", "types"), [
-        ("skills = [DATE '2025-01-01']", ("TEXT", "DATE")), ("skills = scores", ("TEXT", "INT")),
-        ("skills IN (['go'], [1])", ("TEXT", "INT")),
+        ("skills = [DATE '2025-01-01']", ("String", "Date")), ("skills = scores", ("String", "Integer")),
+        ("skills IN (['go'], [1])", ("String", "Integer")),
     ])
     async def test_lists_of_different_element_types(self, duck: SlayerQueryEngine, filter_: str,
                                                     types: tuple[str, str]) -> None:
@@ -607,7 +607,7 @@ class TestLength:
         assert got == {"Ann": 2, "Bob": 1, "Cid": 0, "Dee": None, "Eve": 1, "Fay": 2, "Gil": 0}
 
     async def test_repeats_are_counted_through_the_elements(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(query(dimensions=["id", {"expression": "length(skills)", "name": "len"}],
+        resp = await engine.execute(query(dimensions=["id", {"field": "length(skills)", "alias": "len"}],
                                           metrics=[metric("count(skills.*)", "c")]))
         ann = next(r for r in resp.data if int(cell(r, "id")) == 1)
         assert (num(cell(ann, "len")), num(cell(ann, "c"))) == (2, 3)
@@ -659,7 +659,7 @@ class TestStages:
 
     async def test_length(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute([STAGE, {"population": "s", "dimensions": [
-            "skills", {"expression": "length(skills)", "name": "len"}]}])
+            "skills", {"field": "length(skills)", "alias": "len"}]}])
         assert {as_set(cell(r, "skills")): num(cell(r, "len")) for r in resp.data} == {
             g: None if g is None else len(g) for g in GROUPS}
 
@@ -689,7 +689,7 @@ class TestStages:
         model = await engine.create_dataset_from_query(query=STAGE, name="per_set")
         skills = model.get_field("skills")
         assert skills is not None
-        assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.STRING)
 
     async def test_three_stages(self, engine: SlayerQueryEngine) -> None:
         s1 = {"name": "s1", "population": "contractors", "dimensions": ["team", "skills"],
@@ -740,7 +740,7 @@ class TestWarning:
 
     @pytest.mark.parametrize("body", [
         {"dimensions": ["id", "skills"], "distinct_dimension_values": False},
-        {"dimensions": ["name", {"expression": "length(skills)", "name": "n"}]},
+        {"dimensions": ["name", {"field": "length(skills)", "alias": "n"}]},
         {"metrics": [metric("count(skills)", "n")]},
     ])
     async def test_no_warning_without_a_whole_list_operation(self, duck: SlayerQueryEngine,
@@ -765,7 +765,7 @@ class TestWarning:
             server = create_mcp_server(storage=e.storage, _seed_help=False)
             blocks, _ = await server.call_tool(name="query", arguments={"query": {
                 "population": "contractors", "dimensions": ["skills"],
-                "metrics": [{"expression": "count_distinct(skills)", "name": "n"}]}})
+                "metrics": [{"metric": "count_distinct(skills)", "alias": "n"}]}})
         text = "\n".join(b.text for b in blocks if isinstance(b, TextContent))
         assert "count_distinct(skills.value)" in text, text
 
@@ -779,8 +779,8 @@ GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])",
 
 def grids_dataset() -> SlayerDataset:
     return SlayerDataset(name="grids", sql_table="grids", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.OPAQUE)])
 
 
 @pytest.fixture(scope="module")
@@ -799,7 +799,7 @@ class TestOpaqueElements:
         assert num(resp.data[0]["grids.n"]) == 2
 
     @pytest.mark.parametrize("body", [
-        {"dimensions": ["id", {"expression": "length(grid)", "name": "n"}]},
+        {"dimensions": ["id", {"field": "length(grid)", "alias": "n"}]},
         {"dimensions": ["grid"], "metrics": [metric("count(*)", "n")]},
         {"dimensions": ["grid"]},
         {"dimensions": ["grid.value"]},
@@ -809,7 +809,7 @@ class TestOpaqueElements:
         {"metrics": [metric("count(*)", "n")], "filter": ["grid IN ([1], [2])"]},
     ])
     async def test_set_readings_refused(self, grids: SlayerQueryEngine, body: dict[str, Any]) -> None:
-        with pytest.raises(SlayerError, match="UNKNOWN"):
+        with pytest.raises(SlayerError, match="Opaque"):
             await grids.execute({"population": "grids", **body})
 
 
@@ -817,7 +817,7 @@ class TestOpaqueElements:
 # Aggregation metadata: defaults, save time, re-ingest
 # --------------------------------------------------------------------------- #
 def _list_column(**kw: Any) -> dict[str, Any]:
-    return {"name": "skills", "datatype": "ARRAY", "element_type": "TEXT", **kw}
+    return {"name": "skills", "datatype": "Array", "element_type": "String", **kw}
 
 
 class TestAllowedAggregations:
@@ -895,7 +895,7 @@ def _column_type(key: Any) -> Optional[DataType]:
 
 
 def _column_element(key: Any) -> Optional[DataType]:
-    return DataType.TEXT if isinstance(key, FieldKey) and key.leaf in ("skills", "required") else None
+    return DataType.STRING if isinstance(key, FieldKey) and key.leaf in ("skills", "required") else None
 
 
 class TestKeyKind:
@@ -925,7 +925,7 @@ class TestKeyKind:
     def test_typed_as_the_sources_list(self) -> None:
         key = _list_set(SKILLS)
         assert value_type(key, field_type=_column_type) is DataType.ARRAY
-        assert list_element_type(key, field_type=_column_type, field_element=_column_element) is DataType.TEXT
+        assert list_element_type(key, field_type=_column_type, field_element=_column_element) is DataType.STRING
 
     def test_phase_is_the_sources(self) -> None:
         assert _list_set(SKILLS).phase is Phase.ROW
@@ -944,7 +944,7 @@ class TestDialectHooks:
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     def test_every_native_list_dialect_builds_the_set_and_its_key(self, dialect: str) -> None:
         d = get_dialect(dialect)
-        canonical = d.build_list_set(exp.column("x"), DataType.TEXT)
+        canonical = d.build_list_set(exp.column("x"), DataType.STRING)
         assert isinstance(canonical, Expression)
         assert isinstance(d.build_list_key(canonical), Expression)
 
@@ -959,7 +959,7 @@ class TestDialectHooks:
 SITES: dict[str, SlayerQuery] = {
     "group": query(dimensions=["skills"], metrics=[metric("count(*)", "n")]),
     "distinct": query(dimensions=["skills"]),
-    "group-expression": query(dimensions=[{"name": "s", "expression": "coalesce(skills, required)"}],
+    "group-expression": query(dimensions=[{"alias": "s", "field": "coalesce(skills, required)"}],
                            metrics=[metric("count(*)", "n")]),
     "compare": query(metrics=[metric("count(*)", "n")], filter=["skills = ['go', 'sql']"]),
     "compare-columns": query(metrics=[metric("count(*)", "n")], filter=["skills = required"]),
@@ -977,7 +977,7 @@ SITES: dict[str, SlayerQuery] = {
     "rank-partition": query(dimensions=["skills", "team"],
                          metrics=[metric("rank(sum(rate), partition_by=skills, direction='desc')", "n")]),
     "nested": query(metrics=[metric("count(count(*, partition_by=skills))", "n")]),
-    "length": query(dimensions=["id", {"expression": "length(skills)", "name": "n"}]),
+    "length": query(dimensions=["id", {"field": "length(skills)", "alias": "n"}]),
 }
 #: Sites projecting a grouped list.
 DISPLAYED = ("group", "distinct", "group-expression", "partition", "join-back", "association", "window-transform",
@@ -1059,11 +1059,11 @@ def widths_dataset() -> SlayerDataset:
     def array(name: str, element: DataType, db_type: str) -> DatasetField:
         return DatasetField(name=name, datatype=DataType.ARRAY, element_type=element, db_type=db_type)
     return SlayerDataset(name="widths", sql_table="widths", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        array("v", DataType.TEXT, "VARCHAR[]"), array("t", DataType.TEXT, "TEXT[]"),
-        array("s", DataType.INT, "SMALLINT[]"), array("i", DataType.INT, "INTEGER[]"),
-        array("b", DataType.INT, "BIGINT[]"), array("r", DataType.DOUBLE, "REAL[]"),
-        array("d", DataType.DOUBLE, "DOUBLE PRECISION[]")])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        array("v", DataType.STRING, "VARCHAR[]"), array("t", DataType.STRING, "TEXT[]"),
+        array("s", DataType.INTEGER, "SMALLINT[]"), array("i", DataType.INTEGER, "INTEGER[]"),
+        array("b", DataType.INTEGER, "BIGINT[]"), array("r", DataType.FLOAT, "REAL[]"),
+        array("d", DataType.FLOAT, "DOUBLE PRECISION[]")])
 
 
 @pytest.mark.parametrize("filter_", ["v = t", "t = v", "i = b", "b = i", "r = d", "d = r", "s = i", "i = d",

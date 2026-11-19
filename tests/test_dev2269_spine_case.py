@@ -72,10 +72,10 @@ POSITIONS = {
                           **sum_orders()}, "ok"),
     "order": (lambda s: {"time_dimensions": [td("time_spine")],
                          "order": [{"field": f"{s}.timestamp", "direction": "desc"}], **sum_orders()}, "ok"),
-    "extension-model": (lambda s: {"population": "time_spine", "extensions": [{"source_name": s}],
+    "extension-model": (lambda s: {"population": "time_spine", "extensions": [{"dataset": s}],
                                    "time_dimensions": [td("time_spine")], **sum_orders()}, "TimeSpineError"),
-    "extension-join": (lambda s: {"population": {"source_name": "returns", "relationships": [
-        {"to": s, "join_pairs": [["return_date", "timestamp"]]}]},
+    "extension-join": (lambda s: {"population": {"dataset": "returns", "relationships": [
+        {"to": s, "from_columns": ["return_date"], "to_columns": ["timestamp"]}]},
         "time_dimensions": [td("time_spine")], "metrics": [m("sum(amount)", "r")]}, "AmbiguousRelationshipPathError"),
 }
 
@@ -217,7 +217,7 @@ async def storage(request, tmp_path) -> StorageBackend:
 
 
 def _joined_to(target: str) -> SlayerDataset:
-    join = DatasetRelationship(to=target, name="spine_link", join_pairs=[["order_date", "timestamp"]])
+    join = DatasetRelationship(to=target, name="spine_link", from_columns=["order_date"], to_columns=["timestamp"])
     return orders_dataset(extra_joins=[join])
 
 

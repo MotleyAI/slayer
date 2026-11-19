@@ -37,10 +37,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.profiling import ProfileOutcome
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search import graph as _graph_mod
@@ -270,7 +269,7 @@ async def test_example_query_hit_compact_preserves_query(
 ) -> None:
     sample = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="sum(amount_paid)")],
+        metrics=[QueryMetric(metric="sum(amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -294,7 +293,7 @@ async def test_example_query_hit_verbose_preserves_query(
 ) -> None:
     sample = SlayerQuery(
         population="orders",
-        metrics=[DatasetMetric(expression="sum(amount_paid)")],
+        metrics=[QueryMetric(metric="sum(amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -339,8 +338,8 @@ async def test_entity_hit_compact_description_none_when_entity_has_none(
     await storage.save_dataset(SlayerDataset(
         name="bare", sql_table="bare", data_source="warehouse",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="raw_amount", datatype=DataType.DOUBLE),  # no description
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="raw_amount", datatype=DataType.FLOAT),  # no description
         ],
     ))
     resp = await service.search(question="raw_amount", compact=True)
@@ -603,8 +602,8 @@ async def test_compact_with_datasource_pre_filter(
     await storage.save_dataset(SlayerDataset(
         name="other_table", sql_table="t", data_source="other_ds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount_paid", datatype=DataType.FLOAT,
                    description="other ds amount_paid"),
         ],
     ))

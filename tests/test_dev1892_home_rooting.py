@@ -12,9 +12,10 @@ from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1840_fixtures import dev1840_datasets, gen
 from tests._dev1841_fixtures import (
-    DatasetMetric,
     assoc_q,
     bcast_q,
     broadcast_warnings,
@@ -84,7 +85,7 @@ class TestBroadcastHomeRule:
         """C broadcast roots at customers (weight=spend forces the home shallower than the source) and repeats across status."""
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression=_C_BROADCAST, name="w")]))
+            metrics=[QueryMetric(metric=_C_BROADCAST, alias="w")]))
         vals = _vals(resp, "orders.w")
         for v in vals.values():
             assert float(v) == pytest.approx(CBCAST_ALL_CUSTOMERS)
@@ -95,8 +96,8 @@ class TestBroadcastHomeRule:
         """Home == host (orders determines both) → status attributable, a per-status weighted avg with no broadcast warning."""
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="weighted_avg(customers.spend, weight=amount)", name="w")]))
+            metrics=[QueryMetric(
+                metric="weighted_avg(customers.spend, weight=amount)", alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in HOST_HOME_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -108,8 +109,8 @@ class TestHostLocusSourceRendering:
         """A measure-local filter (north_spend) renders from the host home, joining the customers→regions hop."""
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="wsum(customers.north_spend, weight=amount)", name="w")]))
+            metrics=[QueryMetric(
+                metric="wsum(customers.north_spend, weight=amount)", alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in FILTERED_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -118,8 +119,8 @@ class TestHostLocusSourceRendering:
         """A source-owned default over a to-one path (wsum4 scale=regions.pop) resolves on the source model and joins its hop."""
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(
-                expression="wsum4(customers.spend, weight=amount)", name="w")]))
+            metrics=[QueryMetric(
+                metric="wsum4(customers.spend, weight=amount)", alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in WSUM4_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -131,7 +132,7 @@ class TestHomeRootingPlanShape:
         key in the home-rooted producer's own (root) coordinates (DEV-1910)."""
         planned = plan_query(
             query=assoc_q(dimensions=["status"],
-                          metrics=[DatasetMetric(expression=_C_BROADCAST, name="w")]),
+                          metrics=[QueryMetric(metric=_C_BROADCAST, alias="w")]),
             bundle=_orders_bundle())
         [attach] = _association_attaches(planned)
         assert attach.kernel.entity_keys == [FieldKey(path=(), leaf="id")]
@@ -140,7 +141,7 @@ class TestHomeRootingPlanShape:
         """The broadcast producer CTE reads FROM customers with a LEFT JOIN regions, never FROM regions."""
         sql = await gen(bcast_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression=_C_BROADCAST, name="w")]), dialect="sqlite")
+            metrics=[QueryMetric(metric=_C_BROADCAST, alias="w")]), dialect="sqlite")
         assert "FROM customers AS customers" in sql
         assert "LEFT JOIN regions" in sql
         assert "FROM regions" not in sql
@@ -153,7 +154,7 @@ class TestDerivedColumnEdgeCases:
         bare (nonexistent) column reference."""
         resp = await derived_default_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wsum5(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum5(customers.spend)", alias="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in DERIVED_DEFAULT_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -161,8 +162,8 @@ class TestDerivedColumnEdgeCases:
     async def test_fanning_derived_source_fails_closed(self) -> None:
         """A host-locus source whose Column.sql crosses a fanning hop is rejected,
         never emitted as a multiplying join."""
-        query = bcast_q(dimensions=["status"], metrics=[DatasetMetric(
-            expression="weighted_avg(customers.bad_spend, weight=amount)", name="w")])
+        query = bcast_q(dimensions=["status"], metrics=[QueryMetric(
+            metric="weighted_avg(customers.bad_spend, weight=amount)", alias="w")])
         models = fanning_derived_source_datasets()
         with pytest.raises(ValueError, match="unproven relationship hop"):
             await gen(query, datasets=models)
@@ -173,11 +174,11 @@ class TestCardinalityInvariant:
         """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (semantics Law 7)."""
         base = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
         withw = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
-                      DatasetMetric(expression=_C_BROADCAST, name="w")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+                      QueryMetric(metric=_C_BROADCAST, alias="w")]))
         a = _vals(base, "orders.tot")
         b = _vals(withw, "orders.tot")
         assert set(a) == set(b)

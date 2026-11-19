@@ -40,15 +40,15 @@ def _flags(dataset: SlayerDataset) -> dict:
 
 C_BY_ID = {
     "name": "c", "population": "customers", "dimensions": ["id"],
-    "metrics": [{"expression": "max(tier)", "name": "tr"}],
+    "metrics": [{"metric": "max(tier)", "alias": "tr"}],
 }
 C_BY_ID_TIER = {
     "name": "c", "population": "customers", "dimensions": ["id", "tier"],
-    "metrics": [{"expression": "sum(spend)", "name": "sp"}],
+    "metrics": [{"metric": "sum(spend)", "alias": "sp"}],
 }
 ORDERS_JOIN_C = {
-    "source_name": "orders",
-    "relationships": [{"to": "c", "join_pairs": [["customer_id", "id"]]}],
+    "dataset": "orders",
+    "relationships": [{"to": "c", "from_columns": ["customer_id"], "to_columns": ["id"]}],
 }
 TIERS_BY_ID = {1: "gold", 2: "silver", 3: "gold", 4: "bronze"}
 
@@ -57,7 +57,7 @@ class TestSiblingJoins:
     async def test_join_onto_sibling_grain_is_proven(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID, {
             "population": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tr"],
-            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
         }))
         assert _by(resp, "orders.c.tr", "orders.amt") == pytest.approx(AMOUNT_BY_TIER)
         assert broadcast_warnings(resp) == []
@@ -65,11 +65,11 @@ class TestSiblingJoins:
     async def test_join_onto_sibling_grain_through_a_chain(self, engine) -> None:
         b = {
             "name": "b", "population": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tr"],
-            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "amt"}],
         }
         root = {
             "population": "b", "dimensions": ["c__tr"],
-            "metrics": [{"expression": "sum(amt)", "name": "total"}],
+            "metrics": [{"metric": "sum(amt)", "alias": "total"}],
         }
         resp = await engine.execute(_stages(C_BY_ID, b, root))
         assert _by(resp, "b.c__tr", "b.total") == pytest.approx(AMOUNT_BY_TIER)
@@ -78,14 +78,14 @@ class TestSiblingJoins:
     async def test_join_on_part_of_composite_sibling_grain_broadcasts(self, engine) -> None:
         resp = await engine.execute(_stages(C_BY_ID_TIER, {
             "population": "orders", "extensions": [ORDERS_JOIN_C], "dimensions": ["c.tier"],
-            "metrics": [{"expression": "sum(amount)", "name": "amt"}], "to_many_handling": "broadcast",
+            "metrics": [{"metric": "sum(amount)", "alias": "amt"}], "to_many_handling": "broadcast",
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert {r["orders.amt"] for r in resp.data} == {AMOUNT_TOTAL}
 
     async def test_join_on_part_of_composite_sibling_grain_associates_by_default(self, engine) -> None:
         final = {"population": ORDERS_JOIN_C, "dimensions": ["c.tier"],
-                 "metrics": [{"expression": "sum(amount)", "name": "amt"}]}
+                 "metrics": [{"metric": "sum(amount)", "alias": "amt"}]}
         default = await engine.execute(_stages(C_BY_ID_TIER, final))
         assoc = await engine.execute(_stages(C_BY_ID_TIER, {**final, "to_many_handling": "associate"}))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
@@ -95,13 +95,13 @@ class TestSiblingJoins:
     async def test_extension_over_sibling_keeps_its_grain(self, engine) -> None:
         # The extension adds a join; orders → c is the inverted hop onto c's grain.
         ext = {
-            "source_name": "c",
-            "relationships": [{"to": "orders", "join_pairs": [["id", "customer_id"]]}],
+            "dataset": "c",
+            "relationships": [{"to": "orders", "from_columns": ["id"], "to_columns": ["customer_id"]}],
         }
         resp = await engine.execute(_stages(C_BY_ID, {
             "population": "c", "extensions": [ext],
-            "dimensions": [{"expression": "upper(tr)", "name": "tr_up"}],
-            "metrics": [{"expression": "sum(orders.amount)", "name": "amt"}],
+            "dimensions": [{"field": "upper(tr)", "alias": "tr_up"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "amt"}],
         }))
         assert _by(resp, "c.tr_up", "c.amt") == pytest.approx(
             {"GOLD": 40.0, "SILVER": 30.0, "BRONZE": 40.0},
@@ -112,7 +112,7 @@ class TestSiblingJoins:
         x = {**C_BY_ID_TIER, "name": "x"}
         resp = await engine.execute(_stages(x, {
             "population": "x", "dimensions": ["id"],
-            "metrics": [{"expression": "max(tier)", "name": "tr"}],
+            "metrics": [{"metric": "max(tier)", "alias": "tr"}],
         }))
         assert _by(resp, "x.id", "x.tr") == TIERS_BY_ID
 
@@ -121,39 +121,39 @@ class TestQueryBacked:
     async def test_composite_grain_member_stays_aggregatable(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(SlayerQuery.model_validate({
             "population": "customers", "dimensions": ["id", "tier"],
-            "metrics": [{"expression": "sum(spend)", "name": "sp"}],
+            "metrics": [{"metric": "sum(spend)", "alias": "sp"}],
         }), "vm_id_tier")
         assert _flags(model) == {"id": (True, False), "tier": (True, False), "sp": (False, False)}
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "vm_id_tier", "metrics": [{"expression": "max(tier)", "name": "mt"}],
+            "population": "vm_id_tier", "metrics": [{"metric": "max(tier)", "alias": "mt"}],
         }))
         assert resp.data[0]["vm_id_tier.mt"] == "silver"
 
     async def test_single_column_grain_is_unique_not_identifier(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(SlayerQuery.model_validate({
             "population": "customers", "dimensions": ["tier"],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         }), "vm_tier")
         assert _flags(model) == {"tier": (False, True), "n": (False, False)}
-        join = DatasetRelationship(to="vm_tier", join_pairs=[["tier", "tier"]])
+        join = DatasetRelationship(to="vm_tier", from_columns=["tier"], to_columns=["tier"])
         assert provably_to_one(edge=join, target_dataset=model)
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "vm_tier", "metrics": [{"expression": "max(tier)", "name": "mt"}],
+            "population": "vm_tier", "metrics": [{"metric": "max(tier)", "alias": "mt"}],
         }))
         assert resp.data[0]["vm_tier.mt"] == "silver"
 
     async def test_metric_across_unique_grain_join_is_exact(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(SlayerQuery.model_validate({
             "population": "customers", "dimensions": ["tier"],
-            "metrics": [{"expression": "count(*)", "name": "n"}],
+            "metrics": [{"metric": "count(*)", "alias": "n"}],
         }), "vm_tier_n")
         host = customers_dataset()
         host.name = "customers_t"
-        host.relationships.append(DatasetRelationship(to="vm_tier_n", join_pairs=[["tier", "tier"]]))
+        host.relationships.append(DatasetRelationship(to="vm_tier_n", from_columns=["tier"], to_columns=["tier"]))
         await engine.storage.save_dataset(host, _validate=False)
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "customers_t", "dimensions": ["tier"],
-            "metrics": [{"expression": "sum(vm_tier_n.n)", "name": "n"}],
+            "metrics": [{"metric": "sum(vm_tier_n.n)", "alias": "n"}],
         }))
         assert _by(resp, "customers_t.tier", "customers_t.n") == {"gold": 2, "silver": 1, "bronze": 1}
         assert broadcast_warnings(resp) == []
@@ -161,7 +161,7 @@ class TestQueryBacked:
     async def test_measure_is_never_stamped(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["status", "channel"],
-            "metrics": [{"expression": "sum(amount, partition_by=status)", "name": "st"}],
+            "metrics": [{"metric": "sum(amount, partition_by=status)", "alias": "st"}],
         }), "vm_st")
         assert _flags(model) == {
             "status": (True, False), "channel": (True, False), "st": (False, False),
@@ -174,13 +174,13 @@ class TestAggregateValuedGrainMember:
     async def _dataset(self, engine: SlayerQueryEngine) -> SlayerDataset:
         return await engine.create_dataset_from_query(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": ["status", {"expression": "sum(amount, partition_by=channel)", "name": "ct"}],
+            "dimensions": ["status", {"field": "sum(amount, partition_by=channel)", "alias": "ct"}],
         }), "vm_ctot")
 
     async def test_computed_dimension_is_stamped_into_the_grain(self, engine) -> None:
         model = await self._dataset(engine)
         assert _flags(model) == {"status": (True, False), "ct": (True, False)}
-        join = DatasetRelationship(to="vm_ctot", join_pairs=[["status", "status"]])
+        join = DatasetRelationship(to="vm_ctot", from_columns=["status"], to_columns=["status"])
         assert not provably_to_one(edge=join, target_dataset=model)
 
     async def test_join_on_status_alone_broadcasts_not_multiplies(self, engine: SlayerQueryEngine) -> None:
@@ -189,15 +189,15 @@ class TestAggregateValuedGrainMember:
             name="two_ok", data_source="test",
             sql="SELECT 1 AS id, 'ok' AS status UNION ALL SELECT 2 AS id, 'ok' AS status",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", datatype=DataType.STRING),
             ],
-            relationships=[DatasetRelationship(to="vm_ctot", join_pairs=[["status", "status"]])],
+            relationships=[DatasetRelationship(to="vm_ctot", from_columns=["status"], to_columns=["status"])],
         )
         await engine.storage.save_dataset(host, _validate=False)
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "two_ok", "dimensions": ["vm_ctot.status"],
-            "metrics": [{"expression": "count(*)", "name": "n"}], "to_many_handling": "broadcast",
+            "metrics": [{"metric": "count(*)", "alias": "n"}], "to_many_handling": "broadcast",
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert resp.data

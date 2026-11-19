@@ -41,24 +41,24 @@ def orders_dataset(*, default: Optional[str] = None) -> SlayerDataset:
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension=default,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             # Derived across the unproven hop.
-            DatasetField(name="li_ts", datatype=DataType.TIMESTAMP, sql="line_items.created_at"),
+            DatasetField(name="li_ts", datatype=DataType.DATETIME, sql="line_items.created_at"),
             # Local value, filter across the unproven hop.
             DatasetField(
-                name="li_flag_ts", datatype=DataType.TIMESTAMP, sql="created_at",
+                name="li_flag_ts", datatype=DataType.DATETIME, sql="created_at",
                 filter="line_items.qty > 0",
             ),
-            DatasetField(name="bad_ts", datatype=DataType.TIMESTAMP, sql=UNPARSEABLE_SQL),
+            DatasetField(name="bad_ts", datatype=DataType.DATETIME, sql=UNPARSEABLE_SQL),
             # Derived across the proven hop.
-            DatasetField(name="cust_signup", datatype=DataType.TIMESTAMP, sql="customers.signup_at"),
+            DatasetField(name="cust_signup", datatype=DataType.DATETIME, sql="customers.signup_at"),
         ],
         relationships=[
-            DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]]),
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="line_items", from_columns=["id"], to_columns=["order_id"]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 
@@ -68,14 +68,14 @@ def line_items_dataset(*, default: Optional[str] = None) -> SlayerDataset:
         name="line_items", sql_table="line_items", data_source="test",
         default_time_dimension=default,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="order_id", datatype=DataType.INT),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="sh_ts", datatype=DataType.TIMESTAMP, sql="shipments.shipped_at"),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INTEGER),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="sh_ts", datatype=DataType.DATETIME, sql="shipments.shipped_at"),
         ],
         relationships=[
-            DatasetRelationship(to="shipments", join_pairs=[["id", "line_item_id"]]),
+            DatasetRelationship(to="shipments", from_columns=["id"], to_columns=["line_item_id"]),
         ],
     )
 
@@ -84,9 +84,9 @@ def shipments_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="line_item_id", datatype=DataType.INT),
-            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="line_item_id", datatype=DataType.INTEGER),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -95,8 +95,8 @@ def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -179,7 +179,7 @@ def month_td(column: str = "created_at") -> List[TimeDimension]:
 
 
 def metric(expression: str, name: str = "l") -> dict:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 #: ``last(amount)`` by ``created_at`` and by ``cust_signup`` both pick order 2.

@@ -24,8 +24,8 @@
     ],
     "metrics": [
      {
-      "expression": "max(tier)",
-      "name": "tr"
+      "metric": "max(tier)",
+      "alias": "tr"
      }
     ]
    }
@@ -55,8 +55,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(spend)",
-      "name": "sp"
+      "metric": "sum(spend)",
+      "alias": "sp"
      }
     ]
    }
@@ -82,8 +82,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amt)",
-      "name": "total"
+      "metric": "sum(amt)",
+      "alias": "total"
      }
     ]
    }
@@ -109,8 +109,8 @@
     ],
     "metrics": [
      {
-      "expression": "max(tier)",
-      "name": "tr"
+      "metric": "max(tier)",
+      "alias": "tr"
      }
     ]
    }
@@ -138,8 +138,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(spend)",
-      "name": "sp"
+      "metric": "sum(spend)",
+      "alias": "sp"
      }
     ]
    }
@@ -159,8 +159,8 @@
     "population": "vm_id_tier",
     "metrics": [
      {
-      "expression": "max(tier)",
-      "name": "mt"
+      "metric": "max(tier)",
+      "alias": "mt"
      }
     ]
    }
@@ -186,8 +186,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -205,11 +205,11 @@
    },
    "new": {
     "to": "vm_tier",
-    "join_pairs": [
-     [
-      "tier",
-      "tier"
-     ]
+    "from_columns": [
+     "tier"
+    ],
+    "to_columns": [
+     "tier"
     ]
    }
   },
@@ -228,8 +228,8 @@
     "population": "vm_tier",
     "metrics": [
      {
-      "expression": "max(tier)",
-      "name": "mt"
+      "metric": "max(tier)",
+      "alias": "mt"
      }
     ]
    }
@@ -255,8 +255,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -274,11 +274,11 @@
    },
    "new": {
     "to": "vm_tier_n",
-    "join_pairs": [
-     [
-      "tier",
-      "tier"
-     ]
+    "from_columns": [
+     "tier"
+    ],
+    "to_columns": [
+     "tier"
     ]
    }
   },
@@ -303,8 +303,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(vm_tier_n.n)",
-      "name": "n"
+      "metric": "sum(vm_tier_n.n)",
+      "alias": "n"
      }
     ]
    }
@@ -332,8 +332,8 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount, partition_by=status)",
-      "name": "st"
+      "metric": "sum(amount, partition_by=status)",
+      "alias": "st"
      }
     ]
    }
@@ -355,8 +355,8 @@
     "dimensions": [
      "status",
      {
-      "expression": "sum(amount, partition_by=channel)",
-      "name": "ct"
+      "field": "sum(amount, partition_by=channel)",
+      "alias": "ct"
      }
     ]
    }
@@ -374,11 +374,11 @@
    },
    "new": {
     "to": "vm_ctot",
-    "join_pairs": [
-     [
-      "status",
-      "status"
-     ]
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "status"
     ]
    }
   },
@@ -395,11 +395,11 @@
    },
    "new": {
     "to": "vm_ctot",
-    "join_pairs": [
-     [
-      "status",
-      "status"
-     ]
+    "from_columns": [
+     "status"
+    ],
+    "to_columns": [
+     "status"
     ]
    }
   },
@@ -425,8 +425,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "to_many_handling": "broadcast"

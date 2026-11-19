@@ -15,9 +15,9 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity as TG
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests import _dev1471_fixtures as D71
 from tests import _dev1915_fixtures as F
@@ -33,8 +33,8 @@ def _approx(d):
     return {k: pytest.approx(v, rel=1e-4) for k, v in d.items()}
 
 
-def _m(expression, name):
-    return DatasetMetric(expression=expression, name=name)
+def _m(metric, alias):
+    return QueryMetric(metric=metric, alias=alias)
 
 
 # --------------------------------------------------------------------------- #
@@ -264,8 +264,8 @@ def _monthly_dataset() -> SlayerDataset:
         name="monthly", sql_table="monthly", data_source="ds",
         default_time_dimension="month_ts",
         fields=[
-            DatasetField(name="month_ts", sql="month_ts", datatype=D71.DataType.TIMESTAMP),
-            DatasetField(name="rev", sql="rev", datatype=D71.DataType.DOUBLE),
+            DatasetField(name="month_ts", sql="month_ts", datatype=D71.DataType.DATETIME),
+            DatasetField(name="rev", sql="rev", datatype=D71.DataType.FLOAT),
         ],
     )
 
@@ -287,7 +287,7 @@ _TWO_STAGE_ORACLE = {
                                         ("first", _TWO_STAGE_ORACLE["first"])])
 @pytest.mark.parametrize("backend", D71.BACKENDS)
 async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
-    windowed = [{"expression": f"{agg}(rev, window='60d')", "name": "win"}]
+    windowed = [{"metric": f"{agg}(rev, window='60d')", "alias": "win"}]
     stage_outer = SlayerQuery.model_validate({
         "population": "s1",
         "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],

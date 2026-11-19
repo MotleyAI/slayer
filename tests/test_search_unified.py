@@ -31,8 +31,8 @@ from slayer.cli import main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.search import graph as _search_graph
 from slayer.search.service import (
@@ -73,7 +73,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="sum(amount_paid)")],
+                metrics=[QueryMetric(metric="sum(amount_paid)")],
             ),
         )
         await storage.save_memory(
@@ -81,7 +81,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             entities=["warehouse.customers.email"],
             query=SlayerQuery(
                 population="customers",
-                metrics=[DatasetMetric(expression="count(*)")],
+                metrics=[QueryMetric(metric="count(*)")],
             ),
         )
         yield storage
@@ -510,7 +510,7 @@ def _make_rest_client(tmp_path):
             name="orders",
             sql_table="orders",
             data_source="warehouse",
-            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -657,7 +657,7 @@ def _seed_cli_storage(tmp_path) -> str:
             name="orders",
             sql_table="orders",
             data_source="warehouse",
-            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.FLOAT)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",

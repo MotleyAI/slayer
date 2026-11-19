@@ -14,7 +14,7 @@ def _month_query(order_column: str, direction: str = "desc") -> SlayerQuery:
     return fx.q(
         population="orders",
         time_dimensions=[{"field": "created_at", "granularity": "month"}],
-        metrics=[{"expression": "sum(amount)"}],
+        metrics=[{"metric": "sum(amount)"}],
         order=[{"field": order_column, "direction": direction}],
     )
 
@@ -32,7 +32,7 @@ class TestOrderByProjectedBucket:
         resp = await exec_engine.execute(fx.q(
             population="orders",
             dimensions=["date_trunc('month', created_at)"],
-            metrics=[{"expression": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
             order=[{"field": "date_trunc('month', created_at)", "direction": "asc"}],
         ))
         assert [r["orders.created_at"] for r in resp.data] == [
@@ -47,7 +47,7 @@ class TestOrderWithoutMatchingTimeDimension:
         query = fx.q(
             population="orders",
             dimensions=["status"],
-            metrics=[{"expression": "sum(amount)"}],
+            metrics=[{"metric": "sum(amount)"}],
             order=[{"field": "date_trunc('month', created_at)", "direction": "desc"}],
         )
         with pytest.raises(ValueError) as ei:

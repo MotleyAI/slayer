@@ -80,7 +80,7 @@ ProductKind = Literal["spine", "detached", "unrelated"]
 class OrientedRelationship(BaseModel):
     """A declared relationship viewed from a chosen traversal source.
 
-    ``source_dataset``/``to`` are the traversal direction; ``join_pairs``
+    ``source_dataset``/``to`` are the traversal direction; ``column_pairs``
     and ``cardinality`` are oriented to match it. ``declaring_dataset`` is the dataset
     that stores the underlying :class:`DatasetRelationship` (storage trivia, kept for
     diagnostics). Frozen so a resolved hop cannot be mutated in place.
@@ -90,7 +90,7 @@ class OrientedRelationship(BaseModel):
 
     source_dataset: str
     to: str
-    join_pairs: list[list[str]]
+    column_pairs: list[tuple[str, str]]
     join_type: JoinType
     cardinality: RelationshipCardinality | None
     name: str | None
@@ -185,16 +185,16 @@ def _orient(
     """Orient ``relationship`` (declared on ``declaring``) so its source is ``from_dataset``."""
     if from_dataset == declaring:
         to_dataset = relationship.to
-        pairs = [list(p) for p in relationship.join_pairs]
+        pairs = list(relationship.column_pairs)
         cardinality = relationship.cardinality
     else:
         to_dataset = declaring
-        pairs = [[p[1], p[0]] for p in relationship.join_pairs]
+        pairs = [(p[1], p[0]) for p in relationship.column_pairs]
         cardinality = invert_cardinality(relationship.cardinality)
     return OrientedRelationship(
         source_dataset=from_dataset,
         to=to_dataset,
-        join_pairs=pairs,
+        column_pairs=pairs,
         join_type=relationship.join_type,
         cardinality=cardinality,
         name=relationship.name,
@@ -216,7 +216,7 @@ def orient_relationship(*, relationship: DatasetRelationship, declaring: SlayerD
 def _product_edge(dataset: SlayerDataset) -> OrientedRelationship:
     """A population factor's hop to the spine: the product, each factor row fanning to every instant."""
     return OrientedRelationship(
-        source_dataset=dataset.name, to=TIME_SPINE_DATASET, join_pairs=[],
+        source_dataset=dataset.name, to=TIME_SPINE_DATASET, column_pairs=[],
         join_type=PRODUCT_JOIN_TYPE, cardinality=RelationshipCardinality.ONE_TO_MANY,
         name=TIME_SPINE_DATASET, declaring_dataset=dataset.name,
         source_spelling=dataset.explicit_spelling, product="spine",
@@ -224,7 +224,7 @@ def _product_edge(dataset: SlayerDataset) -> OrientedRelationship:
 
 
 #: An oriented hop, or a declared relationship read in its declared orientation — both
-#: expose ``cardinality`` and target-side ``join_pairs``, all the proof reads.
+#: expose ``cardinality`` and target-side ``column_pairs``, all the proof reads.
 OrientedLike = OrientedRelationship | DatasetRelationship
 
 
@@ -244,7 +244,7 @@ def provably_to_one(*, edge: OrientedLike, target_dataset: SlayerDataset) -> boo
     """Is ``edge`` provably many-to-one onto ``target_dataset`` in its orientation?
     True iff the oriented cardinality is m:1/1:1, or the traversal-target fields
     fully cover a unique key-set of ``target_dataset``."""
-    return _to_one(cardinality=edge.cardinality, target_keys=[p[1] for p in edge.join_pairs], target=target_dataset)
+    return _to_one(cardinality=edge.cardinality, target_keys=[p[1] for p in edge.column_pairs], target=target_dataset)
 
 
 def _detached_names(datasets_by_name: dict[str, SlayerDataset]) -> frozenset[str]:
@@ -257,9 +257,9 @@ def _detached_names(datasets_by_name: dict[str, SlayerDataset]) -> frozenset[str
             t = datasets.get(j.to)
             if t is None:
                 continue
-            if _to_one(cardinality=j.cardinality, target_keys=[p[1] for p in j.join_pairs], target=t):
+            if _to_one(cardinality=j.cardinality, target_keys=[p[1] for p in j.column_pairs], target=t):
                 to_one_into.setdefault(t.name, set()).add(m.name)
-            if _to_one(cardinality=invert_cardinality(j.cardinality), target_keys=[p[0] for p in j.join_pairs],
+            if _to_one(cardinality=invert_cardinality(j.cardinality), target_keys=[p[0] for p in j.column_pairs],
                        target=m):
                 to_one_into.setdefault(m.name, set()).add(t.name)
     frontier = list(reached)
@@ -273,7 +273,7 @@ def _detached_names(datasets_by_name: dict[str, SlayerDataset]) -> frozenset[str
 def _detached_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedRelationship:
     """The spine and a dataset without any route to it, meeting only as a product."""
     return OrientedRelationship(
-        source_dataset=source.name, to=target.name, join_pairs=[],
+        source_dataset=source.name, to=target.name, column_pairs=[],
         join_type=PRODUCT_JOIN_TYPE, cardinality=RelationshipCardinality.MANY_TO_MANY,
         name=None, declaring_dataset=TIME_SPINE_DATASET,
         source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
@@ -284,7 +284,7 @@ def _detached_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedR
 def _unrelated_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedRelationship:
     """The population and a dataset no relationship path reaches, meeting only as a product."""
     return OrientedRelationship(
-        source_dataset=source.name, to=target.name, join_pairs=[],
+        source_dataset=source.name, to=target.name, column_pairs=[],
         join_type=PRODUCT_JOIN_TYPE, cardinality=RelationshipCardinality.MANY_TO_MANY,
         name=None, declaring_dataset=source.name,
         source_spelling=source.explicit_spelling, target_spelling=target.explicit_spelling,
@@ -317,7 +317,7 @@ def list_child(*, parent: SlayerDataset, field: DatasetField) -> SlayerDataset:
     # Built valid, then renamed: the name validator refuses the reserved prefix. Never a relation of its own.
     child = SlayerDataset(
         name="list_child", sql_table="list_child", data_source=parent.data_source or "list_child",
-        fields=[DatasetField(name=LIST_ELEMENT_FIELD, datatype=field.element_type or DataType.UNKNOWN)],
+        fields=[DatasetField(name=LIST_ELEMENT_FIELD, datatype=field.element_type or DataType.OPAQUE)],
     ).model_copy(update={"name": name, "sql_table": name, "data_source": parent.data_source})
     child._list_of = (parent.name, field.name)
     return parent._list_children.setdefault(key, child)
@@ -339,7 +339,7 @@ def _lateral_edge(*, parent: SlayerDataset, field: str, forward: bool) -> Orient
     child = list_child_name(parent=parent.name, field=field)
     return OrientedRelationship(
         source_dataset=parent.name if forward else child, to=child if forward else parent.name,
-        join_pairs=[], join_type=JoinType.INNER,
+        column_pairs=[], join_type=JoinType.INNER,
         cardinality=RelationshipCardinality.ONE_TO_MANY if forward else RelationshipCardinality.MANY_TO_ONE,
         name=field, declaring_dataset=parent.name,
         source_spelling=parent.explicit_spelling if forward else None,
@@ -425,7 +425,7 @@ def relationship_key_fields(
         assert col is not None
         return col
 
-    return [(field(src, source), field(tgt, target)) for src, tgt in edge.join_pairs]
+    return [(field(src, source), field(tgt, target)) for src, tgt in edge.column_pairs]
 
 
 def _virtual_spine_edges(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> list[OrientedRelationship]:

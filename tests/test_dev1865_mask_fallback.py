@@ -10,8 +10,9 @@ from __future__ import annotations
 import pytest
 
 from slayer.sql import generator as generator_module
+from slayer.core.query import QueryMetric
 
-from tests._dev1865_fixtures import DatasetMetric, make_exec_engine, q
+from tests._dev1865_fixtures import make_exec_engine, q
 
 # A combined-select shape (the partitioned measure attaches a producer CTE), so
 # the outer scope the fallback routes to actually exists.
@@ -19,8 +20,8 @@ _QUERY_KWARGS = dict(
     dimensions=["region", "city"],
     filter=["sum(amount) > 55"],
     metrics=[
-        DatasetMetric(expression="sum(amount)", name="s"),
-        DatasetMetric(expression="sum(amount, partition_by=region)", name="part"),
+        QueryMetric(metric="sum(amount)", alias="s"),
+        QueryMetric(metric="sum(amount, partition_by=region)", alias="part"),
     ],
 )
 

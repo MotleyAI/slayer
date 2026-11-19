@@ -2188,7 +2188,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "how": "<code>\"population\": {\"source_name\": \"orders\", \"fields\": [...], \"relationships\": [...]}</code>"
+     "how": "<code>\"population\": {\"dataset\": \"orders\", \"fields\": [...], \"relationships\": [...]}</code>"
     },
     "malloy": {
      "verdict": "yes",

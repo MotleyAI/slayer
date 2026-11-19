@@ -124,7 +124,7 @@ class TestEveryResponse:
     async def test_a_library_call_in_another_model_is_not_announced(self) -> None:
         async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute({
-                "population": "t", "dimensions": [{"expression": "reverse(customers.name)", "name": "rn"}],
+                "population": "t", "dimensions": [{"field": "reverse(customers.name)", "alias": "rn"}],
                 "metrics": [metric("count(*)")]}))
         assert got == ([], [])
 

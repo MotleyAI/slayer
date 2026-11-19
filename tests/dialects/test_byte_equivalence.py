@@ -24,8 +24,8 @@ import re
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 
 from tests._engine_helpers import _engine_generate
 
@@ -41,8 +41,8 @@ async def _gen(dialect: str, query: SlayerQuery, dataset: SlayerDataset) -> str:
 
 _BASIC_QUERY = SlayerQuery(
     population="orders",
-    metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
-    dimensions=[FieldRef(name="status")],
+    metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(revenue)")],
+    dimensions=[QueryDimension(field="status")],
 )
 
 
@@ -147,7 +147,7 @@ async def test_byte_equivalence_basic_query(
 
 _TRUNC_QUERY = SlayerQuery(
     population="orders",
-    metrics=[DatasetMetric(expression="sum(revenue)")],
+    metrics=[QueryMetric(metric="sum(revenue)")],
     time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
 )
 
@@ -242,8 +242,8 @@ async def test_byte_equivalence_date_trunc_month(
 
 _MEDIAN_QUERY = SlayerQuery(
     population="orders",
-    metrics=[DatasetMetric(expression="median(revenue)")],
-    dimensions=[FieldRef(name="status")],
+    metrics=[QueryMetric(metric="median(revenue)")],
+    dimensions=[QueryDimension(field="status")],
 )
 
 
@@ -325,8 +325,8 @@ def test_byte_equivalence_median_tsql_raises(orders_dataset: SlayerDataset) -> N
 
 _PCT_QUERY = SlayerQuery(
     population="orders",
-    metrics=[DatasetMetric(expression="percentile(revenue, p=0.95)")],
-    dimensions=[FieldRef(name="status")],
+    metrics=[QueryMetric(metric="percentile(revenue, p=0.95)")],
+    dimensions=[QueryDimension(field="status")],
 )
 
 
@@ -397,8 +397,8 @@ async def test_byte_equivalence_percentile(
 
 _CORR_QUERY = SlayerQuery(
     population="orders",
-    metrics=[DatasetMetric(expression="corr(revenue, other=quantity)")],
-    dimensions=[FieldRef(name="status")],
+    metrics=[QueryMetric(metric="corr(revenue, other=quantity)")],
+    dimensions=[QueryDimension(field="status")],
 )
 
 
@@ -455,7 +455,7 @@ async def test_byte_equivalence_corr_tsql_decomposition(
 _TIME_SHIFT_QUERY = SlayerQuery(
     population="orders",
     metrics=[
-        DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="rev_prev"),
+        QueryMetric(metric="time_shift(sum(revenue), -1, 'month')", alias="rev_prev"),
     ],
     time_dimensions=[
         TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
@@ -505,7 +505,7 @@ async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -
 _CUMSUM_QUERY = SlayerQuery(
     population="orders",
     metrics=[
-        DatasetMetric(expression="cumsum(sum(revenue))", name="cum_rev"),
+        QueryMetric(metric="cumsum(sum(revenue))", alias="cum_rev"),
     ],
     time_dimensions=[
         TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
@@ -549,12 +549,12 @@ def orders_dataset_with_json() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
             DatasetField(
                 name="json_data",
                 sql="json_extract(blob, '$.k')",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
             ),
         ],
     )
@@ -562,8 +562,8 @@ def orders_dataset_with_json() -> SlayerDataset:
 
 _JSON_QUERY = SlayerQuery(
     population="orders",
-    metrics=[DatasetMetric(expression="count(*)")],
-    dimensions=[FieldRef(name="json_data")],
+    metrics=[QueryMetric(metric="count(*)")],
+    dimensions=[QueryDimension(field="json_data")],
 )
 
 

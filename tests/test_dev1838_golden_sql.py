@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1838_fixtures import (
-    DatasetMetric,
     OrderItem,
     dev1838_datasets,
     month_td,
@@ -31,30 +32,30 @@ def _cases() -> dict:
     return {
         "fuse/plain_hidden_order": q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             order=[OrderItem.model_validate({"field": "avg(amount)", "direction": "desc"})],
         ),
         "fuse/post_filter_on_transform": q(
             dimensions=["status"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="cumsum(sum(amount))", name="x"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="cumsum(sum(amount))", alias="x"),
             ],
             filter=["cumsum(sum(amount)) > 50"],
         ),
         "fuse/multi_alias": q(
             dimensions=["status"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m1"),
-                DatasetMetric(expression="sum(amount)", name="m2"),
+                QueryMetric(metric="sum(amount)", alias="m1"),
+                QueryMetric(metric="sum(amount)", alias="m2"),
             ],
         ),
         "fuse/dim_only_dedup": q(dimensions=["region", "city"]),
         "fuse/scalar_local": q(
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         ),
         "fuse/scalar_cm_spine": q(
-            metrics=[DatasetMetric(expression="sum(customers.spend)", name="cm")],
+            metrics=[QueryMetric(metric="sum(customers.spend)", alias="cm")],
         ),
     }
 

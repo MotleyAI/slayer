@@ -36,14 +36,14 @@ TEAM_SETS = {"population": "contractors", "dimensions": ["team"],
 class TestQueryBackedModels:
     async def test_collect_columns_are_typed_lists(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(query=TEAM_SETS, name="team_sets")
-        assert _typed(model, "team_skills") == (DataType.ARRAY, DataType.TEXT)
-        assert _typed(model, "rates") == (DataType.ARRAY, DataType.INT)
+        assert _typed(model, "team_skills") == (DataType.ARRAY, DataType.STRING)
+        assert _typed(model, "rates") == (DataType.ARRAY, DataType.INTEGER)
 
     async def test_count_of_a_list_is_an_integer(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(query={
             "population": "contractors", "dimensions": ["team"], "metrics": [metric("count(skills)", "n")]},
             name="list_counts")
-        assert _typed(model, "n") == (DataType.INT, None)
+        assert _typed(model, "n") == (DataType.INTEGER, None)
 
     async def test_element_access_on_a_stored_query_backed_model(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(query=TEAM_SETS, name="team_sets")
@@ -57,8 +57,8 @@ class TestQueryBackedModels:
             {"population": "s", "metrics": [metric("collect(team_skills.value)", "all_skills"),
                                                metric("collect(rates.value)", "all_rates")]},
         ], name="all_sets")
-        assert _typed(model, "all_skills") == (DataType.ARRAY, DataType.TEXT)
-        assert _typed(model, "all_rates") == (DataType.ARRAY, DataType.INT)
+        assert _typed(model, "all_skills") == (DataType.ARRAY, DataType.STRING)
+        assert _typed(model, "all_rates") == (DataType.ARRAY, DataType.INTEGER)
 
 
 class TestStages:
@@ -88,4 +88,4 @@ class TestReRootedProducers:
                for r in resp.data}
         assert got == {1: ["go", "sql"], 2: ["sql"], 3: [], 5: ["go"], None: []}
         model = await engine.create_dataset_from_query(query=query, name="per_contractor")
-        assert _typed(model, "s") == (DataType.ARRAY, DataType.TEXT)
+        assert _typed(model, "s") == (DataType.ARRAY, DataType.STRING)

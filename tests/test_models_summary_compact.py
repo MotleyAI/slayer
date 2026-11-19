@@ -61,23 +61,23 @@ async def _seed_orders(storage: YAMLStorage) -> None:
         data_source="mydb",
         description="Orders fact.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT, description="Order state."),
-            DatasetField(name="amount", datatype=DataType.DOUBLE,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING, description="Order state."),
+            DatasetField(name="amount", datatype=DataType.FLOAT,
                    description="USD amount."),
-            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER, hidden=True),
         ],
         metrics=[
             DatasetMetric(name="revenue", expression="sum(amount)"),
             DatasetMetric(name="orders_count", expression="count(*)"),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     ))
     await storage.save_dataset(SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="mydb",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
 
 
@@ -178,7 +178,7 @@ async def test_compact_markdown_no_joins_marker(
     )
     await yaml_storage.save_dataset(SlayerDataset(
         name="solo", sql_table="t", data_source="ds",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     ))
     mcp = create_mcp_server(storage=yaml_storage)
     result = await _call(mcp, name="datasets_summary", arguments={

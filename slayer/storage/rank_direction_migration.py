@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from slayer.storage.document_keys import LEGACY_KEYS, DocumentKeys
-from slayer.storage.migrations import register_migration, stamp_stored
+from slayer.storage.migrations import is_legacy_root_extension, register_migration, stamp_stored
 
 _DIRECTED = frozenset({"rank", "dense_rank"})
 _OPEN = frozenset({"(", "[", "{"})
@@ -83,8 +83,8 @@ def _rewrite_key(item: Any, key: str, fn: FieldRewrite, where: str) -> Any:
 
 
 def _item(where: str, index: int, item: Any) -> str:
-    """``where['name']`` for a named item, else ``where[index]``."""
-    name = item.get("name") if isinstance(item, dict) else None
+    """``where['name']`` for a named (or aliased) item, else ``where[index]``."""
+    name = item.get("name", item.get("alias")) if isinstance(item, dict) else None
     return f"{where}[{name!r}]" if isinstance(name, str) and name else f"{where}[{index}]"
 
 
@@ -99,11 +99,11 @@ def _rewrite_text(value: Any, fn: FieldRewrite, where: str) -> Any:
 
 
 def _rewrite_metric(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
-    return fn(item, where) if isinstance(item, str) else _rewrite_key(item, keys.expression, fn, where)
+    return fn(item, where) if isinstance(item, str) else _rewrite_key(item, keys.query_metric_text, fn, where)
 
 
 def _rewrite_dimension(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
-    return fn(item, where) if isinstance(item, str) else _rewrite_key(item, "expression", fn, where)
+    return fn(item, where) if isinstance(item, str) else _rewrite_key(item, keys.dimension_text, fn, where)
 
 
 def _rewrite_time_dimension(item: Any, fn: FieldRewrite, where: str, keys: DocumentKeys) -> Any:
@@ -170,7 +170,7 @@ def rewrite_query_texts_at(data: dict, fn: FieldRewrite, keys: DocumentKeys = LE
     data = _rewrite_query_fields(data, fn, keys)
     source = data.get(keys.population)
     if isinstance(source, dict):
-        if "source_name" in source:
+        if is_legacy_root_extension(source):
             if isinstance(source.get(keys.metrics), list):
                 data[keys.population] = {**source, keys.metrics: _metric_expressions(
                     source[keys.metrics], fn, f"{keys.population}.{keys.metrics}", keys)}

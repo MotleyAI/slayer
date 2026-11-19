@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -36,13 +36,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "cardinality": "one_to_one",
+    "from_columns": [
+     "customer_id"
     ],
-    "cardinality": "one_to_one"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -58,11 +58,11 @@
    },
    "new": {
     "to": "c",
-    "join_pairs": [
-     [
-      "a",
-      "b"
-     ]
+    "from_columns": [
+     "a"
+    ],
+    "to_columns": [
+     "b"
     ]
    }
   },
@@ -74,7 +74,7 @@
    },
    "new": {
     "name": "id",
-    "datatype": "INT"
+    "datatype": "Integer"
    }
   }
  ],

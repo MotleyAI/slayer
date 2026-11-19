@@ -451,8 +451,8 @@ class TestLiveNameSurvivesToTheReport:
         await storage.save_dataset(SlayerDataset(
             name="_dlt_loads_x", data_source="ds", sql_table="_dlt_loads__x",
             hidden=True, meta={"internal_table": "dlt"},
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="v", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="v", datatype=DataType.STRING)],
         ))
         result = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
         assert "_dlt_loads__x" in {h.table_name for h in result.hidden_internals}
@@ -617,7 +617,7 @@ class TestIdempotencyAndReporting:
                 name="_dlt_loads",
                 data_source="ds",
                 sql_table="_dlt_loads",
-                fields=[DatasetField(name="load_id", sql="load_id", datatype=DataType.TEXT)],
+                fields=[DatasetField(name="load_id", sql="load_id", datatype=DataType.STRING)],
             )
         )
 
@@ -640,7 +640,7 @@ class TestIdempotencyAndReporting:
                 name="_dlt_loads",
                 data_source="ds",
                 sql="SELECT load_id FROM _dlt_loads",
-                fields=[DatasetField(name="load_id", sql="load_id", datatype=DataType.TEXT)],
+                fields=[DatasetField(name="load_id", sql="load_id", datatype=DataType.STRING)],
             )
         )
 
@@ -722,7 +722,7 @@ class TestColumnsToModelKwargs:
         """`_columns_to_model` passes `meta` through untouched, since the caller merges the breadcrumb."""
         model = _fields_to_dataset(
             name="t",
-            fields=[IntrospectedColumn(name="id", type=DataType.INT, primary_key=True)],
+            fields=[IntrospectedColumn(name="id", type=DataType.INTEGER, primary_key=True)],
             data_source="ds",
             sql_table="t",
             hidden=True,
@@ -735,7 +735,7 @@ class TestColumnsToModelKwargs:
         """The dbt hidden-import path calls this without the new kwargs."""
         model = _fields_to_dataset(
             name="t",
-            fields=[IntrospectedColumn(name="id", type=DataType.INT, primary_key=True)],
+            fields=[IntrospectedColumn(name="id", type=DataType.INTEGER, primary_key=True)],
             data_source="ds",
             sql_table="t",
         )
@@ -1238,7 +1238,7 @@ class TestVisibilitySurfaces:
         resp = await engine.execute(
             SlayerQuery.model_validate({
                 "population": "_dlt_loads",
-                "metrics": [{"expression": "count(*)", "name": "n"}],
+                "metrics": [{"metric": "count(*)", "alias": "n"}],
             })
         )
         assert resp.row_count == 1
@@ -1278,7 +1278,7 @@ class TestJoinsIntoHiddenModels:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["_dlt_loads.schema_name"],
-                "metrics": [{"expression": "sum(amount)", "name": "total"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "total"}],
             })
         )
         # The hidden model's name in the result key is evidence the join resolved.

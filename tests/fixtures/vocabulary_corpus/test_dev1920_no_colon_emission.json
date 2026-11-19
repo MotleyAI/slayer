@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "cardinality": "many_to_one",
+    "from_columns": [
+     "customer_id"
     ],
-    "cardinality": "many_to_one"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {

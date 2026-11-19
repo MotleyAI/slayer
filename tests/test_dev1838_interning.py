@@ -17,11 +17,12 @@ import pytest
 
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1838_fixtures import (
     BAND,
     BAND_WM,
-    DatasetMetric,
     SPEND_BAND,
     cte_aliases,
     dev1838_datasets,
@@ -33,7 +34,7 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = DatasetMetric(expression="sum(amount)", name="m")
+M = QueryMetric(metric="sum(amount)", alias="m")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -51,7 +52,7 @@ def _cm_count(sql: str, dialect: str) -> int:
 
 def _band_wm_query(*windows: str, filters=None):
     measures = [M] + [
-        DatasetMetric(expression=f"sum(amount, window='{w}')", name=f"w{w[:-1]}")
+        QueryMetric(metric=f"sum(amount, window='{w}')", alias=f"w{w[:-1]}")
         for w in windows
     ]
     kw = {"filter": filters} if filters else {}
@@ -140,11 +141,11 @@ class TestSharedAcrossScopes:
         must keep it that way with both roles' values correct."""
         dialect, engine = exec_backend
         query = q(
-            dimensions=["customers.tier", {"expression": SPEND_BAND,
-                                           "name": "sband"}],
-            metrics=[M, DatasetMetric(
-                expression="sum(customers.spend, partition_by=customers.tier)",
-                name="rt")],
+            dimensions=["customers.tier", {"field": SPEND_BAND,
+                                           "alias": "sband"}],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="rt")],
         )
         resp = await engine.execute(query)
         got = {
@@ -181,8 +182,8 @@ class TestProducersThatMustStaySeparate:
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"], metrics=[
-            DatasetMetric(expression="last(amount)", name="lb"),
-            DatasetMetric(expression="last(amount, customers.signup_at)", name="ls"),
+            QueryMetric(metric="last(amount)", alias="lb"),
+            QueryMetric(metric="last(amount, customers.signup_at)", alias="ls"),
         ])
         resp = await engine.execute(query)
         by = {r["orders.status"]: r for r in resp.data}
@@ -200,8 +201,8 @@ class TestProducersThatMustStaySeparate:
         query = q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, window='90d')", name="w"),
-                DatasetMetric(expression="sum(ok_amount, window='90d')", name="wok"),
+                QueryMetric(metric="sum(amount, window='90d')", alias="w"),
+                QueryMetric(metric="sum(ok_amount, window='90d')", alias="wok"),
             ],
         )
         resp = await engine.execute(query)
@@ -264,8 +265,8 @@ class TestWarningsUnchangedBySharing:
         filter: one entry per measure; ``cm`` counts the CityA customer only."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            metrics=[M, DatasetMetric(expression="sum(customers.spend)", name="cm")],
+            dimensions=[{"field": SPEND_BAND, "alias": "sband"}],
+            metrics=[M, QueryMetric(metric="sum(customers.spend)", alias="cm")],
             filter=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
@@ -283,11 +284,11 @@ class TestWarningsUnchangedBySharing:
         the host filter: exactly one entry — never one per consumer."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier", {"expression": SPEND_BAND,
-                                           "name": "sband"}],
-            metrics=[M, DatasetMetric(
-                expression="sum(customers.spend, partition_by=customers.tier)",
-                name="rt")],
+            dimensions=["customers.tier", {"field": SPEND_BAND,
+                                           "alias": "sband"}],
+            metrics=[M, QueryMetric(
+                metric="sum(customers.spend, partition_by=customers.tier)",
+                alias="rt")],
             filter=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -69,11 +69,11 @@
    },
    "new": {
     "to": "orders",
-    "join_pairs": [
-     [
-      "order_id",
-      "id"
-     ]
+    "from_columns": [
+     "order_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -90,11 +90,11 @@
    },
    "new": {
     "to": "products",
-    "join_pairs": [
-     [
-      "product_id",
-      "id"
-     ]
+    "from_columns": [
+     "product_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -175,7 +175,7 @@
     "population": "upstream",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dimensions": [
@@ -205,7 +205,7 @@
     "population": "upstream",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "filter": [
@@ -264,11 +264,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -285,11 +285,11 @@
    },
    "new": {
     "to": "products",
-    "join_pairs": [
-     [
-      "product_id",
-      "id"
-     ]
+    "from_columns": [
+     "product_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -317,11 +317,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -351,7 +351,7 @@
      {
       "name": "revenue",
       "sql": "amount",
-      "datatype": "number",
+      "datatype": "Float",
       "allowed_aggregations": [
        "sum",
        "avg"
@@ -395,7 +395,7 @@
      {
       "name": "revenue",
       "sql": "amount",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ],
     "metrics": [
@@ -459,11 +459,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -480,11 +480,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -506,7 +506,7 @@
     "population": "upstream",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "filter": [
@@ -585,7 +585,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -602,12 +602,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(old)"
    },
    "new": {
-    "expression": "sum(old)"
+    "metric": "sum(old)"
    }
   },
   {
@@ -633,12 +633,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(rev)"
    },
    "new": {
-    "expression": "sum(rev)"
+    "metric": "sum(rev)"
    }
   },
   {
@@ -656,7 +656,7 @@
     "population": "upstream",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "dry_run": true
@@ -683,7 +683,7 @@
     "population": "upstream",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "filter": [
@@ -709,7 +709,7 @@
     "population": "upstream",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ]
    }
@@ -736,7 +736,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }
@@ -763,7 +763,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }
@@ -790,7 +790,7 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "number"
+      "datatype": "Float"
      }
     ]
    }

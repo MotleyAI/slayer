@@ -44,8 +44,9 @@ from slayer.core.models import (
     SlayerDataset,
 )
 from slayer.core.query import (
-    FieldRef,
     OrderItem,
+    QueryDimension,
+    QueryMetric,
     SlayerQuery,
     TimeDimension,
 )
@@ -84,11 +85,11 @@ def _orders_dataset(
         sql_table="orders",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
         metrics=metrics or [],
         aggregations=aggregations or [],
@@ -102,9 +103,9 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="customers",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="region", sql="region", datatype=DataType.STRING),
         ],
     )
 
@@ -140,8 +141,8 @@ class TestConstructionRejects:
         ``DistinctDimensionValuesError`` is) raised in
         ``model_validator(mode="after")`` into a ``ValidationError``.
         The error message bubbles up unchanged either way."""
-        status_dim = FieldRef(name="status")
-        count_measure = DatasetMetric(expression="count(*)")
+        status_dim = QueryDimension(field="status")
+        count_measure = QueryMetric(metric="count(*)")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 population="orders",
@@ -168,7 +169,7 @@ class TestConstructionRejects:
         """Case 9: query without the field has the same Pydantic shape."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
         )
         assert q.distinct_dimension_values is True
 
@@ -186,7 +187,7 @@ class TestConstructionAccepts:
         """Case 10: dims only, no filter, flag=False → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
@@ -195,7 +196,7 @@ class TestConstructionAccepts:
         """Case 11: dims + time_dims, no measures → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             time_dimensions=[
                 TimeDimension(field="created_at", granularity="day"),
             ],
@@ -218,7 +219,7 @@ class TestConstructionAccepts:
         """Case 13: filter that references only base columns → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["amount > 100"],
             distinct_dimension_values=False,
         )
@@ -228,8 +229,8 @@ class TestConstructionAccepts:
         """Case 14: plain column order → builds."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            order=[OrderItem(field=FieldRef(name="status"))],
+            dimensions=[QueryDimension(field="status")],
+            order=[OrderItem(field="status")],
             distinct_dimension_values=False,
         )
         assert q.distinct_dimension_values is False
@@ -239,7 +240,7 @@ class TestConstructionAccepts:
         post-substitution check is what matters."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["amount > {threshold}"],
             variables={"threshold": 100},
             distinct_dimension_values=False,
@@ -252,7 +253,7 @@ class TestConstructionAccepts:
         (Pydantic-time check)."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["status == 'a:b'"],
             distinct_dimension_values=False,
         )
@@ -270,7 +271,7 @@ class TestCompileAccepts:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["status == 'a:b'"],
             distinct_dimension_values=False,
         )
@@ -283,7 +284,7 @@ class TestCompileAccepts:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["amount > {threshold}"],
             variables={"threshold": 100},
             distinct_dimension_values=False,
@@ -311,7 +312,7 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["sum(amount) > 100"],
             distinct_dimension_values=False,
         )
@@ -323,7 +324,7 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["count(*) > 0"],
             distinct_dimension_values=False,
         )
@@ -334,7 +335,7 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["rank(sum(amount), direction='desc') <= 5"],
             distinct_dimension_values=False,
         )
@@ -345,7 +346,7 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["sum(amount) / amount > 0"],
             distinct_dimension_values=False,
         )
@@ -356,8 +357,8 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            order=[OrderItem(field=FieldRef(name="status"), raw_expression="sum(amount)")],
+            dimensions=[QueryDimension(field="status")],
+            order=[OrderItem(field="status", raw_expression="sum(amount)")],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -369,8 +370,8 @@ class TestCompileRejects:
         )
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            order=[OrderItem(field=FieldRef(name="aov"))],
+            dimensions=[QueryDimension(field="status")],
+            order=[OrderItem(field="aov")],
             distinct_dimension_values=False,
         )
         await self._expect_reject(q, model)
@@ -382,7 +383,7 @@ class TestCompileRejects:
         )
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["aov > 100"],
             distinct_dimension_values=False,
         )
@@ -405,7 +406,7 @@ class TestCompileRejects:
         # Custom aggregation: `weighted_revenue(amount, weight=...)`
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["weighted_revenue(amount, weight=amount) > 0"],
             distinct_dimension_values=False,
         )
@@ -421,8 +422,8 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            order=[OrderItem(field=FieldRef(name="aov"), raw_expression="sum(amount) / count(*)")],
+            dimensions=[QueryDimension(field="status")],
+            order=[OrderItem(field="aov", raw_expression="sum(amount) / count(*)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
@@ -434,8 +435,8 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            order=[OrderItem(field=FieldRef(name="sum_amount"), raw_expression="sum(amount)")],
+            dimensions=[QueryDimension(field="status")],
+            order=[OrderItem(field="sum_amount", raw_expression="sum(amount)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
@@ -446,7 +447,7 @@ class TestCompileRejects:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["{agg_filter}"],
             variables={"agg_filter": "sum(amount) > 100"},
             distinct_dimension_values=False,
@@ -466,7 +467,7 @@ class TestErrorMessage:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["sum(amount) > 100"],
             distinct_dimension_values=False,
         )
@@ -480,7 +481,7 @@ class TestErrorMessage:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["sum(amount) > 100"],
             distinct_dimension_values=False,
         )
@@ -500,8 +501,8 @@ class TestErrorMessage:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            order=[OrderItem(field=FieldRef(name="status"), raw_expression="sum(amount)")],
+            dimensions=[QueryDimension(field="status")],
+            order=[OrderItem(field="status", raw_expression="sum(amount)")],
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
@@ -513,8 +514,8 @@ class TestErrorMessage:
     def test_construction_message_names_offending_field(self) -> None:
         """Construction-time message points at ``measures`` or
         ``dimensions/time_dimensions``."""
-        status_dim = FieldRef(name="status")
-        count_measure = DatasetMetric(expression="count(*)")
+        status_dim = QueryDimension(field="status")
+        count_measure = QueryMetric(metric="count(*)")
         with pytest.raises(ValueError) as exc:
             SlayerQuery(
                 population="orders",
@@ -541,7 +542,7 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status"), FieldRef(name="customer_id")],
+            dimensions=[QueryDimension(field="status"), QueryDimension(field="customer_id")],
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(query=q, dataset=model)
@@ -571,7 +572,7 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             filter=["amount > 100"],
             distinct_dimension_values=False,
         )
@@ -585,8 +586,8 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            order=[OrderItem(field=FieldRef(name="status"))],
+            dimensions=[QueryDimension(field="status")],
+            order=[OrderItem(field="status")],
             limit=10,
             distinct_dimension_values=False,
         )
@@ -601,7 +602,7 @@ class TestSQLGeneration:
         model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             # No explicit flag — default True.
         )
         sql = await _engine_generate(query=q, dataset=model)
@@ -625,7 +626,7 @@ class TestCrossModelDimensions:
                 joins=[
                     DatasetRelationship(
                         to="customers",
-                        join_pairs=[["customer_id", "id"]],
+                        from_columns=["customer_id"], to_columns=["id"],
                         join_type=JoinType.LEFT,
                     ),
                 ],
@@ -633,7 +634,7 @@ class TestCrossModelDimensions:
             await engine.storage.save_dataset(orders)
             q = SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="region", dataset="customers")],
+                dimensions=[QueryDimension(field="customers.region")],
                 distinct_dimension_values=False,
             )
             resp = await engine.execute(q, dry_run=True)
@@ -654,13 +655,13 @@ class TestMultiStageDag:
             inner = SlayerQuery(
                 population="orders",
                 name="raw_rows",
-                dimensions=[FieldRef(name="status"), FieldRef(name="amount")],
+                dimensions=[QueryDimension(field="status"), QueryDimension(field="amount")],
                 distinct_dimension_values=False,
             )
             outer = SlayerQuery(
                 population="raw_rows",
-                dimensions=[FieldRef(name="status")],
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[QueryDimension(field="status")],
+                metrics=[QueryMetric(metric="sum(amount)")],
                 # Outer is default True (with aggregation, GROUP BY is mandatory).
             )
             resp = await engine.execute([inner, outer], dry_run=True)
@@ -724,11 +725,11 @@ def _orders_slayer_dataset_for(data_source: str) -> SlayerDataset:
         sql_table="orders",
         data_source=data_source,
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -756,7 +757,7 @@ class TestEndToEndExecution:
         engine = sqlite_orders_env
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
         )
         resp = await engine.execute(q)
@@ -774,7 +775,7 @@ class TestEndToEndExecution:
         engine = sqlite_orders_env
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
         )
         resp = await engine.execute(q)
         assert resp.row_count == 3
@@ -829,7 +830,7 @@ class TestMCPSurface:
                     {
                         "population": "raw_rows",
                         "dimensions": ["status"],
-                        "metrics": [{"expression": "sum(amount)"}],
+                        "metrics": [{"metric": "sum(amount)"}],
                     },
                 ],
                 "format": "json",
@@ -862,7 +863,7 @@ class TestMCPSurface:
                             "population": "raw_rows",
                             "dimensions": ["status"],
                             # Outer has flag=False but also a measure → reject.
-                            "metrics": [{"expression": "sum(amount)"}],
+                            "metrics": [{"metric": "sum(amount)"}],
                             "distinct_dimension_values": False,
                         },
                     ],
@@ -913,7 +914,7 @@ class TestRESTSurface:
                     {
                         "population": "raw_rows",
                         "dimensions": ["status"],
-                        "metrics": [{"expression": "sum(amount)"}],
+                        "metrics": [{"metric": "sum(amount)"}],
                     },
                 ],
             },
@@ -948,7 +949,7 @@ class TestSlayerClientBody:
         when the SlayerQuery sets it."""
         q = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
         )
         body = SlayerClient._build_query_body(q)
@@ -959,13 +960,13 @@ class TestSlayerClientBody:
         inner = SlayerQuery(
             population="orders",
             name="raw_rows",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             distinct_dimension_values=False,
         )
         outer = SlayerQuery(
             population="raw_rows",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         body = SlayerClient._build_query_body([inner, outer])
         assert "queries" in body

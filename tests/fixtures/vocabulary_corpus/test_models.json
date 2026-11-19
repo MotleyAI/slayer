@@ -2,14 +2,13 @@
  "source": "tests/test_models.py",
  "pairs": [
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "model": "customers",
     "name": "name"
    },
    "new": {
-    "dataset": "customers",
-    "name": "name"
+    "field": "customers.name"
    }
   },
   {
@@ -594,12 +593,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
@@ -673,11 +672,11 @@
    },
    "new": {
     "to": "staff",
-    "join_pairs": [
-     [
-      "manager_id",
-      "id"
-     ]
+    "from_columns": [
+     "manager_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -694,11 +693,11 @@
    },
    "new": {
     "to": "teams",
-    "join_pairs": [
-     [
-      "team_id",
-      "id"
-     ]
+    "from_columns": [
+     "team_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -795,7 +794,7 @@
       "population": "orders",
       "metrics": [
        {
-        "expression": "count(*)"
+        "metric": "count(*)"
        }
       ]
      }
@@ -862,21 +861,21 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(revenue)"
    },
    "new": {
-    "expression": "sum(revenue)"
+    "metric": "sum(revenue)"
    }
   },
   {
@@ -913,19 +912,19 @@
     "metrics": [
      "count(*)",
      {
-      "expression": "sum(revenue) / count(*)",
-      "name": "aov"
+      "metric": "sum(revenue) / count(*)",
+      "alias": "aov"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
@@ -956,7 +955,7 @@
     "dimensions": [
      "status",
      {
-      "name": "customers.name",
+      "field": "customers.name",
       "label": "Customer"
      }
     ]
@@ -981,23 +980,21 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [
-     {
-      "name": "status"
-     }
+     "status"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
@@ -1040,9 +1037,7 @@
     "direction": "desc"
    },
    "new": {
-    "field": {
-     "name": "revenue_sum"
-    },
+    "field": "revenue_sum",
     "direction": "desc"
    }
   },
@@ -1077,9 +1072,7 @@
     "granularity": "month"
    },
    "new": {
-    "field": {
-     "name": "created_at"
-    },
+    "field": "created_at",
     "granularity": "month"
    }
   },
@@ -1154,8 +1147,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "cnt"
+      "metric": "count(*)",
+      "alias": "cnt"
      }
     ]
    }
@@ -1250,11 +1243,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -1271,11 +1264,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -1293,7 +1286,7 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders"
+      "dataset": "orders"
      }
     ]
    }
@@ -1370,7 +1363,7 @@
    },
    "new": {
     "name": "x",
-    "datatype": "string"
+    "datatype": "String"
    }
   },
   {
@@ -1381,7 +1374,7 @@
    },
    "new": {
     "name": "x",
-    "datatype": "number"
+    "datatype": "Float"
    }
   },
   {
@@ -1392,7 +1385,7 @@
    },
    "new": {
     "name": "x",
-    "datatype": "integer"
+    "datatype": "Integer"
    }
   },
   {
@@ -1403,7 +1396,7 @@
    },
    "new": {
     "name": "x",
-    "datatype": "time"
+    "datatype": "DateTime"
    }
   },
   {
@@ -1414,7 +1407,7 @@
    },
    "new": {
     "name": "x",
-    "datatype": "date"
+    "datatype": "Date"
    }
   },
   {
@@ -1425,7 +1418,7 @@
    },
    "new": {
     "name": "x",
-    "datatype": "boolean"
+    "datatype": "Boolean"
    }
   },
   {
@@ -1435,8 +1428,7 @@
     "type": "count"
    },
    "new": {
-    "name": "x",
-    "datatype": "count"
+    "name": "x"
    }
   },
   {
@@ -1447,7 +1439,7 @@
    },
    "new": {
     "name": "x",
-    "datatype": "DOUBLE"
+    "datatype": "Float"
    }
   },
   {
@@ -1458,38 +1450,37 @@
    },
    "new": {
     "name": "x",
-    "datatype": "unknown"
+    "datatype": "Opaque"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)",
     "type": "number"
    },
    "new": {
-    "expression": "count(*)",
-    "datatype": "number"
+    "metric": "count(*)",
+    "datatype": "Float"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)",
     "type": "count"
    },
    "new": {
-    "expression": "count(*)",
-    "datatype": "count"
+    "metric": "count(*)"
    }
   },
   {
@@ -1508,9 +1499,9 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*) / count(orders)",
-      "name": "ratio",
-      "datatype": "DOUBLE"
+      "metric": "count(*) / count(orders)",
+      "alias": "ratio",
+      "datatype": "Float"
      }
     ]
    }

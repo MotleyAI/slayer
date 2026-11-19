@@ -47,7 +47,7 @@ from tests._gateway_harness import (
 from tests._stored_upgrade_fixtures import raw_store
 
 REVENUE_BY_STATUS = {
-    "population": "orders", "dimensions": ["status"], "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+    "population": "orders", "dimensions": ["status"], "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
 }
 ORDERS_PROJECT = DbtProject(
     semantic_models=[], metrics=[],
@@ -134,7 +134,7 @@ class TestGatewayServesEveryFeature:
     async def test_model_validation(self, tmp_path: Path, shop_db: str) -> None:
         ds = shop_datasource(shop_db)
         drifted = orders_dataset()
-        drifted.fields.append(DatasetField(name="ghost", sql="ghost", datatype=DataType.TEXT))
+        drifted.fields.append(DatasetField(name="ghost", sql="ghost", datatype=DataType.STRING))
 
         async def build(base: str) -> StorageBackend:
             return await shop_storage(base, datasource=ds, datasets=[drifted, customers_dataset(), paid_sql_dataset()])
@@ -189,7 +189,7 @@ class TestGatewayServesEveryFeature:
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
         types = {c["name"]: c["datatype"] for c in twin.default["fields"]}
-        assert (types["quantity"], types["amount"]) == ("INT", "DOUBLE")
+        assert (types["quantity"], types["amount"]) == ("Integer", "Float")
         assert twin.gateway == twin.default
 
     async def test_mcp_create_and_describe_datasource(self, tmp_path: Path, shop_db: str) -> None:
@@ -325,7 +325,7 @@ class TestTheLoopStaysResponsive:
             engine.close()
             engine_factory.invalidate_engine(ds)
         assert model is not None
-        assert {c.name: c.datatype for c in model.fields}["amount"] is DataType.INT
+        assert {c.name: c.datatype for c in model.fields}["amount"] is DataType.INTEGER
         assert statements
         assert threading.get_ident() not in checkouts + statements
 

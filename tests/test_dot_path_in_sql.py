@@ -33,12 +33,12 @@ def _orders_with_customers_join(**overrides) -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
     fields.update(overrides)
@@ -51,12 +51,12 @@ def _customers() -> SlayerDataset:
         data_source="prod",
         sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
     )
 
@@ -67,8 +67,8 @@ def _regions() -> SlayerDataset:
         data_source="prod",
         sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -94,7 +94,7 @@ class TestModeASurfacesPreservedVerbatim:
         m.fields = list(m.fields) + [
             DatasetField(
                 name="region_name",
-                datatype=DataType.TEXT,
+                datatype=DataType.STRING,
                 sql="customers.regions.name",
             )
         ]
@@ -107,7 +107,7 @@ class TestModeASurfacesPreservedVerbatim:
         m.fields = list(m.fields) + [
             DatasetField(
                 name="region_amount",
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 sql="amount",
                 filter="customers.regions.name = 'EU'",
             )

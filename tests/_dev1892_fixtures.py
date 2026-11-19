@@ -15,6 +15,8 @@ from typing import List
 
 from slayer.core.errors import SlayerError
 
+from slayer.core.query import QueryDimension, QueryMetric
+
 from tests._dev1841_fixtures import (
     Aggregation,
     AggregationParam,
@@ -63,7 +65,7 @@ def shared_default_name_datasets() -> List[SlayerDataset]:
     )
     orders = next(m for m in models if m.name == "orders")
     # A host column also named ``spend`` — host-anchoring would weight by this.
-    orders.fields.append(DatasetField(name="spend", datatype=DataType.DOUBLE, sql="amount"))
+    orders.fields.append(DatasetField(name="spend", datatype=DataType.FLOAT, sql="amount"))
     return models
 
 
@@ -82,7 +84,7 @@ def toone_filter_datasets() -> List[SlayerDataset]:
     models = dev1840_datasets()
     cust = _customers(models)
     cust.fields.append(
-        DatasetField(name="north_spend", datatype=DataType.DOUBLE, sql="spend",
+        DatasetField(name="north_spend", datatype=DataType.FLOAT, sql="spend",
                filter="regions.name = 'North'"),
     )
     cust.aggregations.append(
@@ -111,7 +113,7 @@ def derived_default_datasets() -> List[SlayerDataset]:
     """``wsum5`` default is a to-one path to a DERIVED column (``regions.derived_pop`` = ``pop * 2``) — must expand its SQL."""
     models = dev1840_datasets()
     next(m for m in models if m.name == "regions").fields.append(
-        DatasetField(name="derived_pop", datatype=DataType.DOUBLE, sql="pop * 2"),
+        DatasetField(name="derived_pop", datatype=DataType.FLOAT, sql="pop * 2"),
     )
     _customers(models).aggregations.append(
         Aggregation(name="wsum5", expression="SUM({value} * {weight})",
@@ -124,7 +126,7 @@ def fanning_derived_source_datasets() -> List[SlayerDataset]:
     """customers gains ``bad_spend`` = ``spend + orders.amount`` — a derived source crossing the fanning customers→orders hop, must fail closed."""
     models = dev1840_datasets()
     _customers(models).fields.append(
-        DatasetField(name="bad_spend", datatype=DataType.DOUBLE, sql="spend + orders.amount"),
+        DatasetField(name="bad_spend", datatype=DataType.FLOAT, sql="spend + orders.amount"),
     )
     return models
 
@@ -175,7 +177,7 @@ def derived_local_expr_default_datasets() -> List[SlayerDataset]:
     models = dev1840_datasets()
     cust = _customers(models)
     cust.fields.append(
-        DatasetField(name="double_spend", datatype=DataType.DOUBLE, sql="spend * 2"),
+        DatasetField(name="double_spend", datatype=DataType.FLOAT, sql="spend * 2"),
     )
     cust.aggregations.append(
         Aggregation(name="wsum9", expression="SUM({value} * {weight})",
@@ -265,14 +267,14 @@ def weighted_source_queries_dataset() -> SlayerDataset:
         source_queries=[
             SlayerQuery(
                 name="cr_wtotals", population="sales",
-                dimensions=[FieldRef(name="region"), FieldRef(name="city")],
-                metrics=[DatasetMetric(expression="sum(amount)", name="ct"),
-                          DatasetMetric(expression="count(id)", name="cc")]),
+                dimensions=[QueryDimension(field="region"), QueryDimension(field="city")],
+                metrics=[QueryMetric(metric="sum(amount)", alias="ct"),
+                          QueryMetric(metric="count(id)", alias="cc")]),
             SlayerQuery(
                 population="cr_wtotals",
-                dimensions=[FieldRef(name="region")],
-                metrics=[DatasetMetric(expression="weighted_avg(ct, weight=cc)",
-                                       name="w")]),
+                dimensions=[QueryDimension(field="region")],
+                metrics=[QueryMetric(metric="weighted_avg(ct, weight=cc)",
+                                       alias="w")]),
         ])
 
 

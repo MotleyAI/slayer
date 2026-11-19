@@ -45,8 +45,8 @@ async def storage_two_datasources() -> AsyncIterator[StorageBackend]:
                 data_source=ds_name,
                 description=f"{ds_name} orders fact table",
                 fields=[
-                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                    DatasetField(name="amount", datatype=DataType.DOUBLE,
+                    DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.FLOAT,
                            description=f"{ds_name} order amount"),
                 ],
             ))

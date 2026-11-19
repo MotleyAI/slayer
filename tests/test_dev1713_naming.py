@@ -39,7 +39,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.plan import plan_stages
 from slayer.sql.generator import generate_planned_stages
@@ -110,9 +110,9 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="regions",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
-                DatasetField(name="population", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
+                DatasetField(name="population", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -122,13 +122,13 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region_id", datatype=DataType.INT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE, label="Revenue"),
-                DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.DOUBLE, label="Rev x2"),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="revenue", datatype=DataType.FLOAT, label="Revenue"),
+                DatasetField(name="signup_at", datatype=DataType.DATETIME),
+                DatasetField(name="rev_x2", sql="revenue * 2", datatype=DataType.FLOAT, label="Rev x2"),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
     )
     await storage.save_dataset(
@@ -138,12 +138,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             data_source="prod",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
+                DatasetField(name="created_at", datatype=DataType.DATETIME),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
     )
     yield SlayerQueryEngine(storage=storage)
@@ -161,8 +161,8 @@ class TestJoinedDimensionDottedKeys:
         under ``orders.customers.rev_x2``, not ``orders.customers__rev_x2``."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.rev_x2")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="customers.rev_x2")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.rev_x2" in resp.columns, resp.columns
@@ -176,8 +176,8 @@ class TestJoinedDimensionDottedKeys:
         result-key form — not ``orders.customers__regions__name``."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.regions.name")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="customers.regions.name")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.regions.name" in resp.columns, resp.columns
@@ -189,8 +189,8 @@ class TestJoinedDimensionDottedKeys:
         was already dotted; the D3 fix must not regress it."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.region_id")],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            dimensions=[QueryDimension(field="customers.region_id")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.region_id" in resp.columns, resp.columns
@@ -206,8 +206,8 @@ class TestJoinedDimensionDottedKeys:
         rippling into ORDER BY resolution."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.regions.name")],
-            order=[OrderItem(field=FieldRef(name="customers.regions.name"),
+            dimensions=[QueryDimension(field="customers.regions.name")],
+            order=[OrderItem(field="customers.regions.name",
                              direction="asc")],
         )
         # Executes without a "no such column" error and returns the dotted key.
@@ -223,8 +223,8 @@ class TestJoinedDimensionDottedKeys:
         (``orders.customers.revenue_sum``); the fix keeps that."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.region_id")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)")],
+            dimensions=[QueryDimension(field="customers.region_id")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.revenue_sum" in resp.columns, resp.columns
@@ -235,9 +235,9 @@ class TestJoinedDimensionDottedKeys:
         mismatch), alongside a cross-model measure."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.regions.name")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)")],
-            order=[OrderItem(field=FieldRef(name="customers.regions.name"),
+            dimensions=[QueryDimension(field="customers.regions.name")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)")],
+            order=[OrderItem(field="customers.regions.name",
                              direction="asc")],
         )
         resp = await engine.execute(query)
@@ -255,7 +255,7 @@ class TestJoinedDimensionDottedKeys:
                     granularity=TimeGranularity.MONTH,
                 )
             ],
-            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            metrics=[QueryMetric(metric="count(*)", alias="n")],
         )
         resp = await engine.execute(query)
         assert "orders.customers.signup_at" in resp.columns, resp.columns
@@ -277,10 +277,10 @@ class TestJoinedDimensionDottedKeys:
         focused on the local-measure shape."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.rev_x2")],  # labeled -> surfaces
+            dimensions=[QueryDimension(field="customers.rev_x2")],  # labeled -> surfaces
             metrics=[
-                DatasetMetric(expression="sum(amount)"),
-                DatasetMetric(expression="count(*)", name="n"),
+                QueryMetric(metric="sum(amount)"),
+                QueryMetric(metric="count(*)", alias="n"),
             ],
         )
         resp = await engine.execute(query, dry_run=True)
@@ -324,9 +324,9 @@ class TestJoinedDimensionDottedKeys:
             SlayerQuery(
                 population="orders",
                 dimensions=[
-                    FieldRef(name="customer_id"),          # local ColumnKey
-                    FieldRef(name="customers.region_id"),   # joined ColumnKey
-                    FieldRef(name="customers.rev_x2"),      # joined ColumnSqlKey (derived)
+                    QueryDimension(field="customer_id"),          # local ColumnKey
+                    QueryDimension(field="customers.region_id"),   # joined ColumnKey
+                    QueryDimension(field="customers.rev_x2"),      # joined ColumnSqlKey (derived)
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
@@ -335,8 +335,8 @@ class TestJoinedDimensionDottedKeys:
                     )
                 ],
                 metrics=[
-                    DatasetMetric(expression="sum(amount)"),        # local aggregate
-                    DatasetMetric(expression="count(*)", name="n"),  # star-count
+                    QueryMetric(metric="sum(amount)"),        # local aggregate
+                    QueryMetric(metric="count(*)", alias="n"),  # star-count
                 ],
             ),
             {
@@ -352,8 +352,8 @@ class TestJoinedDimensionDottedKeys:
             SlayerQuery(
                 population="orders",
                 dimensions=[
-                    FieldRef(name="customer_id"),          # local ColumnKey
-                    FieldRef(name="customers.region_id"),   # joined ColumnKey
+                    QueryDimension(field="customer_id"),          # local ColumnKey
+                    QueryDimension(field="customers.region_id"),   # joined ColumnKey
                 ],
                 time_dimensions=[
                     TimeDimension(                            # joined TimeTruncKey
@@ -362,9 +362,9 @@ class TestJoinedDimensionDottedKeys:
                     )
                 ],
                 metrics=[
-                    DatasetMetric(expression="sum(amount)"),          # local aggregate
-                    DatasetMetric(expression="sum(customers.revenue)"),  # cross-model aggregate
-                    DatasetMetric(expression="count(*)", name="n"),   # star-count
+                    QueryMetric(metric="sum(amount)"),          # local aggregate
+                    QueryMetric(metric="sum(customers.revenue)"),  # cross-model aggregate
+                    QueryMetric(metric="count(*)", alias="n"),   # star-count
                 ],
             ),
             {
@@ -382,11 +382,11 @@ class TestJoinedDimensionDottedKeys:
         multi-hop joined dim, and a user-renamed measure."""
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.regions.name")],
+            dimensions=[QueryDimension(field="customers.regions.name")],
             metrics=[
-                DatasetMetric(expression="sum(amount)"),
-                DatasetMetric(expression="count(*)"),
-                DatasetMetric(expression="sum(amount)", name="my_total"),
+                QueryMetric(metric="sum(amount)"),
+                QueryMetric(metric="count(*)"),
+                QueryMetric(metric="sum(amount)", alias="my_total"),
             ],
         )
         resp = await engine.execute(query, dry_run=True)
@@ -419,13 +419,13 @@ class TestMultiStageNaming:
         stage1 = SlayerQuery(
             name="stage1",
             population="orders",
-            dimensions=[FieldRef(name="customers.region_id")],
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            dimensions=[QueryDimension(field="customers.region_id")],
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         root = SlayerQuery(
             population="stage1",
-            dimensions=[FieldRef(name="customers__region_id")],
-            metrics=[DatasetMetric(expression="max(amount_sum)", name="peak")],
+            dimensions=[QueryDimension(field="customers__region_id")],
+            metrics=[QueryMetric(metric="max(amount_sum)", alias="peak")],
         )
         sql = await _new_sql(storage=storage, stages=[stage1, root])
         # The inner stage CTE carries the FLAT column name.
@@ -447,19 +447,19 @@ class TestMultiStageNaming:
         s1 = SlayerQuery(
             name="s1",
             population="orders",
-            dimensions=[FieldRef(name="customers.rev_x2")],  # inner: derived join
-            metrics=[DatasetMetric(expression="sum(amount)")],
+            dimensions=[QueryDimension(field="customers.rev_x2")],  # inner: derived join
+            metrics=[QueryMetric(metric="sum(amount)")],
         )
         s2 = SlayerQuery(
             name="s2",
             population="s1",
-            dimensions=[FieldRef(name="customers__rev_x2")],  # consumes flat
-            metrics=[DatasetMetric(expression="max(amount_sum)", name="peak")],
+            dimensions=[QueryDimension(field="customers__rev_x2")],  # consumes flat
+            metrics=[QueryMetric(metric="max(amount_sum)", alias="peak")],
         )
         root = SlayerQuery(
             population="s2",
-            dimensions=[FieldRef(name="customers__rev_x2")],  # re-exports flat
-            metrics=[DatasetMetric(expression="min(peak)", name="floor")],
+            dimensions=[QueryDimension(field="customers__rev_x2")],  # re-exports flat
+            metrics=[QueryMetric(metric="min(peak)", alias="floor")],
         )
         sql = await _new_sql(storage=engine.storage, stages=[s1, s2, root])
         # The inner stage CTE binds the joined derived dim under the FLAT name.
@@ -475,8 +475,8 @@ class TestMultiStageNaming:
         single = await engine.execute(
             SlayerQuery(
                 population="orders",
-                dimensions=[FieldRef(name="customers.rev_x2")],
-                metrics=[DatasetMetric(expression="sum(amount)")],
+                dimensions=[QueryDimension(field="customers.rev_x2")],
+                metrics=[QueryMetric(metric="sum(amount)")],
             )
         )
         assert "orders.customers.rev_x2" in single.columns, single.columns
@@ -513,9 +513,9 @@ def _orders_named_dataset(metrics=None) -> SlayerDataset:
         sql_table="public.orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
         metrics=metrics or [],
     )
@@ -540,7 +540,7 @@ class TestBareNamedMeasureResultKey:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="rev_total", name="custom")],
+            metrics=[QueryMetric(metric="rev_total", alias="custom")],
         )
         sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql)
@@ -555,7 +555,7 @@ class TestBareNamedMeasureResultKey:
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=["companies"],
             order=[OrderItem(field="companies", direction="desc")],
         )
@@ -574,7 +574,7 @@ class TestBareNamedMeasureResultKey:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="orders.rev_total")],
+            metrics=[QueryMetric(metric="orders.rev_total")],
         )
         sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql)
@@ -613,9 +613,9 @@ class TestTimeShiftCteDecollision:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
@@ -627,17 +627,17 @@ class TestTimeShiftCteDecollision:
                 )
             ],
             metrics=[
-                DatasetMetric(
-                    expression="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
-                    name="g1",
+                QueryMetric(
+                    metric="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+                    alias="g1",
                 ),
-                DatasetMetric(
-                    expression="sum(revenue) - time_shift(sum(revenue), -2, 'month')",
-                    name="g2",
+                QueryMetric(
+                    metric="sum(revenue) - time_shift(sum(revenue), -2, 'month')",
+                    alias="g2",
                 ),
-                DatasetMetric(
-                    expression="sum(revenue) - time_shift(sum(revenue), -3, 'month')",
-                    name="g3",
+                QueryMetric(
+                    metric="sum(revenue) - time_shift(sum(revenue), -3, 'month')",
+                    alias="g3",
                 ),
             ],
         )
@@ -667,9 +667,9 @@ class TestTimeShiftCteDecollision:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
@@ -680,10 +680,10 @@ class TestTimeShiftCteDecollision:
             )],
             metrics=[
                 # A user measure whose name collides with the hidden placeholder.
-                DatasetMetric(expression="sum(revenue)", name="_time_shift_inner"),
-                DatasetMetric(
-                    expression="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
-                    name="growth",
+                QueryMetric(metric="sum(revenue)", alias="_time_shift_inner"),
+                QueryMetric(
+                    metric="sum(revenue) - time_shift(sum(revenue), -1, 'month')",
+                    alias="growth",
                 ),
             ],
         )
@@ -705,25 +705,25 @@ class TestTimeShiftCteDecollision:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
             ],
         )
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             time_dimensions=[TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="consecutive_periods(sum(revenue) > 0) + 1",
-                             name="rev_streak"),
-                DatasetMetric(expression="consecutive_periods(sum(quantity) > 0) + 1",
-                             name="qty_streak"),
+                QueryMetric(metric="consecutive_periods(sum(revenue) > 0) + 1",
+                             alias="rev_streak"),
+                QueryMetric(metric="consecutive_periods(sum(quantity) > 0) + 1",
+                             alias="qty_streak"),
             ],
         )
         sql = await _engine_generate(query=query, dataset=model)

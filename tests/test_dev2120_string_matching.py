@@ -49,7 +49,7 @@ def _nocase_seed(db_path: str) -> None:
 
 def _people_dataset() -> SlayerDataset:
     return SlayerDataset(name="people", sql_table="people", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING),
     ])
 
 
@@ -68,7 +68,7 @@ class TestCaseSensitivity:
 
     async def test_mode_a_like_on_sqlite_unchanged(self) -> None:
         async with lib_engine("sqlite", datasets=[_mode_a_dataset()]) as engine:
-            values = lib_values(await engine.execute(lib_query({"expression": "is_ada", "name": "v"},
+            values = lib_values(await engine.execute(lib_query({"field": "is_ada", "alias": "v"},
                                                                filter=["id IN (3, 4)"])))
             assert {k: bool(v) for k, v in values.items()} == {3: True, 4: True}
 
@@ -112,7 +112,7 @@ class TestEmission:
         assert "GLOB" not in sql.upper(), sql
 
     async def test_sqlite_mode_a_like_not_rewritten(self) -> None:
-        sql = await emit_lib(lib_query({"expression": "is_ada", "name": "v"}), dialect="sqlite",
+        sql = await emit_lib(lib_query({"field": "is_ada", "alias": "v"}), dialect="sqlite",
                              datasets=[_mode_a_dataset()])
         assert "GLOB" not in sql.upper(), sql
 

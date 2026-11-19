@@ -122,7 +122,7 @@ class TestFreshVersusStoredBoundary:
     ) -> None:
         with recorded() as caught, migrating_document("doc", stored=True):
             built = model.model_validate(LEGACY_CLEAN)
-        assert [e.source_name for e in built.extensions or []] == ["orders"]
+        assert [e.dataset for e in built.extensions or []] == ["orders"]
         assert built.deprecated_inputs == ()
         assert deprecations(caught) == []
 

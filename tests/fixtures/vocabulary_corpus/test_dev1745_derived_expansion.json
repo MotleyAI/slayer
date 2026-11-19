@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -49,7 +49,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "deep_pop",
+      "expression": "deep_pop",
       "name": "deep_pop"
      }
     ],
@@ -64,14 +64,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "deep_pop",
-      "name": "deep_pop"
+      "field": "deep_pop",
+      "alias": "deep_pop"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "m0"
+      "metric": "sum(amount)",
+      "alias": "m0"
      }
     ]
    }
@@ -82,7 +82,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "status",
+      "expression": "status",
       "name": "status"
      }
     ],
@@ -97,14 +97,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "status",
-      "name": "status"
+      "field": "status",
+      "alias": "status"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(deep_pop)",
-      "name": "m0"
+      "metric": "sum(deep_pop)",
+      "alias": "m0"
      }
     ]
    }
@@ -115,7 +115,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "status",
+      "expression": "status",
       "name": "status"
      }
     ],
@@ -133,14 +133,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "status",
-      "name": "status"
+      "field": "status",
+      "alias": "status"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "m0"
+      "metric": "sum(amount)",
+      "alias": "m0"
      }
     ],
     "filter": [
@@ -154,7 +154,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "alias_local",
+      "expression": "alias_local",
       "name": "alias_local"
      }
     ],
@@ -169,14 +169,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "alias_local",
-      "name": "alias_local"
+      "field": "alias_local",
+      "alias": "alias_local"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "m0"
+      "metric": "sum(amount)",
+      "alias": "m0"
      }
     ]
    }
@@ -185,31 +185,31 @@
    "kind": "query",
    "old": {
     "source_model": "orders",
-    "dimensions": [
-     {
-      "formula": "deep_live",
-      "name": "deep_live"
-     }
-    ],
-    "measures": [
-     {
-      "formula": "sum(amount)",
-      "name": "m0"
-     }
-    ]
-   },
-   "new": {
-    "population": "orders",
     "dimensions": [
      {
       "expression": "deep_live",
       "name": "deep_live"
      }
     ],
+    "measures": [
+     {
+      "formula": "sum(amount)",
+      "name": "m0"
+     }
+    ]
+   },
+   "new": {
+    "population": "orders",
+    "dimensions": [
+     {
+      "field": "deep_live",
+      "alias": "deep_live"
+     }
+    ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "m0"
+      "metric": "sum(amount)",
+      "alias": "m0"
      }
     ]
    }
@@ -220,7 +220,7 @@
     "source_model": "orders",
     "dimensions": [
      {
-      "formula": "deep_pop",
+      "expression": "deep_pop",
       "name": "deep_pop"
      }
     ],
@@ -235,14 +235,14 @@
     "population": "orders",
     "dimensions": [
      {
-      "expression": "deep_pop",
-      "name": "deep_pop"
+      "field": "deep_pop",
+      "alias": "deep_pop"
      }
     ],
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "m0"
+      "metric": "sum(amount)",
+      "alias": "m0"
      }
     ]
    }

@@ -29,8 +29,8 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import (
     SearchHit,
@@ -131,7 +131,7 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
     response = await service.search(
         query={
             "population": "orders",
-            "metrics": [{"expression": "sum(amount_paid)"}],
+            "metrics": [{"metric": "sum(amount_paid)"}],
         },
         max_results=20,
         compact=False,
@@ -345,7 +345,7 @@ async def test_resolved_input_entities_populated_for_query_input(
     response = await service.search(
         query={
             "population": "orders",
-            "metrics": [{"expression": "sum(amount_paid)"}],
+            "metrics": [{"metric": "sum(amount_paid)"}],
         },
     )
     # Both the source model and the referenced column should be resolved.
@@ -361,7 +361,7 @@ async def test_resolved_input_entities_combined_input_dedupes(
         entities=["warehouse.orders.amount_paid"],
         query={
             "population": "orders",
-            "metrics": [{"expression": "sum(amount_paid)"}],
+            "metrics": [{"metric": "sum(amount_paid)"}],
         },
     )
     # `amount_paid` appears via both inputs but should not duplicate.
@@ -396,7 +396,7 @@ async def storage_with_query_memories(
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
                 population="orders",
-                metrics=[DatasetMetric(expression="sum(amount_paid)")],
+                metrics=[QueryMetric(metric="sum(amount_paid)")],
             ),
         )
     return storage_with_corpus
@@ -533,10 +533,10 @@ async def stale_setup() -> AsyncIterator[tuple[StorageBackend, SlayerQueryEngine
             data_source="warehouse",
             description="Checkout orders fixture.",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
                 # status: stale — sampled_values intentionally None.
-                DatasetField(name="status", datatype=DataType.TEXT,
+                DatasetField(name="status", datatype=DataType.STRING,
                        description="Order status."),
             ],
         ))
@@ -752,7 +752,7 @@ async def test_search_numeric_column_hit_is_refreshed(
     async def counting_execute(*args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
         if isinstance(q, SlayerQuery) and any(
-                (m.expression or "").startswith(("min(", "max(")) for m in q.metrics or []):
+                (m.metric or "").startswith(("min(", "max(")) for m in q.metrics or []):
             numeric_queries.append(q)
         return await real_execute(*args, **kwargs)
 
@@ -791,7 +791,7 @@ async def test_search_per_model_serialization_concurrent_hits(
     model = await storage.get_dataset("orders", data_source="warehouse")
     assert model is not None
     model.fields.append(
-        DatasetField(name="region", datatype=DataType.TEXT, description="Region of sale."),
+        DatasetField(name="region", datatype=DataType.STRING, description="Region of sale."),
     )
     await storage.save_dataset(model)
     # Add a region column to the underlying table. (Without it, the
@@ -901,8 +901,8 @@ async def test_search_cross_model_concurrency_is_allowed(
         data_source="warehouse",
         description="Customers.",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING,
                    description="Customer region."),
         ],
     ))

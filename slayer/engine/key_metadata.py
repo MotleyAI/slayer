@@ -70,13 +70,13 @@ def aggregation_result_type(
     of ``source_type``."""
     cls = classify_aggregation(metric_name=metric_name, aggregation=aggregation, source_type=source_type)
     if cls is AggregationValueClass.COUNT:
-        return DataType.INT, None
+        return DataType.INTEGER, None
     if cls is AggregationValueClass.LIST:
-        return DataType.ARRAY, source_type or DataType.UNKNOWN
+        return DataType.ARRAY, source_type or DataType.OPAQUE
     if cls is AggregationValueClass.PRESERVING:
         custom_over_boolean = source_type is DataType.BOOLEAN and aggregation not in BUILTIN_AGGREGATIONS
         return (None if custom_over_boolean else source_type), None
-    return DataType.DOUBLE, None
+    return DataType.FLOAT, None
 
 
 def aggregated_type(
@@ -126,7 +126,7 @@ def _stage_element(schema: StageSchema, key: ValueKey) -> Optional[DataType]:
     if not (isinstance(key, FieldKey) and len(key.path) == 1 and key.leaf == LIST_ELEMENT_FIELD):
         return None
     col = schema.get(key.path[0])
-    return (col.element_type or DataType.UNKNOWN) if col is not None and col.datatype is DataType.ARRAY else None
+    return (col.element_type or DataType.OPAQUE) if col is not None and col.datatype is DataType.ARRAY else None
 
 
 def stage_field_type(schema: StageSchema) -> FieldTypeFn:
@@ -160,7 +160,7 @@ def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle
     element = list_element_type(
         key, field_type=field_type, field_element=scope_field_element(scope=scope, bundle=bundle),
     )
-    return element or DataType.UNKNOWN
+    return element or DataType.OPAQUE
 
 
 def scope_field_type(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> FieldTypeFn:
@@ -192,7 +192,7 @@ def date_scalar_type(key: ValueKey, *, field_type: FieldTypeFn) -> Optional[Data
     """INT for ``date_part``/``date_diff``, else the key's DATE/TIMESTAMP type (date functions,
     temporal conditionals, min/max/first/last of a temporal value); ``None`` otherwise."""
     if isinstance(key, ScalarCallKey) and key.name in ("date_part", "date_diff"):
-        return DataType.INT
+        return DataType.INTEGER
     return temporal_type(key, field_type=field_type)
 
 

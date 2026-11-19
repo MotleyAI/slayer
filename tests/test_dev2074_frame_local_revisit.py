@@ -80,14 +80,14 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders", default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE, format=CURRENCY),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT, format=CURRENCY),
             DatasetField(name="big", datatype=DataType.BOOLEAN),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         relationships=[DatasetRelationship(to="customers", name="customer",
-                         join_pairs=[["customer_id", "id"]], cardinality=M2O)],
+                         from_columns=["customer_id"], to_columns=["id"], cardinality=M2O)],
     )
 
 
@@ -95,20 +95,20 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="last_order_id", datatype=DataType.INT),
-            DatasetField(name="first_order_id", datatype=DataType.INT),
-            DatasetField(name="last_amount", datatype=DataType.DOUBLE, sql="last_order.amount",
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="last_order_id", datatype=DataType.INTEGER),
+            DatasetField(name="first_order_id", datatype=DataType.INTEGER),
+            DatasetField(name="last_amount", datatype=DataType.FLOAT, sql="last_order.amount",
                    label="Latest amount", format=CURRENCY),
-            DatasetField(name="first_amount", datatype=DataType.DOUBLE, sql="first_order.amount"),
-            DatasetField(name="last_ordered_at", datatype=DataType.TIMESTAMP, sql="last_order.ordered_at"),
+            DatasetField(name="first_amount", datatype=DataType.FLOAT, sql="first_order.amount"),
+            DatasetField(name="last_ordered_at", datatype=DataType.DATETIME, sql="last_order.ordered_at"),
         ],
         relationships=[
             DatasetRelationship(to="orders", name="last_order",
-                      join_pairs=[["last_order_id", "id"]], cardinality=M2O),
+                      from_columns=["last_order_id"], to_columns=["id"], cardinality=M2O),
             DatasetRelationship(to="orders", name="first_order",
-                      join_pairs=[["first_order_id", "id"]], cardinality=M2O),
+                      from_columns=["first_order_id"], to_columns=["id"], cardinality=M2O),
         ],
         metrics=[
             DatasetMetric(name="order_total", expression="sum(customer.amount)"),
@@ -124,34 +124,34 @@ def _cycle_datasets() -> list[SlayerDataset]:
     def node(name: str, nxt: str, extra: Sequence[DatasetField] = ()) -> SlayerDataset:
         return SlayerDataset(
             name=name, data_source=DS, sql_table=name,
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name=f"{nxt}_id", datatype=DataType.INT),
-                     DatasetField(name="v", datatype=DataType.TEXT), *extra],
-            relationships=[DatasetRelationship(to=nxt, join_pairs=[[f"{nxt}_id", "id"]], cardinality=M2O)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name=f"{nxt}_id", datatype=DataType.INTEGER),
+                     DatasetField(name="v", datatype=DataType.STRING), *extra],
+            relationships=[DatasetRelationship(to=nxt, from_columns=[f"{nxt}_id"], to_columns=["id"], cardinality=M2O)],
         )
 
     return [
-        node("x", "y", [DatasetField(name="zv", datatype=DataType.TEXT, sql="y.z.v")]),
+        node("x", "y", [DatasetField(name="zv", datatype=DataType.STRING, sql="y.z.v")]),
         node("y", "z"),
-        node("z", "x", [DatasetField(name="xzv", datatype=DataType.TEXT, sql="x.zv")]),
+        node("z", "x", [DatasetField(name="xzv", datatype=DataType.STRING, sql="x.zv")]),
     ]
 
 
 def _ab_datasets() -> list[SlayerDataset]:
     a = SlayerDataset(
         name="a", data_source=DS, sql_table="a",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="b_id", datatype=DataType.INT),
-                 DatasetField(name="bw", datatype=DataType.DOUBLE, sql="to_b.w")],
-        relationships=[DatasetRelationship(to="b", name="to_b", join_pairs=[["b_id", "id"]], cardinality=M2O)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="b_id", datatype=DataType.INTEGER),
+                 DatasetField(name="bw", datatype=DataType.FLOAT, sql="to_b.w")],
+        relationships=[DatasetRelationship(to="b", name="to_b", from_columns=["b_id"], to_columns=["id"], cardinality=M2O)],
     )
     b = SlayerDataset(
         name="b", data_source=DS, sql_table="b",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="a_id", datatype=DataType.INT),
-                 DatasetField(name="w", datatype=DataType.DOUBLE),
-                 DatasetField(name="abw", datatype=DataType.DOUBLE, sql="to_a.bw")],
-        relationships=[DatasetRelationship(to="a", name="to_a", join_pairs=[["a_id", "id"]], cardinality=M2O)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="a_id", datatype=DataType.INTEGER),
+                 DatasetField(name="w", datatype=DataType.FLOAT),
+                 DatasetField(name="abw", datatype=DataType.FLOAT, sql="to_a.bw")],
+        relationships=[DatasetRelationship(to="a", name="to_a", from_columns=["a_id"], to_columns=["id"], cardinality=M2O)],
     )
     return [a, b]
 
@@ -246,7 +246,7 @@ class TestDerivedColumnsCompose:
             f"SELECT c.name, MAX(lo.amount) {_ORDERS_THROUGH_LAST} GROUP BY c.name ORDER BY c.name")
         assert [(n, _num(v)) for n, v in oracle] == [("ann", 20.0), ("bob", 5.0)]
         resp = await ctx.engine.execute(_q(
-            dimensions=["customer.name"], metrics=[{"expression": "max(customer.last_amount)", "name": "m"}],
+            dimensions=["customer.name"], metrics=[{"metric": "max(customer.last_amount)", "alias": "m"}],
             order=[{"field": "customer.name", "direction": "asc"}]))
         assert [(n, _num(v)) for n, v in _rows(resp, "orders.customer.name", "orders.m")] == [
             (n, _num(v)) for n, v in oracle]
@@ -372,7 +372,7 @@ class TestSavedMeasuresCompose:
         assert resp.data
         query = _q(
             dimensions=["customer.name"],
-            metrics=[{"expression": "sum(customer.last_order.amount)", "name": "h"}],
+            metrics=[{"metric": "sum(customer.last_order.amount)", "alias": "h"}],
             to_many_handling="associate")
         with pytest.raises(CircularRelationshipPathError):
             await ctx.engine.execute(query)
@@ -389,8 +389,8 @@ class TestComposedOccurrenceMetadata:
         assert {k: _num(v) for k, v in oracle.items()} == {"ann": 1.0, "bob": 0.0}
         native = await ctx.engine.execute(SlayerQuery.model_validate({
             "population": "customers", "dimensions": ["name"],
-            "metrics": [{"expression": "avg(last_order.big)", "name": "s"},
-                         {"expression": "sum(last_order.amount)", "name": "t"}]}))
+            "metrics": [{"metric": "avg(last_order.big)", "alias": "s"},
+                         {"metric": "sum(last_order.amount)", "alias": "t"}]}))
         assert native.attributes.metrics["customers.s"].format == NumberFormat(type=NumberFormatType.PERCENT)
         assert native.attributes.metrics["customers.t"].format == CURRENCY
         resp = await ctx.engine.execute(_q(
@@ -422,7 +422,7 @@ class TestComposedOccurrenceMetadata:
         td = TimeDimension(field="customer.last_ordered_at",
                            granularity=TimeGranularity.MONTH)
         resp = await ctx.engine.execute(_q(
-            time_dimensions=[td], metrics=[{"expression": "count(*)", "name": "n"}],
+            time_dimensions=[td], metrics=[{"metric": "count(*)", "alias": "n"}],
             order=[{"field": "customer.last_ordered_at", "direction": "desc"}]))
         key = next(k for k in resp.columns if "last_ordered_at" in k)
         got = [(str(t)[:7], n) for t, n in _rows(resp, key, "orders.n")]
@@ -500,7 +500,7 @@ class TestCancellationToTheNearestOccurrence:
         cust = _customers().model_copy(update={"relationships": [
             *_customers().relationships,
             DatasetRelationship(to="stage_recent", name="recent_order",
-                      join_pairs=[["last_order_id", "id"]], cardinality=M2O),
+                      from_columns=["last_order_id"], to_columns=["id"], cardinality=M2O),
         ]})
         models = {**models, "customers": cust, "stage_recent": stage}
         assert self._cancel(root="stage_recent", datasets=models,
@@ -512,11 +512,11 @@ class TestCancellationToTheNearestOccurrence:
     def test_incident_edge_name_hops_rather_than_cancels(self) -> None:
         notes = SlayerDataset(
             name="notes", data_source=DS, sql_table="notes",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)])
         cust = _customers().model_copy(update={
-            "fields": [*_customers().fields, DatasetField(name="note_id", datatype=DataType.INT)],
+            "fields": [*_customers().fields, DatasetField(name="note_id", datatype=DataType.INTEGER)],
             "relationships": [*_customers().relationships, DatasetRelationship(
-                to="notes", name="orders", join_pairs=[["note_id", "id"]], cardinality=M2O)],
+                to="notes", name="orders", from_columns=["note_id"], to_columns=["id"], cardinality=M2O)],
         })
         models = {**_by_name(), "customers": cust, "notes": notes}
         assert self._cancel(datasets=models, owner_path=("customer", "last_order", "customer"),

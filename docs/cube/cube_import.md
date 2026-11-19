@@ -54,7 +54,7 @@ measures:
   - { name: total_revenue, type: sum, sql: "{CUBE}.amount" }
 # SLayer
 fields:
-  - { name: amount, datatype: DOUBLE }
+  - { name: amount, datatype: Float }
 metrics:
   - { name: total_revenue, expression: "sum(amount)" }
 ```
@@ -74,7 +74,7 @@ metrics:
 
 ### Dimensions → fields
 
-`string`→`TEXT`, `number`→`DOUBLE`, `boolean`→`BOOLEAN`, `time`→`TIMESTAMP`.
+`string`→`String`, `number`→`Float`, `boolean`→`Boolean`, `time`→`DateTime`.
 `primary_key: true` carries over. A `case:` dimension becomes a `CASE WHEN`
 field.
 
@@ -98,7 +98,7 @@ import whose datasource is not configured is refused when its SQL holds an unquo
 ### Joins → relationships
 
 A join's ON clause (`{CUBE}.customer_id = {customers.id}`) becomes
-`join_pairs` naming the fields that read each side (a `{cube}.col` operand reads the physical column, through a hidden field when no member reads it; a `{cube.member}` operand names that member, which must be a base field; a physical column another member's name holds drops the join). Composite
+`from_columns` / `to_columns` naming the fields that read each side (a `{cube}.col` operand reads the physical column, through a hidden field when no member reads it; a `{cube.member}` operand names that member, which must be a base field; a physical column another member's name holds drops the join). Composite
 (`AND`-joined) keys are supported. All relationships emit as `LEFT`. When a Cube schema
 declares both directions of one relationship (`orders belongs_to customers` and
 `customers has_many orders` over the same columns), the importer keeps a single

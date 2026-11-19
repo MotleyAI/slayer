@@ -23,8 +23,8 @@ def _dataset(name: str, ds: str = "prod") -> SlayerDataset:
         data_source=ds,
         sql_table=name,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="value", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="value", datatype=DataType.FLOAT),
         ],
     )
 
@@ -41,14 +41,14 @@ def _dataset_with(
         data_source=ds,
         sql_table=name,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="value", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="value", datatype=DataType.FLOAT),
         ],
         aggregations=[
             Aggregation(name=a, expression="AVG({value})") for a in (aggs or [])
         ],
         relationships=[
-            DatasetRelationship(to=t, join_pairs=[["id", "id"]])
+            DatasetRelationship(to=t, from_columns=["id"], to_columns=["id"])
             for t in (joins or [])
         ],
     )

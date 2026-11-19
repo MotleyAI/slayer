@@ -58,23 +58,23 @@ if __name__ == "__main__":
     check_field_types(
         dataset_name="orders",
         expected_types={
-            "id": "INT",
-            "customer_id": "INT",
-            "product_id": "INT",
-            "quantity": "INT",
-            "status": "TEXT",
-            "created_at": "TIMESTAMP",
+            "id": "Integer",
+            "customer_id": "Integer",
+            "product_id": "Integer",
+            "quantity": "Integer",
+            "status": "String",
+            "created_at": "DateTime",
         },
     )
     check_field_types(
         dataset_name="customers",
-        expected_types={"id": "INT", "name": "TEXT", "email": "TEXT", "region_id": "INT"},
+        expected_types={"id": "Integer", "name": "String", "email": "String", "region_id": "Integer"},
     )
     check_field_types(
         dataset_name="products",
-        expected_types={"id": "INT", "name": "TEXT", "category": "TEXT", "price": "DOUBLE"},
+        expected_types={"id": "Integer", "name": "String", "category": "String", "price": "Decimal"},
     )
-    check_field_types(dataset_name="regions", expected_types={"id": "INT", "name": "TEXT"})
+    check_field_types(dataset_name="regions", expected_types={"id": "Integer", "name": "String"})
     check_cardinality_invariant()
     check_approx_median_percentile()
     check_stddev_var()

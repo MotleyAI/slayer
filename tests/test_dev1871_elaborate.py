@@ -12,7 +12,7 @@ from __future__ import annotations
 from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, FieldKey
 from slayer.core.models import DatasetField, SlayerDataset
-from slayer.core.query import ComputedDimension, SlayerQuery
+from slayer.core.query import QueryDimension, SlayerQuery
 from slayer.engine.compile import compile_query
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.plan import plan_query
@@ -33,10 +33,10 @@ def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=_DS, sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="tier", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="tier", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
     )
 
@@ -57,7 +57,7 @@ class TestTypingEnvironment:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "filter": ["status = 'ok'", "sum(amount) > 5"],
             "order": [{"field": "status", "direction": "asc"}],
         })
@@ -72,7 +72,7 @@ class TestTypingEnvironment:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         entry = elab.metrics[0]
@@ -84,7 +84,7 @@ class TestTypingEnvironment:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "filter": ["sum(amount) > 5"],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
@@ -102,12 +102,12 @@ class TestTypingEnvironment:
             population="orders",
             dimensions=[
                 "status",
-                ComputedDimension(
-                    expression=(
+                QueryDimension(
+                    field=(
                         "sum(amount, partition_by=status)"
                         " + sum(amount, partition_by=tier)"
                     ),
-                    name="mix",
+                    alias="mix",
                 ),
             ],
         )
@@ -132,7 +132,7 @@ class TestEntryEquivalence:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
             "filter": ["sum(amount) > 5"],
             "order": [{"field": "status", "direction": "asc"}],
         })
@@ -150,7 +150,7 @@ class TestCompileSeam:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "rev"}],
         })
         planned = plan_query(query=query, bundle=_bundle())
         compiled = compile_query(

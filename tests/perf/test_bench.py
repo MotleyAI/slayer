@@ -9,8 +9,7 @@ import asyncio
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import DatasetMetric
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import OrderItem, QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerResponse
 
 from .conftest import BenchEnv
@@ -38,116 +37,116 @@ WEEKLY_TD = [TimeDimension(
 
 
 # ---------------------------------------------------------------------------
-# Query definitions — each returns kwargs for SlayerQuery(source_model="orders", ...)
+# Query definitions — each returns kwargs for SlayerQuery(population="orders", ...)
 # ---------------------------------------------------------------------------
 
 QUERIES: dict[str, dict] = {
     "simple_count": dict(
-        measures=[DatasetMetric(expression="count(*)")],
+        metrics=[QueryMetric(metric="count(*)")],
     ),
     "count_by_category": dict(
-        measures=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total_cost)")],
-        dimensions=[FieldRef(name="category")],
+        metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total_cost)")],
+        dimensions=["category"],
     ),
     "monthly_revenue": dict(
-        measures=[DatasetMetric(expression="sum(total_cost)")],
+        metrics=[QueryMetric(metric="sum(total_cost)")],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "monthly_cumsum": dict(
-        measures=[DatasetMetric(expression="sum(total_cost)"), DatasetMetric(expression="cumsum(sum(total_cost))", name="running")],
+        metrics=[QueryMetric(metric="sum(total_cost)"), QueryMetric(metric="cumsum(sum(total_cost))", alias="running")],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "monthly_change": dict(
-        measures=[DatasetMetric(expression="sum(total_cost)"), DatasetMetric(expression="change(sum(total_cost))", name="chg")],
+        metrics=[QueryMetric(metric="sum(total_cost)"), QueryMetric(metric="change(sum(total_cost))", alias="chg")],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "monthly_change_pct": dict(
-        measures=[DatasetMetric(expression="sum(total_cost)"), DatasetMetric(expression="change_pct(sum(total_cost))", name="pct")],
+        metrics=[QueryMetric(metric="sum(total_cost)"), QueryMetric(metric="change_pct(sum(total_cost))", alias="pct")],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "monthly_time_shift": dict(
-        measures=[
-            DatasetMetric(expression="sum(total_cost)"),
-            DatasetMetric(expression="time_shift(sum(total_cost), -1, 'month')", name="prev"),
+        metrics=[
+            QueryMetric(metric="sum(total_cost)"),
+            QueryMetric(metric="time_shift(sum(total_cost), -1, 'month')", alias="prev"),
         ],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "monthly_yoy": dict(
-        measures=[
-            DatasetMetric(expression="sum(total_cost)"),
-            DatasetMetric(expression="time_shift(sum(total_cost), -1, 'year')", name="yoy"),
+        metrics=[
+            QueryMetric(metric="sum(total_cost)"),
+            QueryMetric(metric="time_shift(sum(total_cost), -1, 'year')", alias="yoy"),
         ],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "rank_by_category": dict(
-        measures=[
-            DatasetMetric(expression="sum(total_cost)"),
-            DatasetMetric(expression="rank(sum(total_cost), direction='desc')", name="rnk"),
+        metrics=[
+            QueryMetric(metric="sum(total_cost)"),
+            QueryMetric(metric="rank(sum(total_cost), direction='desc')", alias="rnk"),
         ],
-        dimensions=[FieldRef(name="category")],
-        order=[OrderItem(field=FieldRef(name="total_cost_sum"), direction="desc")],
+        dimensions=["category"],
+        order=[OrderItem(field="total_cost_sum", direction="desc")],
     ),
     "last_function": dict(
-        measures=[
-            DatasetMetric(expression="sum(total_cost)"),
-            DatasetMetric(expression="last(sum(total_cost))", name="latest"),
+        metrics=[
+            QueryMetric(metric="sum(total_cost)"),
+            QueryMetric(metric="last(sum(total_cost))", alias="latest"),
         ],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "last_agg_type": dict(
-        measures=[
-            DatasetMetric(expression="sum(total_cost)"),
-            DatasetMetric(expression="last(latest_cost)"),
+        metrics=[
+            QueryMetric(metric="sum(total_cost)"),
+            QueryMetric(metric="last(latest_cost)"),
         ],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "filtered_with_transform": dict(
-        measures=[DatasetMetric(expression="sum(total_cost)")],
+        metrics=[QueryMetric(metric="sum(total_cost)")],
         time_dimensions=MONTHLY_TD,
-        filters=["change(sum(total_cost)) > 0"],
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        filter=["change(sum(total_cost)) > 0"],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "time_shift_date_range": dict(
-        measures=[
-            DatasetMetric(expression="sum(total_cost)"),
-            DatasetMetric(expression="time_shift(sum(total_cost), -1, 'month')", name="prev"),
+        metrics=[
+            QueryMetric(metric="sum(total_cost)"),
+            QueryMetric(metric="time_shift(sum(total_cost), -1, 'month')", alias="prev"),
         ],
         time_dimensions=[TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
             date_range=QUERY_DATE_RANGE,
         )],
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "nested_cumsum_change": dict(
-        measures=[
-            DatasetMetric(expression="sum(total_cost)"),
-            DatasetMetric(expression="cumsum(change(sum(total_cost)))", name="cumchg"),
+        metrics=[
+            QueryMetric(metric="sum(total_cost)"),
+            QueryMetric(metric="cumsum(change(sum(total_cost)))", alias="cumchg"),
         ],
         time_dimensions=MONTHLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "weekly_lag_lead": dict(
-        measures=[
-            DatasetMetric(expression="count(*)"),
-            DatasetMetric(expression="lag(count(*), 1)", name="prev_week"),
-            DatasetMetric(expression="lead(count(*), 1)", name="next_week"),
+        metrics=[
+            QueryMetric(metric="count(*)"),
+            QueryMetric(metric="lag(count(*), 1)", alias="prev_week"),
+            QueryMetric(metric="lead(count(*), 1)", alias="next_week"),
         ],
         time_dimensions=WEEKLY_TD,
-        order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
+        order=[OrderItem(field="created_at", direction="asc")],
     ),
     "having_filter": dict(
-        measures=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total_cost)")],
-        dimensions=[FieldRef(name="category")],
-        filters=["_count > 10"],
+        metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(total_cost)")],
+        dimensions=["category"],
+        filter=["_count > 10"],
     ),
 }
 

@@ -21,13 +21,14 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     CITY_LAST_RC,
     CITY_MONTH_LAST,
     CITY_WM,
     COL_WM,
     GRAND_TOTAL,
-    DatasetMetric,
     OK_LAST,
     OK_W90,
     ORDER_BY_W90_DESC,
@@ -75,12 +76,12 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount, window='1y')", name="w")],
+            metrics=[QueryMetric(metric="sum(amount, window='1y')", alias="w")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(
-                expression="sum(amount, window='1y', partition_by=region)", name="w",
+            metrics=[QueryMetric(
+                metric="sum(amount, window='1y', partition_by=region)", alias="w",
             )],
         ))
         _assert_map(_by_region_month(bare, "w"), COL_WM)
@@ -90,12 +91,12 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[QueryMetric(metric="last(amount)", alias="l")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression="last(amount, partition_by=region)", name="l",
+            metrics=[QueryMetric(
+                metric="last(amount, partition_by=region)", alias="l",
             )],
         ))
         _assert_map(_by_region(bare, "l"), REGION_LAST)
@@ -106,10 +107,10 @@ class TestBareExplicitTwins:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount, window='1y')", name="wb"),
-                DatasetMetric(
-                    expression="sum(amount, window='1y', partition_by=region)",
-                    name="we",
+                QueryMetric(metric="sum(amount, window='1y')", alias="wb"),
+                QueryMetric(
+                    metric="sum(amount, window='1y', partition_by=region)",
+                    alias="we",
                 ),
             ],
         )
@@ -128,8 +129,8 @@ class TestMigratedFamilyValuePins:
         query = q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         )
         resp = await engine.execute(query)
@@ -147,7 +148,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount, window='45d')", name="w")],
+            metrics=[QueryMetric(metric="sum(amount, window='45d')", alias="w")],
         ))
         _assert_map(_by_region_month(resp, "w"), TRAILING_45D_REGION)
 
@@ -155,7 +156,7 @@ class TestMigratedFamilyValuePins:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            metrics=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[QueryMetric(metric="last(amount)", alias="l")],
         )
         resp = await engine.execute(query)
         got = {
@@ -170,7 +171,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[QueryMetric(metric="last(amount)", alias="l")],
         ))
         got = {
             (r["orders.region"], r["orders.city"],
@@ -183,7 +184,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="first(amount)", name="f")],
+            metrics=[QueryMetric(metric="first(amount)", alias="f")],
         ))
         _assert_map(_by_region(resp, "f"), REGION_FIRST)
 
@@ -193,7 +194,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
+            metrics=[QueryMetric(metric="sum(amount, window='90d')", alias="w")],
         ))
         got = {
             month_key(r["orders.ordered_at"]): r["orders.w"] for r in resp.data
@@ -205,8 +206,8 @@ class TestMigratedFamilyValuePins:
         single-row CROSS JOIN attach post-migration)."""
         dialect, engine = exec_backend
         query = q(metrics=[
-            DatasetMetric(expression="sum(amount)", name="m"),
-            DatasetMetric(expression="last(amount)", name="l"),
+            QueryMetric(metric="sum(amount)", alias="m"),
+            QueryMetric(metric="last(amount)", alias="l"),
         ])
         resp = await engine.execute(query)
         assert len(resp.data) == 1
@@ -229,7 +230,7 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             order=[{"field": "sum(amount, window='90d')", "direction": "desc"}],
         ))
         got = [
@@ -245,7 +246,7 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             order=[{"field": "last(amount)", "direction": "desc"}],
         ))
         # REGION_LAST desc: NULL 60, North 30, South 25.
@@ -257,7 +258,7 @@ class TestOrderOnlyHiddenProducers:
         resp = await engine.execute(q(
             dimensions=["region"],
             filter=["last(amount) > 28"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         ))
         _assert_map(_by_region(resp, "m"), {"North": 100.0, None: 60.0})
 
@@ -269,13 +270,13 @@ class TestFilteredMeasureNeutrality:
         _, engine = exec_backend
         base = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         ))
         plus = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(ok_amount, window='90d')", name="w"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(ok_amount, window='90d')", alias="w"),
             ],
         ))
         _assert_map(_by_region_month(plus, "m"), _by_region_month(base, "m"))
@@ -291,9 +292,9 @@ class TestFilteredMeasureNeutrality:
         resp = await engine.execute(q(
             dimensions=["region"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="last(ok_amount)", name="ol"),
-                DatasetMetric(expression="last(nomatch)", name="nl"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="last(ok_amount)", alias="ol"),
+                QueryMetric(metric="last(nomatch)", alias="nl"),
             ],
         ))
         assert len(resp.data) == 3
@@ -311,7 +312,7 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"],
-            metrics=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[QueryMetric(metric="last(amount)", alias="l")],
         ))
         got = {
             (r["orders.region"], r["orders.city_key"]): r["orders.l"]
@@ -329,7 +330,7 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"], time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression="sum(amount, window='1y')", name="w")],
+            metrics=[QueryMetric(metric="sum(amount, window='1y')", alias="w")],
         ))
         got = {
             (r["orders.region"], r["orders.city_key"],
@@ -356,12 +357,12 @@ class TestDualRoleWithBareWindowed:
         dialect, engine = exec_backend
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
-            dimensions=["region", {"expression": band, "name": "rband"}],
+            dimensions=["region", {"field": band, "alias": "rband"}],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
-                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="sum(amount, partition_by=region)", alias="rt"),
+                QueryMetric(metric="sum(amount, window='1y')", alias="w"),
             ],
         )
         resp = await engine.execute(query)

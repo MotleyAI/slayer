@@ -13,15 +13,17 @@ from slayer.core.errors import AmbiguousReferenceError, UnconvertibleStoredQuery
 from slayer.core.models import SlayerDataset
 from slayer.core.names import match_name
 from slayer.core.query import (
-    FieldRef,
-    ComputedDimension,
     DatasetExtension,
     DatasetMetric,
+    FieldRef,
     OrderItem,
+    QueryDimension,
+    QueryMetric,
     SlayerQuery,
     TimeDimension,
     computed_dimension_name,
     extension_field_text,
+    map_filter,
 )
 from slayer.core.syntax import (
     DottedRef,
@@ -36,6 +38,7 @@ from slayer.core.warnings import ExtensionFieldInlinedWarning, SlayerExtensionFi
 from slayer.engine.extensions import QueryScope, query_scopes
 from slayer.sql.naming import expression_text_alias
 from slayer.storage.migrations import migrating_document
+from slayer.storage.document_keys import relationship_pairs
 
 Key = Tuple[str, str]
 
@@ -117,7 +120,7 @@ def _without_fields(stage: dict) -> dict:
     if not isinstance(extensions, list):
         return stage
     stripped = [{k: v for k, v in e.items() if k != "columns"} if isinstance(e, dict) else e for e in extensions]
-    return {**stage, "extensions": [e for e in stripped if not isinstance(e, dict) or set(e) - {"source_name"}]}
+    return {**stage, "extensions": [e for e in stripped if not isinstance(e, dict) or set(e) - {"dataset"}]}
 
 
 class _Stage:
@@ -131,7 +134,7 @@ class _Stage:
         self.document = document
         self.fields: Dict[Key, _ExtensionField] = {}
         for extension, columns in raw:
-            owner = self._owner(extension.get("source_name"))
+            owner = self._owner(extension.get("dataset"))
             for column in columns:
                 parsed = self._field(column, owner=owner)
                 self.fields[(owner, parsed.name)] = parsed
@@ -140,7 +143,7 @@ class _Stage:
 
     def _owner(self, name: Any) -> str:
         if not isinstance(name, str):
-            raise UnconvertibleStoredQueryError("an extension without source_name")
+            raise UnconvertibleStoredQueryError("an extension without dataset")
         found = self._dataset_named(name, quoted=False)
         if found is None:
             raise UnconvertibleStoredQueryError(f"extension fields of {name!r}, which the store does not hold")
@@ -173,12 +176,12 @@ class _Stage:
         return _ExtensionField(owner=owner, name=name, tree=parse_expr(text), derived=True, label=raw.get("label"))
 
     def _check_relationship_keys(self, extension: dict) -> None:
-        owner = self._owner(extension.get("source_name"))
+        owner = self._owner(extension.get("dataset"))
         for relationship in (j for j in extension.get("relationships") or [] if isinstance(j, dict)):
             target = relationship.get("to")
             target_owner = (self._dataset_named(target, quoted=False) or target) if isinstance(target, str) else target
             if any((owner, pair[0]) in self.fields or (target_owner, pair[1]) in self.fields
-                   for pair in relationship.get("join_pairs") or []):
+                   for pair in relationship_pairs(relationship)):
                 raise UnconvertibleStoredQueryError(f"an extension relationship of {owner!r} keyed on an extension field")
 
     # -- resolution ----------------------------------------------------------
@@ -271,7 +274,7 @@ class _Stage:
             "time_dimensions": [self._time_dimension(td, root=host) for td in q.time_dimensions]
             if q.time_dimensions else q.time_dimensions,
             "metrics": [self._metric(m, root=host) for m in q.metrics] if q.metrics else q.metrics,
-            "filter": [self._text(f, root=host) or f for f in q.filter] if q.filter else q.filter,
+            "filter": map_filter(q.filter, lambda f: self._text(f, root=host) or f),
             "order": [self._order(o, root=host) for o in q.order] if q.order else q.order,
             "extensions": [self._extension(e) for e in q.extensions] if q.extensions else q.extensions,
         }
@@ -291,42 +294,47 @@ class _Stage:
             return self._expression(hit)
         return self._text(text, root=root) or text
 
-    def _dimension(self, dim: Any, *, root: Optional[SlayerDataset]) -> Any:
-        if isinstance(dim, ComputedDimension):
-            text = self._text(dim.expression, root=root)
-            return dim if text is None else ComputedDimension(expression=text, name=dim.name)
-        hit = self._hit(dim, root=root) if isinstance(dim, FieldRef) else None
+    def _dimension(self, dim: QueryDimension, *, root: Optional[SlayerDataset]) -> QueryDimension:
+        ref = dim.ref
+        if dim.is_computed or ref is None:
+            text = self._text(dim.field, root=root)
+            return dim if text is None else QueryDimension(field=text, alias=dim.name, label=dim.label)
+        hit = self._hit(ref, root=root)
         if hit is None:
             return dim
-        return ComputedDimension(expression=self._expression(hit), name="__".join([*hit[0], hit[1][1]]))
+        return QueryDimension(field=self._expression(hit), alias="__".join([*hit[0], hit[1][1]]), label=dim.label)
 
     def _time_dimension(self, td: TimeDimension, *, root: Optional[SlayerDataset]) -> TimeDimension:
         parsed = _parsed(td.field)
         hit = self._hit(parsed, root=root) if isinstance(parsed, (Ref, DottedRef)) else None
         if hit is not None:
-            text, name = self._expression(hit), td.name or "__".join([*hit[0], hit[1][1]])
+            text, name = self._expression(hit), td.alias or "__".join([*hit[0], hit[1][1]])
             label = td.label or self.fields[hit[1]].label
         else:
             text = self._text(td.field, root=root)
             if text is None:
                 return td
-            name, label = td.name or computed_dimension_name(td.field), td.label
+            name, label = td.alias or computed_dimension_name(td.field), td.label
         return TimeDimension.model_validate({
-            "field": text, "name": name, "granularity": td.granularity, "date_range": td.date_range, "label": label,
+            "field": text, "alias": name, "granularity": td.granularity, "date_range": td.date_range, "label": label,
         })
 
-    def _metric(self, metric: DatasetMetric, *, root: Optional[SlayerDataset]) -> DatasetMetric:
-        text = self._text(metric.expression, root=root) if metric.expression else None
+    def _metric(self, metric: QueryMetric, *, root: Optional[SlayerDataset]) -> QueryMetric:
+        text = self._text(metric.metric, root=root) if metric.metric else None
         if text is None:
             return metric
-        name = metric.name or expression_text_alias(parse_expr(metric.expression)).replace(".", "__")
-        return DatasetMetric.model_validate({**metric.model_dump(exclude_none=True), "expression": text, "name": name})
+        alias = metric.alias or expression_text_alias(parse_expr(metric.metric)).replace(".", "__")
+        return metric.model_copy(update={"metric": text, "alias": alias})
+
+    def _extension_metric(self, metric: DatasetMetric, *, root: Optional[SlayerDataset]) -> DatasetMetric:
+        text = self._text(metric.expression, root=root) if metric.expression else None
+        return metric if text is None else metric.model_copy(update={"expression": text})
 
     def _order(self, item: OrderItem, *, root: Optional[SlayerDataset]) -> OrderItem:
         if item.raw_expression:
             text = self._text(item.raw_expression, root=root)
             return item if text is None else item.model_copy(update={"raw_expression": text})
-        hit = self._hit(item.field, root=root)
+        hit = self._hit(item.ref, root=root) if item.ref is not None else None
         if hit is None:
             return item
         return OrderItem.model_validate({"field": self._expression(hit), "direction": item.direction,
@@ -335,8 +343,8 @@ class _Stage:
     def _extension(self, extension: DatasetExtension) -> DatasetExtension:
         if not extension.metrics:
             return extension
-        root = self.scope.datasets.get(self._owner(extension.source_name))
-        return extension.model_copy(update={"metrics": [self._metric(m, root=root) for m in extension.metrics]})
+        root = self.scope.datasets.get(self._owner(extension.dataset))
+        return extension.model_copy(update={"metrics": [self._extension_metric(m, root=root) for m in extension.metrics]})
 
 
 def _visible(dataset: SlayerDataset, name: str) -> bool:

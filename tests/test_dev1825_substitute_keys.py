@@ -121,7 +121,7 @@ class TestTotality:
             TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),
             InKey: InKey(field=CITY, values=(LiteralKey(value="gold"),)),
             SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
-            CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.TEXT),
+            CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.STRING),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
             ListSetKey: ListSetKey(source=CITY),
         }

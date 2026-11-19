@@ -20,10 +20,9 @@ from slayer.core.models import (
     DatasetField,
     DatasourceConfig,
     DatasetRelationship,
-    DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import DatasetExtension, SlayerQuery
+from slayer.core.query import DatasetExtension, QueryMetric, SlayerQuery
 from slayer.engine.cache import CacheConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -38,7 +37,7 @@ from tests._dev1866_fixtures import (
 
 _INFERRED = SlayerQuery.model_validate({
     "dimensions": ["customers.region"],
-    "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+    "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
 })
 
 
@@ -65,7 +64,7 @@ class TestExplicitVsInferredReporting:
         resp = await engine.execute(SlayerQuery(
             population="customers",
             extensions=[DatasetExtension.model_validate({
-                "source_name": "customers",
+                "dataset": "customers",
                 "metrics": [{"name": "n", "expression": "count(*)"}],
             })],
             dimensions=["region"],
@@ -78,7 +77,7 @@ class TestExplicitVsInferredReporting:
             query=SlayerQuery(
                 population="customers",
                 dimensions=["region"],
-                metrics=[DatasetMetric(expression="sum(orders.amount)", name="rev")],
+                metrics=[QueryMetric(metric="sum(orders.amount)", alias="rev")],
             ),
             name="cust_by_region",
         )
@@ -90,9 +89,9 @@ class TestExplicitVsInferredReporting:
     async def test_stage_population_reports_the_stage_name(self, engine, dry_run) -> None:
         stage = SlayerQuery.model_validate({
             "name": "by_region", "population": "customers", "dimensions": ["region"],
-            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
-        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"expression": "sum(rev)"}]})
+        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"metric": "sum(rev)"}]})
         resp = await engine.execute([stage, main], dry_run=dry_run)
         assert resp.population == "by_region"
         assert resp.population_inferred is False
@@ -124,7 +123,7 @@ class TestReportedAcrossExecutionModes:
         explicit = SlayerQuery.model_validate({
             "population": "customers",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"metric": "sum(orders.amount)", "alias": "rev"}],
         })
         first = await engine.execute(explicit, cache=True)
         assert first.population_inferred is False
@@ -179,21 +178,21 @@ class TestEngineDatasourceForwarding:
             )
         regions = SlayerDataset(
             name="regions", data_source="dsa", sql_table="regions",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="name", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="name", datatype=DataType.STRING)],
         )
         cust_a = SlayerDataset(
             name="customers", data_source="dsa", sql_table="customers",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="region_id", datatype=DataType.INT),
-                     DatasetField(name="name", datatype=DataType.TEXT)],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="region_id", datatype=DataType.INTEGER),
+                     DatasetField(name="name", datatype=DataType.STRING)],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                              cardinality=RelationshipCardinality.MANY_TO_ONE)],
         )
         cust_b = SlayerDataset(  # name collides with dsa.customers
             name="customers", data_source="dsb", sql_table="customers",
-            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                     DatasetField(name="name", datatype=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                     DatasetField(name="name", datatype=DataType.STRING)],
         )
         for model in (regions, cust_a, cust_b):
             await storage.save_dataset(model, _validate=False)

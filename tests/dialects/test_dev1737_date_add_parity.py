@@ -24,9 +24,9 @@ def _ev_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
-            DatasetField(name="v", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.DATETIME),
+            DatasetField(name="v", datatype=DataType.FLOAT),
         ],
     )
 
@@ -41,11 +41,11 @@ def _query(granularity: str, *measures) -> dict:
 
 def _shift(granularity: TimeGranularity, offset: int, *, bucket: TimeGranularity | None = None) -> dict:
     return _query((bucket or granularity).value, "sum(v)", {
-        "expression": f"time_shift(sum(v), {offset}, '{granularity.value}')", "name": "x"})
+        "metric": f"time_shift(sum(v), {offset}, '{granularity.value}')", "alias": "x"})
 
 
 def _window(duration: str, bucket: str) -> dict:
-    return _query(bucket, {"expression": f"sum(v, window='{duration}')", "name": "x"})
+    return _query(bucket, {"metric": f"sum(v, window='{duration}')", "alias": "x"})
 
 
 def _cases() -> dict:

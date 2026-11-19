@@ -14,9 +14,9 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Aggregation, AggregationParam, DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset,
+    Aggregation, AggregationParam, DatasetField, DatasourceConfig, SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.sql_template import (
     SqlTemplateError, aggregation_reads, check_aggregation_definition, placeholder_names, sql_template,
@@ -46,15 +46,15 @@ def _orders(*aggs: Aggregation) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ],
         aggregations=list(aggs),
     )
 
 
 def _q(expression: str) -> SlayerQuery:
-    return SlayerQuery(population="orders", metrics=[DatasetMetric(expression=expression, name="m")])
+    return SlayerQuery(population="orders", metrics=[QueryMetric(metric=expression, alias="m")])
 
 
 def _mode_b_string(text: str) -> str:

@@ -16,8 +16,8 @@
     "population": "pub",
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "v"
+      "metric": "count(*)",
+      "alias": "v"
      }
     ]
    }
@@ -41,8 +41,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(pub.id)",
-      "name": "n"
+      "metric": "count(pub.id)",
+      "alias": "n"
      }
     ]
    }
@@ -70,8 +70,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -91,8 +91,8 @@
     "population": "s",
     "metrics": [
      {
-      "expression": "sum(n)",
-      "name": "total"
+      "metric": "sum(n)",
+      "alias": "total"
      }
     ]
    }
@@ -112,8 +112,8 @@
     "population": "hr",
     "metrics": [
      {
-      "expression": "sum(salary)",
-      "name": "v"
+      "metric": "sum(salary)",
+      "alias": "v"
      }
     ]
    }

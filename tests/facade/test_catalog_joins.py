@@ -43,16 +43,16 @@ def test_facade_table_joins_populated_from_model_joins() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
+        joins=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
     )
     stores = _dataset(
         name="stores",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, stores]})
@@ -60,7 +60,7 @@ def test_facade_table_joins_populated_from_model_joins() -> None:
     assert table.relationships == [
         FacadeRelationship(
             to="stores",
-            join_pairs=[["store_id", "id"]],
+            column_pairs=[("store_id", "id")],
             join_type=JoinType.LEFT,
         ),
     ]
@@ -70,18 +70,18 @@ def test_facade_table_joins_preserve_join_type() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
         joins=[DatasetRelationship(
             to="stores",
-            join_pairs=[["store_id", "id"]],
+            from_columns=["store_id"], to_columns=["id"],
             join_type=JoinType.INNER,
         )],
     )
     stores = _dataset(
         name="stores",
-        columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, stores]})
     table = _find_table(cat, schema="ds1", table="orders")
@@ -96,14 +96,14 @@ def test_facade_table_joins_filter_to_hidden_target() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
+        joins=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
     )
     hidden_stores = _dataset(
         name="stores",
-        columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
         hidden=True,
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, hidden_stores]})
@@ -119,10 +119,10 @@ def test_facade_table_joins_filter_to_absent_target() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER),
         ],
-        joins=[DatasetRelationship(to="ghost", join_pairs=[["store_id", "id"]])],
+        joins=[DatasetRelationship(to="ghost", from_columns=["store_id"], to_columns=["id"])],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders]})
     table = _find_table(cat, schema="ds1", table="orders")
@@ -136,14 +136,14 @@ def test_facade_table_model_ref_carries_underlying_slayer_model() -> None:
     orders = _dataset(
         name="orders",
         columns=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="store_id", datatype=DataType.INT, hidden=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INTEGER, hidden=True),
         ],
-        joins=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
+        joins=[DatasetRelationship(to="stores", from_columns=["store_id"], to_columns=["id"])],
     )
     stores = _dataset(
         name="stores",
-        columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+        columns=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [orders, stores]})
     table = _find_table(cat, schema="ds1", table="orders")

@@ -23,7 +23,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.enums import DataType, RelationshipCardinality, finer_datatype
 from slayer.core.errors import AmbiguousRelationshipPathError, UnsupportedServerFunctionError
 from slayer.core.syntax import parse_expr
 from slayer.core.relationship_walker import resolve_hop
@@ -64,15 +64,14 @@ from slayer.osi.source import ParsedSource, parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
 
-_TIME_DIMENSION_TYPES = (DataType.DATE, DataType.TIMESTAMP)
-
-
 def _typed_field(*, name: str, data_type: DataType, sql: str | None = None, element: DataType | None = None,
                   hidden: bool = False, db_type: str | None = None) -> DatasetField:
-    """A field of a probed type; a list's elements are ``element``, else UNKNOWN (a probe cannot see them)."""
+    """A field of a probed type, narrowed by its database type; a list's elements are ``element``, else Opaque (a
+    probe cannot see them)."""
     if data_type is not DataType.ARRAY:
-        return DatasetField(name=name, sql=sql, datatype=data_type, hidden=hidden, db_type=db_type)
-    return DatasetField(name=name, sql=sql, datatype=data_type, element_type=element or DataType.UNKNOWN, hidden=hidden,
+        return DatasetField(name=name, sql=sql, datatype=finer_datatype(data_type, db_type), hidden=hidden,
+                            db_type=db_type)
+    return DatasetField(name=name, sql=sql, datatype=data_type, element_type=element or DataType.OPAQUE, hidden=hidden,
                   db_type=db_type)
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
@@ -139,7 +138,7 @@ def _is_time_role(field: OSIField) -> bool:
 def _first_time_dimension(dataset: SlayerDataset) -> str | None:
     return next(
         (c.name for c in dataset.fields
-         if (c.meta or {}).get("osi_is_time") and c.datatype in _TIME_DIMENSION_TYPES),
+         if (c.meta or {}).get("osi_is_time") and c.datatype is not None and c.datatype.is_temporal),
         None,
     )
 
@@ -468,10 +467,11 @@ class OsiToSlayerConverter:
         if found is not None and found[1]:
             payload = found[0]
             assert isinstance(payload, ext.MetricPayload)
-            built = _build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions,
-                                extra={"osi_datatype": metric.datatype} if metric.datatype else None)
-            slayer_metric = payload.metric.model_copy(update={"meta": {**(built or {}), **(payload.metric.meta or {})}
-                                                         or None})
+            built = _build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions)
+            slayer_metric = payload.metric.model_copy(update={
+                "meta": {**(built or {}), **(payload.metric.meta or {})} or None,
+                "datatype": OSSIE_DATATYPES.get(metric.datatype or "") or payload.metric.datatype,
+            })
             self._pending.append(_PendingMetric(dataset=payload.dataset, metric=slayer_metric, label=f"Metric {metric.name!r}",
                                                  osi_metric=metric, doc=doc, home=home))
             return
@@ -727,12 +727,14 @@ class OsiToSlayerConverter:
         if typed is None:
             return None
         col, db_type = typed
-        if db_type is not None and declared is not None and db_type != declared:
-            self._warn(
-                f"Field {field.name!r} on {ds.name!r} declares datatype {field.datatype} but the "
-                f"database reports {db_type.value}; using {db_type.value}.",
-                dataset_name=ds.name, category="datatype", severity="info",
-            )
+        if declared is not None:
+            if db_type is not None and db_type.kind is not declared.kind:
+                self._warn(
+                    f"Field {field.name!r} on {ds.name!r} declares datatype {field.datatype} but the "
+                    f"database reports {db_type.value}; keeping {field.datatype}.",
+                    dataset_name=ds.name, category="datatype", severity="info",
+                )
+            col.datatype, col.element_type = declared, None
         self._apply_field_metadata(col=col, field=field)
         found = self._payload(field.nonportable_extensions, kind="field", entity=field.name,
                               label=f"field {field.name!r} of {ds.name!r}", dataset_name=ds.name,
@@ -796,9 +798,9 @@ class OsiToSlayerConverter:
         probed = self._probe_expression_type(dataset=dataset, expr=sql)
         if probed is not None:
             slayer_field = _typed_field(name=field.name, sql=sql, data_type=probed.type, db_type=probed.lossy_db_type)
-            return slayer_field, probed.type
+            return slayer_field, slayer_field.datatype
         shadowed = physical.get(field.name)
-        fallback = declared or (shadowed.datatype if shadowed is not None else None) or DataType.DOUBLE
+        fallback = declared or (shadowed.datatype if shadowed is not None else None) or DataType.FLOAT
         element = shadowed.element_type if shadowed is not None else None
         return _typed_field(name=field.name, sql=sql, data_type=fallback, element=element), None
 
@@ -808,8 +810,6 @@ class OsiToSlayerConverter:
         col.description = render_description(explicit=field.description, ctx=field.ai_context) \
             or col.description
         extra: dict[str, Any] = {}
-        if field.datatype:
-            extra["osi_datatype"] = field.datatype
         explicit = field.dimension.is_time if field.dimension is not None else None
         if explicit is not None or _is_time_role(field):
             extra["osi_is_time"] = _is_time_role(field)
@@ -924,10 +924,9 @@ class OsiToSlayerConverter:
             )
             return
 
-        pairs = [[f, t] for f, t in zip(rel.from_columns, rel.to_columns)]
         self._datasets[src].relationships.append(DatasetRelationship(
             to=rel.to,
-            join_pairs=pairs,
+            from_columns=list(rel.from_columns), to_columns=list(rel.to_columns),
             # OSI relationships are direction-implied: from = many, to = one.
             cardinality=RelationshipCardinality.MANY_TO_ONE,
             description=render_description(explicit=None, ctx=rel.ai_context),
@@ -1044,7 +1043,7 @@ class OsiToSlayerConverter:
 
     def _relationship_fields_missing(self, dataset: SlayerDataset, relationship: DatasetRelationship) -> bool:
         target = self._datasets.get(relationship.to)
-        for src_col, tgt_col in relationship.join_pairs:
+        for src_col, tgt_col in relationship.column_pairs:
             if not self._dataset_has_field(dataset_name=dataset.name, field=src_col):
                 return True
             if target is None or not any(c.name == tgt_col for c in target.fields):
@@ -1268,8 +1267,8 @@ class OsiToSlayerConverter:
                 expression=result.expression,
                 name=metric.name,
                 description=render_description(explicit=metric.description, ctx=metric.ai_context),
-                meta=_build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions,
-                                 extra={"osi_datatype": metric.datatype} if metric.datatype else None),
+                meta=_build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions),
+                datatype=OSSIE_DATATYPES.get(metric.datatype or ""),
             )
         except Exception as exc:  # noqa: BLE001 — any parse/validation error -> report
             self._unconv(
@@ -1386,7 +1385,7 @@ class OsiToSlayerConverter:
             probed = self._probe_expression_type(dataset=dataset, expr=self._physical_sql(dataset, mc.sql))
             dataset.fields.append(_typed_field(
                 name=mc.name, sql=mc.sql, hidden=True,
-                data_type=probed.type if probed is not None else DataType.DOUBLE,
+                data_type=probed.type if probed is not None else DataType.FLOAT,
                 db_type=probed.lossy_db_type if probed is not None else None,
             ))
 
@@ -1434,7 +1433,7 @@ class OsiToSlayerConverter:
                                          fields=dataset.fields) or
                           relationship_key_error(dataset=dataset.name, target=target.name, key=b, side=target.name,
                                          fields=target.fields)
-                          for a, b in relationship.join_pairs]
+                          for a, b in relationship.column_pairs]
                 problem = next((str(e).splitlines()[0] for e in errors if e is not None), None)
             if problem is not None:
                 self._warn(f"Relationship {rel.name!r}: its SLayer relationship {problem}; imported as a plain "
@@ -1554,7 +1553,7 @@ class OsiToSlayerConverter:
                 continue
             source = payload.source
             if source.source_queries is None:
-                dataset.sql_table, dataset.sql, dataset.filters = source.sql_table, source.sql, list(source.filters)
+                dataset.sql_table, dataset.sql, dataset.filters = source.sql_table, source.sql, list(source.filters or [])
                 continue
             try:
                 restored = dataset.model_copy(update={

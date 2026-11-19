@@ -57,9 +57,9 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -69,12 +69,12 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -86,7 +86,7 @@ async def test_single_cross_model_parametric_key(engine: SlayerQueryEngine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"expression": "percentile(customers.revenue, p=0.5)"}],
+            "metrics": [{"metric": "percentile(customers.revenue, p=0.5)"}],
         })
     )
     assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
@@ -98,8 +98,8 @@ async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
             population="orders",
             dimensions=["customers.region"],
             metrics=[
-                {"expression": "percentile(customers.revenue, p=0.5)"},
-                {"expression": "percentile(customers.revenue, p=0.95)"},
+                {"metric": "percentile(customers.revenue, p=0.5)"},
+                {"metric": "percentile(customers.revenue, p=0.95)"},
             ],
         )
     )

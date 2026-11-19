@@ -38,7 +38,7 @@ _AGG_NODES = (exp.Filter, exp.AggFunc, exp.WithinGroup)
 
 _BINARY_OPS: dict[type[exp.Expr], str] = {
     exp.Add: "+", exp.Sub: "-", exp.Mul: "*", exp.Div: "/", exp.Mod: "%",
-    exp.EQ: "==", exp.NEQ: "!=", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=",
+    exp.EQ: "=", exp.NEQ: "!=", exp.GT: ">", exp.GTE: ">=", exp.LT: "<", exp.LTE: "<=",
     exp.And: "and", exp.Or: "or",
 }
 # Passthrough scalars whose sqlglot argument order is not the expression's.

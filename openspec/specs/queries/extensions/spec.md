@@ -12,7 +12,7 @@ An extension SHALL be visible only inside the query object that declares it.
 - Other stages SHALL NOT see the extension.
 - Stored definitions SHALL NOT see it: stored joins, stored columns, saved measures, and the stages of a stored query-backed model.
 
-An extension's `source_name` and each of its joins' `to` SHALL resolve, in order, to:
+An extension's `dataset` and each of its joins' `to` SHALL resolve, in order, to:
 1. a sibling stage of the query list;
 2. else a stored model of the query's datasource;
 3. else fail with a model-not-found error.
@@ -39,11 +39,11 @@ A query whose `population` is an extension object SHALL be converted to `populat
 - The query's JSON schema and documentation SHALL NOT advertise the extension object for `population`.
 
 #### Scenario: Fresh legacy input converts with a deprecation warning
-- **WHEN** a query is submitted without a version with `population` = `{"source_name": "orders", "relationships": [...]}`
+- **WHEN** a query is submitted without a version with `population` = `{"dataset": "orders", "relationships": [...]}`
 - **THEN** it executes with `population` `orders` and one extension of `orders`, and a deprecation warning names `extensions` and removal in 3.0
 
 #### Scenario: Legacy form conflicting with an extensions entry
-- **WHEN** a fresh query carries `population` = `{"source_name": "orders", ...}` and also an `extensions` entry for `orders`
+- **WHEN** a fresh query carries `population` = `{"dataset": "orders", ...}` and also an `extensions` entry for `orders`
 - **THEN** construction fails naming `orders`
 
 #### Scenario: Current-version query cannot use the legacy form
@@ -120,7 +120,7 @@ An extension of the time spine SHALL be rejected with a typed error naming the t
 
 ### Requirement: Stored stages with failing extensions are refused at save
 
-Saving a query-backed model SHALL be refused, naming the stage and the extension, when one of its stages carries an extension that every query reading the model would fail on: an unresolvable `source_name` or join target, an edge-merge conflict, or an INNER declaration the stage's population cannot reach.
+Saving a query-backed model SHALL be refused, naming the stage and the extension, when one of its stages carries an extension that every query reading the model would fail on: an unresolvable `dataset` or join target, an edge-merge conflict, or an INNER declaration the stage's population cannot reach.
 
 #### Scenario: Save refuses an edge conflict
 - **WHEN** a query-backed model is saved whose stage extends `orders` with a join named like an existing `orders` edge but on different key pairs
@@ -150,11 +150,11 @@ No field of a query object SHALL be read as SQL of the datasource's dialect, and
 
 ### Requirement: A query extends any model it reads with measures and joins
 
-A query object SHALL accept `extensions`, a list of extensions each naming the model it extends (`source_name`) and carrying optional `metrics` and `relationships`.
+A query object SHALL accept `extensions`, a list of extensions each naming the model it extends (`dataset`) and carrying optional `metrics` and `relationships`.
 - An extension SHALL apply to the named model wherever the query object reads it: as its population, as a join target, or on any join path.
 - Its measures SHALL be addressable exactly like the model's own: by bare name from that model, and by dotted path from elsewhere.
 - Its joins SHALL be edges of the query object's join graph, merged with stored edges by the join-traversal rules.
-- A query object SHALL carry at most one extension per `source_name`; a second one SHALL be rejected at construction, naming the model.
+- A query object SHALL carry at most one extension per `dataset`; a second one SHALL be rejected at construction, naming the model.
 - An extension object carrying any key other than the three SHALL be rejected at construction; `columns` is rejected with an error stating that extension columns were removed and that a per-query column is written as an expression in the position that uses it.
 - Query refinements SHALL NOT accept `extensions`.
 
@@ -163,7 +163,7 @@ A query object SHALL accept `extensions`, a list of extensions each naming the m
 - **THEN** construction fails with an error stating that extension columns were removed and that the expression `upper(customers.tier)` is written where it is used, and nothing executes
 
 #### Scenario: The expression replaces the column
-- **WHEN** the same query instead selects the dimension `{"expression": "upper(customers.tier)", "name": "tier_label"}` and `sum(amount)`
+- **WHEN** the same query instead selects the dimension `{"field": "upper(customers.tier)", "alias": "tier_label"}` and `sum(amount)`
 - **THEN** it executes, grouped by the upper-cased tier
 
 #### Scenario: Extending a joined model adds a measure

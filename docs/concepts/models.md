@@ -9,9 +9,9 @@ name: orders
 sql_table: public.orders
 data_source: my_postgres
 fields:
-  - {name: id, datatype: INT, primary_key: true}
-  - {name: status, datatype: TEXT}
-  - {name: revenue, sql: amount, datatype: DOUBLE}
+  - {name: id, datatype: Integer, primary_key: true}
+  - {name: status, datatype: String}
+  - {name: revenue, sql: amount, datatype: Decimal}
 metrics:
   - {name: aov, expression: "sum(revenue) / count(*)"}
 ```
@@ -76,9 +76,9 @@ A field is the unit of structure on the dataset. The same field entry can serve 
 | `description` | string | No | — | Clarifies meaning for agents and users |
 | `label` | string | No | — | Display name; propagates into query result metadata |
 | `sql` | string | No | (bare field name) | SQL expression — defaults to the field's name |
-| `datatype` | string | No | `TEXT` | `TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, `UNKNOWN`, `ARRAY` |
-| `element_type` | string | With `ARRAY` on a table-backed dataset | `UNKNOWN` on an `sql`-mode dataset's `ARRAY` | A list's element type (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for nested lists and records, which support only NULL tests and `count`); rejected on any other type |
-| `db_type` | string | No | — | The raw database type, recorded by ingestion where `datatype` loses information: `UNKNOWN`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps and lists |
+| `datatype` | string | No | `String` | One of the [data types](#data-types), matched by exact case |
+| `element_type` | string | With `Array` on a table-backed dataset | `Opaque` on an `sql`-mode dataset's `Array` | A list's element type (any data type but `Array`; `Opaque` for nested lists and records, which support only NULL tests and `count`); rejected on any other type |
+| `db_type` | string | No | — | The raw database type, recorded by ingestion where `datatype` loses information: `Opaque`, exact `NUMERIC` / `DECIMAL`, JSON, zoned timestamps and lists |
 | `primary_key` | bool | No | `false` | A dataset's sole primary key is an identifier, restricted to counting, `min` / `max` and `collect`; members of a composite key are ordinary fields |
 | `unique` | bool | No | `false` | Single-field uniqueness (non-PK). A sole `primary_key` implies unique; a composite-key member does not. Auto-set from `UNIQUE` constraints / unique indexes; used to infer one-to-one relationships |
 | `hidden` | bool | No | `false` | Hide from listings |
@@ -91,24 +91,31 @@ A field is the unit of structure on the dataset. The same field entry can serve 
 | `sampled_values` | list[str] | No | — | Structured top-50-by-frequency list (categorical values only); the unambiguous counterpart to `sampled` for consumers that need to compare predicate literals against stored values. `None` for numeric/temporal fields |
 | `distinct_count` | int | No | — | Exact distinct count when ≤ 50 (categorical only). `None` on overflow (> 50 distinct — one scan only, no secondary `count_distinct` query) and for numeric/temporal fields |
 
-A list field is profiled over its non-NULL elements: `sampled_values` and `distinct_count` for `TEXT` / `BOOLEAN` elements, a `min .. max` range for numeric and temporal ones; a whole list is never sampled, and a list with `UNKNOWN` elements is never profiled.
+A list field is profiled over its non-NULL elements: `sampled_values` and `distinct_count` for `String` / `Boolean` elements, a `min .. max` range for numeric and temporal ones; a whole list is never sampled, and a list with `Opaque` elements is never profiled.
 
-A JSON function reads a field over a native JSON column (Postgres `json` / `jsonb`, `JSON`, Snowflake `VARIANT`) in its native form only when its `db_type` is recorded; a field without one is read as `TEXT`.
+A JSON function reads a field over a native JSON column (Postgres `json` / `jsonb`, `JSON`, Snowflake `VARIANT`) in its native form only when its `db_type` is recorded; a field without one is read as text.
 
 A field's `sql` is rendered into the executed statement, which reaches the database verbatim — `:name` is never read as a bind parameter, nor `%` as a format directive — so regex literals (`(?:…)`) and date formats (`%Y-%m`) pass through unchanged.
 
 ### Data types
 
+Data types are Ossie's datatype names plus `Array`, stored and shown as written.
+
 | Type | Description | SQL examples |
 |------|-------------|--------------|
-| `TEXT` | Text values | VARCHAR, TEXT, CHAR |
-| `INT` | Integers | INTEGER, BIGINT, SMALLINT |
-| `DOUBLE` | Floating-point and decimal numbers | FLOAT, DOUBLE, REAL |
-| `BOOLEAN` | True/false | BOOLEAN |
-| `TIMESTAMP` | Date and time | TIMESTAMP, DATETIME |
-| `DATE` | Date only | DATE |
-| `UNKNOWN` | Opaque: stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
-| `ARRAY` | A list of `element_type` values, see [list fields](queries.md#list-fields); re-ingest re-types a `TEXT` field whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
+| `String` | Text values | VARCHAR, TEXT, CHAR |
+| `Integer` | Integers | INTEGER, BIGINT, SMALLINT |
+| `Decimal` | Exact decimal numbers; behave as `Float` | NUMERIC, DECIMAL |
+| `Float` | Floating-point numbers | FLOAT, DOUBLE, REAL |
+| `Boolean` | True/false | BOOLEAN |
+| `Date` | Date only | DATE |
+| `DateTime` | Date and time | TIMESTAMP, DATETIME |
+| `DateTimeTz` | Date and time with a time zone; behave as `DateTime` | TIMESTAMPTZ, TIMESTAMP WITH TIME ZONE |
+| `Time` | Time of day; opaque, like `Opaque` | TIME |
+| `Opaque` | Stored and displayed, never grouped, aggregated or cast | Postgres `point`, `json`, range types |
+| `Array` | A list of `element_type` values, see [list fields](queries.md#list-fields); re-ingest re-types a `String` field whose live type is a list, keeping its other attributes | `TEXT[]`, BigQuery `REPEATED STRING`, `Array(String)` |
+
+The pre-2.0 values `TEXT`, `INT`, `BOOLEAN`, `DATE`, `UNKNOWN` and `ARRAY` (and their lowercase spellings) still convert, with a deprecation; `DOUBLE` becomes `Decimal` when the field's `db_type` is an exact numeric, else `Float`, and `TIMESTAMP` becomes `DateTimeTz` when the `db_type` carries a time zone, else `DateTime`.
 
 ### Aggregation eligibility
 
@@ -116,12 +123,12 @@ A field with no explicit `allowed_aggregations` whitelist gets a default set bas
 
 | Type | Default eligible aggregations |
 |------|-------------------------------|
-| `INT` / `DOUBLE` | sum, avg, min, max, count, count_distinct, count_distinct_approx, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop, collect |
-| `TEXT` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
-| `BOOLEAN` | the `INT` set |
-| `DATE` / `TIMESTAMP` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
-| `ARRAY` | count (non-NULL lists), count_distinct (distinct element sets) |
-| `UNKNOWN` | none |
+| `Integer` / `Decimal` / `Float` | sum, avg, min, max, count, count_distinct, count_distinct_approx, median, weighted_avg, percentile, first, last, stddev_samp, stddev_pop, var_samp, var_pop, corr, covar_samp, covar_pop, collect |
+| `String` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
+| `Boolean` | the `Integer` set |
+| `Date` / `DateTime` / `DateTimeTz` | count, count_distinct, count_distinct_approx, first, last, min, max, collect |
+| `Array` | count (non-NULL lists), count_distinct (distinct element sets) |
+| `Time` / `Opaque` | none |
 
 A boolean is its integer (true 1, false 0, NULL ignored) inside every numeric aggregation, so `sum` counts the true rows, `avg` is their share (formatted as a percentage), and `min` / `max` stay boolean.
 
@@ -135,17 +142,17 @@ A field can carry a `filter` — a SQL condition applied as a `CASE WHEN` value 
 fields:
   - name: active_revenue
     sql: amount
-    datatype: DOUBLE
+    datatype: Float
     filter: "status = 'active'"
   - name: completed_count
     sql: id
-    datatype: INT
+    datatype: Integer
     filter: "status = 'completed'"
 ```
 
 `sum(active_revenue)` then generates `SUM(CASE WHEN status = 'active' THEN amount END)`. The filter is pure syntactic sugar for `CASE WHEN <filter> THEN <value> END`, a **value mask** that fires in *every* position: as a group-by dimension, rows where the filter is false fall into the `NULL` group; a `first`/`last` picks the masked value at the chosen row (`NULL` if it does not match). It never removes rows or changes which row is picked — a genuine row restriction belongs in a query `filter`.
 
-Filters can reference joined fields via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered fields coexist freely in the same query and combine cleanly in arithmetic expressions (e.g. `{"expression": "sum(active_revenue) / sum(total_revenue)"}`).
+Filters can reference joined fields via dot syntax (`categories.type = 'electronics'`). Filtered and unfiltered fields coexist freely in the same query and combine cleanly in arithmetic expressions (e.g. `"sum(active_revenue) / sum(total_revenue)"`).
 
 ### Derived Fields Referencing Other Derived Fields
 
@@ -156,21 +163,20 @@ A `DatasetField.sql` may reference any other field on the same dataset or on a j
 fields:
   - name: foo_raw                 # base field
     sql: "foo_raw"
-    datatype: DOUBLE
-
+    datatype: Float
   - name: foo_normalized          # derived on stations
     sql: "foo_raw / 100.0"
-    datatype: DOUBLE
-
+    datatype: Float
 # Dataset: telescopes — joined to stations
 fields:
   - name: aoi_ratio               # derived on telescopes, references the
                                   # *derived* stations.foo_normalized
     sql: "telescopes.aperture / stations.foo_normalized"
-    datatype: DOUBLE
+    datatype: Float
 relationships:
   - to: stations
-    join_pairs: [["station_id", "id"]]
+    from_columns: ["station_id"]
+    to_columns: ["id"]
 ```
 
 At query time, `aoi_ratio` expands to `telescopes.aperture / (stations.foo_raw / 100.0)`. The same applies to same-dataset chains (a field referencing another derived field on the same dataset) and to multi-hop relationship paths (use the dotted form, e.g., `B.C.x_derived`, when crossing more than one relationship).
@@ -198,10 +204,10 @@ Bare field names auto-qualify against the dataset's own table — single referen
 ```yaml
 fields:
   - name: tier
-    datatype: TEXT
+    datatype: String
     sql: "json_extract(payload, '$.tier')"
   - name: is_gold
-    datatype: INT
+    datatype: Integer
     sql: "CASE LOWER(json_extract(payload, '$.tier')) WHEN 'gold' THEN 1 ELSE 0 END"
 ```
 
@@ -242,20 +248,20 @@ A metric is a saved expression. Its shape is identical to an inline `SlayerQuery
 An inferred integer metric type describes the result without narrowing the
 database's native integer range. For example, `"sum(amount)"` can return a total
 larger than a 32-bit integer even when each source value fits in one. An explicit
-metric `"datatype": "INT"` still requests the database's INT cast and can reject
+metric `"datatype": "Integer"` still requests the database's INT cast and can reject
 out-of-range results. Auto-ingested NUMERIC/DECIMAL fields likewise retain the
 database's exact aggregate type instead of being coerced through floating point
 (except on SQLite, whose numeric affinity has no exact decimal type to retain).
-An explicit metric `"datatype": "DOUBLE"` still requests a floating-point cast.
+An explicit metric `"datatype": "Float"` still requests a floating-point cast.
 Other type casts, including declared derived-field types, are unchanged.
 
 Field and metric names share a namespace within a dataset — you can't have a field `aov` *and* a metric `aov`. A metric can use any other metric by bare name, including inside transforms and arithmetic:
 
 ```json
 "metrics": [
-  {"expression": "aov"},
-  {"expression": "cumsum(aov)"},
-  {"expression": "aov * 1.1", "name": "aov_with_markup"}
+  "aov",
+  "cumsum(aov)",
+  {"metric": "aov * 1.1", "alias": "aov_with_markup"}
 ]
 ```
 
@@ -263,7 +269,7 @@ A saved expression produces the same SQL as writing it out longhand. Cycles (`a 
 
 ### Reusing another dataset's saved metric (`customers.aov`)
 
-A dotted `{"expression": "customers.aov"}` reuses a saved metric from the joined `customers` dataset as if its expression were written inline, and a query-backed dataset cannot declare `metrics` directly. A saved metric whose expression crosses back to a dataset already on the path (e.g. `customers.order_total` defined as `sum(customer.amount)`, used from `orders`) evaluates over its own occurrence of that dataset rather than failing.
+A dotted `"customers.aov"` reuses a saved metric from the joined `customers` dataset as if its expression were written inline, and a query-backed dataset cannot declare `metrics` directly. A saved metric whose expression crosses back to a dataset already on the path (e.g. `customers.order_total` defined as `sum(customer.amount)`, used from `orders`) evaluates over its own occurrence of that dataset rather than failing.
 
 See [formulas.md](formulas.md) for the full expression grammar — operators, transforms, time-shifted forms, and the `Mode B` DSL rules.
 
@@ -299,7 +305,7 @@ Aggregations are the operators that turn a field expression into a value: `sum`,
 
 ```yaml
 fields:
-  - {name: balance, sql: balance, datatype: DOUBLE}
+  - {name: balance, sql: balance, datatype: Float}
 ```
 
 `last(balance, updated_at)` gives the most recent balance per group; `first(balance, updated_at)` the earliest. A row whose ranking key is NULL is never picked, on every database; a group whose keys are all NULL returns NULL. When grouped by month, each month returns the latest (or earliest) record's balance in that month. If no time field is specified, ordering resolves via: the first DATE / TIMESTAMP row-level dimension in the query → the first time dimension's untruncated field or expression → the dataset's `default_time_dimension` (its only DATE / TIMESTAMP field when unset). Whichever field wins is an input of the aggregation: if it, or a derived definition it names, crosses a relationship hop that is not provably to-one from the aggregation's root, the query fails with the input-safety error exactly as an explicit ranking argument would. The value and the ranking key may each be a row-level expression (`first(amount - customers.discount)`, `last(balance, coalesce(updated_at, created_at))`), and a computed dimension typed DATE / TIMESTAMP counts as a DATE / TIMESTAMP dimension in that order.
@@ -337,12 +343,14 @@ name: orders
 sql_table: public.orders
 relationships:
   - to: customers
-    join_pairs: [["customer_id", "id"]]
+    from_columns: ["customer_id"]
+    to_columns: ["id"]
   - to: products
-    join_pairs: [["product_id", "id"]]
+    from_columns: ["product_id"]
+    to_columns: ["id"]
 ```
 
-Each `join_pairs` entry names a base field (`sql` unset or a single column, no `filter`) declared on its side by the field's `name`, and the field's `sql` rename is applied when the join is emitted.
+`from_columns` and `to_columns` are equal-length, non-empty lists: the n-th entries form one key pair, and a composite key lists several in pair order, kept as written in storage, dumps, exports and the generated `ON` condition. Each entry names a base field (`sql` unset or a single column, no `filter`) declared on its side by the field's `name`, and the field's `sql` rename is applied when the join is emitted. The pre-2.0 `join_pairs: [["customer_id", "id"]]` still converts, with a deprecation; giving it beside either list is refused.
 
 A relationship's `to` spells its dataset exactly: a save whose target matches a dataset only by case (`customers` for `Customers`), or whose name a stored relationship reaches only by case, fails naming the declared spelling.
 
@@ -357,11 +365,13 @@ When two or more edges connect the same pair of datasets (e.g. billing and shipp
 ```yaml
 relationships:
   - to: customers
-    join_pairs: [["billing_customer_id", "id"]]
+    from_columns: ["billing_customer_id"]
+    to_columns: ["id"]
     cardinality: many_to_one
     name: billing_customer
   - to: customers
-    join_pairs: [["shipping_customer_id", "id"]]
+    from_columns: ["shipping_customer_id"]
+    to_columns: ["id"]
     cardinality: many_to_one
     name: shipping_customer
 ```
@@ -377,7 +387,8 @@ A relationship optionally records its **arity**, read source→target:
 ```yaml
 relationships:
   - to: customers
-    join_pairs: [["customer_id", "id"]]
+    from_columns: ["customer_id"]
+    to_columns: ["id"]
     cardinality: many_to_one   # many orders → one customer
 ```
 
@@ -431,7 +442,7 @@ A query-backed dataset is a queryable relation whose rows are the final-stage re
 await engine.create_dataset_from_query(
     query={
         "population": "orders",
-        "metrics": [{"expression": "sum(amount)"}],
+        "metrics": ["sum(amount)"],
         "dimensions": ["region"],
         "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
     },
@@ -464,7 +475,7 @@ Or use the saved result as a dataset in another query:
 ```json
 {
   "population": "monthly_revenue",
-  "metrics": [{"expression": "avg(amount_sum)"}],
+  "metrics": ["avg(amount_sum)"],
   "dimensions": ["region"]
 }
 ```
@@ -493,9 +504,9 @@ The four substituted surfaces are:
   "sql": "SELECT id, region, amount FROM orders WHERE amount >= {floor}",
   "query_variables": {"floor": 0},
   "fields": [
-    {"name": "id", "sql": "id", "datatype": "INT", "primary_key": true},
-    {"name": "region", "sql": "region", "datatype": "TEXT"},
-    {"name": "amount", "sql": "amount", "datatype": "DOUBLE"}
+    {"name": "id", "sql": "id", "datatype": "Integer", "primary_key": true},
+    {"name": "region", "sql": "region", "datatype": "String"},
+    {"name": "amount", "sql": "amount", "datatype": "Float"}
   ]
 }
 ```
@@ -558,9 +569,9 @@ A query result is a self-contained table — it no longer has the relationships 
 | `customer_id` | `customer_id` |
 | `count(*)` (metric) | `count` |
 | `sum(revenue)` (metric) | `revenue_sum` |
-| `{"expression": "sum(revenue)", "name": "rev"}` | `rev` |
+| `{"metric": "sum(revenue)", "alias": "rev"}` | `rev` |
 
-This uses the same `__` convention as the SQL-level path aliases. When referencing these fields in an outer query, use the `__` name directly (e.g., `{"name": "stores__name"}`), not dot syntax — dots would imply a relationship to a dataset that doesn't exist on the virtual table.
+This uses the same `__` convention as the SQL-level path aliases. When referencing these fields in an outer query, use the `__` name directly (e.g., `"stores__name"`), not dot syntax — dots would imply a relationship to a dataset that doesn't exist on the virtual table.
 
 An explicit `name` on a metric spec **overrides** the canonical naming above, for both arithmetic/transform expressions and simple aggregations. This is what lets multi-stage `source_queries` rename inner-stage outputs cleanly:
 
@@ -571,11 +582,11 @@ An explicit `name` on a metric spec **overrides** the canonical naming above, fo
       "name": "raw",
       "population": "orders",
       "dimensions": ["region"],
-      "metrics": [{"expression": "sum(amount)", "name": "rev"}]
+      "metrics": [{"metric": "sum(amount)", "alias": "rev"}]
     },
     {
       "population": "raw",
-      "metrics": [{"expression": "sum(rev)"}]
+      "metrics": ["sum(rev)"]
     }
   ]
 }

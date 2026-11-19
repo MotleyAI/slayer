@@ -215,15 +215,15 @@ class TestLegacyJoinTargetNormalisation:
         await storage.save_dataset(SlayerDataset(
             name="src", sql_table="src", data_source="ds",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="x", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="x", datatype=DataType.INTEGER),
             ],
             relationships=[
                 # Matches the fresh join's pairs — this is the one to repair.
-                DatasetRelationship(to="a__b", join_pairs=[["x", "id"]]),
+                DatasetRelationship(to="a__b", from_columns=["x"], to_columns=["id"]),
                 # Sanitizes to the same name but has different pairs, so it is
                 # somebody else's join and must be left alone.
-                DatasetRelationship(to="a___b", join_pairs=[["id", "id"]]),
+                DatasetRelationship(to="a___b", from_columns=["id"], to_columns=["id"]),
             ],
         ))
 

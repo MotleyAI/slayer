@@ -2,39 +2,39 @@
  "source": "tests/test_count_distinct_approx_generation.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct_approx(customer_id)"
    },
    "new": {
-    "expression": "count_distinct_approx(customer_id)"
+    "metric": "count_distinct_approx(customer_id)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct_approx(customer_id)"
    },
    "new": {
-    "expression": "count_distinct_approx(customer_id)"
+    "metric": "count_distinct_approx(customer_id)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct_approx(customer_id)"
    },
    "new": {
-    "expression": "count_distinct_approx(customer_id)"
+    "metric": "count_distinct_approx(customer_id)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count_distinct_approx(id)"
    },
    "new": {
-    "expression": "count_distinct_approx(id)"
+    "metric": "count_distinct_approx(id)"
    }
   }
  ],

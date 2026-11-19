@@ -65,7 +65,7 @@
     "population": "lib",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "time_dimensions": [
@@ -95,8 +95,8 @@
     "population": "lib",
     "metrics": [
      {
-      "expression": "max(ts_shifted)",
-      "name": "agg_v"
+      "metric": "max(ts_shifted)",
+      "alias": "agg_v"
      }
     ]
    }
@@ -121,7 +121,7 @@
     "population": "lib",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "time_dimensions": [
@@ -145,11 +145,11 @@
    },
    "new": {
     "to": "b",
-    "join_pairs": [
-     [
-      "at",
-      "bt"
-     ]
+    "from_columns": [
+     "at"
+    ],
+    "to_columns": [
+     "bt"
     ]
    }
   },
@@ -181,11 +181,11 @@
    },
    "new": {
     "to": "b",
-    "join_pairs": [
-     [
-      "at",
-      "bt"
-     ]
+    "from_columns": [
+     "at"
+    ],
+    "to_columns": [
+     "bt"
     ]
    }
   },

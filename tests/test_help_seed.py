@@ -74,9 +74,9 @@ async def storage() -> AsyncIterator[YAMLStorage]:
                 sql_table="orders",
                 data_source="mydb",
                 fields=[
-                    DatasetField(name="id", sql="id", datatype=DataType.INT,
+                    DatasetField(name="id", sql="id", datatype=DataType.INTEGER,
                            primary_key=True),
-                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
                 ],
             )
         )

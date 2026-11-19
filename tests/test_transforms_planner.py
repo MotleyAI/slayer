@@ -44,8 +44,8 @@ from slayer.core.keys import (
     TransformKey,
 )
 from slayer.core.keys import Grain
-from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.compile.projection import _iter_slot_deps
@@ -65,11 +65,11 @@ def _orders_dataset() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
     )
 
@@ -357,7 +357,7 @@ class TestIterSlotDepsTransformAux:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "cumsum(sum(amount), partition_by=region)"},
+                {"metric": "cumsum(sum(amount), partition_by=region)"},
             ],
             time_dimensions=[
                 TimeDimension(
@@ -380,7 +380,7 @@ class TestTransformLayersPopulation:
     def test_cumsum_emits_transform_layer(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "cumsum(sum(amount))"}],
+            "metrics": [{"metric": "cumsum(sum(amount))"}],
             "time_dimensions": [
                 TimeDimension(
                     field="created_at",
@@ -397,7 +397,7 @@ class TestTransformLayersPopulation:
     def test_rank_emits_transform_layer(self) -> None:
         q = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="rank(sum(amount), direction='desc')")],
+            metrics=[QueryMetric(metric="rank(sum(amount), direction='desc')")],
         )
         planned = plan_query(query=q, bundle=_bundle())
         assert any(
@@ -407,7 +407,7 @@ class TestTransformLayersPopulation:
     def test_time_shift_emits_transform_layer(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "time_shift(sum(amount), periods=-1)"}],
+            "metrics": [{"metric": "time_shift(sum(amount), periods=-1)"}],
             "time_dimensions": [
                 TimeDimension(
                     field="created_at",
@@ -426,7 +426,7 @@ class TestTransformLayersPopulation:
         # transform_layers should show the materialised op only.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "change(sum(amount))"}],
+            "metrics": [{"metric": "change(sum(amount))"}],
             "time_dimensions": [
                 TimeDimension(
                     field="created_at",
@@ -445,7 +445,7 @@ class TestTransformLayersPopulation:
         # time_shift layer must appear before the outer cumsum layer.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "cumsum(change(sum(amount)))"}],
+            "metrics": [{"metric": "cumsum(change(sum(amount)))"}],
             "time_dimensions": [
                 TimeDimension(
                     field="created_at",
@@ -468,8 +468,8 @@ class TestTransformLayersPopulation:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "rank(sum(amount), direction='desc')"},
-                {"expression": "cumsum(sum(amount))"},
+                {"metric": "rank(sum(amount), direction='desc')"},
+                {"metric": "cumsum(sum(amount))"},
             ],
             time_dimensions=[
                 TimeDimension(
@@ -487,7 +487,7 @@ class TestTransformLayersPopulation:
             assert len(layer.slot_ids) == 1
 
     def test_no_transform_no_layers(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         assert planned.transform_layers == []
 
@@ -504,7 +504,7 @@ class TestTransformInnerIdentity:
         # both occurrences of amount:sum must intern to the SAME slot.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "change(sum(amount))"}],
+            "metrics": [{"metric": "change(sum(amount))"}],
             "time_dimensions": [
                 TimeDimension(
                     field="created_at",
@@ -529,8 +529,8 @@ class TestTransformInnerIdentity:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "sum(amount)"},
-                {"expression": "change(sum(amount))"},
+                {"metric": "sum(amount)"},
+                {"metric": "change(sum(amount))"},
             ],
             time_dimensions=[
                 TimeDimension(

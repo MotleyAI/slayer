@@ -48,7 +48,7 @@ _STORED_MEASURES = [
 # An sql-mode list column declaring no element type; 1.8.2 stores it as UNKNOWN.
 DEV_SKILLS = SlayerModel(
     name="dev_skills", data_source=SHOP, sql="SELECT id, name, skills FROM contractors",
-    columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT),
+    columns=[Column(name="id", type=DataType.INTEGER, primary_key=True), Column(name="name", type=DataType.STRING),
              Column(name="skills", type=DataType.ARRAY)],
 )
 

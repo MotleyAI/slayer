@@ -144,7 +144,7 @@ async def test_cube(db: Path) -> None:
     ]) == pytest.approx({"paid_cnt": 2, "paid_amount": 30, "paid_sum": 30, "via_dotted": 30, "via_cube": 30,
                          "share": 10, "tag_cnt": 2})
     tags = column(datasets_of(result)["orders"], "tags")
-    assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
     assert await _values(datasets=models, db=db, dataset="orders_self", names=["paid_sum"]) == {"paid_sum": 30}
     assert await _values(datasets=models, db=db, dataset="orders_view", names=["paid_sum"]) == {"paid_sum": 30}
     assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status") == STATE_COUNTS
@@ -170,7 +170,7 @@ async def test_dbt(db: Path) -> None:
     assert await _values(datasets=models, db=db, dataset="orders", names=["paid_cnt", "paid_bool", "total", "tag_cnt"]) \
         == {"paid_cnt": 2, "paid_bool": 2, "total": 35, "tag_cnt": 2}
     tags = column(datasets_of(result)["orders"], "tags")
-    assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.STRING)
     assert await counts_by(datasets=models, db=db, dataset="orders_clash", dimension="status") == STATE_COUNTS
     assert not has_metric(result, "orders", "tag_kinds")
     assert entries(result, "tag_kinds")

@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidatorFunctionWrapHandler,
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, finer_datatype
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,11 @@ class ReflectedColumn(BaseModel):
     type_name: str | None = None
     # SQLAlchemy's ``quoted_name`` flag on ``name`` (a lower-case Snowflake / Oracle name).
     quoted: bool = False
+
+    @property
+    def narrowed_type(self) -> DataType:
+        """``type`` narrowed by the database's type name (``Decimal``, ``DateTimeTz``)."""
+        return finer_datatype(self.type, self.db_type or self.type_name)
 
 
 class ResultColumnType(BaseModel):
@@ -115,68 +120,68 @@ class TableKeys(BaseModel):
 # --- Type names → DataType (one table for catalog strings, SQLAlchemy types and probes) ---
 
 _TYPE_NAME_MAP = {
-    "INTEGER": DataType.INT,
-    "INT": DataType.INT,
-    "BIGINT": DataType.INT,
-    "SMALLINT": DataType.INT,
-    "TINYINT": DataType.INT,
-    "MEDIUMINT": DataType.INT,
-    "HUGEINT": DataType.INT,
-    "SERIAL": DataType.INT,
-    "BIGSERIAL": DataType.INT,
-    "OID": DataType.INT,
-    "YEAR": DataType.INT,
-    "FLOAT": DataType.DOUBLE,
-    "REAL": DataType.DOUBLE,
-    "DOUBLE": DataType.DOUBLE,
-    "DOUBLE_PRECISION": DataType.DOUBLE,
-    "DOUBLE PRECISION": DataType.DOUBLE,
-    "MONEY": DataType.DOUBLE,
-    "SMALLMONEY": DataType.DOUBLE,
-    "VARCHAR": DataType.TEXT,
-    "CHAR": DataType.TEXT,
-    "TEXT": DataType.TEXT,
-    "STRING": DataType.TEXT,
+    "INTEGER": DataType.INTEGER,
+    "INT": DataType.INTEGER,
+    "BIGINT": DataType.INTEGER,
+    "SMALLINT": DataType.INTEGER,
+    "TINYINT": DataType.INTEGER,
+    "MEDIUMINT": DataType.INTEGER,
+    "HUGEINT": DataType.INTEGER,
+    "SERIAL": DataType.INTEGER,
+    "BIGSERIAL": DataType.INTEGER,
+    "OID": DataType.INTEGER,
+    "YEAR": DataType.INTEGER,
+    "FLOAT": DataType.FLOAT,
+    "REAL": DataType.FLOAT,
+    "DOUBLE": DataType.FLOAT,
+    "DOUBLE_PRECISION": DataType.FLOAT,
+    "DOUBLE PRECISION": DataType.FLOAT,
+    "MONEY": DataType.FLOAT,
+    "SMALLMONEY": DataType.FLOAT,
+    "VARCHAR": DataType.STRING,
+    "CHAR": DataType.STRING,
+    "TEXT": DataType.STRING,
+    "STRING": DataType.STRING,
     "BOOLEAN": DataType.BOOLEAN,
     "BOOL": DataType.BOOLEAN,
     "BIT": DataType.BOOLEAN,  # T-SQL boolean
-    "TIMESTAMP": DataType.TIMESTAMP,
-    "DATETIME": DataType.TIMESTAMP,
-    "TIMESTAMP WITHOUT TIME ZONE": DataType.TIMESTAMP,
-    "TIMESTAMP WITH TIME ZONE": DataType.TIMESTAMP,
-    "TIMESTAMP_NTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_LTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_TZ": DataType.TIMESTAMP,
+    "TIMESTAMP": DataType.DATETIME,
+    "DATETIME": DataType.DATETIME,
+    "TIMESTAMP WITHOUT TIME ZONE": DataType.DATETIME,
+    "TIMESTAMP WITH TIME ZONE": DataType.DATETIME,
+    "TIMESTAMP_NTZ": DataType.DATETIME,
+    "TIMESTAMP_LTZ": DataType.DATETIME,
+    "TIMESTAMP_TZ": DataType.DATETIME,
     "DATE": DataType.DATE,
-    "TIME": DataType.TIMESTAMP,
-    "INTERVAL": DataType.TEXT,  # no interval DataType; groupable as TEXT
+    "TIME": DataType.DATETIME,
+    "INTERVAL": DataType.STRING,  # no interval DataType; groupable as TEXT
     # ClickHouse
-    "INT8": DataType.INT,
-    "INT16": DataType.INT,
-    "INT32": DataType.INT,
-    "INT64": DataType.INT,
-    "INT128": DataType.INT,
-    "INT256": DataType.INT,
-    "UINT8": DataType.INT,
-    "UINT16": DataType.INT,
-    "UINT32": DataType.INT,
-    "UINT64": DataType.INT,
-    "UINT128": DataType.INT,
-    "UINT256": DataType.INT,
-    "FLOAT32": DataType.DOUBLE,
-    "FLOAT64": DataType.DOUBLE,
-    "DATETIME64": DataType.TIMESTAMP,
+    "INT8": DataType.INTEGER,
+    "INT16": DataType.INTEGER,
+    "INT32": DataType.INTEGER,
+    "INT64": DataType.INTEGER,
+    "INT128": DataType.INTEGER,
+    "INT256": DataType.INTEGER,
+    "UINT8": DataType.INTEGER,
+    "UINT16": DataType.INTEGER,
+    "UINT32": DataType.INTEGER,
+    "UINT64": DataType.INTEGER,
+    "UINT128": DataType.INTEGER,
+    "UINT256": DataType.INTEGER,
+    "FLOAT32": DataType.FLOAT,
+    "FLOAT64": DataType.FLOAT,
+    "DATETIME64": DataType.DATETIME,
     "DATE32": DataType.DATE,
     # T-SQL
-    "DATETIME2": DataType.TIMESTAMP,
-    "SMALLDATETIME": DataType.TIMESTAMP,
-    "DATETIMEOFFSET": DataType.TIMESTAMP,
-    "NVARCHAR": DataType.TEXT,
-    "NCHAR": DataType.TEXT,
-    "NTEXT": DataType.TEXT,
-    "ROWVERSION": DataType.TEXT,  # 8-byte binary counter, not temporal
-    "UUID": DataType.TEXT,
-    "JSONB": DataType.TEXT,  # comparable, unlike generic JSON
+    "DATETIME2": DataType.DATETIME,
+    "SMALLDATETIME": DataType.DATETIME,
+    "DATETIMEOFFSET": DataType.DATETIME,
+    "NVARCHAR": DataType.STRING,
+    "NCHAR": DataType.STRING,
+    "NTEXT": DataType.STRING,
+    "ROWVERSION": DataType.STRING,  # 8-byte binary counter, not temporal
+    "UUID": DataType.STRING,
+    "JSONB": DataType.STRING,  # comparable, unlike generic JSON
 }
 
 # NUMERIC/DECIMAL are float-like only by scale.
@@ -262,24 +267,24 @@ def info_schema_type(
     if info_schema_list_element(name) is not None:
         return DataType.ARRAY, False
     if _is_container_name(name):
-        return DataType.TEXT, False
+        return DataType.STRING, False
     if base in _OPAQUE_TYPE_NAMES:
-        return DataType.UNKNOWN, False
+        return DataType.OPAQUE, False
     if is_exact_numeric_db_type(base):
         is_float = parse_info_schema_is_float(name)
-        return (DataType.DOUBLE if is_float else DataType.INT), is_float
+        return (DataType.FLOAT if is_float else DataType.INTEGER), is_float
     mapped = _TYPE_NAME_MAP.get(base)
     if mapped is not None:
         return mapped, base in _FLOAT_LIKE_TYPE_NAMES
     if "DOUBLE" in base or "FLOAT" in base or "REAL" in base:
-        return DataType.DOUBLE, True
+        return DataType.FLOAT, True
     if "TIMESTAMP" in base or "DATETIME" in base:
-        return DataType.TIMESTAMP, False
+        return DataType.DATETIME, False
     if "INTERVAL" in base:
-        return DataType.TEXT, False
+        return DataType.STRING, False
     if "INT" in base:
-        return DataType.INT, False
-    return DataType.TEXT, False
+        return DataType.INTEGER, False
+    return DataType.STRING, False
 
 
 def info_schema_list_element(data_type_str: str | None) -> DataType | None:
@@ -288,7 +293,7 @@ def info_schema_list_element(data_type_str: str | None) -> DataType | None:
     text = (data_type_str or "").strip()
     upper = text.upper()
     if upper == "ARRAY":  # an untyped list (Snowflake), or a catalog that names no element type
-        return DataType.UNKNOWN
+        return DataType.OPAQUE
     if upper.endswith("[]"):
         inner = text[:-2].strip()
     elif upper.startswith(("LIST(", "ARRAY(", "ARRAY<")) and upper.endswith((")", ">")):
@@ -296,7 +301,7 @@ def info_schema_list_element(data_type_str: str | None) -> DataType | None:
     else:
         return None
     if info_schema_list_element(inner) is not None or inner.upper().startswith(("STRUCT", "MAP", "UNION", "ROW")):
-        return DataType.UNKNOWN
+        return DataType.OPAQUE
     return info_schema_type(unwrap_clickhouse_wrapper_str(inner))[0]
 
 
@@ -371,9 +376,9 @@ def _sa_list_item(sa_type: sa.types.TypeEngine) -> tuple[bool, sa.types.TypeEngi
 def _sa_element_type(item: sa.types.TypeEngine | None) -> DataType:
     """A list item's SLayer type: a scalar's own, ``UNKNOWN`` for a nested list, a record or no item type."""
     if item is None or _sa_list_item(item)[0]:
-        return DataType.UNKNOWN
+        return DataType.OPAQUE
     if type(_unwrap_clickhouse_wrappers(item)).__name__.upper() in _OPAQUE_ELEMENT_TYPE_NAMES:
-        return DataType.UNKNOWN
+        return DataType.OPAQUE
     return _sa_type_to_data_type(item)
 
 
@@ -405,18 +410,18 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         return DataType.ARRAY
     # mssql.TIMESTAMP is rowversion (binary), and its name collides with sa.TIMESTAMP.
     if isinstance(sa_type, _sqla_mssql.TIMESTAMP):
-        return DataType.TEXT
+        return DataType.STRING
     # Any dialect's UUID, e.g. SQL Server UNIQUEIDENTIFIER.
     if isinstance(sa_type, sa.Uuid):
-        return DataType.TEXT
+        return DataType.STRING
     type_name = type(sa_type).__name__.upper()
     type_str = str(sa_type).split("(")[0].upper().strip()
     if type_name in _CONTAINER_PREFIXES or _is_container_name(str(sa_type)):
-        return DataType.TEXT
+        return DataType.STRING
     if type_name in _OPAQUE_TYPE_NAMES or type_str in _OPAQUE_TYPE_NAMES:
-        return DataType.UNKNOWN
+        return DataType.OPAQUE
     if is_exact_numeric_db_type(type_name) or is_exact_numeric_db_type(type_str):
-        return DataType.DOUBLE if _sa_type_is_float(sa_type) else DataType.INT
+        return DataType.FLOAT if _sa_type_is_float(sa_type) else DataType.INTEGER
     if type_name in _TYPE_NAME_MAP:
         return _TYPE_NAME_MAP[type_name]
     if type_str in _TYPE_NAME_MAP:
@@ -425,17 +430,25 @@ def _sa_type_to_data_type(sa_type: sa.types.TypeEngine) -> DataType:
         _logged_unmapped_sa_types.add(type_name)
         logger.warning(
             "Unrecognized SQLAlchemy type %r (str=%r); falling back to "
-            "DataType.TEXT. Most unmapped types (bytea) are comparable and "
+            "DataType.STRING. Most unmapped types (bytea) are comparable and "
             "work as TEXT; add genuinely non-comparable ones to "
             "_OPAQUE_TYPE_NAMES and the rest to _TYPE_NAME_MAP.",
             type_name,
             str(sa_type),
         )
-    return DataType.TEXT
+    return DataType.STRING
 
 
-def _raw_db_type_str(sa_type: sa.types.TypeEngine) -> str | None:
-    """Best-effort raw database type string for ``Column.db_type`` (never raises)."""
+def _raw_db_type_str(sa_type: sa.types.TypeEngine, *, sa_dialect: Any = None) -> str | None:
+    """Best-effort raw database type string for ``Column.db_type``, spelled by ``sa_dialect`` when given (never raises)."""
+    if sa_dialect is not None:
+        try:
+            compiled = str(sa_type.compile(dialect=sa_dialect)).strip()
+        except Exception:  # noqa: BLE001 — a type its dialect cannot spell keeps the generic form
+            logger.debug("type %r does not compile on %s", sa_type, sa_dialect.name)
+            compiled = ""
+        if compiled:
+            return compiled
     try:
         text = str(sa_type).strip()
     except Exception:
@@ -489,7 +502,7 @@ def column_from_sa_type(
             name=name, type=data_type, element_type=element_type, db_type=list_type,
             comment=clean_comment(comment), type_name=list_type, quoted=getattr(name, "quote", None) is True,
         )
-    type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type))
+    type_name = _raw_db_type_str(_unwrap_clickhouse_wrappers(sa_type), sa_dialect=sa_dialect)
     lossy = data_type.is_opaque or _sa_type_is_exact_numeric(sa_type) or _sa_type_is_json(
         sa_type, json_types=json_types,
     ) or type(sa_type).__name__.upper() in zoned_types

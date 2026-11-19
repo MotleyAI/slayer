@@ -97,7 +97,7 @@ async def _count(engine, **variables):
     """Count order_facts rows with the given FILTER_PARAMS variables."""
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"expression": "count"}],
+        "metrics": [{"metric": "count"}],
         "variables": variables,
     })
     return _sole(await engine.execute(q))
@@ -256,7 +256,7 @@ async def test_required_omitted_raises_naming_category(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"expression": "count"}],
+        "metrics": [{"metric": "count"}],
         "variables": {"region": ["North"]},  # category (required) omitted
     })
     with pytest.raises(ValueError, match=r"Undefined variable 'category'"):
@@ -267,7 +267,7 @@ async def test_empty_list_raises_not_treated_as_omission(tmp_path):
     engine, _, _, _ = await _prepare(tmp_path)
     q = SlayerQuery.model_validate({
         "population": "order_facts",
-        "metrics": [{"expression": "count"}],
+        "metrics": [{"metric": "count"}],
         "variables": {"category": _BOTH, "region": []},
     })
     with pytest.raises(ValueError, match=r"cannot be an empty list"):

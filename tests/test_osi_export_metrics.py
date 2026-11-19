@@ -65,9 +65,9 @@ async def test_cross_model_ratio_is_model_scoped(env) -> None:
 
 
 async def test_ambiguous_route_measure_is_slayer_only(env) -> None:
-    second = DatasetRelationship(to="customers", join_pairs=[["region_code", "id"]], name="referrer",
+    second = DatasetRelationship(to="customers", from_columns=["region_code"], to_columns=["id"], name="referrer",
                        cardinality=None)
-    model = orders(columns=[*orders_columns(), col("region_code", DataType.INT, "quantity")],
+    model = orders(columns=[*orders_columns(), col("region_code", DataType.INTEGER, "quantity")],
                    joins=[to_customers(name="buyer"), second],
                    metrics=[*BASIC_MEASURES, slayer_metric("ratio", "sum(amount) / count_distinct(buyer.id)")])
     result = await export_datasets(env, customers(), model)
@@ -179,7 +179,7 @@ async def test_relocated_metric_name_unique_under_case_folding(env) -> None:
 
 
 async def test_relationship_and_metric_names_unique_document_wide(env) -> None:
-    to_cust = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+    to_cust = DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                         cardinality=RelationshipCardinality.MANY_TO_ONE)
     ratio = slayer_metric("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
     result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, ratio]),
@@ -191,7 +191,7 @@ async def test_relationship_and_metric_names_unique_document_wide(env) -> None:
 
 
 async def test_case_ambiguous_identifier_is_quoted(env) -> None:
-    columns = [*orders_columns(), col("Status", DataType.TEXT, '"LegalType"')]
+    columns = [*orders_columns(), col("Status", DataType.STRING, '"LegalType"')]
     await save(env, customers())
     # Unvalidated save: a grandfathered ``status``/``Status`` collision a validated save would refuse.
     await YAMLStorage(base_dir=str(env.store)).save_dataset(
@@ -224,7 +224,7 @@ async def test_dialect_only_field_expression(tmp_path: Path) -> None:
     storage = YAMLStorage(base_dir=str(store))
     await storage.save_datasource(DatasourceConfig(name=DATASOURCE, type="postgres", host="127.0.0.1", port=1,
                                                    database="none"))
-    model = orders(columns=[*orders_columns(), col("month_label", DataType.TEXT, "to_char(ordered_on, 'YYYY-MM')")],
+    model = orders(columns=[*orders_columns(), col("month_label", DataType.STRING, "to_char(ordered_on, 'YYYY-MM')")],
                    joins=[], metrics=BASIC_MEASURES)
     await storage.save_dataset(model, _validate=False)
     label = field(dataset((await export(pg)).document, "orders"), "month_label")

@@ -22,14 +22,14 @@ def _orders_dataset(*, cardinality: RelationshipCardinality | None, email_unique
         sql_table="orders",
         data_source="ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="email", sql="email", datatype=DataType.TEXT, unique=email_unique),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="email", sql="email", datatype=DataType.STRING, unique=email_unique),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
         ],
         relationships=[
             DatasetRelationship(
                 to="customers",
-                join_pairs=[["customer_id", "id"]],
+                from_columns=["customer_id"], to_columns=["id"],
                 cardinality=cardinality,
             )
         ],
@@ -41,7 +41,7 @@ def _customers_dataset() -> SlayerDataset:
         name="customers",
         sql_table="customers",
         data_source="ds",
-        fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True)],
     )
 
 
@@ -167,7 +167,7 @@ class TestEditModelRoundTrip:
                     "relationships": [
                         {
                             "to": "customers",
-                            "join_pairs": [["customer_id", "id"]],
+                            "from_columns": ["customer_id"], "to_columns": ["id"],
                             "cardinality": "many_to_one",
                         }
                     ],
@@ -196,8 +196,8 @@ class TestNoEmbeddingChurn:
 
     def test_unique_not_in_column_embedding_text(self) -> None:
         dataset = _orders_dataset(cardinality=None, email_unique=False)
-        plain_col = DatasetField(name="email", sql="email", datatype=DataType.TEXT, unique=False)
-        uniq_col = DatasetField(name="email", sql="email", datatype=DataType.TEXT, unique=True)
+        plain_col = DatasetField(name="email", sql="email", datatype=DataType.STRING, unique=False)
+        uniq_col = DatasetField(name="email", sql="email", datatype=DataType.STRING, unique=True)
         assert render_field_text(dataset=dataset, field=uniq_col) == render_field_text(
             dataset=dataset, field=plain_col
         )

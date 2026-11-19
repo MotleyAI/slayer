@@ -44,13 +44,13 @@ class TestNestedSavedMeasure:
         _, engine = exec_backend
         dotted = await engine.execute(
             q(dimensions=["customers.tier"],
-              metrics=[{"expression": "customers.aov_big", "name": "x"}]),
+              metrics=[{"metric": "customers.aov_big", "alias": "x"}]),
         )
         hand = await engine.execute(
             q(dimensions=["customers.tier"],
-              metrics=[{"expression":
+              metrics=[{"metric":
                          "(sum(customers.spend) / count(customers.*)) * 2",
-                         "name": "x"}]),
+                         "alias": "x"}]),
         )
         assert _canon(dotted) == _canon(hand)
 
@@ -61,10 +61,10 @@ class TestHostMeasureContainingDottedRef:
         reference (``host_runs_dotted`` = ``cumsum(customers.aov)``) resolves
         recursively — identical SQL to writing the dotted form inline."""
         bare = q(dimensions=["customers.tier"],
-                 metrics=[{"expression": "host_runs_dotted", "name": "x"}],
+                 metrics=[{"metric": "host_runs_dotted", "alias": "x"}],
                  time_dimensions=month_td())
         inline = q(dimensions=["customers.tier"],
-                   metrics=[{"expression": "cumsum(customers.aov)", "name": "x"}],
+                   metrics=[{"metric": "cumsum(customers.aov)", "alias": "x"}],
                    time_dimensions=month_td())
         assert await gen(bare) == await gen(inline)
 
@@ -74,7 +74,7 @@ class TestCrossModelCycle:
         """``customers.cyc_c`` → ``orders.cyc_o`` → ``customers.cyc_c`` is a
         cross-model measure cycle. The error names the full (model, measure)
         chain, not a wrong or double-counted value."""
-        query = q(metrics=[{"expression": "customers.cyc_c", "name": "x"}])
+        query = q(metrics=[{"metric": "customers.cyc_c", "alias": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value).lower()
@@ -91,8 +91,8 @@ class TestDepthLimit:
         sub = SlayerDataset(
             name="sub", data_source="test", sql_table="sub",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             metrics=[
                 DatasetMetric(name="d1", expression="d2"),
@@ -103,10 +103,10 @@ class TestDepthLimit:
         main = SlayerDataset(
             name="main", data_source="test", sql_table="main",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="sub_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="sub_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="sub", join_pairs=[["sub_id", "id"]])],
+            relationships=[DatasetRelationship(to="sub", from_columns=["sub_id"], to_columns=["id"])],
         )
         return main, sub
 
@@ -114,7 +114,7 @@ class TestDepthLimit:
         main, sub = self._datasets()
         return await _engine_generate(
             query=q(population="main",
-                    metrics=[{"expression": expression, "name": "x"}]),
+                    metrics=[{"metric": expression, "alias": "x"}]),
             dataset=main, extra_datasets=[sub], dialect="duckdb", validate=False,
         )
 

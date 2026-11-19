@@ -18,7 +18,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -39,11 +39,11 @@
    },
    "new": {
     "to": "stores",
-    "join_pairs": [
-     [
-      "store_id",
-      "id"
-     ]
+    "from_columns": [
+     "store_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -64,7 +64,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -89,7 +89,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -114,7 +114,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -142,7 +142,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "dimensions": [

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -77,21 +77,21 @@
    },
    "new": {
     "to": "warehouses",
-    "join_pairs": [
-     [
-      "warehouse_id",
-      "id"
-     ]
+    "from_columns": [
+     "warehouse_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(wh_pop)"
    },
    "new": {
-    "expression": "sum(wh_pop)"
+    "metric": "sum(wh_pop)"
    }
   },
   {
@@ -107,21 +107,21 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.balance)"
    },
    "new": {
-    "expression": "sum(customers.balance)"
+    "metric": "sum(customers.balance)"
    }
   },
   {
@@ -137,11 +137,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -158,21 +158,21 @@
    },
    "new": {
     "to": "shippers",
-    "join_pairs": [
-     [
-      "shipper_id",
-      "id"
-     ]
+    "from_columns": [
+     "shipper_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(customers.balance)"
    },
    "new": {
-    "expression": "sum(customers.balance)"
+    "metric": "sum(customers.balance)"
    }
   },
   {
@@ -188,23 +188,22 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "cust_ref",
-      "CustId"
-     ]
+    "from_columns": [
+     "cust_ref"
+    ],
+    "to_columns": [
+     "CustId"
     ]
    }
   },
   {
-   "kind": "field_ref",
+   "kind": "dimension",
    "old": {
     "name": "balance",
     "model": "customers"
    },
    "new": {
-    "name": "balance",
-    "dataset": "customers"
+    "field": "customers.balance"
    }
   }
  ],

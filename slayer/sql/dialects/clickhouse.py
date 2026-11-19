@@ -258,7 +258,7 @@ class ClickhouseDialect(SqlDialect):
     ) -> ListRelation:
         """``ARRAY JOIN`` of one-field named tuples, so the element reads as ``alias.value``."""
         element_name = exp.to_identifier(LIST_ELEMENT)
-        row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {(element or DataType.UNKNOWN).value}>")
+        row_type = exp.DataType.build(f"STRUCT<{LIST_VALUE} {(element or DataType.OPAQUE).kind.value}>")
         as_row = exp.Lambda(this=exp.Cast(this=anon("tuple", exp.Column(this=element_name.copy())), to=row_type),
                             expressions=[element_name])
         kept = anon("arrayDistinct", _compact(values)) if distinct else _compact(values)

@@ -88,14 +88,14 @@ async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]
         sql_table="orders",
         data_source="ds",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT,
                    description="Order total in USD."),
-            DatasetField(name="status", datatype=DataType.TEXT,
+            DatasetField(name="status", datatype=DataType.STRING,
                    description="Order lifecycle status."),
             DatasetField(name="order_date", datatype=DataType.DATE,
                    description="Date the order was placed."),
-            DatasetField(name="secret", datatype=DataType.TEXT,
+            DatasetField(name="secret", datatype=DataType.STRING,
                    description="Hidden but inspectable.", hidden=True),
         ],
         metrics=[

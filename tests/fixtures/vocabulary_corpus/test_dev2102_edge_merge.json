@@ -38,11 +38,11 @@
    "new": {
     "to": "customers",
     "name": "home",
-    "join_pairs": [
-     [
-      "id",
-      "region_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "region_id"
     ]
    }
   },

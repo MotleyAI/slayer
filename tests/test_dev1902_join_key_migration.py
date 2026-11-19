@@ -53,7 +53,7 @@ def _orders(*, fk_sql: str | None = "cust_fk", joins: list[dict] | None = None) 
 
 
 def _join(target: str, pairs: list[list[str]], **extra) -> dict:
-    return {"to": target, "join_pairs": pairs, **extra}
+    return {"to": target, "from_columns": [p[0] for p in pairs], "to_columns": [p[1] for p in pairs], **extra}
 
 
 @pytest.fixture(params=["yaml", "sqlite"])
@@ -96,10 +96,10 @@ class TestCanonicalisedOnLoad:
             _customers()])
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert orders.relationships[0].column_pairs == [("customer_id", "id")]
         stored = await _stored(storage, "orders")
         assert stored["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert stored["relationships"][0]["join_pairs"] == [["customer_id", "id"]]
+        assert (stored["relationships"][0]["from_columns"], stored["relationships"][0]["to_columns"]) == (["customer_id"], ["id"])
 
     async def test_target_side_physical_spelling_rewritten(self, seed: Seeder):
         storage = await seed([
@@ -107,7 +107,7 @@ class TestCanonicalisedOnLoad:
             _customers()])
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert orders.relationships[0].column_pairs == [("customer_id", "id")]
 
     async def test_both_sides_rewritten_together(self, seed: Seeder):
         storage = await seed([
@@ -115,7 +115,7 @@ class TestCanonicalisedOnLoad:
             _customers()])
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert orders.relationships[0].column_pairs == [("customer_id", "id")]
 
     async def test_quoted_rename_rewritten(self, seed: Seeder):
         storage = await seed([
@@ -123,7 +123,7 @@ class TestCanonicalisedOnLoad:
             _customers()])
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert orders.relationships[0].column_pairs == [("customer_id", "id")]
 
     @pytest.mark.parametrize("first", ["orders", "customers"])
     async def test_mirror_pair_spelled_two_ways_collapses(self, seed: Seeder, first: str):
@@ -140,7 +140,7 @@ class TestCanonicalisedOnLoad:
         assert orders is not None
         assert customers is not None
         assert len(edges_between(source=orders, target=customers)) == 1
-        assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
+        assert orders.relationships[0].column_pairs == [("customer_id", "id")]
         assert customers.relationships == []
 
 
@@ -155,7 +155,7 @@ class TestLeftAlone:
         assert orders is not None
         stored = await _stored(storage, "orders")
         assert stored["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert stored["relationships"][0]["join_pairs"] == [["customer_id", "id"]]
+        assert (stored["relationships"][0]["from_columns"], stored["relationships"][0]["to_columns"]) == (["customer_id"], ["id"])
 
     async def test_declared_name_wins_over_a_rename(self, seed: Seeder):
         # ``cust_fk`` is both a declared name and another column's rename.
@@ -164,7 +164,7 @@ class TestLeftAlone:
         storage = await seed([doc, _customers()])
         orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
-        assert orders.relationships[0].join_pairs == [["cust_fk", "id"]]
+        assert orders.relationships[0].column_pairs == [("cust_fk", "id")]
 
     async def test_ambiguous_rename_left_for_validation(self, seed: Seeder):
         doc = _orders(joins=[_join("customers", [["cust_fk", "id"]])])

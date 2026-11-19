@@ -28,10 +28,10 @@ def _m(name, cols, joins=None):
 def _unnamed_two_hop():
     """orders → customers → regions, both hops unnamed (many-to-one)."""
     orders = _m("orders", ["id", "customer_id", "status"], [
-        DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     regions = _m("regions", ["id", "pop"])
     return {m.name: m for m in (orders, customers, regions)}
@@ -40,10 +40,10 @@ def _unnamed_two_hop():
 def _named_two_hop():
     """orders → customers (unnamed) → regions (named ``home_region``)."""
     orders = _m("orders", ["id", "customer_id"], [
-        DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+        DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE, name="home_region")])
     regions = _m("regions", ["id", "pop"])
     return {m.name: m for m in (orders, customers, regions)}
@@ -52,10 +52,10 @@ def _named_two_hop():
 def _one_to_one_chain():
     """orders → carts → sessions, both hops one-to-one (attributable reverse)."""
     orders = _m("orders", ["id", "cart_id"], [
-        DatasetRelationship(to="carts", join_pairs=[["cart_id", "id"]],
+        DatasetRelationship(to="carts", from_columns=["cart_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.ONE_TO_ONE)])
     carts = _m("carts", ["id", "session_id"], [
-        DatasetRelationship(to="sessions", join_pairs=[["session_id", "id"]],
+        DatasetRelationship(to="sessions", from_columns=["session_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.ONE_TO_ONE)])
     sessions = _m("sessions", ["id", "channel"])
     return {m.name: m for m in (orders, carts, sessions)}
@@ -65,12 +65,12 @@ def _ambiguous_reverse():
     """events → customers on TWO parallel unnamed edges (the reverse hop from a
     customers-side home is ambiguous), customers → regions single."""
     events = _m("events", ["id", "bill_cid", "ship_cid", "kind"], [
-        DatasetRelationship(to="customers", join_pairs=[["bill_cid", "id"]],
+        DatasetRelationship(to="customers", from_columns=["bill_cid"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE),
-        DatasetRelationship(to="customers", join_pairs=[["ship_cid", "id"]],
+        DatasetRelationship(to="customers", from_columns=["ship_cid"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     customers = _m("customers", ["id", "region_id"], [
-        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"],
                   cardinality=RelationshipCardinality.MANY_TO_ONE)])
     regions = _m("regions", ["id", "pop"])
     return {m.name: m for m in (events, customers, regions)}

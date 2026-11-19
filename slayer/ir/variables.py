@@ -22,8 +22,9 @@ from slayer.core.names import match_name
 from slayer.core.syntax import bind_variables, has_bindings, variable_names
 from slayer.core.time_points import is_date_only
 from slayer.core.query import (
-    ComputedDimension,
     OrderItem,
+    QueryDimension,
+    QueryMetric,
     SlayerQuery,
     TimeDimension,
     _contains_block_delimiter,
@@ -32,6 +33,7 @@ from slayer.core.query import (
     extract_placeholder_names,
     extract_variable_refs,
     list_valued_variable_names,
+    map_filter,
 )
 
 
@@ -55,19 +57,17 @@ def merge_query_variables(
     }
 
 
-def _substituted_metric(m: DatasetMetric, variables: Dict[str, Any]) -> DatasetMetric:
-    if not has_bindings(m.expression):
+def _substituted_metric(m: QueryMetric, variables: Dict[str, Any]) -> QueryMetric:
+    if not has_bindings(m.metric):
         return m
-    return m.substituted(bind_variables(m.expression, variables), variables=variables)
+    return m.substituted(bind_variables(m.metric, variables), variables=variables)
 
 
-def _substituted_dimension(d: Any, variables: Dict[str, Any]) -> Any:
-    if not isinstance(d, ComputedDimension):
+def _substituted_dimension(d: QueryDimension, variables: Dict[str, Any]) -> QueryDimension:
+    text = bind_variables(d.field, variables)
+    if text == d.field:
         return d
-    text = bind_variables(d.expression, variables)
-    if text == d.expression:
-        return d
-    bound = d.model_copy(update={"expression": text})
+    bound = d.model_copy(update={"field": text})
     bound._template = d.template
     return bound
 
@@ -106,7 +106,7 @@ def _substituted_time_dimension(td: TimeDimension, variables: Dict[str, Any]) ->
         return td
     # Revalidated so a substituted bound is shape-checked like a literal one.
     bound = TimeDimension.model_validate({
-        "field": dimension, "granularity": td.granularity, "date_range": bounds, "name": td.name,
+        "field": dimension, "granularity": td.granularity, "date_range": bounds, "alias": td.alias,
         "label": td.label,
     })
     bound._template = td.template
@@ -127,7 +127,7 @@ def apply_variables_to_query(
     date_variables = _date_variables(query, effective)
     changed: Dict[str, Any] = {}
     if query.filter is not None:
-        changed["filter"] = [bind_variables(f, effective) for f in query.filter]
+        changed["filter"] = map_filter(query.filter, lambda f: bind_variables(f, effective))
     surfaces = (
         ("metrics", lambda m: _substituted_metric(m, effective)),
         ("dimensions", lambda d: _substituted_dimension(d, effective)),
@@ -156,8 +156,8 @@ def _with_date_variables(query: SlayerQuery, date_variables: DateVariables) -> S
 
 def _texts(query: SlayerQuery) -> List[str]:
     return [
-        *(query.filter or []), *(m.expression for m in query.metrics or [] if isinstance(m, DatasetMetric)),
-        *(d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)),
+        *query.filter_conditions, *(m.metric for m in query.metrics or []),
+        *(d.field for d in query.dimensions or []),
         *(o.raw_expression for o in query.order or [] if o.raw_expression),
     ]
 
@@ -183,7 +183,7 @@ def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariab
     dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
     roots = [query.population] if isinstance(query.population, str) else []
     texts = [*((t, None) for t in _texts(query)),
-             *((m.expression, e.source_name) for e in query.extensions or [] for m in e.metrics or [])]
+             *((m.expression, e.dataset) for e in query.extensions or [] for m in e.metrics or [])]
     out: DateVariables = {}
     for text, owner in texts:
         for name in (n for n in variable_names(text) if n in dated):

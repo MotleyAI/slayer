@@ -351,7 +351,7 @@ class TestTotalityAndFailClosed:
                 template="{r0} * 2", refs=(FieldKey(path=("customers",), leaf="spend"),),
             ),
             CastKey: CastKey(
-                source=FieldKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INT,
+                source=FieldKey(path=("customers",), leaf="spend"), type_text="INT", data_type=DataType.INTEGER,
             ),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),
             ListSetKey: ListSetKey(source=FieldKey(path=("customers",), leaf="tags")),

@@ -117,7 +117,7 @@ class TestReturningIsTryCast:
                         bundle=bundle, allow_metrics=True).value_key
         assert isinstance(key, CastKey), key
         assert key.try_ is True
-        assert key.data_type is DataType.INT
+        assert key.data_type is DataType.INTEGER
 
 
 class TestPathSubset:
@@ -160,7 +160,7 @@ class TestPathSubset:
 
 
 def _metric_query(expression: str, **kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": expression, "name": "v"}], **kw})
+    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"metric": expression, "alias": "v"}], **kw})
 
 
 class TestTyping:
@@ -179,7 +179,7 @@ class TestTyping:
         await _rejected(engine, expr, any_of=("json",))
 
 
-def _json_dataset(*, db_type: Optional[str], type_: DataType = DataType.TEXT) -> SlayerDataset:
+def _json_dataset(*, db_type: Optional[str], type_: DataType = DataType.STRING) -> SlayerDataset:
     base = lib_dataset()
     columns = [c for c in base.fields if c.name != "payload"]
     columns.append(DatasetField(name="payload", datatype=type_, db_type=db_type))
@@ -217,12 +217,12 @@ class TestInputForms:
         ("snowflake", "VARIANT"), ("snowflake", "OBJECT"), ("snowflake", "ARRAY"), ("clickhouse", "JSON"),
     ])
     async def test_native_json_column_emits(self, dialect: str, db_type: str) -> None:
-        for type_ in (DataType.TEXT, DataType.UNKNOWN):
+        for type_ in (DataType.STRING, DataType.OPAQUE):
             await emit_lib(lib_query("json_value(payload, '$.a' RETURNING INT)"), dialect=dialect,
                            datasets=[_json_dataset(db_type=db_type, type_=type_)])
 
     async def test_opaque_non_json_column_rejected(self) -> None:
-        models = [_json_dataset(db_type="bytea", type_=DataType.UNKNOWN)]
+        models = [_json_dataset(db_type="bytea", type_=DataType.OPAQUE)]
         with pytest.raises(SlayerError):
             await emit_lib(JSON_VALUE_Q, dialect="postgres", datasets=models)
 

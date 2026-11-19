@@ -29,13 +29,13 @@
      {
       "name": "id",
       "sql": "id",
-      "datatype": "DOUBLE",
+      "datatype": "Float",
       "primary_key": true
      },
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -62,7 +62,7 @@
      {
       "name": "amount",
       "sql": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -94,12 +94,12 @@
      {
       "name": "name",
       "sql": "name",
-      "datatype": "TEXT"
+      "datatype": "String"
      },
      {
       "name": "amount",
       "sql": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -126,7 +126,7 @@
      {
       "name": "double_id",
       "sql": "id * 2",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -162,7 +162,7 @@
       "population": "items",
       "metrics": [
        {
-        "expression": "sum(qty)"
+        "metric": "sum(qty)"
        }
       ]
      }
@@ -171,7 +171,7 @@
      {
       "name": "qty_sum",
       "sql": "qty_sum",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -198,7 +198,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -225,7 +225,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -255,7 +255,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "INT",
+      "datatype": "Integer",
       "format": {
        "type": "integer"
       }
@@ -285,7 +285,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -312,7 +312,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -339,7 +339,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -366,7 +366,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
@@ -393,7 +393,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "INT"
+      "datatype": "Integer"
      }
     ]
    }
@@ -411,7 +411,7 @@
       "type": "INT",
       "format": {
        "type": "currency",
-       "symbol": "\u20ac",
+       "symbol": "€",
        "precision": 3
       }
      }
@@ -425,10 +425,10 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "INT",
+      "datatype": "Integer",
       "format": {
        "type": "currency",
-       "symbol": "\u20ac",
+       "symbol": "€",
        "precision": 3
       }
      }
@@ -460,7 +460,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "INT",
+      "datatype": "Integer",
       "format": {
        "type": "integer"
       }
@@ -490,7 +490,7 @@
      {
       "name": "qty",
       "sql": "qty",
-      "datatype": "INT"
+      "datatype": "Integer"
      }
     ]
    }
@@ -517,7 +517,7 @@
      {
       "name": "amount",
       "sql": "amount",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }

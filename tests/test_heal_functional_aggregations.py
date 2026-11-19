@@ -124,7 +124,7 @@ class TestCountDistinctExecuted:
 
     async def test_mode_a_distinct_unchanged(self) -> None:
         orders = orders_dataset()
-        orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INT))
+        orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INTEGER))
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
             dataset=orders, extra_datasets=[customers_dataset(), order_items_dataset(), products_dataset()],

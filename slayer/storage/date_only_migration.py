@@ -14,14 +14,15 @@ from typing import Any, Iterable
 from pydantic import BaseModel, Field
 
 from slayer.core.date_only import scan_date_only
-from slayer.core.enums import DataType, RelationshipCardinality, invert_cardinality
+from slayer.core.enums import RelationshipCardinality, TypeKind, invert_cardinality, kind_of, stored_datatype
 from slayer.core.errors import AmbiguousReferenceError
 from slayer.core.names import match_name
 from slayer.core.syntax import string_literal_spans
 from slayer.core.time_points import is_date_only
 from slayer.core.spine_names import TIME_SPINE_FIELD, TIME_SPINE_FIELD_TYPE, TIME_SPINE_DATASET
 from slayer.core.legacy_spellings import rewrite_spans
-from slayer.storage.document_keys import LEGACY_KEYS, DocumentKeys
+from slayer.core.vocabulary import extension_dataset
+from slayer.storage.document_keys import DocumentKeys, LEGACY_KEYS, relationship_pairs
 from slayer.storage.migrations import document_label, register_migration, stamp_stored
 from slayer.storage.rank_direction_migration import rewrite_query_fields, stamp_memory_query
 
@@ -57,16 +58,14 @@ def stored_type(*, key: Any, fields: Any, keys: DocumentKeys) -> str | None:
     named = [c for c in fields if isinstance(c, dict)]
     found = _named(key, (c.get("name") for c in named))
     col = next((c for c in named if found is not None and c.get("name") == found), None)
-    try:
-        return DataType(col[keys.datatype]).value if col is not None and keys.datatype in col else None
-    except ValueError:
-        return None
+    value = col.get(keys.datatype) if col is not None else None
+    return value if stored_datatype(value) is not None else None
 
 
 def extended(*, key: str, dataset: dict, extensions: list[dict]) -> list:
     """``model[key]`` plus the ``key`` entries of each of ``extensions`` that extends ``dataset``."""
     own = dataset.get(key)
-    added = [x for e in extensions if _same(e.get("source_name"), dataset.get("name")) and isinstance(e.get(key), list)
+    added = [x for e in extensions if _same(extension_dataset(e), dataset.get("name")) and isinstance(e.get(key), list)
              for x in e[key]]
     return [*(own if isinstance(own, list) else []), *added]
 
@@ -77,8 +76,8 @@ def is_exact_inverse_relationship(a: dict, b: dict) -> bool:
     if (a.get("name") or None) != (b.get("name") or None):
         return False
     try:
-        a_pairs = {(str(x), str(y)) for x, y in a.get("join_pairs") or []}
-        b_pairs = {(str(y), str(x)) for x, y in b.get("join_pairs") or []}
+        a_pairs = {(str(x), str(y)) for x, y in relationship_pairs(a)}
+        b_pairs = {(str(y), str(x)) for x, y in relationship_pairs(b)}
     except (TypeError, ValueError):
         return False
     if not a_pairs or a_pairs != b_pairs:
@@ -273,7 +272,7 @@ def _upgraded(text: str, *, label: str | None, host: dict | None, extensions: li
     rewrite, untyped = [], scan.unlocated > 0
     for site in scan.sites:
         t = models.field_type(host=host, parts=site.parts, extensions=extensions) if host else None
-        if t == DataType.TIMESTAMP.value:
+        if kind_of(stored_datatype(t)) is TypeKind.TIMESTAMP:
             rewrite.append(site)
         untyped = untyped or t is None
     if untyped:
@@ -327,7 +326,7 @@ def upgrade_query(data: dict) -> dict:
     if isinstance(data.get("extensions"), list):
         data["extensions"] = [
             _upgraded_dataset_texts(dict(e), label=label, extensions=extensions,
-                                  host=models.host(e.get("source_name")) if models else None)
+                                  host=models.host(extension_dataset(e)) if models else None)
             if isinstance(e, dict) else e
             for e in data["extensions"]
         ]

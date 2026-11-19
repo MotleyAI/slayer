@@ -263,20 +263,20 @@ def shipped_orders_dataset() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
-            DatasetField(name="city", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="shipped_at", datatype=DataType.DATETIME),
             # Derived column — the "every dimension kind" scenario (Codex F3).
-            DatasetField(name="city_key", datatype=DataType.TEXT, sql="LOWER(city)"),
+            DatasetField(name="city_key", datatype=DataType.STRING, sql="LOWER(city)"),
         ],
         relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
         ],
     )
 

@@ -42,8 +42,8 @@ def _countries_dataset() -> SlayerDataset:
         sql_table="countries",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
         ],
     )
 
@@ -54,12 +54,12 @@ def _regions_dataset() -> SlayerDataset:
         sql_table="regions",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-            DatasetField(name="country_id", sql="country_id", datatype=DataType.DOUBLE),
-            DatasetField(name="last_activity_at", sql="last_activity_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.STRING),
+            DatasetField(name="country_id", sql="country_id", datatype=DataType.FLOAT),
+            DatasetField(name="last_activity_at", sql="last_activity_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])],
+        relationships=[DatasetRelationship(to="countries", from_columns=["country_id"], to_columns=["id"])],
     )
 
 
@@ -69,11 +69,11 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="customers",
         data_source="test_ds",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -84,12 +84,12 @@ def _orders_dataset() -> SlayerDataset:
         data_source="test_ds",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -238,12 +238,12 @@ class TestReportedCase:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -281,12 +281,12 @@ class TestReportedCase:
             "name": "s1",
             "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["customers__regions__name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         resp = await engine.execute(query=[inner, outer])
         # Three distinct regions in the seed → three rows.
@@ -308,12 +308,12 @@ class TestThreeHopDimension:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.countries.name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "dimensions": ["customers__regions__countries__name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -353,13 +353,13 @@ class TestCrossStageTimeDimension:
                     field="customers.regions.last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({"population": "s1", "time_dimensions": [TimeDimension(
                     # Typed contract: flat downstream alias.
                     field="customers__regions__last_activity_at",
                     granularity=TimeGranularity.MONTH,
-                )], "metrics": [{"expression": "count(*)"}]})
+                )], "metrics": [{"metric": "count(*)"}]})
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
             outer_tables = _outer_tables_referenced(sql)
@@ -393,11 +393,11 @@ class TestCrossStageCrossModelMeasure:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers__revenue_sum)"}],
+                "metrics": [{"metric": "sum(customers__revenue_sum)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -426,11 +426,11 @@ class TestCrossStageCrossModelMeasure:
             "name": "s1",
             "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
-            "metrics": [{"expression": "sum(customers__revenue_sum)"}],
+            "metrics": [{"metric": "sum(customers__revenue_sum)"}],
         })
         resp = await engine.execute(query=[inner, outer])
         assert resp.row_count == 1, f"got {resp.row_count} rows: {resp.data}"
@@ -461,12 +461,12 @@ class TestCrossStageFilter:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "filter": ["customers__regions__name = 'West'"],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -499,12 +499,12 @@ class TestCrossStageFilter:
             "name": "s1",
             "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["customers__regions__name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["customers__regions__name = 'West'"],
         })
         resp = await engine.execute(query=[inner, outer])
@@ -525,12 +525,12 @@ class TestCrossStageOrderBy:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "order": [{"field": "customers__regions__name"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -567,12 +567,12 @@ class TestCrossStageOrderBy:
             "name": "s1",
             "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["customers__regions__name"],
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "order": [{"field": "customers__regions__name"}],
         })
         resp = await engine.execute(query=[inner, outer])
@@ -594,12 +594,12 @@ class TestShortAliasRegression:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -627,7 +627,7 @@ class TestNonVirtualModel:
             single = SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             resp = await engine.execute(single, dry_run=True)
             sql = resp.sql or ""
@@ -663,11 +663,11 @@ class TestRenamedInnerMeasureCrossStage:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+                "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -685,9 +685,9 @@ class TestRenamedInnerMeasureCrossStage:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+                "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
             })
-            outer = SlayerQuery.model_validate({"population": "s1", "metrics": [{"expression": "sum(rev)"}]})
+            outer = SlayerQuery.model_validate({"population": "s1", "metrics": [{"metric": "sum(rev)"}]})
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
             outer_select = _outermost_select(sql)
@@ -724,7 +724,7 @@ class TestCrossStageTimeShift:
                     field="customers.regions.last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
             })
             outer = SlayerQuery(
                 population="s1",
@@ -734,8 +734,8 @@ class TestCrossStageTimeShift:
                     granularity=TimeGranularity.MONTH,
                 )],
                 metrics=[
-                    {"expression": "count(*)"},
-                    {"expression": "time_shift(count(*), -1, 'month')", "name": "prev"},
+                    {"metric": "count(*)"},
+                    {"metric": "time_shift(count(*), -1, 'month')", "alias": "prev"},
                 ],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -781,7 +781,7 @@ class TestSerializationRoundtripStripsBreadcrumb:
             name="virtual_test",
             sql="SELECT 1 AS one",
             data_source="test_ds",
-            fields=[DatasetField(name="one", sql="one", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="one", sql="one", datatype=DataType.FLOAT)],
             source_dataset_origin=SourceDatasetOrigin(
                 name="upstream", data_source="test_ds",
             ),
@@ -806,7 +806,7 @@ class TestSerializationRoundtripStripsBreadcrumb:
             name="virtual_test",
             sql="SELECT 1 AS one",
             data_source="test_ds",
-            fields=[DatasetField(name="one", sql="one", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="one", sql="one", datatype=DataType.FLOAT)],
             source_dataset_origin=SourceDatasetOrigin(
                 name="upstream", data_source="test_ds",
             ),
@@ -849,11 +849,11 @@ class TestCrossModelStarCountCrossStage:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "count(customers.*)"}],
+                "metrics": [{"metric": "count(customers.*)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers___count)"}],
+                "metrics": [{"metric": "sum(customers___count)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -904,11 +904,11 @@ class TestCrossModelInterceptSemanticsGate:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "avg(customers.revenue)"}],
+                "metrics": [{"metric": "avg(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "avg(customers.revenue)"}],
+                "metrics": [{"metric": "avg(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -924,11 +924,11 @@ class TestCrossModelInterceptSemanticsGate:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "count_distinct(customers.revenue)"}],
+                "metrics": [{"metric": "count_distinct(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "count_distinct(customers.revenue)"}],
+                "metrics": [{"metric": "count_distinct(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -945,11 +945,11 @@ class TestCrossModelInterceptSemanticsGate:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers__revenue_sum)"}],
+                "metrics": [{"metric": "sum(customers__revenue_sum)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -983,11 +983,11 @@ class TestCrossModelInterceptRenameBookkeeping:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers__revenue_sum)", "name": "rev"}],
+                "metrics": [{"metric": "sum(customers__revenue_sum)", "alias": "rev"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1011,11 +1011,11 @@ class TestCrossModelInterceptRenameBookkeeping:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers__revenue_sum)", "name": "rev"}],
+                "metrics": [{"metric": "sum(customers__revenue_sum)", "alias": "rev"}],
                 "filter": ["sum(customers__revenue_sum) > 100"],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1080,16 +1080,16 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             s2 = SlayerQuery.model_validate({
                 "name": "s2",
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers__revenue_sum)"}],
+                "metrics": [{"metric": "sum(customers__revenue_sum)"}],
             })
             s3 = SlayerQuery.model_validate({
                 "population": "s2",
-                "metrics": [{"expression": "sum(customers__revenue_sum_sum)"}],
+                "metrics": [{"metric": "sum(customers__revenue_sum_sum)"}],
             })
             resp = await engine.execute(query=[s1, s2, s3], dry_run=True)
             assert resp.sql is not None, "3-stage DAG must render SQL"
@@ -1131,7 +1131,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(amount)", "name": "customers__revenue_sum"}],
+                "metrics": [{"metric": "sum(amount)", "alias": "customers__revenue_sum"}],
             })
             # Outer references `sum(customers.revenue)` — the intercept
             # candidate computes `customers__revenue_sum` and the
@@ -1141,7 +1141,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             # join path reaches from s1, is aggregated over its own rows.
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -1167,11 +1167,11 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
                 "filter": ["sum(customers.revenue) > 100"],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1194,12 +1194,12 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "order": [{"field": "max(customers__revenue_sum)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1249,12 +1249,12 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "metrics": [{"expression": "count(*)"}],
+                "metrics": [{"metric": "count(*)"}],
                 "order": [{"field": "customers__revenue_sum"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1284,7 +1284,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
@@ -1326,7 +1326,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "name": "s1",
                 "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "metrics": [{"expression": "sum(customers.revenue)"}],
+                "metrics": [{"metric": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
                 "population": "s1",
@@ -1394,13 +1394,13 @@ class TestInterceptRename:
             "name": "s1",
             "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "metrics": [{"expression": "sum(customers.revenue)"}],
+            "metrics": [{"metric": "sum(customers.revenue)"}],
         })
         outer = SlayerQuery(
             population="s1",
             metrics=[
-                {"expression": "sum(customers__revenue_sum) / count(*)", "name": "avg_rev"},
-                {"expression": "sum(customers__revenue_sum)", "name": "cust_rev"},
+                {"metric": "sum(customers__revenue_sum) / count(*)", "alias": "avg_rev"},
+                {"metric": "sum(customers__revenue_sum)", "alias": "cust_rev"},
             ],
         )
         dry = await engine.execute(query=[inner, outer], dry_run=True)

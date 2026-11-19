@@ -9,7 +9,7 @@ Spec rules pinned by ``tests/test_search_render.py``:
 * Named children (fields / metrics / aggregations / relationship targets) are
   mentioned by name + kind only — never with their descriptions, since
   each one has its own indexed doc.
-* Non-named children (dataset filters, dataset sql, join_pairs, aggregation
+* Non-named children (dataset filters, dataset sql, relationship keys, aggregation
   params) get their full text content included so the search-text is
   self-contained and an agent searching for a literal SQL fragment can
   find the dataset.
@@ -187,9 +187,9 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
                 [(j.to, "model") for j in dataset.relationships]
             )
         )
-        # Non-named-child: the join_pairs in full.
+        # Non-named-child: the relationship keys in full.
         for j in dataset.relationships:
-            pairs = "; ".join(f"{src}={tgt}" for src, tgt in j.join_pairs)
+            pairs = "; ".join(f"{src}={tgt}" for src, tgt in j.column_pairs)
             lines.append(f"Join pairs to {j.to}: {pairs}")
     return "\n".join(lines)
 

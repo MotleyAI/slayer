@@ -30,7 +30,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
@@ -50,14 +50,14 @@ def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="order_date",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="region", datatype=DataType.STRING),
             DatasetField(name="order_date", datatype=DataType.DATE),
-            DatasetField(name="amount", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.INTEGER),
         ],
         metrics=[DatasetMetric(name="aov", expression=AOV)],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -65,9 +65,9 @@ def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="score", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="score", datatype=DataType.INTEGER),
         ],
     )
 
@@ -83,8 +83,8 @@ DATE_RANGE: List[Optional[str]] = ["2025-01-01", "2025-12-31"]
 DATE_FILTER = "order_date >= '2025-01-01'"
 
 
-def m(expression: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=expression, name=name)
+def m(expression: str, name: str = "v") -> QueryMetric:
+    return QueryMetric(metric=expression, alias=name)
 
 
 def orders_q(**kw) -> SlayerQuery:
@@ -98,7 +98,7 @@ def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDi
     )]
 
 
-def monthly_q(*measures: DatasetMetric, **kw) -> SlayerQuery:
+def monthly_q(*measures: QueryMetric, **kw) -> SlayerQuery:
     kw.setdefault("time_dimensions", month_td())
     return orders_q(metrics=list(measures), **kw)
 

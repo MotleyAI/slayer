@@ -29,10 +29,10 @@ def _orders() -> SlayerDataset:
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
         ],
         metrics=[
             DatasetMetric(name="bad_window", expression="sum(amount, window='90x')"),

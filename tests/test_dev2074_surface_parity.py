@@ -49,15 +49,15 @@ def _m(name: str, *, cols: tuple[str, ...] = (), joins: list[DatasetRelationship
        metrics: list[DatasetMetric] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source=DS, sql_table=name,
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 *(DatasetField(name=c, datatype=DataType.INT if c.endswith("_id") else DataType.TEXT) for c in cols)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 *(DatasetField(name=c, datatype=DataType.INTEGER if c.endswith("_id") else DataType.STRING) for c in cols)],
         relationships=joins or [], metrics=metrics or [],
     )
 
 
 def _to(target: str, src: str, *, tgt: str = "id", name: str | None = None,
         cardinality: RelationshipCardinality | None = M2O) -> DatasetRelationship:
-    return DatasetRelationship(to=target, join_pairs=[[src, tgt]], name=name, cardinality=cardinality)
+    return DatasetRelationship(to=target, from_columns=[src], to_columns=[tgt], name=name, cardinality=cardinality)
 
 
 def _by(*models: SlayerDataset) -> dict[str, SlayerDataset]:
@@ -158,7 +158,7 @@ class TestShortFormRouting:
         assert ei.value.suggested_path == "zzz.d.name"
 
     def test_routes_never_cross_the_spine(self) -> None:
-        ts = DatasetField(name="at", datatype=DataType.TIMESTAMP)
+        ts = DatasetField(name="at", datatype=DataType.DATETIME)
         orders = _m("orders").model_copy(update={"fields": [*_m("orders").fields, ts],
                                                   "default_time_dimension": "at"})
         returns = _m("returns").model_copy(update={"fields": [*_m("returns").fields, ts],
@@ -178,7 +178,7 @@ class TestFacadeCatalog:
             r.getMessage() for r in caplog.records]
 
     def test_paths_never_cross_the_spine(self) -> None:
-        ts = DatasetField(name="at", datatype=DataType.TIMESTAMP)
+        ts = DatasetField(name="at", datatype=DataType.DATETIME)
         orders = _m("orders").model_copy(update={"fields": [*_m("orders").fields, ts],
                                                   "default_time_dimension": "at"})
         returns = _m("returns", cols=("kind",)).model_copy(update={

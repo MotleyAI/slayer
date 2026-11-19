@@ -73,7 +73,7 @@ A save of a model, datasource or saved query SHALL be refused with a typed error
 A query (or each query of a query list) whose result names, after resolution, include two that are equal case-insensitively but differ in spelling SHALL fail before SQL is generated, on every dialect, with a typed error naming both. Saved queries that already hold such names SHALL keep running.
 
 #### Scenario: Two measures named by case
-- **WHEN** a query has the measures `{"expression": "sum(amount)", "name": "Total"}` and `{"expression": "count(*)", "name": "total"}`
+- **WHEN** a query has the measures `{"metric": "sum(amount)", "alias": "Total"}` and `{"metric": "count(*)", "alias": "total"}`
 - **THEN** it fails with the typed error naming `Total` and `total`, on every dialect
 
 ### Requirement: Ingestion keeps case-only-distinct columns apart

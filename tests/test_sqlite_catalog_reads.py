@@ -195,7 +195,7 @@ def _unique(dataset: SlayerDataset) -> set[str]:
 
 
 def _joins(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
-    return {j.to: (j.join_pairs, j.cardinality) for j in dataset.relationships}
+    return {j.to: ([list(p) for p in j.column_pairs], j.cardinality) for j in dataset.relationships}
 
 
 class TestIngestion:

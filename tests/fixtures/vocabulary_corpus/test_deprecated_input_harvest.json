@@ -24,8 +24,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -47,8 +47,8 @@
     "population": "a",
     "metrics": [
      {
-      "expression": "sum(n)",
-      "name": "total"
+      "metric": "sum(n)",
+      "alias": "total"
      }
     ]
    }
@@ -68,8 +68,8 @@
     "population": "a",
     "metrics": [
      {
-      "expression": "sum(n)",
-      "name": "grand"
+      "metric": "sum(n)",
+      "alias": "grand"
      }
     ]
    }
@@ -89,8 +89,8 @@
     "population": "b",
     "metrics": [
      {
-      "expression": "sum(total)",
-      "name": "grand"
+      "metric": "sum(total)",
+      "alias": "grand"
      }
     ]
    }

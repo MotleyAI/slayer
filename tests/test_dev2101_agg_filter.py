@@ -81,14 +81,14 @@ class TestFilterValues:
     async def test_filtered_last_picks_the_newest_passing_row(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "balances", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
+            "metrics": [{"metric": "last(balance, updated_at) FILTER (WHERE status = 'active')", "alias": "v"}],
         }))
         assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 
     async def test_filtered_first_picks_the_oldest_passing_row(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "balances", "dimensions": ["customer_id"],
-            "metrics": [{"expression": "first(balance, updated_at) FILTER (WHERE status = 'inactive')", "name": "v"}],
+            "metrics": [{"metric": "first(balance, updated_at) FILTER (WHERE status = 'inactive')", "alias": "v"}],
         }))
         assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 999.0, 2: 70.0}
 
@@ -141,7 +141,7 @@ class TestFilterPositions:
     async def test_inline_model_measure(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             population="orders",
-            extensions=[{"source_name": "orders", "metrics": [
+            extensions=[{"dataset": "orders", "metrics": [
                 {"name": "paid_total", "expression": f"sum(amount) FILTER (WHERE {PAID})"},
             ]}],
             metrics=["paid_total"],

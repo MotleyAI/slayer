@@ -68,15 +68,15 @@ class TestDunderTargetResolves:
         return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="cr_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="cr_id", datatype=DataType.INTEGER),
                 # Mode-A reference to a DIRECT join target literally named
                 # ``customer__region`` — exact match, single hop.
-                DatasetField(name="region_label", datatype=DataType.TEXT,
+                DatasetField(name="region_label", datatype=DataType.STRING,
                        sql="customer__region.label"),
             ],
             relationships=[DatasetRelationship(to="customer__region",
-                             join_pairs=[["cr_id", "id"]])],
+                             from_columns=["cr_id"], to_columns=["id"])],
         )
 
     @pytest.mark.asyncio
@@ -99,16 +99,16 @@ class TestLegacyDunderIsHardErrorAtSave:
         return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
                 # No model literally named ``customers__regions`` exists; the
                 # naive split walks customers -> regions, so this must be a D2
                 # error naming the dotted replacement.
-                DatasetField(name="rn", datatype=DataType.TEXT,
+                DatasetField(name="rn", datatype=DataType.STRING,
                        sql="customers__regions.name"),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]])],
+                             from_columns=["customer_id"], to_columns=["id"])],
         )
 
     @pytest.mark.asyncio
@@ -134,13 +134,13 @@ class TestLegacyDunderIsHardErrorAtGeneration:
         return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="rn", datatype=DataType.TEXT,
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="rn", datatype=DataType.STRING,
                        sql="customers__regions.name"),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]])],
+                             from_columns=["customer_id"], to_columns=["id"])],
         )
 
     @pytest.mark.asyncio
@@ -169,18 +169,18 @@ class TestModeAValidationOverReverseOnlyEdge:
         orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]])],
+                             from_columns=["customer_id"], to_columns=["id"])],
         )
         engine = await _engine_with([orders])
         customers = SlayerDataset(
             name="customers", data_source="test", sql_table="customers",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="bad", datatype=DataType.TEXT,
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="bad", datatype=DataType.STRING,
                        sql="orders.nonexistent.name"),
             ],
         )
@@ -196,14 +196,14 @@ class TestBrokenChainNamesFailingHop:
         return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
                 # customers is a join target; nonexistent is not a join on it.
-                DatasetField(name="bad", datatype=DataType.TEXT,
+                DatasetField(name="bad", datatype=DataType.STRING,
                        sql="customers.nonexistent.name"),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]])],
+                             from_columns=["customer_id"], to_columns=["id"])],
         )
 
     @pytest.mark.asyncio
@@ -232,14 +232,14 @@ class TestExactHostQualifier:
         host = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
                 # Explicit host qualifier — resolves to the host relation.
-                DatasetField(name="doubled", datatype=DataType.DOUBLE, sql="orders.amount * 2"),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="doubled", datatype=DataType.FLOAT, sql="orders.amount * 2"),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
         )
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(doubled)"}]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"metric": "sum(doubled)"}]}),
             dataset=host,
         )
         assert "amount" in sql
@@ -254,12 +254,12 @@ class TestFilterSurfacesResolve:
         return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE, filter=col_filter),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="amount", datatype=DataType.FLOAT, filter=col_filter),
             ],
             relationships=[DatasetRelationship(to="customers",
-                             join_pairs=[["customer_id", "id"]])],
+                             from_columns=["customer_id"], to_columns=["id"])],
             filters=list(dataset_filters) if dataset_filters else [],
         )
 
@@ -290,15 +290,15 @@ class TestAmbiguityImpossible:
         return SlayerDataset(
             name="host", data_source="test", sql_table="host",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="a_id", datatype=DataType.INT),
-                DatasetField(name="ab_id", datatype=DataType.INT),
-                DatasetField(name="chain_val", datatype=DataType.TEXT, sql="a.b.val"),
-                DatasetField(name="direct_val", datatype=DataType.TEXT, sql="a__b.val"),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="a_id", datatype=DataType.INTEGER),
+                DatasetField(name="ab_id", datatype=DataType.INTEGER),
+                DatasetField(name="chain_val", datatype=DataType.STRING, sql="a.b.val"),
+                DatasetField(name="direct_val", datatype=DataType.STRING, sql="a__b.val"),
             ],
             relationships=[
-                DatasetRelationship(to="a", join_pairs=[["a_id", "id"]]),
-                DatasetRelationship(to="a__b", join_pairs=[["ab_id", "id"]]),
+                DatasetRelationship(to="a", from_columns=["a_id"], to_columns=["id"]),
+                DatasetRelationship(to="a__b", from_columns=["ab_id"], to_columns=["id"]),
             ],
         )
 
@@ -325,27 +325,27 @@ class TestDeepDottedChainResolves:
             name=name, data_source="test", sql_table=name,
             fields=cols, relationships=list(joins),
         )
-        leaf = d("dd", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                        DatasetField(name="v", datatype=DataType.TEXT)])
-        cc = d("cc", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                      DatasetField(name="dd_id", datatype=DataType.INT)],
-               [DatasetRelationship(to="dd", join_pairs=[["dd_id", "id"]])])
-        bb = d("bb", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                      DatasetField(name="cc_id", datatype=DataType.INT)],
-               [DatasetRelationship(to="cc", join_pairs=[["cc_id", "id"]])])
-        aa = d("aa", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                      DatasetField(name="bb_id", datatype=DataType.INT)],
-               [DatasetRelationship(to="bb", join_pairs=[["bb_id", "id"]])])
+        leaf = d("dd", [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                        DatasetField(name="v", datatype=DataType.STRING)])
+        cc = d("cc", [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                      DatasetField(name="dd_id", datatype=DataType.INTEGER)],
+               [DatasetRelationship(to="dd", from_columns=["dd_id"], to_columns=["id"])])
+        bb = d("bb", [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                      DatasetField(name="cc_id", datatype=DataType.INTEGER)],
+               [DatasetRelationship(to="cc", from_columns=["cc_id"], to_columns=["id"])])
+        aa = d("aa", [DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                      DatasetField(name="bb_id", datatype=DataType.INTEGER)],
+               [DatasetRelationship(to="bb", from_columns=["bb_id"], to_columns=["id"])])
         host = SlayerDataset(
             name="hh", data_source="test", sql_table="hh",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="aa_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="aa_id", datatype=DataType.INTEGER),
                 # 5 name parts: aa.bb.cc.dd.v — a nested-Dot AST, not 4-part
                 # Column.parts. The extraction layer must still walk it.
-                DatasetField(name="deep", datatype=DataType.TEXT, sql="aa.bb.cc.dd.v"),
+                DatasetField(name="deep", datatype=DataType.STRING, sql="aa.bb.cc.dd.v"),
             ],
-            relationships=[DatasetRelationship(to="aa", join_pairs=[["aa_id", "id"]])],
+            relationships=[DatasetRelationship(to="aa", from_columns=["aa_id"], to_columns=["id"])],
         )
         return host, [aa, bb, cc, leaf]
 
@@ -384,12 +384,12 @@ class TestModeAValidationDialect:
         host = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="cr_id", datatype=DataType.INT),
-                DatasetField(name="rl", datatype=DataType.TEXT, sql="customer__region.label"),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="cr_id", datatype=DataType.INTEGER),
+                DatasetField(name="rl", datatype=DataType.STRING, sql="customer__region.label"),
             ],
             relationships=[DatasetRelationship(to="customer__region",
-                             join_pairs=[["cr_id", "id"]])],
+                             from_columns=["cr_id"], to_columns=["id"])],
         )
         await engine.save_dataset(host)
         assert captured.get("dialect") == "mysql"

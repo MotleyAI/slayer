@@ -11,8 +11,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.models import DatasetMetric
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 
@@ -48,8 +47,8 @@ def _plain_query(
     """Single-model aggregate — no isolation CTE, no hidden slot."""
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="sum(amount)", name="revenue")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="sum(amount)", alias="revenue")],
         order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
@@ -62,8 +61,8 @@ def _outer_trim_query(
     """Ordering by a non-projected aggregate produces the outer-trim wrapper shape."""
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="status")],
-        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        dimensions=[QueryDimension(field="status")],
+        metrics=[QueryMetric(metric="count(*)", alias="n")],
         order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
@@ -76,8 +75,8 @@ def _combined_query(
     """Cross-model measure — the combined-SELECT path that appends raw text."""
     return SlayerQuery(
         population="orders",
-        dimensions=[FieldRef(name="customers.tier")],
-        metrics=[DatasetMetric(expression="sum(customers.spend)", name="spend")],
+        dimensions=[QueryDimension(field="customers.tier")],
+        metrics=[QueryMetric(metric="sum(customers.spend)", alias="spend")],
         order=(
             [OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})]
             if ordered else []

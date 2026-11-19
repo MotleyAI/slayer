@@ -18,8 +18,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1824_fixtures import (
-    DatasetMetric,
     REGION_LAST,
     SlayerQuery,
     gen,
@@ -66,8 +67,8 @@ def _assert_flat_and_unique(
 TWO_PRODUCERS = dict(
     dimensions=["region", "city"],
     metrics=[
-        DatasetMetric(expression="last(amount, partition_by=region)", name="a"),
-        DatasetMetric(expression="last(amount, partition_by=city)", name="b"),
+        QueryMetric(metric="last(amount, partition_by=region)", alias="a"),
+        QueryMetric(metric="last(amount, partition_by=city)", alias="b"),
     ],
 )
 
@@ -103,14 +104,14 @@ class TestThreeLevelNesting:
 
     def _query(self):
         return q(
-            dimensions=["region", {"expression": self.CBAND, "name": "cband"}],
+            dimensions=["region", {"field": self.CBAND, "alias": "cband"}],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="s"),
-                DatasetMetric(
-                    expression="sum(amount, window='90d', partition_by=region)", name="w",
+                QueryMetric(metric="sum(amount)", alias="s"),
+                QueryMetric(
+                    metric="sum(amount, window='90d', partition_by=region)", alias="w",
                 ),
-                DatasetMetric(expression="last(amount, partition_by=region)", name="l"),
+                QueryMetric(metric="last(amount, partition_by=region)", alias="l"),
             ],
         )
 
@@ -153,11 +154,11 @@ def _long_names_dataset() -> SlayerDataset:
         name="t", data_source="test", sql_table="t",
         default_time_dimension="at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="grp", datatype=DataType.TEXT),
-            DatasetField(name="at", datatype=DataType.TIMESTAMP),
-            DatasetField(name=f"{LONG_PREFIX}_alpha", datatype=DataType.DOUBLE),
-            DatasetField(name=f"{LONG_PREFIX}_beta", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="grp", datatype=DataType.STRING),
+            DatasetField(name="at", datatype=DataType.DATETIME),
+            DatasetField(name=f"{LONG_PREFIX}_alpha", datatype=DataType.FLOAT),
+            DatasetField(name=f"{LONG_PREFIX}_beta", datatype=DataType.FLOAT),
         ],
     )
 
@@ -169,11 +170,11 @@ class TestTruncatingDialect:
             population=model.name,
             dimensions=["grp"],
             metrics=[
-                DatasetMetric(
-                    expression=f"last({LONG_PREFIX}_alpha, partition_by=grp)", name="a",
+                QueryMetric(
+                    metric=f"last({LONG_PREFIX}_alpha, partition_by=grp)", alias="a",
                 ),
-                DatasetMetric(
-                    expression=f"last({LONG_PREFIX}_beta, partition_by=[])", name="b",
+                QueryMetric(
+                    metric=f"last({LONG_PREFIX}_beta, partition_by=[])", alias="b",
                 ),
             ],
         )

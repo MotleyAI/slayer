@@ -21,7 +21,7 @@
     "population": "hr",
     "extensions": [
      {
-      "source_name": "hr",
+      "dataset": "hr",
       "metrics": [
        {
         "name": "x",
@@ -57,15 +57,15 @@
     "population": "pub",
     "extensions": [
      {
-      "source_name": "pub",
+      "dataset": "pub",
       "relationships": [
        {
         "to": "hr",
-        "join_pairs": [
-         [
-          "id",
-          "id"
-         ]
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "id"
         ]
        }
       ]
@@ -111,7 +111,7 @@
     "population": "fin",
     "metrics": [
      {
-      "expression": "sum(amount)"
+      "metric": "sum(amount)"
      }
     ],
     "filter": [
@@ -136,8 +136,8 @@
     "population": "hr",
     "metrics": [
      {
-      "expression": "sum(salary)",
-      "name": "t"
+      "metric": "sum(salary)",
+      "alias": "t"
      }
     ]
    }
@@ -156,7 +156,7 @@
     "population": "s1",
     "metrics": [
      {
-      "expression": "sum(t)"
+      "metric": "sum(t)"
      }
     ]
    }

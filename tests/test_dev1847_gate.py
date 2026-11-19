@@ -14,11 +14,11 @@ from slayer.engine.binding import _source_is_reaggregation, bind_expr
 from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
+from slayer.core.query import QueryDimension, QueryMetric
+
 from tests._dev1847_fixtures import (
     dev1847_datasets,
     INNER_CR,
-    FieldRef,
-    DatasetMetric,
     SlayerQuery,
     gen,
     sales_q,
@@ -66,8 +66,8 @@ class TestFullyAttachedAccepted:
     async def test_reaggregation_compiles_to_sql(self):
         """Accepted end-to-end: emits SQL rather than raising the gate."""
         sql = await gen(sales_q(dimensions=["region"],
-                                metrics=[DatasetMetric(expression=f"avg({INNER_CR})",
-                                                       name="acr")]))
+                                metrics=[QueryMetric(metric=f"avg({INNER_CR})",
+                                                       alias="acr")]))
         assert "SELECT" in sql.upper()
 
 
@@ -88,8 +88,8 @@ class TestRejections:
         ref-free."""
         query = sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression=f"wavg({INNER_CR}, weight=id)", name="w")])
+            metrics=[QueryMetric(
+                metric=f"wavg({INNER_CR}, weight=id)", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -104,7 +104,7 @@ class TestRejections:
         grain; same one-rule error."""
         query = sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=f"wavg({INNER_CR})", name="w")])
+            metrics=[QueryMetric(metric=f"wavg({INNER_CR})", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -119,8 +119,8 @@ class TestRejections:
         NotImplementedError."""
         query = sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression=f"sum({INNER_CR}, window='90d')", name="w")])
+            metrics=[QueryMetric(
+                metric=f"sum({INNER_CR}, window='90d')", alias="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -140,16 +140,16 @@ class TestCrossModelAndFilteredOperandNowAccepted:
         """A dotted joined-model leaf inside the expression now compiles."""
         query = SlayerQuery(
             population="corders",
-            dimensions=[FieldRef(name="customer_id")],
-            metrics=[DatasetMetric(expression="sum(amount - customers.region_id)",
-                                   name="x")])
+            dimensions=[QueryDimension(field="customer_id")],
+            metrics=[QueryMetric(metric="sum(amount - customers.region_id)",
+                                   alias="x")])
         assert "SELECT" in (await gen(query)).upper()
 
     async def test_filtered_column_operand_accepted(self):
         """A filtered column operand desugars to CASE WHEN, not a rejection."""
         query = sales_q(dimensions=["region"],
-                        metrics=[DatasetMetric(expression="sum(q_amount - 1)",
-                                               name="x")])
+                        metrics=[QueryMetric(metric="sum(q_amount - 1)",
+                                               alias="x")])
         assert "CASE WHEN" in (await gen(query)).upper()
 
 
@@ -181,6 +181,6 @@ class TestUnknownOuterAggregationRejectedAtBinding:
         """Unknown custom-aggregation candidates are rejected at binding."""
         query = sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(expression=f"magic_fn({INNER_CR})", name="x")])
+            metrics=[QueryMetric(metric=f"magic_fn({INNER_CR})", alias="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)unknown function"):
             await gen(query)

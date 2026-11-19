@@ -21,7 +21,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any, Literal, TypeVar
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, NUMERIC_DATATYPES
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.names import name_taken
 from slayer.core.models import (
@@ -179,9 +179,9 @@ def _meta_of(config: DbtConfig | None) -> dict[str, Any] | None:
 def _convert_dimension(dim: DbtDimension) -> DatasetField:
     """Convert a dbt dimension to a SLayer field."""
     if dim.type == "time":
-        data_type = DataType.TIMESTAMP
+        data_type = DataType.DATETIME
     else:
-        data_type = DataType.TEXT
+        data_type = DataType.STRING
 
     sql = dim.expr if dim.expr and dim.expr != dim.name else None
 
@@ -209,7 +209,7 @@ def _declare_primary_entity(*, sm: DbtSemanticModel, primary_entity: str, cols: 
     pe_expr = next((e.expr or e.name for e in sm.entities if e.name == primary_entity), primary_entity)
     pk = _key_field(expr=pe_expr, cols=cols)
     if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
-        pk = DatasetField(name=name, datatype=DataType.DOUBLE)
+        pk = DatasetField(name=name, datatype=DataType.FLOAT)
         cols.append(pk)
     if pk is not None:
         pk.primary_key = True
@@ -655,12 +655,12 @@ class DbtToSlayerConverter:
                 dataset_name=sm.name, category="typing", severity="info",
                 message=contradiction_note(col.name, declared=declared, live=found)))
         found = found or declared or next((t for a in aggs if (t := implied_type(a)) is not None and
-                                           t[0] is not DataType.TEXT), None) or next(
+                                           t[0] is not DataType.STRING), None) or next(
             (t for a in aggs if (t := implied_type(a)) is not None), None)
         if found is None:
             return dimension or not aggs
         col.datatype, col.element_type = found
-        if col.datatype not in (DataType.INT, DataType.DOUBLE):
+        if col.datatype not in NUMERIC_DATATYPES:
             col.format = None
         return True
 
@@ -705,11 +705,10 @@ class DbtToSlayerConverter:
         kept: list[DatasetRelationship] = []
         for relationship in relationships:
             srcs = [self._declare_key(key=src, cols=cols, metric_names=metric_names)
-                    for src, _ in relationship.join_pairs]
-            bad = next((src for (src, _), name in zip(relationship.join_pairs, srcs) if name is None), None)
+                    for src, _ in relationship.column_pairs]
+            bad = next((src for (src, _), name in zip(relationship.column_pairs, srcs) if name is None), None)
             if bad is None:
-                kept.append(relationship.model_copy(update={"join_pairs": [
-                    [name, tgt] for name, (_, tgt) in zip(srcs, relationship.join_pairs)]}))
+                kept.append(relationship.model_copy(update={"from_columns": srcs}))
                 continue
             self._warn_dropped_relationship(dataset_name=sm_name, target=relationship.to, key=bad)
         return kept
@@ -721,11 +720,10 @@ class DbtToSlayerConverter:
             for relationship in dataset.relationships:
                 target = self._datasets_by_name[relationship.to]
                 tgts = [col.name if (col := _key_field(expr=tgt, cols=target.fields)) else None
-                        for _, tgt in relationship.join_pairs]
-                bad = next((tgt for (_, tgt), name in zip(relationship.join_pairs, tgts) if name is None), None)
+                        for _, tgt in relationship.column_pairs]
+                bad = next((tgt for (_, tgt), name in zip(relationship.column_pairs, tgts) if name is None), None)
                 if bad is None:
-                    kept.append(relationship.model_copy(update={"join_pairs": [
-                        [src, name] for (src, _), name in zip(relationship.join_pairs, tgts)]}))
+                    kept.append(relationship.model_copy(update={"to_columns": tgts}))
                     continue
                 self._warn_dropped_relationship(dataset_name=dataset.name, target=target.name, key=bad)
             dataset.relationships = kept
@@ -750,7 +748,7 @@ class DbtToSlayerConverter:
                              f"identifier; no primary key declared."),
                 ))
                 return
-            col = DatasetField(name=name, datatype=DataType.DOUBLE)
+            col = DatasetField(name=name, datatype=DataType.FLOAT)
             cols.append(col)
         col.primary_key = True
         # Keep what the field already has.
@@ -770,7 +768,7 @@ class DbtToSlayerConverter:
             return col.name
         name = _free_key_name(expr=key, cols=cols, taken=metric_names)
         if name is not None:
-            cols.append(DatasetField(name=name, datatype=DataType.DOUBLE, hidden=True))
+            cols.append(DatasetField(name=name, datatype=DataType.FLOAT, hidden=True))
         return name
 
     @staticmethod
@@ -817,7 +815,7 @@ class DbtToSlayerConverter:
                 fields.append(DatasetField(
                     name=col_name,
                     sql=f"CASE WHEN ({m.expr or m.name}) THEN 1 ELSE 0 END",
-                    datatype=DataType.INT,
+                    datatype=DataType.INTEGER,
                     meta=_meta_of(m.config),
                 ))
                 self._emit_dataset_metric(
@@ -832,7 +830,7 @@ class DbtToSlayerConverter:
             fields.append(DatasetField(
                 name=col_name,
                 sql=expr_key if expr_key != col_name else None,
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
                 format=_FLOAT_FORMAT,
             ))
             self._emit_group_metrics(group, col_name=col_name, sm_name=sm_name, dataset_meta=dataset_meta,
@@ -1788,7 +1786,7 @@ class DbtToSlayerConverter:
             return None  # clean-failed inside _filtered_leaf_spec
         column_expr, col_type, col_format, agg_call = leaf
         source = _aggregated_field(base.expression)
-        typed = slayer_dataset.get_field(source[0]) if source is not None and col_type is not DataType.INT else None
+        typed = slayer_dataset.get_field(source[0]) if source is not None and col_type is not DataType.INTEGER else None
         element_type = typed.element_type if typed is not None else None
         col_type = typed.datatype if typed is not None else col_type
 
@@ -1802,7 +1800,7 @@ class DbtToSlayerConverter:
                 sql=column_expr,
                 datatype=col_type,
                 element_type=element_type,
-                format=col_format if col_type in (DataType.INT, DataType.DOUBLE) else None,
+                format=col_format if col_type in NUMERIC_DATATYPES else None,
                 filter=slayer_filter,
             ))
             self._filtered_columns[key] = col_name
@@ -1835,7 +1833,7 @@ class DbtToSlayerConverter:
         agg = dbt_measure.agg.lower()
         if agg == "sum_boolean":
             expr = dbt_measure.expr or dbt_measure.name
-            return f"CASE WHEN ({expr}) THEN 1 ELSE 0 END", DataType.INT, None, "sum"
+            return f"CASE WHEN ({expr}) THEN 1 ELSE 0 END", DataType.INTEGER, None, "sum"
 
         column_expr = (
             dbt_measure.expr
@@ -1855,8 +1853,8 @@ class DbtToSlayerConverter:
                     suggestion="Set agg_params.percentile (continuous, in [0, 1]).",
                 )
                 return None
-            return column_expr, DataType.DOUBLE, _FLOAT_FORMAT, f"percentile(p={ap.percentile})"
-        return column_expr, DataType.DOUBLE, _FLOAT_FORMAT, mapped
+            return column_expr, DataType.FLOAT, _FLOAT_FORMAT, f"percentile(p={ap.percentile})"
+        return column_expr, DataType.FLOAT, _FLOAT_FORMAT, mapped
 
     @staticmethod
     def _alloc_field_name(slayer_dataset: SlayerDataset, base: str) -> str:

@@ -16,8 +16,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(amount)",
-      "name": "total"
+      "metric": "sum(amount)",
+      "alias": "total"
      }
     ]
    }

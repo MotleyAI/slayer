@@ -15,13 +15,13 @@
    },
    "new": {
     "to": "loss_payment",
-    "join_pairs": [
-     [
-      "id",
-      "claim_amount_id"
-     ]
+    "join_type": "inner",
+    "from_columns": [
+     "id"
     ],
-    "join_type": "inner"
+    "to_columns": [
+     "claim_amount_id"
+    ]
    }
   },
   {
@@ -38,13 +38,13 @@
    },
    "new": {
     "to": "loss_reserve",
-    "join_pairs": [
-     [
-      "id",
-      "claim_amount_id"
-     ]
+    "join_type": "inner",
+    "from_columns": [
+     "id"
     ],
-    "join_type": "inner"
+    "to_columns": [
+     "claim_amount_id"
+    ]
    }
   },
   {
@@ -60,11 +60,11 @@
    },
    "new": {
     "to": "claim",
-    "join_pairs": [
-     [
-      "claim_id",
-      "id"
-     ]
+    "from_columns": [
+     "claim_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -81,11 +81,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -106,7 +106,7 @@
     "population": "claim_amount",
     "metrics": [
      {
-      "expression": "sum(total_amount)"
+      "metric": "sum(total_amount)"
      }
     ],
     "dimensions": [
@@ -131,7 +131,7 @@
     "population": "claim_amount",
     "metrics": [
      {
-      "expression": "sum(paid_amount)"
+      "metric": "sum(paid_amount)"
      }
     ],
     "dimensions": [
@@ -156,7 +156,7 @@
     "population": "claim_amount",
     "metrics": [
      {
-      "expression": "sum(loss_payment_amt)"
+      "metric": "sum(loss_payment_amt)"
      }
     ],
     "dimensions": [
@@ -181,7 +181,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(eu_amount)"
+      "metric": "sum(eu_amount)"
      }
     ],
     "dimensions": [
@@ -206,7 +206,7 @@
     "population": "claim_amount",
     "metrics": [
      {
-      "expression": "sum(loss_payment.has_flag)"
+      "metric": "sum(loss_payment.has_flag)"
      }
     ],
     "dimensions": [
@@ -227,11 +227,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -248,11 +248,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -273,7 +273,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(customers.premium_rev)"
+      "metric": "sum(customers.premium_rev)"
      }
     ],
     "dimensions": [
@@ -298,7 +298,7 @@
     "population": "claim_amount",
     "metrics": [
      {
-      "expression": "sum(loss_payment_amt)"
+      "metric": "sum(loss_payment_amt)"
      }
     ],
     "dimensions": [
@@ -320,13 +320,13 @@
    },
    "new": {
     "to": "loss_payment",
-    "join_pairs": [
-     [
-      "id",
-      "claim_amount_id"
-     ]
+    "join_type": "inner",
+    "from_columns": [
+     "id"
     ],
-    "join_type": "inner"
+    "to_columns": [
+     "claim_amount_id"
+    ]
    }
   },
   {
@@ -346,7 +346,7 @@
     "population": "claim_amount",
     "metrics": [
      {
-      "expression": "sum(loss_payment_amt)"
+      "metric": "sum(loss_payment_amt)"
      }
     ],
     "dimensions": [
@@ -367,11 +367,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -388,11 +388,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -425,11 +425,11 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(region_pay)"
+      "metric": "sum(region_pay)"
      },
      {
-      "expression": "sum(region_pay) + sum(amount)",
-      "name": "combo"
+      "metric": "sum(region_pay) + sum(amount)",
+      "alias": "combo"
      }
     ]
    }
@@ -451,10 +451,10 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(region_pay)"
+      "metric": "sum(region_pay)"
      },
      {
-      "expression": "sum(cust_weight_d)"
+      "metric": "sum(cust_weight_d)"
      }
     ]
    }
@@ -476,7 +476,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(region_pay)"
+      "metric": "sum(region_pay)"
      }
     ],
     "filter": [
@@ -501,7 +501,7 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(region_pay)"
+      "metric": "sum(region_pay)"
      }
     ],
     "filter": [

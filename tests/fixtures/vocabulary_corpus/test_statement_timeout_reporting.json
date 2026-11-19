@@ -2,12 +2,12 @@
  "source": "tests/test_statement_timeout_reporting.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   }
  ],

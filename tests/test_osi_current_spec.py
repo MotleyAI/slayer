@@ -65,7 +65,7 @@ async def test_flat_document_imports_end_to_end(db: Path) -> None:
     [join] = models["orders"].relationships
     assert join.to == "customers"
     assert join.cardinality == RelationshipCardinality.MANY_TO_ONE
-    assert join.join_pairs == [["customer_id", "id"]]
+    assert join.column_pairs == [("customer_id", "id")]
     assert metric_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
     assert not [e for e in entries(result) if e.severity == "unconverted"]
@@ -83,7 +83,7 @@ def test_flat_document_of_either_version_imports_the_same(
         result = convert(db=db, docs=parse_osi_path(path))
     models = by_name(result)
     assert set(models) == {"orders", "customers"}
-    assert [(j.to, j.join_pairs) for j in models["orders"].relationships] == [("customers", [["customer_id", "id"]])]
+    assert [(j.to, j.column_pairs) for j in models["orders"].relationships] == [("customers", [("customer_id", "id")])]
     assert metric_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "version" in r.getMessage().lower()]
@@ -141,10 +141,10 @@ def test_field_typo_is_reported_and_skipped(db: Path) -> None:
 
 async def test_relationship_on_renamed_fields_joins_the_source_columns(db: Path) -> None:
     result = convert(db=db, docs=documents(_shop()))
-    assert [j.join_pairs for j in by_name(result)["orders"].relationships] == [[["customer_id", "id"]]]
+    assert [j.column_pairs for j in by_name(result)["orders"].relationships] == [[("customer_id", "id")]]
     rows = await query(result=result, db=db, payload={
         "population": "orders", "dimensions": ["customers.segment"],
-        "metrics": [{"expression": "sum(amount)", "name": "s"}]})
+        "metrics": [{"metric": "sum(amount)", "alias": "s"}]})
     assert {r["orders.customers.segment"]: r["orders.s"] for r in rows} == {"b2b": 15, "b2c": 7}
 
 
@@ -307,7 +307,7 @@ def test_legacy_relationship_on_a_source_column(db: Path, tmp_path: Path) -> Non
     model = {"name": "s", "datasets": [_orders([f("amount")]), _customers([f("segment")])],
              "relationships": [src_rel]}
     result = convert(db=db, docs=_legacy_docs(tmp_path, model))
-    assert [j.join_pairs for j in by_name(result)["orders"].relationships] == [[["o_custkey", "c_custkey"]]]
+    assert [j.column_pairs for j in by_name(result)["orders"].relationships] == [[("o_custkey", "c_custkey")]]
 
 
 def test_legacy_unique_keys_resolve_against_source_columns_and_fields(db: Path, tmp_path: Path) -> None:

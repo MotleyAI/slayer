@@ -66,9 +66,9 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -78,13 +78,13 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -96,7 +96,7 @@ def _stage1() -> SlayerQuery:
         "name": "stage1",
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(amount)"}],
+        "metrics": [{"metric": "sum(amount)"}],
     })
 
 
@@ -108,7 +108,7 @@ async def test_dev1449_flat_name_resolves(engine: Tuple[SlayerQueryEngine, str])
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers__region"],
-        "metrics": [{"expression": "sum(amount_sum)"}],
+        "metrics": [{"metric": "sum(amount_sum)"}],
     })
     resp = await eng.execute([_stage1(), root])
     assert resp.columns == ["stage1.customers__region", "stage1.amount_sum_sum"]
@@ -134,7 +134,7 @@ async def test_dev1449_dotted_form_raises(engine: Tuple[SlayerQueryEngine, str])
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers.region"],
-        "metrics": [{"expression": "sum(amount_sum)"}],
+        "metrics": [{"metric": "sum(amount_sum)"}],
     })
     stage1 = _stage1()
     with pytest.raises(UnrelatedDatasetError):

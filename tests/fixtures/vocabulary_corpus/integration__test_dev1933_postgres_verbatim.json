@@ -2,12 +2,12 @@
  "source": "tests/integration/test_dev1933_postgres_verbatim.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "count(*)"
    },
    "new": {
-    "expression": "count(*)"
+    "metric": "count(*)"
    }
   }
  ],

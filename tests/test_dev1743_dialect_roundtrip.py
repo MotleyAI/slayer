@@ -51,13 +51,13 @@ def _host_with_label() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="cr_id", datatype=DataType.INT),
-            DatasetField(name="region_label", datatype=DataType.TEXT,
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="cr_id", datatype=DataType.INTEGER),
+            DatasetField(name="region_label", datatype=DataType.STRING,
                    sql="customer__region.label"),
         ],
         relationships=[DatasetRelationship(to="customer__region",
-                         join_pairs=[["cr_id", "id"]])],
+                         from_columns=["cr_id"], to_columns=["id"])],
     )
 
 

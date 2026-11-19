@@ -27,7 +27,7 @@ class TestRawRows:
 
     async def test_list_valued_expression_projected_per_record(self) -> None:
         async with list_engine() as engine:
-            resp = await engine.execute(query(dimensions=["id", {"name": "s", "expression": "skills"}],
+            resp = await engine.execute(query(dimensions=["id", {"alias": "s", "field": "skills"}],
                                               distinct_dimension_values=False))
         assert _lists(resp.data, key="contractors.id", value="contractors.s") == SKILLS
 
@@ -56,7 +56,7 @@ class TestRawRows:
 class TestGrouping:
     async def test_computed_dimension_checks_keep_their_precedence(self) -> None:
         """A raw-rows computed dimension holding an aggregation is refused for that, before any list rule."""
-        body = query(dimensions=["id", {"name": "s", "expression": "iif(count(*) > 1, skills, required)"}],
+        body = query(dimensions=["id", {"alias": "s", "field": "iif(count(*) > 1, skills, required)"}],
                      distinct_dimension_values=False)
         async with list_engine() as engine:
             with pytest.raises(SlayerError, match="distinct_dimension_values") as caught:

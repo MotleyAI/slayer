@@ -17,7 +17,7 @@ from tests._time_points_fixtures import month_key, monthly
 D = datetime
 EXPLICIT_NOW = D(2026, 9, 29, 12)
 EXPLICIT_WINDOW = ids_in(D(2026, 6, 1), D(2026, 9, 1))
-COUNT = [{"expression": "count(*)", "name": "n"}]
+COUNT = [{"metric": "count(*)", "alias": "n"}]
 
 
 class _FalseyClock:
@@ -133,7 +133,7 @@ def _spine_months(resp) -> set[str]:
 async def test_time_spine_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     query = SlayerQuery.model_validate({
-        "metrics": [{"expression": "count(ev.id)", "name": "n"}],
+        "metrics": [{"metric": "count(ev.id)", "alias": "n"}],
         "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-05-01", None]}],
     })
     async with now_engine() as engine:

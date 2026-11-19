@@ -101,7 +101,7 @@ class TestAvgIsFractional:
     async def test_double_input_unchanged(self, db_type: str) -> None:
         """An exact decimal keeps its precision; a float needs no conversion."""
         model = orders_dataset()
-        model.fields.append(DatasetField(name="price", datatype=DataType.DOUBLE, db_type=db_type))
+        model.fields.append(DatasetField(name="price", datatype=DataType.FLOAT, db_type=db_type))
         tree = await _statement("tsql", "avg(price)", model=model)
         (agg,) = _nodes(tree, exp.Avg)
         assert not _float_cast(agg.this), agg.sql(dialect="tsql")

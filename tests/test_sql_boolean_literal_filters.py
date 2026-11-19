@@ -42,8 +42,8 @@ def _make_engine() -> SlayerQueryEngine:
         sql_table="orders",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
             DatasetField(name="is_active", sql="is_active", datatype=DataType.BOOLEAN),
         ],
     )))
@@ -55,7 +55,7 @@ class TestSQLEmission:
         engine = _make_engine()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["is_active = true"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -65,7 +65,7 @@ class TestSQLEmission:
         engine = _make_engine()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["status = 'food' or false"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -75,7 +75,7 @@ class TestSQLEmission:
         engine = _make_engine()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "count(*)"}],
+            "metrics": [{"metric": "count(*)"}],
             "filter": ["is_active = True"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql

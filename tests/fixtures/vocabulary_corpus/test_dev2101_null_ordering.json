@@ -62,8 +62,8 @@
     ],
     "metrics": [
      {
-      "expression": "max(discount)",
-      "name": "md"
+      "metric": "max(discount)",
+      "alias": "md"
      }
     ]
    }
@@ -99,8 +99,8 @@
     ],
     "metrics": [
      {
-      "expression": "max(md)",
-      "name": "v"
+      "metric": "max(md)",
+      "alias": "v"
      }
     ],
     "order": [

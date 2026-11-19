@@ -22,11 +22,11 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="ds", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
         ],
         relationships=[DatasetRelationship(to="customers",
-                         join_pairs=[["customer_id", "id"]],
+                         from_columns=["customer_id"], to_columns=["id"],
                          cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
@@ -34,8 +34,8 @@ def _orders() -> SlayerDataset:
 def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="ds", sql_table="customers",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="name", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="name", datatype=DataType.STRING)],
     )
 
 
@@ -102,17 +102,17 @@ class TestAuditReportsBothOrientations:
         orders = SlayerDataset(
             name="orders", data_source="ds", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="billing_customer_id", datatype=DataType.INT,
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="billing_customer_id", datatype=DataType.INTEGER,
                        unique=True),
-                DatasetField(name="shipping_customer_id", datatype=DataType.INT),
+                DatasetField(name="shipping_customer_id", datatype=DataType.INTEGER),
             ],
             relationships=[
                 DatasetRelationship(to="customers",
-                          join_pairs=[["billing_customer_id", "id"]],
+                          from_columns=["billing_customer_id"], to_columns=["id"],
                           name="billing"),
                 DatasetRelationship(to="customers",
-                          join_pairs=[["shipping_customer_id", "id"]],
+                          from_columns=["shipping_customer_id"], to_columns=["id"],
                           name="shipping"),
             ],
         )

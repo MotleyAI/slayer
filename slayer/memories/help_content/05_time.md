@@ -32,9 +32,9 @@ row, in two stages:
 [
   {"name": "running", "population": "orders",
    "time_dimensions": [{"field": "order_date", "granularity": "month"}],
-   "metrics": [{"expression": "cumsum(sum(amount))", "name": "running_total"}]},
+   "metrics": [{"metric": "cumsum(sum(amount))", "alias": "running_total"}]},
   {"population": "running", "dimensions": ["order_date", "running_total"],
-   "filter": ["order_date >= '2025'"]}
+   "filter": "order_date >= '2025'"}
 ]
 ```
 

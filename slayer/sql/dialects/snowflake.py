@@ -52,7 +52,7 @@ def _typed_elements(values: Expression, element: Optional[DataType], distinct: b
     kept = anon("ARRAY_DISTINCT", kept) if distinct else kept
     if element is None or element.is_opaque:
         return kept
-    return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.value}>"))
+    return exp.Cast(this=kept, to=exp.DataType.build(f"ARRAY<{element.kind.value}>"))
 
 
 def _json_list(value: Any) -> Any:
@@ -62,9 +62,9 @@ def _json_list(value: Any) -> Any:
 _TYPEOF_SAMPLE = 20
 #: ``TYPEOF`` of a VARIANT element → its SLayer type (absent: opaque).
 _TYPEOF_TYPES: dict[str, DataType] = {
-    "INTEGER": DataType.INT, "DECIMAL": DataType.DOUBLE, "DOUBLE": DataType.DOUBLE, "VARCHAR": DataType.TEXT,
-    "BOOLEAN": DataType.BOOLEAN, "DATE": DataType.DATE, "TIMESTAMP_NTZ": DataType.TIMESTAMP,
-    "TIMESTAMP_LTZ": DataType.TIMESTAMP, "TIMESTAMP_TZ": DataType.TIMESTAMP,
+    "INTEGER": DataType.INTEGER, "DECIMAL": DataType.FLOAT, "DOUBLE": DataType.FLOAT, "VARCHAR": DataType.STRING,
+    "BOOLEAN": DataType.BOOLEAN, "DATE": DataType.DATE, "TIMESTAMP_NTZ": DataType.DATETIME,
+    "TIMESTAMP_LTZ": DataType.DATETIME, "TIMESTAMP_TZ": DataType.DATETIME,
 }
 # ``snowflake.connector.constants.FieldType`` codes → type names; ``FIXED`` (0) is read by precision / scale.
 _FIXED = 0
@@ -213,12 +213,12 @@ class SnowflakeDialect(SqlDialect):
     def list_element_type(self, names: Sequence[Any]) -> DataType:
         """One scalar family maps to its type, mixed scalars to TEXT; objects, nested arrays or no elements are
         UNKNOWN."""
-        kinds = {_TYPEOF_TYPES.get(str(n).upper(), DataType.UNKNOWN) for n in names if str(n).upper() != "NULL_VALUE"}
-        if not kinds or DataType.UNKNOWN in kinds:
-            return DataType.UNKNOWN
-        if kinds <= {DataType.INT, DataType.DOUBLE}:
-            return DataType.DOUBLE if DataType.DOUBLE in kinds else DataType.INT
-        return kinds.pop() if len(kinds) == 1 else DataType.TEXT
+        kinds = {_TYPEOF_TYPES.get(str(n).upper(), DataType.OPAQUE) for n in names if str(n).upper() != "NULL_VALUE"}
+        if not kinds or DataType.OPAQUE in kinds:
+            return DataType.OPAQUE
+        if kinds <= {DataType.INTEGER, DataType.FLOAT}:
+            return DataType.FLOAT if DataType.FLOAT in kinds else DataType.INTEGER
+        return kinds.pop() if len(kinds) == 1 else DataType.STRING
 
     def list_length(self, values: Expression) -> Expression:
         return anon("ARRAY_SIZE", values)
@@ -466,7 +466,7 @@ class SnowflakeDialect(SqlDialect):
         if code == _FIXED:
             known = precision is not None and scale is not None
             return ResultColumnType(
-                type=DataType.INT if scale == 0 else DataType.DOUBLE,
+                type=DataType.INTEGER if scale == 0 else DataType.FLOAT,
                 db_type=f"NUMBER({precision},{scale})" if known else "NUMBER",
             )
         name = _FIELD_TYPE_NAMES.get(code) if isinstance(code, int) else None

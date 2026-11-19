@@ -19,12 +19,13 @@ import pytest
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1835_fixtures import (
     COL_WM,
     CHANGE_OVER_LAST,
     CHANGE_PCT_OVER_LAST,
     CUMSUM_OVER_W90,
-    DatasetMetric,
     TS_OVER_LAST,
     TS_OVER_W90,
     W90_RATIO,
@@ -77,14 +78,14 @@ class TestWindowedTransforms:
     async def test_cumsum_over_bare_windowed(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression="cumsum(sum(amount, window='90d'))", name="x"),
+            QueryMetric(metric="cumsum(sum(amount, window='90d'))", alias="x"),
         ])
         _assert_map(_by_region_month(resp, "x"), CUMSUM_OVER_W90)
 
     async def test_time_shift_over_bare_windowed(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression="time_shift(sum(amount, window='90d'), -1)", name="x"),
+            QueryMetric(metric="time_shift(sum(amount, window='90d'), -1)", alias="x"),
         ])
         expected = with_nulls(CUMSUM_OVER_W90.keys(), TS_OVER_W90)
         _assert_map(_by_region_month(resp, "x"), expected)
@@ -96,15 +97,15 @@ class TestWindowedComposites:
     async def test_windowed_over_plain_ratio(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression="sum(amount)", name="m"),
-            DatasetMetric(expression="sum(amount, window='90d') / sum(amount)", name="x"),
+            QueryMetric(metric="sum(amount)", alias="m"),
+            QueryMetric(metric="sum(amount, window='90d') / sum(amount)", alias="x"),
         ])
         _assert_map(_by_region_month(resp, "x"), W90_RATIO)
 
     async def test_windowed_halved(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression="sum(amount, window='1y') / 2", name="x"),
+            QueryMetric(metric="sum(amount, window='1y') / 2", alias="x"),
         ])
         _assert_map(
             _by_region_month(resp, "x"), {k: v / 2 for k, v in COL_WM.items()},
@@ -121,7 +122,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             filters=["sum(amount, window='90d') > 40"],
         )
         _assert_map(_by_region_month(resp, "m"), {
@@ -135,7 +136,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             filters=["sum(amount, window='90d') > sum(amount)"],
         )
         _assert_map(_by_region_month(resp, "m"), {
@@ -148,7 +149,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             filters=["sum(amount, window='90d') > 40 and status = 'ok'"],
         )
         # OK rows only: South loses its March bucket; the windowed values are
@@ -161,7 +162,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
             filters=["sum(amount, window='90d') > 40", "status = 'ok'"],
         )
         _assert_map(_by_region_month(resp, "m"), {
@@ -177,7 +178,7 @@ class TestWindowedFilters:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
             filter=["sum(amount, window='90d') > 40 or status = 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         with pytest.raises(ValueError, match="neither a field nor a metric"):
             await engine.execute(query)
@@ -189,7 +190,7 @@ class TestTemporalOverRanked:
     async def test_time_shift_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression="time_shift(last(amount), -1)", name="x"),
+            QueryMetric(metric="time_shift(last(amount), -1)", alias="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),
@@ -200,7 +201,7 @@ class TestTemporalOverRanked:
     async def test_change_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression="change(last(amount))", name="x"),
+            QueryMetric(metric="change(last(amount))", alias="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),
@@ -211,7 +212,7 @@ class TestTemporalOverRanked:
     async def test_change_pct_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression="change_pct(last(amount))", name="x"),
+            QueryMetric(metric="change_pct(last(amount))", alias="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),
@@ -235,7 +236,7 @@ class TestChangeOverAttached:
     async def test_change_over_partitioned(self, exec_backend, op, expected) -> None:
         dialect, engine = exec_backend
         resp = await _run_x(engine, dialect, metrics=[
-            DatasetMetric(expression=f"{op}(sum(amount, partition_by=region))", name="x"),
+            QueryMetric(metric=f"{op}(sum(amount, partition_by=region))", alias="x"),
         ])
         keys = {
             ("North", "2024-01"), ("North", "2024-02"), ("South", "2024-01"),

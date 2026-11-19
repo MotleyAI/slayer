@@ -136,7 +136,7 @@ def test_door_executes_the_probe_verbatim(sqlite_engine: sa.Engine) -> None:
     assert census == [probe.census_sql(["a", "b"], dialect=SqliteDialect())]
 
 
-_TYPED = {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
+_TYPED = {"a": ResultColumnType(type=DataType.INTEGER), "b": ResultColumnType(type=DataType.STRING)}
 
 
 def _probe_db_client(tmp_path: Path) -> SlayerSQLClient:
@@ -250,8 +250,8 @@ def test_parse_query_refuses_what_is_not_a_read_only_query(sql: str) -> None:
 
 def _orders(sql_table: str = "orders") -> SlayerDataset:
     return SlayerDataset(name="orders", sql_table=sql_table, data_source="test", fields=[
-        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-        DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+        DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
     ])
 
 
@@ -316,7 +316,7 @@ async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
             types = await engine.get_result_column_types("orders")
     finally:
         engine.close()
-    assert types["revenue"].type == DataType.DOUBLE
+    assert types["revenue"].type == DataType.FLOAT
     (sql,) = seen
     assert "secret-org" in sql
     assert sql.endswith(") AS _types LIMIT 1")

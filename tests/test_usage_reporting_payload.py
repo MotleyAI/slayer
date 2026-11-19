@@ -190,8 +190,8 @@ def sentinel_store(usage_reporting_env) -> str:
 def test_cli_arguments_and_names_never_leave(sentinel_store: str, usage_reporting_env) -> None:
     query = {
         "population": f"{SENT}_model",
-        "dimensions": [{"expression": f"{SENT}_col * 2", "name": SENT}],
-        "metrics": [f"{SENT}_agg({SENT}_col)", {"expression": f"sum({SENT}_col)", "name": f"{SENT}_m"}],
+        "dimensions": [{"field": f"{SENT}_col * 2", "alias": SENT}],
+        "metrics": [f"{SENT}_agg({SENT}_col)", {"metric": f"sum({SENT}_col)", "alias": f"{SENT}_m"}],
         "filter": [f"{SENT}_col > 0 or '{HOSTILE}' == 'x'"],
     }
     runs = [

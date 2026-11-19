@@ -8,7 +8,7 @@ import decimal
 import pyarrow as pa
 import pytest
 
-from slayer.core.enums import DataType
+from slayer.core.enums import DataType, canonical_datatype
 from slayer.flight.types import (
     SUPPORTED_DATATYPES,
     arrow_to_datatype,
@@ -21,12 +21,12 @@ from tests._arrow_types import ArrowTable
 @pytest.mark.parametrize(
     "dt,arrow_type,jdbc_name",
     [
-        (DataType.TEXT, pa.utf8(), "VARCHAR"),
-        (DataType.INT, pa.int64(), "BIGINT"),
-        (DataType.DOUBLE, pa.float64(), "DOUBLE"),
+        (DataType.STRING, pa.utf8(), "VARCHAR"),
+        (DataType.INTEGER, pa.int64(), "BIGINT"),
+        (DataType.FLOAT, pa.float64(), "DOUBLE"),
         (DataType.BOOLEAN, pa.bool_(), "BOOLEAN"),
         (DataType.DATE, pa.date32(), "DATE"),
-        (DataType.TIMESTAMP, pa.timestamp("us"), "TIMESTAMP"),
+        (DataType.DATETIME, pa.timestamp("us"), "TIMESTAMP"),
     ],
 )
 def test_datatype_forward_map(dt: DataType, arrow_type: pa.DataType, jdbc_name: str) -> None:
@@ -41,27 +41,27 @@ def test_supported_datatypes_covers_every_enum_value() -> None:
 @pytest.mark.parametrize(
     "arrow_type,expected",
     [
-        (pa.utf8(), DataType.TEXT),
-        (pa.large_string(), DataType.TEXT),
-        (pa.int8(), DataType.INT),
-        (pa.int16(), DataType.INT),
-        (pa.int32(), DataType.INT),
-        (pa.int64(), DataType.INT),
-        (pa.uint8(), DataType.INT),
-        (pa.uint16(), DataType.INT),
-        (pa.uint32(), DataType.INT),
-        (pa.uint64(), DataType.INT),
-        (pa.float16(), DataType.DOUBLE),
-        (pa.float32(), DataType.DOUBLE),
-        (pa.float64(), DataType.DOUBLE),
-        (pa.decimal128(precision=18, scale=4), DataType.DOUBLE),
+        (pa.utf8(), DataType.STRING),
+        (pa.large_string(), DataType.STRING),
+        (pa.int8(), DataType.INTEGER),
+        (pa.int16(), DataType.INTEGER),
+        (pa.int32(), DataType.INTEGER),
+        (pa.int64(), DataType.INTEGER),
+        (pa.uint8(), DataType.INTEGER),
+        (pa.uint16(), DataType.INTEGER),
+        (pa.uint32(), DataType.INTEGER),
+        (pa.uint64(), DataType.INTEGER),
+        (pa.float16(), DataType.FLOAT),
+        (pa.float32(), DataType.FLOAT),
+        (pa.float64(), DataType.FLOAT),
+        (pa.decimal128(precision=18, scale=4), DataType.FLOAT),
         (pa.bool_(), DataType.BOOLEAN),
         (pa.date32(), DataType.DATE),
         (pa.date64(), DataType.DATE),
-        (pa.timestamp("s"), DataType.TIMESTAMP),
-        (pa.timestamp("ms"), DataType.TIMESTAMP),
-        (pa.timestamp("us"), DataType.TIMESTAMP),
-        (pa.timestamp("ns"), DataType.TIMESTAMP),
+        (pa.timestamp("s"), DataType.DATETIME),
+        (pa.timestamp("ms"), DataType.DATETIME),
+        (pa.timestamp("us"), DataType.DATETIME),
+        (pa.timestamp("ns"), DataType.DATETIME),
     ],
 )
 def test_arrow_to_datatype_collapses_widths(arrow_type: pa.DataType, expected: DataType) -> None:
@@ -91,12 +91,12 @@ def test_forward_then_reverse_round_trip() -> None:
         if dt.is_opaque or dt is DataType.ARRAY:
             continue
         round_tripped = arrow_to_datatype(datatype_to_arrow(dt))
-        assert round_tripped == dt, f"{dt} did not round-trip cleanly"
+        assert round_tripped == canonical_datatype(dt), f"{dt} did not round-trip cleanly"
 
 
 def test_opaque_datatype_maps_to_utf8() -> None:
-    assert datatype_to_arrow(DataType.UNKNOWN) == pa.utf8()
-    assert datatype_to_jdbc(DataType.UNKNOWN) == "VARCHAR"
+    assert datatype_to_arrow(DataType.OPAQUE) == pa.utf8()
+    assert datatype_to_jdbc(DataType.OPAQUE) == "VARCHAR"
 
 
 def test_pa_table_from_pylist_with_explicit_schema_preserves_null_cells() -> None:
@@ -107,12 +107,12 @@ def test_pa_table_from_pylist_with_explicit_schema_preserves_null_cells() -> Non
     """
     schema = pa.schema(
         [
-            pa.field("name", datatype_to_arrow(DataType.TEXT)),
-            pa.field("count", datatype_to_arrow(DataType.INT)),
-            pa.field("price", datatype_to_arrow(DataType.DOUBLE)),
+            pa.field("name", datatype_to_arrow(DataType.STRING)),
+            pa.field("count", datatype_to_arrow(DataType.INTEGER)),
+            pa.field("price", datatype_to_arrow(DataType.FLOAT)),
             pa.field("flag", datatype_to_arrow(DataType.BOOLEAN)),
             pa.field("d", datatype_to_arrow(DataType.DATE)),
-            pa.field("ts", datatype_to_arrow(DataType.TIMESTAMP)),
+            pa.field("ts", datatype_to_arrow(DataType.DATETIME)),
         ]
     )
     rows = [
@@ -143,7 +143,7 @@ def test_pa_table_from_pylist_rejects_decimal_into_double() -> None:
     before calling from_pylist (or uses ``pa.array(coerced_list, type=...)``
     column-by-column). Without that shim, the Arrow build raises
     ``ArrowInvalid``."""
-    schema = pa.schema([pa.field("v", datatype_to_arrow(DataType.DOUBLE))])
+    schema = pa.schema([pa.field("v", datatype_to_arrow(DataType.FLOAT))])
     decimal_rows = [{"v": decimal.Decimal("3.14")}]
     with pytest.raises(pa.ArrowInvalid):
         pa.Table.from_pylist(decimal_rows, schema=schema)

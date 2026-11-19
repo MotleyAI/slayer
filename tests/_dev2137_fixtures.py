@@ -40,17 +40,17 @@ EXTRA = (ASSIGNMENTS_DDL, ASSIGNMENTS_INSERT, TWINS_DDL, TWINS_INSERT)
 def assignments_dataset(*, data_source: str = "test", sql_table: str = "assignments") -> SlayerDataset:
     return SlayerDataset(
         name="assignments", sql_table=sql_table, data_source=data_source,
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="contractor_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to="contractors", join_pairs=[["contractor_id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="contractor_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="contractors", from_columns=["contractor_id"], to_columns=["id"])],
     )
 
 
 def twins_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="twins", sql_table="twins", data_source=data_source,
-        fields=[DatasetField(name="name", datatype=DataType.TEXT),
-                 DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)],
+        fields=[DatasetField(name="name", datatype=DataType.STRING),
+                 DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING)],
     )
 
 
@@ -73,7 +73,7 @@ def query(**body: Any) -> SlayerQuery:
 
 
 def metric(expression: str, name: str) -> dict[str, str]:
-    return {"expression": expression, "name": name}
+    return {"metric": expression, "alias": name}
 
 
 def num(value: Any) -> Optional[float]:

@@ -112,9 +112,9 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="pop", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="pop", datatype=DataType.FLOAT),
         ],
     )
 
@@ -124,9 +124,9 @@ def plans_dataset(*, strong: bool = True) -> SlayerDataset:
     return SlayerDataset(
         name="plans", data_source="test", sql_table="plans",
         fields=[
-            DatasetField(name="code", datatype=DataType.TEXT, primary_key=strong),
-            DatasetField(name="level", datatype=DataType.TEXT),
-            DatasetField(name="fee", datatype=DataType.DOUBLE),
+            DatasetField(name="code", datatype=DataType.STRING, primary_key=strong),
+            DatasetField(name="level", datatype=DataType.STRING),
+            DatasetField(name="fee", datatype=DataType.FLOAT),
         ],
     )
 
@@ -135,10 +135,10 @@ def stores_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="stores", data_source="test", sql_table="stores",
         fields=[
-            DatasetField(name="co", datatype=DataType.TEXT, primary_key=True),
-            DatasetField(name="no", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="city", datatype=DataType.TEXT),
-            DatasetField(name="rent", datatype=DataType.DOUBLE),
+            DatasetField(name="co", datatype=DataType.STRING, primary_key=True),
+            DatasetField(name="no", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="city", datatype=DataType.STRING),
+            DatasetField(name="rent", datatype=DataType.FLOAT),
         ],
     )
 
@@ -148,25 +148,25 @@ def customers_dataset(*, declare_reverse: bool = False) -> SlayerDataset:
     ``last_status`` Mode-A probe; orders then declares no customers edge — one
     symmetric edge either way (DEV-1853)."""
     columns = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="region_id", datatype=DataType.INT),
-        DatasetField(name="plan_code", datatype=DataType.TEXT),
-        DatasetField(name="tier", datatype=DataType.TEXT),
-        DatasetField(name="spend", datatype=DataType.DOUBLE),
-        DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="region_id", datatype=DataType.INTEGER),
+        DatasetField(name="plan_code", datatype=DataType.STRING),
+        DatasetField(name="tier", datatype=DataType.STRING),
+        DatasetField(name="spend", datatype=DataType.FLOAT),
+        DatasetField(name="signup_at", datatype=DataType.DATETIME),
     ]
     joins = [
-        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
-        DatasetRelationship(to="plans", join_pairs=[["plan_code", "code"]]),
+        DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
+        DatasetRelationship(to="plans", from_columns=["plan_code"], to_columns=["code"]),
     ]
     if declare_reverse:
         joins.append(DatasetRelationship(
-            to="orders", join_pairs=[["id", "customer_id"]],
+            to="orders", from_columns=["id"], to_columns=["customer_id"],
             cardinality=RelationshipCardinality.ONE_TO_MANY,
         ))
         # Derived over the declared 1:N hop — classification-by-deps probe.
         columns.append(DatasetField(
-            name="last_status", datatype=DataType.TEXT, sql="orders.status",
+            name="last_status", datatype=DataType.STRING, sql="orders.status",
         ))
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
@@ -177,26 +177,26 @@ def customers_dataset(*, declare_reverse: bool = False) -> SlayerDataset:
 def orders_dataset(*, customers_edge: bool = True) -> SlayerDataset:
     joins = [
         DatasetRelationship(to="stores",
-                  join_pairs=[["store_co", "co"], ["store_no", "no"]]),
+                  from_columns=["store_co", "store_no"], to_columns=["co", "no"]),
     ]
     if customers_edge:
         joins.insert(0, DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         ))
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="channel", datatype=DataType.TEXT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="store_co", datatype=DataType.TEXT),
-            DatasetField(name="store_no", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="channel", datatype=DataType.STRING),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
+            DatasetField(name="store_co", datatype=DataType.STRING),
+            DatasetField(name="store_no", datatype=DataType.INTEGER),
             # Host-declared, target-reading: expanded-deps probe.
-            DatasetField(name="cust_tier", datatype=DataType.TEXT, sql="customers.tier"),
+            DatasetField(name="cust_tier", datatype=DataType.STRING, sql="customers.tier"),
         ],
         relationships=joins,
     )
@@ -206,9 +206,9 @@ def agents_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="agents", data_source="test", sql_table="agents",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
-            DatasetField(name="score", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
+            DatasetField(name="score", datatype=DataType.FLOAT),
         ],
     )
 
@@ -217,8 +217,8 @@ def reviews_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="reviews", data_source="test", sql_table="reviews",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="stars", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="stars", datatype=DataType.FLOAT),
         ],
     )
 
@@ -228,17 +228,17 @@ def tickets_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="tickets", data_source="test", sql_table="tickets",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="opened_by", datatype=DataType.INT),
-            DatasetField(name="closed_by", datatype=DataType.INT),
-            DatasetField(name="review_id", datatype=DataType.INT),
-            DatasetField(name="priority", datatype=DataType.TEXT),
-            DatasetField(name="effort", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="opened_by", datatype=DataType.INTEGER),
+            DatasetField(name="closed_by", datatype=DataType.INTEGER),
+            DatasetField(name="review_id", datatype=DataType.INTEGER),
+            DatasetField(name="priority", datatype=DataType.STRING),
+            DatasetField(name="effort", datatype=DataType.FLOAT),
         ],
         relationships=[
-            DatasetRelationship(to="agents", join_pairs=[["opened_by", "id"]]),
-            DatasetRelationship(to="agents", join_pairs=[["closed_by", "id"]]),
-            DatasetRelationship(to="reviews", join_pairs=[["review_id", "id"]]),
+            DatasetRelationship(to="agents", from_columns=["opened_by"], to_columns=["id"]),
+            DatasetRelationship(to="agents", from_columns=["closed_by"], to_columns=["id"]),
+            DatasetRelationship(to="reviews", from_columns=["review_id"], to_columns=["id"]),
         ],
     )
 

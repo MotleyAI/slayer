@@ -7,7 +7,6 @@ import re
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, SlayerDataset
-from slayer.core.query import FieldRef
 from slayer.live_schema.ingestion import _updated_detail_lines
 from slayer.live_schema.schema_drift import DatasetAddition
 from slayer.facade.catalog import FacadeCatalog, FacadeTable, build_catalog
@@ -79,7 +78,7 @@ def _table(catalog: FacadeCatalog, name: str) -> FacadeTable:
 
 
 def _facade_edges(table: FacadeTable) -> set[tuple]:
-    return {(j.name, j.to, str(j.join_pairs)) for j in table.relationships}
+    return {(j.name, j.to, str([list(p) for p in j.column_pairs])) for j in table.relationships}
 
 
 class TestFacadeCatalogExposesBothOrientations:
@@ -101,13 +100,13 @@ class TestFacadeCatalogExposesBothOrientations:
 def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="name", datatype=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="name", datatype=DataType.STRING)],
     )
 
 
 def _dimension_names(result: QueryResult) -> list[str]:
-    return [d.full_name if isinstance(d, FieldRef) else repr(d) for d in result.query.dimensions or []]
+    return [d.ref.full_name if d.ref is not None else repr(d) for d in result.query.dimensions or []]
 
 
 class TestTranslatorMatchesTheDeclaredEdge:

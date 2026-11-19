@@ -164,7 +164,7 @@ class TestSingleStage:
     ) -> None:
         calls = executed_sql(monkeypatch)
         with pytest.raises(RefinementConflictError) as info:
-            await engine.execute("monthly_revenue", refine={"metrics": [{"expression": "count(*)", "name": "revenue"}]})
+            await engine.execute("monthly_revenue", refine={"metrics": [{"metric": "count(*)", "alias": "revenue"}]})
         for part in ("metrics", "revenue", "sum(amount)", "count(*)"):
             assert part in str(info.value)
         assert calls == []

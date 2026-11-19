@@ -16,8 +16,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "aov",
-      "name": "result"
+      "metric": "aov",
+      "alias": "result"
      }
     ]
    }
@@ -43,8 +43,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "cumsum(aov)",
-      "name": "result"
+      "metric": "cumsum(aov)",
+      "alias": "result"
      }
     ],
     "time_dimensions": [
@@ -70,8 +70,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "aov * 1.1",
-      "name": "result"
+      "metric": "aov * 1.1",
+      "alias": "result"
      }
     ]
    }
@@ -113,8 +113,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "b",
-      "name": "result"
+      "metric": "b",
+      "alias": "result"
      }
     ]
    }
@@ -134,8 +134,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenue)",
-      "name": "result"
+      "metric": "sum(revenue)",
+      "alias": "result"
      }
     ]
    }
@@ -177,8 +177,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "a",
-      "name": "result"
+      "metric": "a",
+      "alias": "result"
      }
     ]
    }
@@ -209,8 +209,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "nonexistent",
-      "name": "result"
+      "metric": "nonexistent",
+      "alias": "result"
      }
     ]
    }
@@ -241,8 +241,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "aov_nett",
-      "name": "result"
+      "metric": "aov_nett",
+      "alias": "result"
      }
     ]
    }
@@ -273,8 +273,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(aov)",
-      "name": "result"
+      "metric": "sum(aov)",
+      "alias": "result"
      }
     ]
    }
@@ -294,8 +294,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "round(revenue, 2)",
-      "name": "result"
+      "metric": "round(revenue, 2)",
+      "alias": "result"
      }
     ]
    }
@@ -312,12 +312,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "avg(revenue)"
    },
    "new": {
-    "expression": "avg(revenue)"
+    "metric": "avg(revenue)"
    }
   },
   {
@@ -335,8 +335,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "sum(revenu)",
-      "name": "result"
+      "metric": "sum(revenu)",
+      "alias": "result"
      }
     ]
    }
@@ -378,8 +378,8 @@
     "population": "orders",
     "metrics": [
      {
-      "expression": "aov",
-      "name": "result"
+      "metric": "aov",
+      "alias": "result"
      }
     ]
    }

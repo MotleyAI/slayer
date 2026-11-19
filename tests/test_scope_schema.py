@@ -25,9 +25,9 @@ def _orders_dataset() -> SlayerDataset:
         data_source="prod",
         sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="status", datatype=DataType.STRING),
         ],
     )
 
@@ -51,7 +51,7 @@ class TestStageColumn:
             name="customers__regions__name",
             sql_alias="customers__regions__name",
             public_alias="customers.regions.name",
-            datatype=DataType.TEXT,
+            datatype=DataType.STRING,
             label="Region",
             format=None,
             hidden=False,

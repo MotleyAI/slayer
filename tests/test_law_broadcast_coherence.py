@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import pytest
 
+from slayer.core.query import QueryMetric
+
 from tests._law_harness import (
     OPERANDS,
-    DatasetMetric,
     canon,
     make_law_engine,
     month_key,
@@ -65,12 +66,12 @@ async def test_formula_equals_client_side_combine(pair_case):
     engine, pair, grain = pair_case
     kwargs = _pair_kwargs(pair=pair, grain=grain)
     left = await engine.execute(q(**kwargs, metrics=[
-        DatasetMetric(expression=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
-                     name="x"),
+        QueryMetric(metric=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
+                     alias="x"),
     ]))
     right = await engine.execute(q(**kwargs, metrics=[
-        DatasetMetric(expression=OPERANDS[pair.a], name="a"),
-        DatasetMetric(expression=OPERANDS[pair.b], name="b"),
+        QueryMetric(metric=OPERANDS[pair.a], alias="a"),
+        QueryMetric(metric=OPERANDS[pair.b], alias="b"),
     ]))
     left_rows = {_row_key(row=r, kwargs=kwargs): r["orders.x"] for r in left.data}
     right_rows = {_row_key(row=r, kwargs=kwargs): r for r in right.data}
@@ -96,14 +97,14 @@ async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engi
     kwargs: dict = {"dimensions": ["region"], "time_dimensions": month_td()}
     refusal = r"partition_by field 'city' is not a query dimension"
     as_formula = q(**kwargs, metrics=[
-        DatasetMetric(
-            expression=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
-            name="x",
+        QueryMetric(
+            metric=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
+            alias="x",
         ),
     ])
     as_separate = q(**kwargs, metrics=[
-        DatasetMetric(expression=OPERANDS["part_city"], name="a"),
-        DatasetMetric(expression=OPERANDS["plain"], name="b"),
+        QueryMetric(metric=OPERANDS["part_city"], alias="a"),
+        QueryMetric(metric=OPERANDS["plain"], alias="b"),
     ])
     with pytest.raises(ValueError, match=refusal):
         await exec_engine.execute(as_formula)
@@ -115,7 +116,7 @@ async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):
     """Coercions compose: one region-grain operand read at (region),
     (region, city), and (region, city, month) yields the same per-region value
     all along the chain."""
-    rt = DatasetMetric(expression=OPERANDS["part_region"], name="rt")
+    rt = QueryMetric(metric=OPERANDS["part_region"], alias="rt")
     per_region: list[dict] = []
     for kwargs in (
         {"dimensions": ["region"]},

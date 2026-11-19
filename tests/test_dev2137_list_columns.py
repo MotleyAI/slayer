@@ -14,7 +14,6 @@ import sqlalchemy as sa
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import TextContent
 from sqlalchemy.dialects import postgresql
-from sqlglot import exp
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
@@ -42,29 +41,26 @@ from tests._stored_upgrade_fixtures import DS, raw_doc, raw_store
 
 
 def _array(element: str) -> dict[str, Any]:
-    return {"datatype": "ARRAY", "element_type": element}
+    return {"datatype": "Array", "element_type": element}
 
 
 class TestTheType:
-    def test_value_matches_sqlglot(self) -> None:
-        assert DataType.ARRAY.value == exp.DataType.Type.ARRAY.value
-
     def test_missing_element_type_rejected(self) -> None:
         with pytest.raises(ValueError, match="(?s)skills.*element_type|element_type.*skills"):
             SlayerDataset.model_validate({"name": "c", "sql_table": "c", "data_source": "test",
-                                        "fields": [{"name": "skills", "datatype": "ARRAY"}]})
+                                        "fields": [{"name": "skills", "datatype": "Array"}]})
 
     def test_element_type_on_a_scalar_rejected(self) -> None:
         with pytest.raises(ValueError, match="team"):
             SlayerDataset.model_validate({"name": "c", "sql_table": "c", "data_source": "test",
-                                        "fields": [{"name": "team", "datatype": "TEXT", "element_type": "INT"}]})
+                                        "fields": [{"name": "team", "datatype": "String", "element_type": "Integer"}]})
 
     def test_nested_element_type_rejected(self) -> None:
-        raw = {"name": "grid", **_array("ARRAY")}
+        raw = {"name": "grid", **_array("Array")}
         with pytest.raises(ValueError, match="grid"):
             DatasetField.model_validate(raw)
 
-    @pytest.mark.parametrize("element", ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP", "UNKNOWN"])
+    @pytest.mark.parametrize("element", ["String", "Integer", "Decimal", "Float", "Boolean", "Date", "Time", "DateTime", "DateTimeTz", "Opaque"])
     def test_scalar_and_opaque_elements_accepted(self, element: str) -> None:
         col = DatasetField.model_validate({"name": "xs", **_array(element)})
         assert col.datatype is DataType.ARRAY
@@ -81,7 +77,7 @@ class TestTheType:
         assert loaded is not None
         scores = loaded.get_field("scores")
         assert scores is not None
-        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.INT)
+        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.INTEGER)
 
 
 # --------------------------------------------------------------------------- #
@@ -95,50 +91,50 @@ def _mapped(sa_type: sa.types.TypeEngine) -> tuple[DataType, Optional[DataType],
 class TestIngestionMapping:
     def test_postgres_integer_array(self) -> None:
         data_type, element, db_type = _mapped(postgresql.ARRAY(sa.Integer()))
-        assert (data_type, element) == (DataType.ARRAY, DataType.INT)
+        assert (data_type, element) == (DataType.ARRAY, DataType.INTEGER)
         assert "INTEGER[]" in (db_type or "").upper()
 
     def test_postgres_text_array(self) -> None:
-        assert _mapped(postgresql.ARRAY(sa.Text()))[:2] == (DataType.ARRAY, DataType.TEXT)
+        assert _mapped(postgresql.ARRAY(sa.Text()))[:2] == (DataType.ARRAY, DataType.STRING)
 
     def test_bigquery_repeated_string(self) -> None:
         bq = pytest.importorskip("sqlalchemy_bigquery")
         data_type, element, db_type = _mapped(sa.ARRAY(bq.STRING()))
-        assert (data_type, element) == (DataType.ARRAY, DataType.TEXT)
+        assert (data_type, element) == (DataType.ARRAY, DataType.STRING)
         assert "STRING" in (db_type or "").upper(), db_type
 
     def test_bigquery_repeated_record_is_opaque(self) -> None:
         bq = pytest.importorskip("sqlalchemy_bigquery")
-        assert _mapped(sa.ARRAY(bq.STRUCT(x=bq.INT64())))[:2] == (DataType.ARRAY, DataType.UNKNOWN)
+        assert _mapped(sa.ARRAY(bq.STRUCT(x=bq.INT64())))[:2] == (DataType.ARRAY, DataType.OPAQUE)
 
     def test_clickhouse_wrapped_element(self) -> None:
         ch = pytest.importorskip("clickhouse_sqlalchemy.types")
         wrapped = ch.Array(ch.LowCardinality(ch.Nullable(ch.String)))
-        assert _mapped(wrapped)[:2] == (DataType.ARRAY, DataType.TEXT)
+        assert _mapped(wrapped)[:2] == (DataType.ARRAY, DataType.STRING)
 
     def test_clickhouse_nested_list_is_opaque(self) -> None:
         ch = pytest.importorskip("clickhouse_sqlalchemy.types")
-        assert _mapped(ch.Array(ch.Array(ch.Int32)))[:2] == (DataType.ARRAY, DataType.UNKNOWN)
+        assert _mapped(ch.Array(ch.Array(ch.Int32)))[:2] == (DataType.ARRAY, DataType.OPAQUE)
 
     def test_trino_array(self) -> None:
-        assert _mapped(sa.ARRAY(sa.VARCHAR()))[:2] == (DataType.ARRAY, DataType.TEXT)
+        assert _mapped(sa.ARRAY(sa.VARCHAR()))[:2] == (DataType.ARRAY, DataType.STRING)
 
     def test_multidimensional_array_is_opaque(self) -> None:
-        assert _mapped(postgresql.ARRAY(sa.Integer(), dimensions=2))[:2] == (DataType.ARRAY, DataType.UNKNOWN)
+        assert _mapped(postgresql.ARRAY(sa.Integer(), dimensions=2))[:2] == (DataType.ARRAY, DataType.OPAQUE)
 
     def test_snowflake_structured_array(self) -> None:
         sf = pytest.importorskip("snowflake.sqlalchemy")
-        assert _mapped(sf.ARRAY(value_type=sa.VARCHAR()))[:2] == (DataType.ARRAY, DataType.TEXT)
+        assert _mapped(sf.ARRAY(value_type=sa.VARCHAR()))[:2] == (DataType.ARRAY, DataType.STRING)
 
     def test_scalars_carry_no_element_type(self) -> None:
         assert _mapped(sa.Integer())[1] is None
 
 
 DUCKDB_KINDS = {
-    "tags": ("VARCHAR[]", DataType.TEXT), "scores": ("INTEGER[]", DataType.INT),
-    "ratios": ("DOUBLE[]", DataType.DOUBLE), "flags": ("BOOLEAN[]", DataType.BOOLEAN),
-    "days": ("DATE[]", DataType.DATE), "grid": ("INTEGER[][]", DataType.UNKNOWN),
-    "recs": ("STRUCT(x INTEGER)[]", DataType.UNKNOWN),
+    "tags": ("VARCHAR[]", DataType.STRING), "scores": ("INTEGER[]", DataType.INTEGER),
+    "ratios": ("DOUBLE[]", DataType.FLOAT), "flags": ("BOOLEAN[]", DataType.BOOLEAN),
+    "days": ("DATE[]", DataType.DATE), "grid": ("INTEGER[][]", DataType.OPAQUE),
+    "recs": ("STRUCT(x INTEGER)[]", DataType.OPAQUE),
 }
 
 
@@ -239,13 +235,13 @@ class TestEligibility:
 
     def test_save_time_allowed_aggregations(self) -> None:
         raw = {"name": "c", "sql_table": "c", "data_source": "test", "fields": [
-            {"name": "skills", "datatype": "ARRAY", "element_type": "TEXT", "allowed_aggregations": ["sum"]}]}
+            {"name": "skills", "datatype": "Array", "element_type": "String", "allowed_aggregations": ["sum"]}]}
         with pytest.raises(ValueError, match="skills"):
             SlayerDataset.model_validate(raw)
 
     def test_count_is_an_allowed_aggregation(self) -> None:
         SlayerDataset(name="c", sql_table="c", data_source="test", fields=[
-            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT, allowed_aggregations=["count"])])
+            DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.STRING, allowed_aggregations=["count"])])
 
     async def test_null_test(self, engine) -> None:
         resp = await engine.execute(query(dimensions=["name"], filter=["skills IS NULL"]))
@@ -256,8 +252,8 @@ class TestNullElements:
     async def test_null_element_is_not_an_element(self, engine) -> None:
         bob = ["name = 'Bob'"]
         resp = await engine.execute(query(
-            dimensions=["name", {"expression": "length(skills)", "name": "n"},
-                        {"expression": "contains(skills, 'go')", "name": "has_go"}],
+            dimensions=["name", {"field": "length(skills)", "alias": "n"},
+                        {"field": "contains(skills, 'go')", "alias": "has_go"}],
             filter=bob))
         row = resp.data[0]
         assert num(row["contractors.n"]) == 1
@@ -272,17 +268,17 @@ GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])", "INSERT INTO grids
 
 def _grids_dataset() -> SlayerDataset:
     return SlayerDataset(name="grids", sql_table="grids", data_source="test", fields=[
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)])
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.OPAQUE)])
 
 
 class TestOpaqueElements:
     async def test_length_and_element_access_refused(self) -> None:
         async with contractors_engine(datasets=[contractors_dataset(), _grids_dataset()], extra=GRIDS) as e:
-            with pytest.raises(SlayerError, match="UNKNOWN"):
+            with pytest.raises(SlayerError, match="Opaque"):
                 await e.execute({"population": "grids", "dimensions": [
-                    "id", {"expression": "length(grid)", "name": "n"}]})
-            with pytest.raises(SlayerError, match="UNKNOWN"):
+                    "id", {"field": "length(grid)", "alias": "n"}]})
+            with pytest.raises(SlayerError, match="Opaque"):
                 await e.execute({"population": "grids", "dimensions": ["grid.value"]})
             with pytest.raises(SlayerError, match="grid"):
                 await e.execute({"population": "grids", "dimensions": ["id"],
@@ -356,23 +352,23 @@ async def _reingest(ds: DatasourceConfig, tmp: str, stored: SlayerDataset) -> Sl
 
 def _stored(*columns: DatasetField) -> SlayerDataset:
     return SlayerDataset(name="contractors", sql_table="contractors", data_source="test",
-                       fields=[DatasetField(name="id", datatype=DataType.INT), *columns])
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER), *columns])
 
 
 class TestReingest:
     async def test_retyping_keeps_metadata(self) -> None:
-        stale = DatasetField(name="skills", datatype=DataType.TEXT, description="What they can do", label="Skills",
+        stale = DatasetField(name="skills", datatype=DataType.STRING, description="What they can do", label="Skills",
                        meta={"source": "hr"})
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(stale))
         skills = loaded.get_field("skills")
         assert skills is not None
-        assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.STRING)
         assert (skills.description, skills.label, skills.meta) == ("What they can do", "Skills", {"source": "hr"})
         assert (skills.db_type or "").upper() == "VARCHAR[]"
 
     async def test_retyping_keeps_only_the_count_aggregation(self) -> None:
-        stale = DatasetField(name="skills", datatype=DataType.TEXT, allowed_aggregations=["count", "max"])
+        stale = DatasetField(name="skills", datatype=DataType.STRING, allowed_aggregations=["count", "max"])
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(stale))
         skills = loaded.get_field("skills")
@@ -380,7 +376,7 @@ class TestReingest:
         assert (skills.datatype, skills.allowed_aggregations) == (DataType.ARRAY, ["count"])
 
     async def test_retyping_keeps_a_distinct_count(self) -> None:
-        stale = DatasetField(name="skills", datatype=DataType.TEXT, allowed_aggregations=["count", "count_distinct", "min"])
+        stale = DatasetField(name="skills", datatype=DataType.STRING, allowed_aggregations=["count", "count_distinct", "min"])
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(stale))
         skills = loaded.get_field("skills")
@@ -388,42 +384,42 @@ class TestReingest:
         assert (skills.datatype, skills.allowed_aggregations) == (DataType.ARRAY, ["count", "count_distinct"])
 
     async def test_a_users_element_type_survives(self) -> None:
-        mine = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.TEXT)
+        mine = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.STRING)
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(mine))
         scores = loaded.get_field("scores")
         assert scores is not None
-        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.STRING)
 
     async def test_a_declared_unknown_element_type_survives(self) -> None:
-        opaque = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)
+        opaque = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.OPAQUE)
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(opaque))
         scores = loaded.get_field("scores")
         assert scores is not None
-        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.UNKNOWN)
+        assert (scores.datatype, scores.element_type) == (DataType.ARRAY, DataType.OPAQUE)
 
-    @pytest.mark.parametrize(("live_db_type", "refilled"), [("ARRAY", DataType.INT), ("ARRAY(NUMBER(38,0))", None)])
+    @pytest.mark.parametrize(("live_db_type", "refilled"), [("ARRAY", DataType.INTEGER), ("ARRAY(NUMBER(38,0))", None)])
     def test_only_an_untyped_snowflake_list_is_re_inferred(self, live_db_type: str, refilled: Any) -> None:
-        stored = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)
-        live = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT, db_type=live_db_type)
+        stored = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.OPAQUE)
+        live = DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INTEGER, db_type=live_db_type)
         merged = _retyped_list(persisted=stored, fresh=live)
         assert (merged.element_type if merged is not None else None) == refilled
 
     async def test_a_derived_text_column_named_like_a_live_list_untouched(self) -> None:
-        derived = DatasetField(name="skills", sql="CAST(id AS VARCHAR)", datatype=DataType.TEXT)
+        derived = DatasetField(name="skills", sql="CAST(id AS VARCHAR)", datatype=DataType.STRING)
         with _duckdb_file(*LIVE) as (ds, tmp):
             loaded = await _reingest(ds, tmp, _stored(derived))
         skills = loaded.get_field("skills")
         assert skills is not None
-        assert (skills.datatype, skills.element_type) == (DataType.TEXT, None)
+        assert (skills.datatype, skills.element_type) == (DataType.STRING, None)
 
     async def test_text_over_a_live_text_column_untouched(self) -> None:
         with _duckdb_file("CREATE TABLE contractors (id INTEGER, skills VARCHAR)") as (ds, tmp):
-            loaded = await _reingest(ds, tmp, _stored(DatasetField(name="skills", datatype=DataType.TEXT)))
+            loaded = await _reingest(ds, tmp, _stored(DatasetField(name="skills", datatype=DataType.STRING)))
         skills = loaded.get_field("skills")
         assert skills is not None
-        assert (skills.datatype, skills.element_type) == (DataType.TEXT, None)
+        assert (skills.datatype, skills.element_type) == (DataType.STRING, None)
 
 
 # --------------------------------------------------------------------------- #
@@ -451,7 +447,7 @@ class TestRendering:
         assert model is not None
         out = await render_dataset_inspection(dataset=model, storage=engine.storage, engine=engine, format="markdown",
                                             sections=["fields"])
-        for needle in ("ARRAY<TEXT>", "go", "sql", "contains", "contains_any", "contains_all", "skills.value"):
+        for needle in ("Array<String>", "go", "sql", "contains", "contains_any", "contains_all", "skills.value"):
             assert needle in out, (needle, out)
 
     async def test_inspect_model_json(self, engine: SlayerQueryEngine) -> None:
@@ -461,7 +457,7 @@ class TestRendering:
                                             sections=["fields"])
         skills = _find_column(json.loads(out), "skills")
         assert skills is not None
-        assert (skills["datatype"], skills["element_type"]) == ("ARRAY", "TEXT")
+        assert (skills["datatype"], skills["element_type"]) == ("Array", "String")
         assert skills.get("sampled_values") == ["go", "sql"]
 
     def test_search_column_text(self) -> None:
@@ -469,26 +465,26 @@ class TestRendering:
         skills = model.get_field("skills")
         assert skills is not None
         text = render_field_text(dataset=model, field=skills)
-        assert "ARRAY<TEXT>" in text, text
+        assert "Array<String>" in text, text
         assert "skills.value" in text, text
         assert "contains" in text, text
 
     def test_models_summary(self) -> None:
         models = [contractors_dataset()]
         markdown = render_datasets_summary(datasource_name="test", datasets=models, fmt="markdown", compact=False)
-        assert "ARRAY<TEXT>" in markdown, markdown
-        assert "ARRAY<INT>" in markdown, markdown
+        assert "Array<String>" in markdown, markdown
+        assert "Array<Integer>" in markdown, markdown
         skills = _find_column(json.loads(render_datasets_summary(datasource_name="test", datasets=models, fmt="json",
                                                                compact=False)), "skills")
         assert skills is not None
-        assert skills["element_type"] == "TEXT"
+        assert skills["element_type"] == "String"
 
 
 class TestSnowflakeJson:
     async def test_json_value_reads_an_array_column(self) -> None:
-        tags = DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.TEXT, db_type="ARRAY")
+        tags = DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.STRING, db_type="ARRAY")
         model = contractors_dataset().model_copy(update={"fields": [*contractors_dataset().fields, tags]})
-        sql = await emit_contractors(query(dimensions=["id", {"expression": "json_value(tags, '$[0]')", "name": "t"}]),
+        sql = await emit_contractors(query(dimensions=["id", {"field": "json_value(tags, '$[0]')", "alias": "t"}]),
                                      dialect="snowflake", datasets=[model])
         assert "TRY_PARSE_JSON" not in sql.upper(), sql
 
@@ -496,7 +492,7 @@ class TestSnowflakeJson:
 class TestCatalogFallbackLists:
     def test_a_bare_array_type_string_is_a_list_with_opaque_elements(self) -> None:
         col = column_from_type_string(name="tags", data_type="ARRAY")
-        assert (col.type, col.element_type, col.db_type) == (DataType.ARRAY, DataType.UNKNOWN, "ARRAY")
+        assert (col.type, col.element_type, col.db_type) == (DataType.ARRAY, DataType.OPAQUE, "ARRAY")
 
     def test_a_snowflake_array_cursor_column_is_a_list(self) -> None:
         described = get_dialect("snowflake").describe_cursor_column(("tags", 10, None, None, None, None, None))
@@ -513,10 +509,10 @@ class TestCatalogFallbackLists:
                 statements.append(sql)
                 return ExecutionResult(rows=[{"t": "INTEGER"}])
 
-        column = IntrospectedColumn(name="ints", type=DataType.ARRAY, element_type=DataType.UNKNOWN)
+        column = IntrospectedColumn(name="ints", type=DataType.ARRAY, element_type=DataType.OPAQUE)
         typed = run_sync(_inferred_elements(column, client=_Client(), table_name="kinds",  # pyright: ignore[reportArgumentType]  # a minimal client double
                                             ref=SchemaRef(catalog="OTHER_DB", name="RAW")))
-        assert typed.element_type is DataType.INT
+        assert typed.element_type is DataType.INTEGER
         assert "OTHER_DB.RAW.kinds" in statements[0], statements
 
 
@@ -528,7 +524,7 @@ SKILLS_SQL = "SELECT id, skills FROM contractors"
 
 def _dev_skills(skills: dict[str, Any], *, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset.model_validate({"name": "dev_skills", "sql": SKILLS_SQL, "data_source": data_source,
-                                       "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
+                                       "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
                                                    {"name": "skills", **skills}]})
 
 
@@ -541,37 +537,37 @@ def _skills(dataset: Optional[SlayerDataset]) -> DatasetField:
 
 class TestSqlModeElementType:
     def test_a_standalone_column_needs_no_element_type(self) -> None:
-        assert DatasetField.model_validate({"name": "skills", "datatype": "ARRAY"}).datatype is DataType.ARRAY
+        assert DatasetField.model_validate({"name": "skills", "datatype": "Array"}).datatype is DataType.ARRAY
 
     def test_undeclared_element_type_is_unknown(self) -> None:
-        assert _skills(_dev_skills({"datatype": "ARRAY"})).element_type is DataType.UNKNOWN
+        assert _skills(_dev_skills({"datatype": "Array"})).element_type is DataType.OPAQUE
 
     def test_a_declared_element_type_is_kept(self) -> None:
-        assert _skills(_dev_skills(_array("TEXT"))).element_type is DataType.TEXT
+        assert _skills(_dev_skills(_array("String"))).element_type is DataType.STRING
 
     async def test_element_access_names_the_opaque_type(self) -> None:
-        async with contractors_engine(datasets=[contractors_dataset(), _dev_skills({"datatype": "ARRAY"})]) as e:
-            with pytest.raises(SlayerError, match="UNKNOWN"):
+        async with contractors_engine(datasets=[contractors_dataset(), _dev_skills({"datatype": "Array"})]) as e:
+            with pytest.raises(SlayerError, match="Opaque"):
                 await e.execute({"population": "dev_skills", "dimensions": ["skills.value"]})
 
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_a_stored_model_loads_and_re_saves_unknown(self, tmp_path, backend: str) -> None:
         doc = {"version": CURRENT_VERSIONS["SlayerModel"], "name": "dev_skills", "sql": SKILLS_SQL,
-               "data_source": DS, "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
-                                              {"name": "skills", "datatype": "ARRAY"}]}
+               "data_source": DS, "fields": [{"name": "id", "datatype": "Integer", "primary_key": True},
+                                              {"name": "skills", "datatype": "Array"}]}
         storage = await raw_store(backend=backend, base=str(tmp_path), models=[doc],
                                   datasource=DatasourceConfig(name=DS, type="duckdb", database=":memory:"))
         loaded = await storage.get_dataset("dev_skills", data_source=DS)
-        assert _skills(loaded).element_type is DataType.UNKNOWN
+        assert _skills(loaded).element_type is DataType.OPAQUE
         assert loaded is not None
         await storage.save_dataset(loaded)
         (saved,) = [c for c in (await raw_doc(storage, "dev_skills"))["fields"] if c["name"] == "skills"]
-        assert saved.get("element_type") == "UNKNOWN", saved
+        assert saved.get("element_type") == "Opaque", saved
 
     async def test_a_declared_element_type_survives_re_ingest(self) -> None:
         with _duckdb_file(*LIVE) as (ds, tmp):
-            loaded = await _reingest(ds, tmp, _dev_skills(_array("TEXT")))
-            assert _skills(loaded).element_type is DataType.TEXT
+            loaded = await _reingest(ds, tmp, _dev_skills(_array("String")))
+            assert _skills(loaded).element_type is DataType.STRING
             engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=os.path.join(tmp, "store")))
             try:
                 resp = await engine.execute({"population": "dev_skills", "dimensions": ["id"],
@@ -582,18 +578,18 @@ class TestSqlModeElementType:
 
     async def test_an_undeclared_element_type_stays_opaque_on_re_ingest(self) -> None:
         with _duckdb_file(*LIVE) as (ds, tmp):
-            loaded = await _reingest(ds, tmp, _dev_skills({"datatype": "ARRAY"}))
-        assert (_skills(loaded).datatype, _skills(loaded).element_type) == (DataType.ARRAY, DataType.UNKNOWN)
+            loaded = await _reingest(ds, tmp, _dev_skills({"datatype": "Array"}))
+        assert (_skills(loaded).datatype, _skills(loaded).element_type) == (DataType.ARRAY, DataType.OPAQUE)
 
     def test_snowflake_re_inference_applies(self) -> None:
         model = SlayerDataset.model_validate({"name": "tagged", "sql": "SELECT id, tags FROM t", "data_source": "sf",
-                                            "fields": [{"name": "id", "datatype": "INT"},
-                                                        {"name": "tags", "datatype": "ARRAY"}]})
-        updated, retyped = retyped_sql_columns(model, lists={"tags": ResultList(element_type=DataType.INT,
+                                            "fields": [{"name": "id", "datatype": "Integer"},
+                                                        {"name": "tags", "datatype": "Array"}]})
+        updated, retyped = retyped_sql_columns(model, lists={"tags": ResultList(element_type=DataType.INTEGER,
                                                                                 db_type="ARRAY")})
         tags = updated.get_field("tags")
         assert tags is not None
-        assert (retyped, tags.element_type) == (["tags"], DataType.INT)
+        assert (retyped, tags.element_type) == (["tags"], DataType.INTEGER)
 
 
 async def _mcp(server: Any, *, name: str, arguments: dict[str, Any]) -> str:
@@ -612,37 +608,37 @@ class TestMCPSqlModeElementType:
             storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
             await storage.save_datasource(ds)
             await storage.save_dataset(SlayerDataset(name="contractors", sql_table="contractors", data_source="test",
-                                                 fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)]))
+                                                 fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)]))
             yield create_mcp_server(storage=storage, _seed_help=False), storage
 
     async def test_create_model_canonicalises_sql_mode(self) -> None:
         async with self._server() as (server, storage):
             await _mcp(server, name="create_dataset", arguments={
                 "name": "dev_skills", "data_source": "test", "sql": SKILLS_SQL,
-                "fields": [{"name": "id", "datatype": "INT"}, {"name": "skills", "datatype": "ARRAY"}]})
-            assert _skills(await storage.get_dataset("dev_skills")).element_type is DataType.UNKNOWN
+                "fields": [{"name": "id", "datatype": "Integer"}, {"name": "skills", "datatype": "Array"}]})
+            assert _skills(await storage.get_dataset("dev_skills")).element_type is DataType.OPAQUE
 
     async def test_create_model_refuses_a_table_backed_list(self) -> None:
         async with self._server() as (server, storage):
             out = await _mcp(server, name="create_dataset", arguments={
                 "name": "raw_skills", "data_source": "test", "sql_table": "contractors",
-                "fields": [{"name": "id", "datatype": "INT"}, {"name": "skills", "datatype": "ARRAY"}]})
+                "fields": [{"name": "id", "datatype": "Integer"}, {"name": "skills", "datatype": "Array"}]})
             assert "skills" in out, out
             assert "element_type" in out, out
             assert await storage.get_dataset("raw_skills") is None
 
     async def test_edit_model_canonicalises_sql_mode(self) -> None:
         async with self._server() as (server, storage):
-            await storage.save_dataset(_dev_skills(_array("TEXT")).model_copy(update={"fields": [
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True)]}))
+            await storage.save_dataset(_dev_skills(_array("String")).model_copy(update={"fields": [
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)]}))
             await _mcp(server, name="edit_dataset", arguments={
-                "dataset_name": "dev_skills", "fields": [{"name": "skills", "datatype": "ARRAY"}]})
-            assert _skills(await storage.get_dataset("dev_skills")).element_type is DataType.UNKNOWN
+                "dataset_name": "dev_skills", "fields": [{"name": "skills", "datatype": "Array"}]})
+            assert _skills(await storage.get_dataset("dev_skills")).element_type is DataType.OPAQUE
 
     async def test_edit_model_refuses_a_table_backed_list(self) -> None:
         async with self._server() as (server, storage):
             out = await _mcp(server, name="edit_dataset", arguments={
-                "dataset_name": "contractors", "fields": [{"name": "skills", "datatype": "ARRAY"}]})
+                "dataset_name": "contractors", "fields": [{"name": "skills", "datatype": "Array"}]})
             assert "skills" in out, out
             assert "element_type" in out, out
             stored = await storage.get_dataset("contractors")

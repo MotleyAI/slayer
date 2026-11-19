@@ -67,9 +67,9 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
             sql_table="customers",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region", datatype=DataType.TEXT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region", datatype=DataType.STRING),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
             ],
         )
     )
@@ -79,13 +79,13 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
             sql_table="orders",
             data_source="prod",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
             ],
             relationships=[
-                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
             ],
         )
     )
@@ -99,13 +99,13 @@ async def test_dev1448_downstream_resolves_user_name(engine: tuple[SlayerQueryEn
         "name": "stage1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+        "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
         "to_many_handling": "broadcast",
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["status"],
-        "metrics": [{"expression": "max(rev)"}],
+        "metrics": [{"metric": "max(rev)"}],
     })
     resp = await eng.execute([stage1, root])
     # Result-key contract: downstream stage prefix + canonical alias of the
@@ -129,12 +129,12 @@ async def test_dev1448_canonical_form_not_a_downstream_name(engine: tuple[Slayer
         "name": "stage1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
+        "metrics": [{"metric": "sum(customers.revenue)", "alias": "rev"}],
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["status"],
-        "metrics": [{"expression": "max(customers__revenue_sum)"}],
+        "metrics": [{"metric": "max(customers__revenue_sum)"}],
     })
     with pytest.raises(UnknownReferenceError):
         await eng.execute([stage1, root])

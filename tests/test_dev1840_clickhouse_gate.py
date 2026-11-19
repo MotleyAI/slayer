@@ -34,10 +34,10 @@ from slayer.sql.dialects.clickhouse import _attach_ch_correlated_setting
 from slayer.sql.generator import generate_planned_stages
 from slayer.sql.session_policy import apply_session_policy
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.core.query import QueryMetric
 
 from tests._ch_fake_http import FakeClickHouse, fake_ch_engine, route_engine
 from tests._dev1840_fixtures import (
-    DatasetMetric,
     SPEND_BAND_170,
     bundle,
     dev1840_datasets,
@@ -47,8 +47,8 @@ from tests._dev1840_fixtures import (
 
 _SETTING = "allow_experimental_correlated_subqueries"
 
-M = DatasetMetric(expression="sum(amount)", name="m")
-CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+M = QueryMetric(metric="sum(amount)", alias="m")
+CM = QueryMetric(metric="sum(customers.spend)", alias="cm")
 
 PUSHED = q(dimensions=["customers.tier"], metrics=[M, CM],
            filter=["channel = 'app'"])
@@ -126,7 +126,7 @@ class TestPlanPredicate:
 
     def test_true_when_only_a_nested_producer_pushes(self):
         planned = plan_query(
-            query=q(dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
+            query=q(dimensions=[{"field": SPEND_BAND_170, "alias": "sband"}],
                     metrics=[M], filter=["channel = 'app'"]),
             bundle=bundle(),
         )

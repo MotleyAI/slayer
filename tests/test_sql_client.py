@@ -45,10 +45,10 @@ class TestDuckdbDriverTypeObjects:
 
         dialect = dialect_for_ds_type("duckdb")
         assert {column[0]: dialect.describe_cursor_column(column) for column in description} == {
-            "i": ResultColumnType(type=DataType.INT, db_type="INTEGER"),
+            "i": ResultColumnType(type=DataType.INTEGER, db_type="INTEGER"),
             "b": ResultColumnType(type=DataType.BOOLEAN, db_type="BOOLEAN"),
-            "t": ResultColumnType(type=DataType.TIMESTAMP, db_type="TIMESTAMP WITH TIME ZONE"),
-            "iv": ResultColumnType(type=DataType.TEXT, db_type="INTERVAL"),
+            "t": ResultColumnType(type=DataType.DATETIME, db_type="TIMESTAMP WITH TIME ZONE"),
+            "iv": ResultColumnType(type=DataType.STRING, db_type="INTERVAL"),
         }
 
 
@@ -663,7 +663,7 @@ class TestProbeRollsBack:
                     render_type_probe(exp.select("a", "b").from_("t"), dialect=SqliteDialect()),
                     db_type="sqlite", engine=eng,
                 )
-            assert types == {"a": ResultColumnType(type=DataType.INT), "b": ResultColumnType(type=DataType.TEXT)}
+            assert types == {"a": ResultColumnType(type=DataType.INTEGER), "b": ResultColumnType(type=DataType.STRING)}
             assert "rollback" in seen
 
 

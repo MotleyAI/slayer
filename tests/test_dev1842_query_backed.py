@@ -36,7 +36,7 @@ class TestQueryBackedFailClosed:
         backing = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError):
@@ -47,7 +47,7 @@ class TestQueryBackedFailClosed:
         backing = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"expression": "sum(amount)"}],
+            "metrics": [{"metric": "sum(amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError) as ei:
@@ -66,7 +66,7 @@ class TestQueryBackedFailClosed:
         table-backed model keeps declaring measures."""
         m = SlayerDataset(
             name="ok", data_source="ds", sql_table="ok",
-            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
             metrics=[DatasetMetric(name="live", expression="sum(amount)")],
         )
         assert m.metrics[0].name == "live"
@@ -84,8 +84,8 @@ class TestExtensionMeasuresOverQueryBacked:
             await storage.save_dataset(SlayerDataset(
                 name="orders", sql_table="orders", data_source="ds",
                 fields=[
-                    DatasetField(name="status", datatype=DataType.TEXT),
-                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
                 ],
             ))
             await storage.save_dataset(SlayerDataset(
@@ -93,18 +93,18 @@ class TestExtensionMeasuresOverQueryBacked:
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
                     "dimensions": ["status"],
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                 })],
             ))
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
                 "population": "qb_base", "extensions": [DatasetExtension(
-                    source_name="qb_base",
+                    dataset="qb_base",
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
                 "dimensions": ["status"],
-                "metrics": [{"expression": "doubled", "name": "r"}],
+                "metrics": [{"metric": "doubled", "alias": "r"}],
             })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
@@ -115,14 +115,14 @@ class TestExtensionMeasuresOverQueryBacked:
         resolution exactly like a model measure."""
         base = SlayerDataset(
             name="t", data_source="ds", sql_table="t",
-            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
         )
         query = SlayerQuery.model_validate({
             "population": "t", "extensions": [DatasetExtension(
-                source_name="t",
+                dataset="t",
                 metrics=[DatasetMetric(name="scaled", expression="sum(amount) * 100")],
             )],
-            "metrics": [{"expression": "scaled", "name": "r"}],
+            "metrics": [{"metric": "scaled", "alias": "r"}],
         })
         sql = await _engine_generate(
             query=query, dataset=base, dialect="duckdb", validate=False,
@@ -143,11 +143,11 @@ class TestExtensionMeasuresOverQueryBacked:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
                 "population": "orders", "extensions": [DatasetExtension(
-                    source_name="orders",
+                    dataset="orders",
                     metrics=[DatasetMetric(name="ext_aov", expression="customers.aov")],
                 )],
                 "dimensions": ["customers.tier"],
-                "metrics": [{"expression": "ext_aov", "name": "r"}],
+                "metrics": [{"metric": "ext_aov", "alias": "r"}],
             })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
@@ -161,15 +161,15 @@ class TestSameNameExtensionRejected:
     async def test_same_name_overlay_is_rejected(self) -> None:
         base = SlayerDataset(
             name="t", data_source="ds", sql_table="t",
-            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
             metrics=[DatasetMetric(name="sh", expression="sum(amount)")],
         )
         query = SlayerQuery.model_validate({
             "population": "t", "extensions": [DatasetExtension(
-                source_name="t",
+                dataset="t",
                 metrics=[DatasetMetric(name="sh", expression="sum(amount) * 100")],
             )],
-            "metrics": [{"expression": "sh", "name": "r"}],
+            "metrics": [{"metric": "sh", "alias": "r"}],
         })
         with pytest.raises(ValueError, match=r"duplicate metric names"):
             await _engine_generate(
@@ -185,10 +185,10 @@ class TestOverlayNamespaceDisjoint:
     def test_overlay_measure_colliding_with_base_column_rejected(self) -> None:
         base = SlayerDataset(
             name="t", data_source="ds", sql_table="t",
-            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", datatype=DataType.FLOAT)],
         )
         ext = DatasetExtension(
-            source_name="t",
+            dataset="t",
             metrics=[DatasetMetric(name="amount", expression="sum(amount)")],
         )
         with pytest.raises(
@@ -209,8 +209,8 @@ class TestStageExtensionMeasuresOverQueryBacked:
             await storage.save_dataset(SlayerDataset(
                 name="orders", sql_table="orders", data_source="ds",
                 fields=[
-                    DatasetField(name="status", datatype=DataType.TEXT),
-                    DatasetField(name="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="status", datatype=DataType.STRING),
+                    DatasetField(name="amount", datatype=DataType.FLOAT),
                 ],
             ))
             await storage.save_dataset(SlayerDataset(
@@ -218,17 +218,17 @@ class TestStageExtensionMeasuresOverQueryBacked:
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
                     "dimensions": ["status"],
-                    "metrics": [{"expression": "sum(amount)"}],
+                    "metrics": [{"metric": "sum(amount)"}],
                 })],
             ))
             stage = SlayerQuery.model_validate({
                 "population": "qb_base", "extensions": [DatasetExtension(
-                    source_name="qb_base",
+                    dataset="qb_base",
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
                 "dimensions": ["status"],
-                "metrics": [{"expression": "doubled", "name": "r"}],
+                "metrics": [{"metric": "doubled", "alias": "r"}],
             })
             root = SlayerQuery(population="orders", dimensions=["status"])
             bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(

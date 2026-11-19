@@ -12,13 +12,12 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.query import QueryMetric, SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import Aggregate
 
 from tests._dev1832_fixtures import (
-    DatasetMetric,
     bundle,
     dev1832_datasets,
     orders_q,
@@ -31,7 +30,7 @@ def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
-            metrics=[DatasetMetric(expression=expression, name="m")]),
+            metrics=[QueryMetric(metric=expression, alias="m")]),
         bundle=bundle(dev1832_datasets()))
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
@@ -45,15 +44,15 @@ def _parallel_edge_datasets() -> list[SlayerDataset]:
     """A model with two NAMED joins to the same target (parallel edges)."""
     tickets = SlayerDataset(
         name="tk", data_source="test", sql_table="tk",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="opened_by", datatype=DataType.INT),
-                 DatasetField(name="closed_by", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to="ag", join_pairs=[["opened_by", "id"]], name="opener"),
-               DatasetRelationship(to="ag", join_pairs=[["closed_by", "id"]], name="closer")])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="opened_by", datatype=DataType.INTEGER),
+                 DatasetField(name="closed_by", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to="ag", from_columns=["opened_by"], to_columns=["id"], name="opener"),
+               DatasetRelationship(to="ag", from_columns=["closed_by"], to_columns=["id"], name="closer")])
     ag = SlayerDataset(
         name="ag", data_source="test", sql_table="ag",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                 DatasetField(name="score", datatype=DataType.DOUBLE)])
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                 DatasetField(name="score", datatype=DataType.FLOAT)])
     return [tickets, ag]
 
 
@@ -155,7 +154,7 @@ class TestParallelNamedEdges:
         models = _parallel_edge_datasets()
         elab = elaborate_query(
             query=SlayerQuery(population="tk", metrics=[
-                DatasetMetric(expression="sum(opener.score - closer.score)", name="m")]),
+                QueryMetric(metric="sum(opener.score - closer.score)", alias="m")]),
             bundle=ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:]))
         aggs = [k for k in elab.terms if isinstance(k, AggregateKey)]
         assert len(aggs) == 1

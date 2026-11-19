@@ -16,8 +16,8 @@ from sqlglot import exp
 import slayer.sql._identifier_fit as fitmod
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError, SlayerError
-from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.database.client import ExecutionResult, ResultColumnType, TypeProbe
 from slayer.sql.dialects import get_dialect
@@ -127,46 +127,46 @@ def _chain_datasets(
     decoy_root_column: str | None = None,
 ) -> list[SlayerDataset]:
     consumer_columns = [
-        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="name", sql="name", datatype=DataType.TEXT),
-        DatasetField(name="email", sql="email", datatype=DataType.TEXT),
-        DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.STRING),
+        DatasetField(name="email", sql="email", datatype=DataType.STRING),
+        DatasetField(name="lifetimeValue", sql="lifetime_value", datatype=DataType.FLOAT),
     ]
     if case_colliding_columns:
         # Differs from ``email`` only by case; Postgres case-folds the namespace.
-        consumer_columns.append(DatasetField(name="Email", sql="email", datatype=DataType.TEXT))
+        consumer_columns.append(DatasetField(name="Email", sql="email", datatype=DataType.STRING))
     return [
         SlayerDataset(
             name="SandboxInvoiceV2", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.DOUBLE),
-                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="totalAmount", sql="total_amount", datatype=DataType.FLOAT),
+                DatasetField(name="subscription_id", sql="subscription_id", datatype=DataType.INTEGER),
                 *([
                     # Root column named what a deep join path flattens to; names permit ``__``.
-                    DatasetField(name=decoy_root_column, sql="decoy", datatype=DataType.TEXT),
+                    DatasetField(name=decoy_root_column, sql="decoy", datatype=DataType.STRING),
                 ] if decoy_root_column else []),
             ],
             relationships=[DatasetRelationship(
-                to="SandboxSubscription", join_pairs=[["subscription_id", "id"]],
+                to="SandboxSubscription", from_columns=["subscription_id"], to_columns=["id"],
             )],
         ),
         SlayerDataset(
             name="SandboxSubscription", sql_table="subscriptions", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="SandboxCustomer", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="SandboxCustomer", from_columns=["customer_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name="SandboxCustomer", sql_table="customers", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INT),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="consumer_id", sql="consumer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="SandboxConsumer", join_pairs=[["consumer_id", "id"]])],
+            relationships=[DatasetRelationship(to="SandboxConsumer", from_columns=["consumer_id"], to_columns=["id"])],
         ),
         SlayerDataset(
             name="SandboxConsumer", sql_table="consumers", data_source=DS,
@@ -200,16 +200,16 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
         kwargs["order"] = [OrderItem.model_validate({"field": "avg(totalAmount)", "direction": "desc"})]
         kwargs["limit"] = 10
     return SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-            FieldRef(name=f"{DEEP}.name"),
-            FieldRef(name=f"{DEEP}.email"),
-            FieldRef(name="status"),
-        ], "metrics": [{"expression": "sum(totalAmount)"}, {"expression": "count(*)"}], **kwargs})
+            QueryDimension(field=f"{DEEP}.name"),
+            QueryDimension(field=f"{DEEP}.email"),
+            QueryDimension(field="status"),
+        ], "metrics": [{"metric": "sum(totalAmount)"}, {"metric": "count(*)"}], **kwargs})
 
 
 SHORT_QUERY = SlayerQuery.model_validate({
     "population": "SandboxInvoiceV2",
-    "dimensions": [FieldRef(name="status")],
-    "metrics": [{"expression": "sum(totalAmount)"}],
+    "dimensions": [QueryDimension(field="status")],
+    "metrics": [{"metric": "sum(totalAmount)"}],
 })
 
 
@@ -608,12 +608,12 @@ class TestAllProjectionAliases:
 
 
 def _deep_cross_dataset_query(*, two_metrics: bool = False) -> SlayerQuery:
-    measures = [DatasetMetric(expression=f"sum({DEEP}.lifetimeValue)")]
+    measures = [QueryMetric(metric=f"sum({DEEP}.lifetimeValue)")]
     if two_metrics:
-        measures.append(DatasetMetric(expression=f"avg({DEEP}.lifetimeValue)"))
+        measures.append(QueryMetric(metric=f"avg({DEEP}.lifetimeValue)"))
     return SlayerQuery(
         population="SandboxInvoiceV2",
-        dimensions=[FieldRef(name="status")],
+        dimensions=[QueryDimension(field="status")],
         metrics=measures,
     )
 
@@ -712,19 +712,19 @@ class TestCteNames:
             name="ShiftOrders", sql_table="orders", data_source=DS,
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", sql="revenue", datatype=DataType.FLOAT),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
         prepared = await engine._prepare_pipeline(
             query=SlayerQuery.model_validate({
                 "population": "ShiftOrders",
-                "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
+                "time_dimensions": [{"field": "created_at", "granularity": "month"}],
                 "metrics": [
-                    {"expression": "sum(revenue)"},
-                    {"expression": "time_shift(sum(revenue), -1)", "name": long_transform_name},
+                    {"metric": "sum(revenue)"},
+                    {"metric": "time_shift(sum(revenue), -1)", "alias": long_transform_name},
                 ],
             }),
             named_queries={}, runtime_kwarg={},
@@ -873,9 +873,9 @@ class TestVirtualModelShorts:
         """``email`` and ``Email`` (grandfathered) as two result names: refused before SQL generation."""
         engine, _ = await _build_engine(tmp_path, validate=False, case_colliding_columns=True)
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
-                FieldRef(name=f"{DEEP}.email"),
-                FieldRef(name=f"{DEEP}.Email"),
-            ], "metrics": [{"expression": "count(*)"}]})
+                QueryDimension(field=f"{DEEP}.email"),
+                QueryDimension(field=f"{DEEP}.Email"),
+            ], "metrics": [{"metric": "count(*)"}]})
         with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
         assert not isinstance(exc.value, IdentifierCollisionError), exc.value
@@ -888,8 +888,8 @@ class TestVirtualModelShorts:
         engine, _ = await _build_engine(tmp_path, decoy_root_column=flat)
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
-            "dimensions": [FieldRef(name=f"{DEEP}.name"), FieldRef(name=flat)],
-            "metrics": [{"expression": "count(*)"}],
+            "dimensions": [QueryDimension(field=f"{DEEP}.name"), QueryDimension(field=flat)],
+            "metrics": [{"metric": "count(*)"}],
         })
         with pytest.raises(IdentifierCollisionError) as exc:
             await engine._query_as_model(inner_query=query)
@@ -904,10 +904,10 @@ class TestVirtualModelShorts:
         assert long_a[:63] == long_b[:63]
         query = SlayerQuery(
             population="SandboxInvoiceV2",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                {"expression": "sum(totalAmount)", "name": long_a},
-                {"expression": "avg(totalAmount)", "name": long_b},
+                {"metric": "sum(totalAmount)", "alias": long_a},
+                {"metric": "avg(totalAmount)", "alias": long_b},
             ],
         )
         vm = await engine._query_as_dataset(inner_query=query)
@@ -931,8 +931,8 @@ class TestVirtualModelShorts:
         short = next(c.name for c in vm.fields if "email" in c.name.lower())
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "dimensions": [FieldRef(name=short)],
-            "metrics": [{"expression": "sum(totalAmount_sum)"}],
+            "dimensions": [QueryDimension(field=short)],
+            "metrics": [{"metric": "sum(totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql is not None
@@ -979,7 +979,7 @@ class TestEngineContract:
                 with emitted_reparse_law.as_database():
                     tree = sqlglot.parse_one(probe.sql, dialect="postgres")
                 for name, _ in _projection_aliases(next(iter(tree.args["from_"].this.find_all(exp.Select)))):
-                    captured[name] = ResultColumnType(type=DataType.DOUBLE, db_type="double precision")
+                    captured[name] = ResultColumnType(type=DataType.FLOAT, db_type="double precision")
                 return dict(captured)
 
             async def aclose(self) -> None:  # pragma: no cover — not reached
@@ -988,8 +988,8 @@ class TestEngineContract:
         model = SlayerDataset(
             name="TypeProbe", sql_table="invoices", data_source=DS,
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name=over_limit, sql="total_amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name=over_limit, sql="total_amount", datatype=DataType.FLOAT),
             ],
         )
         await engine.storage.save_dataset(model)
@@ -1024,16 +1024,16 @@ class TestSweep:
             _deep_cross_dataset_query(),                        # cross-model CTE (_cm_ + WITH)
             SlayerQuery(                                      # arithmetic expression
                 population="SandboxInvoiceV2",
-                dimensions=[FieldRef(name=f"{DEEP}.email")],
+                dimensions=[QueryDimension(field=f"{DEEP}.email")],
                 metrics=[
-                    {"expression": "sum(totalAmount)"},
-                    {"expression": "sum(totalAmount) / count(*)", "name": "avg_ticket"},
+                    {"metric": "sum(totalAmount)"},
+                    {"metric": "sum(totalAmount) / count(*)", "alias": "avg_ticket"},
                 ],
             ),
             SlayerQuery.model_validate({
                 "population": "SandboxInvoiceV2",
-                "dimensions": [FieldRef(name=f"{DEEP}.name")],
-                "metrics": [{"expression": "count(*)"}],
+                "dimensions": [QueryDimension(field=f"{DEEP}.name")],
+                "metrics": [{"metric": "count(*)"}],
                 "filter": [f"{DEEP}.email IS NOT NULL"],
             }),
         ]

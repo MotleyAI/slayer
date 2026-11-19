@@ -15,8 +15,9 @@ from slayer.core.keys import FieldKey, Grain
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.cardinality.relationship_safety import grain_determines
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1841_fixtures import (
-    DatasetMetric,
     assoc_q,
     make_exec_engine as make_assoc_engine,
     status_key,
@@ -57,8 +58,8 @@ def _customers_dataset(*, key_sql: str | None) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="prod", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, sql=key_sql, primary_key=True),
-            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, sql=key_sql, primary_key=True),
+            DatasetField(name="name", datatype=DataType.STRING),
         ],
     )
 
@@ -69,18 +70,18 @@ def _fk_hop_datasets(*, fk_sql: str | None) -> tuple[SlayerDataset, dict[str, Sl
     regions = SlayerDataset(
         name="regions", data_source="prod", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="pop", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="pop", datatype=DataType.INTEGER),
         ],
     )
     customers = SlayerDataset(
         name="customers", data_source="prod", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT, sql=fk_sql),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER, sql=fk_sql),
         ],
         relationships=[DatasetRelationship(
-            to="regions", join_pairs=[["region_id", "id"]],
+            to="regions", from_columns=["region_id"], to_columns=["id"],
             cardinality=RelationshipCardinality.MANY_TO_ONE,
         )],
     )
@@ -136,9 +137,9 @@ class TestPickedParamDoesNotInheritSourceFilter:
         sql = await _engine_generate(
             query=assoc_q(
                 dimensions=["channel"],
-                metrics=[DatasetMetric(
-                    expression="weighted_avg(customers.north_spend, weight=customers.spend)",
-                    name="w")]),
+                metrics=[QueryMetric(
+                    metric="weighted_avg(customers.north_spend, weight=customers.spend)",
+                    alias="w")]),
             dataset=orders, extra_datasets=extra, dialect="sqlite", validate=False,
         )
         p0_line = next(line for line in sql.splitlines() if "AS _p0" in line)
@@ -231,7 +232,7 @@ class TestExprDefaultQualifiedRefs:
         # default was neither lifted nor rejected.
         resp = await qual_expr_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wsum6(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum6(customers.spend)", alias="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM6_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -240,7 +241,7 @@ class TestExprDefaultQualifiedRefs:
         # ``spend * regions.pop``: owner and qualified refs in one expression.
         resp = await mixed_expr_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wsum7(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum7(customers.spend)", alias="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM7_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -250,7 +251,7 @@ class TestExprDefaultQualifiedRefs:
         # self-reference, not a hop (and not opaque) — SUM(spend * spend).
         resp = await self_qual_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wsum8(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum8(customers.spend)", alias="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -260,7 +261,7 @@ class TestExprDefaultQualifiedRefs:
         # the owner-anchored entry alongside the qualified ref.
         resp = await derived_local_engine.execute(assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wsum9(customers.spend)", name="w")]))
+            metrics=[QueryMetric(metric="wsum9(customers.spend)", alias="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM9_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -270,7 +271,7 @@ class TestExprDefaultQualifiedRefs:
         # model columns, exactly as its explicit spelling must.
         q = assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wphys(customers.spend)", name="w")])
+            metrics=[QueryMetric(metric="wphys(customers.spend)", alias="w")])
         with pytest.raises(UnknownReferenceError, match="tier"):
             await phys_expr_engine.execute(q)
 
@@ -278,8 +279,8 @@ class TestExprDefaultQualifiedRefs:
         # Was silent NULL: ``customers.region_id * 1`` is FK-seeded by the
         # operand grain (customer_id pins the to-one customers row).
         resp = await qual_reagg_engine.execute(chain_q(
-            metrics=[DatasetMetric(
-                expression="cwavg(sum(amount, partition_by=customer_id))", name="w")]))
+            metrics=[QueryMetric(
+                metric="cwavg(sum(amount, partition_by=customer_id))", alias="w")]))
         got = float(resp.data[0]["corders.w"])
         assert got == pytest.approx(CORDERS_GLOBAL_WAVG)
         assert got != pytest.approx(CORDERS_GLOBAL_UNWEIGHTED)
@@ -291,9 +292,9 @@ class TestExprDefaultLiteralsAndResidue:
         # ``amount`` column. Weight is constant 2.0 -> the unweighted average.
         resp = await lit_reagg_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression="wlit(sum(amount, partition_by=[city, region]))",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric="wlit(sum(amount, partition_by=[city, region]))",
+                alias="w")]))
         vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -304,9 +305,9 @@ class TestExprDefaultLiteralsAndResidue:
         # 2.0 -> the unweighted average. Was a spurious ``amount`` dependency.
         resp = await lit_only_engine.execute(sales_q(
             dimensions=["region"],
-            metrics=[DatasetMetric(
-                expression="wconst(sum(amount, partition_by=[city, region]))",
-                name="w")]))
+            metrics=[QueryMetric(
+                metric="wconst(sum(amount, partition_by=[city, region]))",
+                alias="w")]))
         vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -315,8 +316,8 @@ class TestExprDefaultLiteralsAndResidue:
     async def test_undetermined_qualified_expr_default_rejected(self, qual_reagg_engine):
         # An operand grain that pins nothing about customers -> the one-rule
         # typed error (was silent invalid SQL).
-        q = chain_q(metrics=[DatasetMetric(
-            expression="cwavg(sum(amount, partition_by=amount))", name="w")])
+        q = chain_q(metrics=[QueryMetric(
+            metric="cwavg(sum(amount, partition_by=amount))", alias="w")])
         with pytest.raises(SlayerError) as ei:
             await qual_reagg_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -325,7 +326,7 @@ class TestExprDefaultLiteralsAndResidue:
         # ``nosuch.col`` resolves no join walk -> the default fails at binding.
         q = assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wopq(customers.spend)", name="w")])
+            metrics=[QueryMetric(metric="wopq(customers.spend)", alias="w")])
         with pytest.raises(UnresolvableDimensionRelationshipError, match="nosuch.col"):
             await opaque_expr_engine.execute(q)
 
@@ -334,7 +335,7 @@ class TestExprDefaultLiteralsAndResidue:
         # level-2 render, and never the parser's own diagnostics.
         q = assoc_q(
             dimensions=["status"],
-            metrics=[DatasetMetric(expression="wugly(customers.spend)", name="w")])
+            metrics=[QueryMetric(metric="wugly(customers.spend)", alias="w")])
         with pytest.raises(UnanalyzableAggregationParameterError, match="weight") as ei:
             await unparseable_engine.execute(q)
         assert "\x1b" not in str(ei.value)
@@ -348,9 +349,9 @@ class TestExprDefaultLiteralsAndResidue:
         resp = await root_named_expr_engine.execute(assoc_q(
             dimensions=["status"],
             metrics=[
-                DatasetMetric(expression="wroot(customers.spend)", name="w"),
-                DatasetMetric(
-                    expression="sum(customers.spend * (orders.amount + 0))", name="oracle"),
+                QueryMetric(metric="wroot(customers.spend)", alias="w"),
+                QueryMetric(
+                    metric="sum(customers.spend * (orders.amount + 0))", alias="oracle"),
             ]))
         default_vals = _status_vals(resp=resp, metric="orders.w")
         oracle_vals = _status_vals(resp=resp, metric="orders.oracle")

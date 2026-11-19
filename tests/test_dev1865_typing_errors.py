@@ -12,7 +12,9 @@ import pytest
 
 from slayer.core.errors import DistinctDimensionValuesError, PositionTypingError
 
-from tests._dev1865_fixtures import DatasetMetric, q
+from slayer.core.query import QueryMetric
+
+from tests._dev1865_fixtures import q
 
 
 class TestMixedGrainOr:
@@ -22,7 +24,7 @@ class TestMixedGrainOr:
         query = q(
             dimensions=["region", "city"],
             filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="s")],
         )
         with pytest.raises(PositionTypingError) as ei:
             await exec_engine.execute(query)

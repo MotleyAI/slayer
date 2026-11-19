@@ -28,8 +28,8 @@ _KEY_RE = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
 async def _dry(query: SlayerQuery):
     mart = mart_dataset(
         extra_columns=[
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="quantity", datatype=DataType.DOUBLE),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="quantity", datatype=DataType.FLOAT),
         ],
         metrics=[DatasetMetric(name="aov", expression="sum(revenue) / sum(quantity)")],
     )
@@ -100,8 +100,8 @@ class TestUnchangedPaths:
             _q(
                 metrics=[
                     {
-                        "expression": "sum(logo_churn) / sum(logo_bop)",
-                        "name": "churn_ratio",
+                        "metric": "sum(logo_churn) / sum(logo_bop)",
+                        "alias": "churn_ratio",
                     }
                 ]
             )
@@ -160,8 +160,8 @@ class TestCollisions:
     async def test_identical_formulas_conflicting_metadata_fail_loudly(self) -> None:
         q = _q(
             metrics=[
-                {"expression": "sum(logo_churn) / sum(logo_bop)", "datatype": "DOUBLE"},
-                {"expression": "sum(logo_churn) / sum(logo_bop)", "datatype": "INT"},
+                {"metric": "sum(logo_churn) / sum(logo_bop)", "datatype": "Float"},
+                {"metric": "sum(logo_churn) / sum(logo_bop)", "datatype": "Integer"},
             ]
         )
         with pytest.raises(ValueError, match="set 'name'"):

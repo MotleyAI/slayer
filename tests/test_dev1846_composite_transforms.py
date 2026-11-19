@@ -21,8 +21,9 @@ from slayer.core.keys import (
 )
 from slayer.engine.compile.projection import _iter_slot_deps
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1846_fixtures import (
-    DatasetMetric,
     SlayerQuery,
     gen,
     make_exec_engine,
@@ -78,8 +79,8 @@ async def _error(*, metrics, dimensions=None):
 class TestFixtureSmoke:
     async def test_trivial_query_executes(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="sum(revenue)", name="r"),
-            DatasetMetric(expression="count(*)", name="n"),
+            QueryMetric(metric="sum(revenue)", alias="r"),
+            QueryMetric(metric="count(*)", alias="n"),
         ]))
         by = _by_month(resp)
         assert _f(by["2024-01"]["sales.r"]) == pytest.approx(60.0)
@@ -94,9 +95,9 @@ class TestTimeShiftCompositeExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[
-                DatasetMetric(expression="sum(revenue) / sum(qty)", name="cur"),
-                DatasetMetric(expression="time_shift(sum(revenue) / sum(qty), -1)",
-                             name="prev"),
+                QueryMetric(metric="sum(revenue) / sum(qty)", alias="cur"),
+                QueryMetric(metric="time_shift(sum(revenue) / sum(qty), -1)",
+                             alias="prev"),
             ],
         ))
         by = _by_store_month(resp)
@@ -117,7 +118,7 @@ class TestTimeShiftCompositeExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[
-                DatasetMetric(expression="change_pct(sum(revenue) / count(*))", name="pct"),
+                QueryMetric(metric="change_pct(sum(revenue) / count(*))", alias="pct"),
             ],
         ))
         by = _by_store_month(resp)
@@ -134,7 +135,7 @@ class TestTimeShiftCompositeExecution:
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
             metrics=[
-                DatasetMetric(expression="change(sum(revenue) / sum(qty))", name="delta"),
+                QueryMetric(metric="change(sum(revenue) / sum(qty))", alias="delta"),
             ],
         ))
         by = _by_store_month(resp)
@@ -149,9 +150,9 @@ class TestTimeShiftCompositeExecution:
         """A NULL-absorbing wrapper does NOT turn a missing shifted bucket into
         0: the earliest month's shifted value is NULL."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="coalesce(sum(revenue), 0)", name="cur"),
-            DatasetMetric(expression="time_shift(coalesce(sum(revenue), 0), -1)",
-                         name="prev"),
+            QueryMetric(metric="coalesce(sum(revenue), 0)", alias="cur"),
+            QueryMetric(metric="time_shift(coalesce(sum(revenue), 0), -1)",
+                         alias="prev"),
         ]))
         by = _by_month(resp)
         assert _f(by["2024-01"]["sales.cur"]) == pytest.approx(60.0)
@@ -164,9 +165,9 @@ class TestTimeShiftCompositeExecution:
         leaf (``hi_rev``): each re-aggregates with its own parameters/filter in
         the shifted period."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="wrevenue_sum(revenue) + sum(hi_rev)", name="cur"),
-            DatasetMetric(expression="time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
-                         name="prev"),
+            QueryMetric(metric="wrevenue_sum(revenue) + sum(hi_rev)", alias="cur"),
+            QueryMetric(metric="time_shift(wrevenue_sum(revenue) + sum(hi_rev), -1)",
+                         alias="prev"),
         ]))
         by = _by_month(resp)
         assert _f(by["2024-01"]["sales.cur"]) == pytest.approx(200.0)  # 150 + 50
@@ -181,9 +182,9 @@ class TestTimeShiftCompositeExecution:
         the shifted CTE must bind that join to compute ``SUM(revenue * factor)``
         in the prior period."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="wrevenue_sum(revenue) * 2", name="cur"),
-            DatasetMetric(expression="time_shift(wrevenue_sum(revenue) * 2, -1)",
-                         name="prev"),
+            QueryMetric(metric="wrevenue_sum(revenue) * 2", alias="cur"),
+            QueryMetric(metric="time_shift(wrevenue_sum(revenue) * 2, -1)",
+                         alias="prev"),
         ]))
         by = _by_month(resp)
         assert _f(by["2024-01"]["sales.cur"]) == pytest.approx(300.0)  # 150 * 2
@@ -198,8 +199,8 @@ class TestConsecutivePeriodsExecution:
         """A bare numeric composite: streak counts consecutive months where the
         delta is non-NULL and non-zero (40, 62, 30 → 1, 2, 3)."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="consecutive_periods(sum(revenue) - sum(cost))",
-                         name="streak"),
+            QueryMetric(metric="consecutive_periods(sum(revenue) - sum(cost))",
+                         alias="streak"),
         ]))
         by = _by_month(resp)
         assert int(by["2024-01"]["sales.streak"]) == 1
@@ -210,8 +211,8 @@ class TestConsecutivePeriodsExecution:
         """Comparison predicate over a nested transform (already renders today —
         regression anchor): change > 0 holds only in Feb → 0, 1, 0."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="consecutive_periods(change(sum(revenue)) > 0)",
-                         name="streak"),
+            QueryMetric(metric="consecutive_periods(change(sum(revenue)) > 0)",
+                         alias="streak"),
         ]))
         by = _by_month(resp)
         assert int(by["2024-01"]["sales.streak"]) == 0
@@ -221,8 +222,8 @@ class TestConsecutivePeriodsExecution:
     async def test_bare_nested_transform(self, exec_engine) -> None:
         """A bare nested transform value: cumsum is non-zero every month → 1,2,3."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="consecutive_periods(cumsum(sum(revenue)))",
-                         name="streak"),
+            QueryMetric(metric="consecutive_periods(cumsum(sum(revenue)))",
+                         alias="streak"),
         ]))
         by = _by_month(resp)
         assert int(by["2024-01"]["sales.streak"]) == 1
@@ -233,8 +234,8 @@ class TestConsecutivePeriodsExecution:
         """Scalar call inside a comparison (already renders today — regression
         anchor): round(revenue:sum) >= 10 holds every month → 1, 2, 3."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="consecutive_periods(round(sum(revenue)) >= 10)",
-                         name="streak"),
+            QueryMetric(metric="consecutive_periods(round(sum(revenue)) >= 10)",
+                         alias="streak"),
         ]))
         by = _by_month(resp)
         assert int(by["2024-01"]["sales.streak"]) == 1
@@ -244,9 +245,9 @@ class TestConsecutivePeriodsExecution:
     async def test_or_connective(self, exec_engine) -> None:
         """``sum(revenue) > 90 or sum(cost) > 40`` holds only in Feb → 0, 1, 0."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(
-                expression="consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
-                name="streak"),
+            QueryMetric(
+                metric="consecutive_periods(sum(revenue) > 90 or sum(cost) > 40)",
+                alias="streak"),
         ]))
         by = _by_month(resp)
         assert int(by["2024-01"]["sales.streak"]) == 0
@@ -256,8 +257,8 @@ class TestConsecutivePeriodsExecution:
     async def test_not_connective(self, exec_engine) -> None:
         """``not (sum(revenue) > 90)`` fails only in Feb → 1, 0, 1."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(expression="consecutive_periods(not (sum(revenue) > 90))",
-                         name="streak"),
+            QueryMetric(metric="consecutive_periods(not (sum(revenue) > 90))",
+                         alias="streak"),
         ]))
         by = _by_month(resp)
         assert int(by["2024-01"]["sales.streak"]) == 1
@@ -269,8 +270,8 @@ class TestConsecutivePeriodsExecution:
         every month → each streak 1, 2, 3."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            metrics=[DatasetMetric(
-                expression="consecutive_periods(store in ('A', 'B'))", name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(store in ('A', 'B'))", alias="streak")],
         ))
         by = _by_store_month(resp)
         for store in ("A", "B"):
@@ -283,9 +284,9 @@ class TestConsecutivePeriodsExecution:
         always is (false → 0,0,0)."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            metrics=[DatasetMetric(
-                expression="consecutive_periods(store not in ('B', 'C'))",
-                name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(store not in ('B', 'C'))",
+                alias="streak")],
         ))
         by = _by_store_month(resp)
         assert int(by[("A", "2024-03")]["sales.streak"]) == 3
@@ -299,9 +300,9 @@ class TestConsecutivePeriodsExecution:
         there → B streak 1, 2, 0; store A never NULL → 1, 2, 3."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            metrics=[DatasetMetric(
-                expression="consecutive_periods(sum(hi_rev) > 0 or sum(cost) > 1000)",
-                name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(sum(hi_rev) > 0 or sum(cost) > 1000)",
+                alias="streak")],
         ))
         by = _by_store_month(resp)
         assert int(by[("A", "2024-03")]["sales.streak"]) == 3
@@ -314,9 +315,9 @@ class TestConsecutivePeriodsExecution:
         matches with revenue>0 (1,2,3); store B never matches (0,0,0)."""
         resp = await exec_engine.execute(_q(
             dimensions=["store"],
-            metrics=[DatasetMetric(
-                expression="consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
-                name="streak")],
+            metrics=[QueryMetric(
+                metric="consecutive_periods(store in ('A', 'C') and sum(revenue) > 0)",
+                alias="streak")],
         ))
         by = _by_store_month(resp)
         assert int(by[("A", "2024-01")]["sales.streak"]) == 1
@@ -329,9 +330,9 @@ class TestPredicateTypingContract:
         """A boolean-shaped node is legal in ``iif``'s condition seat; the value
         drives truthiness (iif → 1 every month → 1, 2, 3)."""
         resp = await exec_engine.execute(_q(metrics=[
-            DatasetMetric(
-                expression="consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
-                name="streak"),
+            QueryMetric(
+                metric="consecutive_periods(iif(sum(revenue) > 0, 1, 0))",
+                alias="streak"),
         ]))
         by = _by_month(resp)
         assert int(by["2024-01"]["sales.streak"]) == 1
@@ -344,13 +345,13 @@ class TestPredicateTypingContract:
     ])
     async def test_boolean_in_numeric_position_is_its_integer(self, exec_engine, formula: str) -> None:
         """Every month's revenue and cost are positive, so each value is non-zero and the run never breaks."""
-        resp = await exec_engine.execute(_q(metrics=[DatasetMetric(expression=formula, name="streak")]))
+        resp = await exec_engine.execute(_q(metrics=[QueryMetric(metric=formula, alias="streak")]))
         by = _by_month(resp)
         assert [int(by[m]["sales.streak"]) for m in ("2024-01", "2024-02", "2024-03")] == [1, 2, 3]
 
     async def test_string_family_predicate_rejected(self) -> None:
-        name, msg = await _error(metrics=[DatasetMetric(
-            expression="consecutive_periods(lower(max(sku)))", name="x")])
+        name, msg = await _error(metrics=[QueryMetric(
+            metric="consecutive_periods(lower(max(sku)))", alias="x")])
         assert name == "ValueError", (name, msg)
         low = msg.lower()
         assert "consecutive_periods" in low, msg
@@ -359,8 +360,8 @@ class TestPredicateTypingContract:
 
     async def test_boolean_in_in_operand_is_its_integer(self) -> None:
         """Never passed through as a bare ``(SUM(revenue) > 0) IN (...)``."""
-        sql = await gen(_q(metrics=[DatasetMetric(
-            expression="consecutive_periods((sum(revenue) > 0) in (1, 0))", name="x")]), dialect="postgres")
+        sql = await gen(_q(metrics=[QueryMetric(
+            metric="consecutive_periods((sum(revenue) > 0) in (1, 0))", alias="x")]), dialect="postgres")
         assert "> 0 IN" not in sql.replace("\n", " ").upper()
 
 
@@ -382,7 +383,7 @@ class TestUniformFailClosed:
 
     @pytest.mark.parametrize("shape", list(SHAPES))
     async def test_plain_path_names_shape_and_remedy(self, shape) -> None:
-        name, msg = await _error(metrics=[DatasetMetric(expression=self.SHAPES[shape], name="prev")])
+        name, msg = await _error(metrics=[QueryMetric(metric=self.SHAPES[shape], alias="prev")])
         assert name == "TransformInputError", (shape, name, msg)
         low = msg.lower()
         for token in self.TOKENS[shape]:
@@ -393,10 +394,10 @@ class TestUniformFailClosed:
         """The presence of a cross-model measure elsewhere must not change which
         error the unsupported shape produces (today the plain path and the
         cross-model-chain path diverge)."""
-        plain = await _error(metrics=[DatasetMetric(expression=self.SHAPES[shape], name="prev")])
+        plain = await _error(metrics=[QueryMetric(metric=self.SHAPES[shape], alias="prev")])
         with_sibling = await _error(metrics=[
-            DatasetMetric(expression="sum(regions.factor)", name="cm"),
-            DatasetMetric(expression=self.SHAPES[shape], name="prev"),
+            QueryMetric(metric="sum(regions.factor)", alias="cm"),
+            QueryMetric(metric=self.SHAPES[shape], alias="prev"),
         ])
         assert plain == with_sibling, (shape, plain, with_sibling)
 

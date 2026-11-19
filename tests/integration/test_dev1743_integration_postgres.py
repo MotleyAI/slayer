@@ -77,15 +77,15 @@ def _dunder_storage(postgresql_proc, tmp_path_factory):
         models = [
             SlayerDataset(name="customer__region", sql_table="customer_region_dim",
                         data_source="testpg", fields=[
-                            DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
-                            DatasetField(name="label", datatype=DataType.TEXT)]),
+                            DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
+                            DatasetField(name="label", datatype=DataType.STRING)]),
             SlayerDataset(name="orders", sql_table="orders", data_source="testpg",
                         fields=[
-                            DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
-                            DatasetField(name="cr_id", datatype=DataType.DOUBLE),
-                            DatasetField(name="amount", datatype=DataType.DOUBLE)],
+                            DatasetField(name="id", datatype=DataType.FLOAT, primary_key=True),
+                            DatasetField(name="cr_id", datatype=DataType.FLOAT),
+                            DatasetField(name="amount", datatype=DataType.FLOAT)],
                         relationships=[DatasetRelationship(to="customer__region",
-                                         join_pairs=[["cr_id", "id"]])]),
+                                         from_columns=["cr_id"], to_columns=["id"])]),
         ]
         storage = _storage_for(postgresql_proc, db_name,
                                str(tmp_path_factory.mktemp("dunder")), models)
@@ -102,7 +102,7 @@ class TestDunderModelLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customer__region.label"],
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             }))
         by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
@@ -141,25 +141,25 @@ def _long_alias_storage(postgresql_proc, tmp_path_factory):
         def m(name, cols, joins=()):
             return SlayerDataset(name=name, sql_table=name, data_source="testpg",
                                fields=cols, relationships=list(joins))
-        idc = lambda n: DatasetField(name=n, datatype=DataType.DOUBLE, primary_key=(n == "id"))  # noqa: E731
+        idc = lambda n: DatasetField(name=n, datatype=DataType.FLOAT, primary_key=(n == "id"))  # noqa: E731
         models = [
             m("household_entity_record_north",
-              [idc("id"), DatasetField(name="tag", datatype=DataType.TEXT)]),
+              [idc("id"), DatasetField(name="tag", datatype=DataType.STRING)]),
             m("household_entity_record_south",
-              [idc("id"), DatasetField(name="tag", datatype=DataType.TEXT)]),
+              [idc("id"), DatasetField(name="tag", datatype=DataType.STRING)]),
             m("consumer_entity_record",
               [idc("id"), idc("north_id"), idc("south_id")],
               [DatasetRelationship(to="household_entity_record_north",
-                         join_pairs=[["north_id", "id"]]),
+                         from_columns=["north_id"], to_columns=["id"]),
                DatasetRelationship(to="household_entity_record_south",
-                         join_pairs=[["south_id", "id"]])]),
+                         from_columns=["south_id"], to_columns=["id"])]),
             m("customer_entity_record", [idc("id"), idc("consumer_id")],
               [DatasetRelationship(to="consumer_entity_record",
-                         join_pairs=[["consumer_id", "id"]])]),
+                         from_columns=["consumer_id"], to_columns=["id"])]),
             m("subscription_entity",
-              [idc("id"), idc("customer_id"), DatasetField(name="amount", datatype=DataType.DOUBLE)],
+              [idc("id"), idc("customer_id"), DatasetField(name="amount", datatype=DataType.FLOAT)],
               [DatasetRelationship(to="customer_entity_record",
-                         join_pairs=[["customer_id", "id"]])]),
+                         from_columns=["customer_id"], to_columns=["id"])]),
         ]
         storage = _storage_for(postgresql_proc, db_name,
                                str(tmp_path_factory.mktemp("longalias")), models)
@@ -180,7 +180,7 @@ class TestLongAliasCollisionLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "subscription_entity",
                 "dimensions": [north, south],
-                "metrics": [{"expression": "sum(amount)"}],
+                "metrics": [{"metric": "sum(amount)"}],
             }))
         assert result.row_count == 1
         row = result.data[0]

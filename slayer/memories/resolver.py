@@ -45,7 +45,7 @@ from slayer.core.errors import (
 )
 from slayer.core.relationship_walker import walk_miss, walk_terminal
 from slayer.core.models import SlayerDataset
-from slayer.core.query import ComputedDimension, SlayerQuery, extension_dataset_names
+from slayer.core.query import SlayerQuery, extension_dataset_names
 from slayer.core.time_spine import is_spine_query
 from slayer.engine.bundle_builder import stored_dataset
 from slayer.engine.field_dependency import definition_reads
@@ -635,9 +635,9 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
             _add([f"{extended.data_source}.{extended.name}"])
 
     # 2. every field the reads walk enumerates; aggregation arguments and the query's own names are not entities.
-    local_names = {m.name for m in query.metrics or [] if m.name} | {
-        d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name
-    } | {td.name for td in query.time_dimensions or [] if td.name}
+    local_names = {m.alias for m in query.metrics or [] if m.alias} | {
+        d.name for d in query.dimensions or [] if d.is_computed
+    } | {td.alias for td in query.time_dimensions or [] if td.alias}
     scope = _ExtensionScope(storage=storage, scope=query_scope, stored=stored)
     root = query_scope.host or source_dataset
     for kind, text in query_field_texts(query):

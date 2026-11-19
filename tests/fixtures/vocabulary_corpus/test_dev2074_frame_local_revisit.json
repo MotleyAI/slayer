@@ -242,12 +242,12 @@
     ],
     "metrics": [
      {
-      "expression": "avg(last_order.big)",
-      "name": "s"
+      "metric": "avg(last_order.big)",
+      "alias": "s"
      },
      {
-      "expression": "sum(last_order.amount)",
-      "name": "t"
+      "metric": "sum(last_order.amount)",
+      "alias": "t"
      }
     ]
    }

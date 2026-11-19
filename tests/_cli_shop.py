@@ -42,19 +42,19 @@ def build_shop_storage(base: Path) -> str:
         await storage.save_dataset(SlayerDataset(
             name="stores", sql_table="stores", data_source=SHOP_DS,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="name", datatype=DataType.STRING),
             ],
         ))
         await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source=SHOP_DS,
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="store_id", datatype=DataType.INT),
-                DatasetField(name="status", datatype=DataType.TEXT),
-                DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="store_id", datatype=DataType.INTEGER),
+                DatasetField(name="status", datatype=DataType.STRING),
+                DatasetField(name="ordered_at", datatype=DataType.DATETIME),
                 DatasetField(
-                    name="order_total", datatype=DataType.DOUBLE,
+                    name="order_total", datatype=DataType.FLOAT,
                     format=NumberFormat(type=NumberFormatType.CURRENCY, precision=2),
                 ),
             ],

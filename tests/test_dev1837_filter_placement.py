@@ -18,9 +18,10 @@ import sqlglot
 
 from slayer.sql.scope_check import assert_scope_closed
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1837_fixtures import (
     BAND35,
-    DatasetMetric,
     gen,
     make_exec_engine,
     month_key,
@@ -36,7 +37,7 @@ async def exec_engine(request):
         yield engine
 
 
-BAND = {"expression": BAND35, "name": "band"}
+BAND = {"field": BAND35, "alias": "band"}
 
 
 def _by_band_month(resp, *values):
@@ -54,8 +55,8 @@ class TestPostFilterOnShiftedValue:
             time_dimensions=month_td(),
             filter=["change(sum(amount)) > 0"],
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="change(sum(amount))", name="c"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="change(sum(amount))", alias="c"),
             ],
         ))
         got = _by_band_month(resp, "m", "c")
@@ -70,7 +71,7 @@ class TestPostFilterOnShiftedValue:
             dimensions=[BAND],
             time_dimensions=month_td(),
             filter=["change(sum(amount)) > 0"],
-            metrics=[DatasetMetric(expression="change(sum(amount))", name="c")],
+            metrics=[QueryMetric(metric="change(sum(amount))", alias="c")],
         ), dry_run=True)
         assert dry.sql is not None
         assert "__regroup__" not in dry.sql, dry.sql
@@ -85,8 +86,8 @@ class TestConjunctionSplits:
             dimensions=[BAND],
             time_dimensions=month_td(),
             metrics=[
-                DatasetMetric(expression="sum(amount)", name="m"),
-                DatasetMetric(expression="change(sum(amount))", name="c"),
+                QueryMetric(metric="sum(amount)", alias="m"),
+                QueryMetric(metric="change(sum(amount))", alias="c"),
             ],
         )
         anded = await exec_engine.execute(q(
@@ -104,7 +105,7 @@ class TestConjunctionSplits:
     async def test_band_and_row_predicate_conjunction_splits(self, exec_engine) -> None:
         base_kwargs = dict(
             dimensions=[BAND],
-            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="m")],
         )
         anded = await exec_engine.execute(q(
             filter=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -126,7 +127,7 @@ class TestConjunctionSplits:
             dimensions=[BAND],
             time_dimensions=month_td(),
             filter=["band == 1 or change(sum(amount)) > 0"],
-            metrics=[DatasetMetric(expression="change(sum(amount))", name="c")],
+            metrics=[QueryMetric(metric="change(sum(amount))", alias="c")],
         ))
         got = _by_band_month(resp, "c")
         assert set(got) == {(1, "2024-01"), (1, "2024-02"), (1, "2024-03")}
@@ -145,8 +146,8 @@ class TestShiftedCteRegroupAwareness:
         time_dimensions=month_td(),
         filter=["band == 1"],
         metrics=[
-            DatasetMetric(expression="sum(amount)", name="m"),
-            DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
+            QueryMetric(metric="sum(amount)", alias="m"),
+            QueryMetric(metric="time_shift(sum(amount), -1)", alias="prev"),
         ],
     )
 

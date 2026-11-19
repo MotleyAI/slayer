@@ -22,7 +22,6 @@ from tests._dev1900_fixtures import (
     BROADCAST_AMOUNT_TOTAL,
     BROADCAST_SPEND_TOTAL,
     BAD_POP,
-    DatasetMetric,
     SPEND_SUM,
     associated_warnings,
     bad_pop_vals,
@@ -30,6 +29,7 @@ from tests._dev1900_fixtures import (
     make_exec_engine,
     orders_q,
 )
+from slayer.core.query import QueryMetric
 
 HOP = "region_events"
 
@@ -105,8 +105,8 @@ class TestExplicitPartitionBy:
     async def test_partition_by_fanning_derived_is_hard_error(self, engine, mode):
         """An explicit partition_by naming the fanning derived dimension is an
         error outside associate — every partition key must be attributable."""
-        measure = DatasetMetric(
-            expression="sum(amount, partition_by=customers.regions.bad_pop)", name="w")
+        measure = QueryMetric(
+            metric="sum(amount, partition_by=customers.regions.bad_pop)", alias="w")
         q = orders_q(dimensions=[BAD_POP], metrics=[measure], to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
             await engine.execute(q)

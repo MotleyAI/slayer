@@ -209,8 +209,8 @@ def dataset_from_stage_schema(
             DatasetField(
                 name=c.name,
                 sql=field_sql.get(c.name),
-                datatype=c.datatype or DataType.DOUBLE,
-                element_type=(c.element_type or DataType.UNKNOWN) if c.datatype is DataType.ARRAY else None,
+                datatype=c.datatype or DataType.FLOAT,
+                element_type=(c.element_type or DataType.OPAQUE) if c.datatype is DataType.ARRAY else None,
                 granularity=c.granularity.name if isinstance(c.granularity, CustomGranularity) else c.granularity,
                 label=c.label,
                 format=c.format,

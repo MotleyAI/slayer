@@ -59,7 +59,7 @@ class TestCyclesIngestVerbatim:
             }
             resp = await lv.query(
                 population="stores", dimensions=["name"],
-                metrics=[{"expression": "sum(sales.total)", "name": "t"}],
+                metrics=[{"metric": "sum(sales.total)", "alias": "t"}],
             )
             assert {r["stores.name"]: r["stores.t"] for r in resp.data} == {"North": 25.0, "South": 4.0}
 
@@ -81,7 +81,7 @@ class TestCyclesIngestVerbatim:
             await lv.ingest()
             resp = await lv.query(
                 population="offices", dimensions=["city"],
-                metrics=[{"expression": "sum(depts.employees.salary)", "name": "s"}],
+                metrics=[{"metric": "sum(depts.employees.salary)", "alias": "s"}],
             )
             assert {r["offices.city"]: r["offices.s"] for r in resp.data} == {"Paris": 150.0, "Rome": 80.0}
 
@@ -131,7 +131,7 @@ class TestOneEdgePerFkRelationship:
             orders = await lv.dataset("orders")
             await lv.storage.save_dataset(orders.model_copy(update={"relationships": []}))
             customers = await lv.dataset("customers")
-            reverse = DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]], name=name)
+            reverse = DatasetRelationship(to="orders", from_columns=["id"], to_columns=["customer_id"], name=name)
             await lv.storage.save_dataset(customers.model_copy(update={"relationships": [reverse]}))
 
             result = await lv.ingest()

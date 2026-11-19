@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "from_columns": [
+     "region_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -35,11 +35,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -56,11 +56,11 @@
    },
    "new": {
     "to": "order_tags",
-    "join_pairs": [
-     [
-      "id",
-      "order_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "order_id"
     ]
    }
   }

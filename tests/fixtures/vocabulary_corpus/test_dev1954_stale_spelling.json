@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "region_amounts",
-    "join_pairs": [
-     [
-      "id",
-      "customers__region_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "customers__region_id"
     ]
    }
   },
@@ -47,13 +47,13 @@
    },
    "new": {
     "to": "regions",
-    "join_pairs": [
-     [
-      "region_id",
-      "id"
-     ]
+    "name": "hr2",
+    "from_columns": [
+     "region_id"
     ],
-    "name": "hr2"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {
@@ -69,11 +69,11 @@
    },
    "new": {
     "to": "pq",
-    "join_pairs": [
-     [
-      "id",
-      "customers__region_id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "customers__region_id"
     ]
    }
   },
@@ -113,13 +113,13 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "name": "buyer",
+    "from_columns": [
+     "customer_id"
     ],
-    "name": "buyer"
+    "to_columns": [
+     "id"
+    ]
    }
   },
   {

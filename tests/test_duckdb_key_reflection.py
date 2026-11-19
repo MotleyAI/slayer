@@ -114,7 +114,7 @@ def _unique(dataset: SlayerDataset) -> set[str]:
 
 
 def _joins(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
-    return {j.to: (j.join_pairs, j.cardinality) for j in dataset.relationships}
+    return {j.to: ([list(p) for p in j.column_pairs], j.cardinality) for j in dataset.relationships}
 
 
 def _raise_regclass(*_args: Any, **_kwargs: Any) -> NoReturn:
@@ -224,7 +224,7 @@ class TestGenericReflectionBypassed:
         assert _joins(models["pairs"])["customers"][0] == [["a", "a"], ["b", "b"]]
         assert _joins(models["lines"])["orders"][0] == [["order_id", "id"]]
         amount = next(c for c in models["orders"].fields if c.name == "amount")
-        assert (amount.datatype, amount.db_type) == (DataType.DOUBLE, "DECIMAL(12,2)")
+        assert (amount.datatype, amount.db_type) == (DataType.DECIMAL, "DECIMAL(12,2)")
 
     async def test_non_default_schema_join_survives(self, schema_db, broken_generic_reflection) -> None:
         models = _datasets(await _report(_ds(schema_db), schemas=["ofr"]))
@@ -371,7 +371,7 @@ class TestSqliteBaseBehaviour:
         customers, orders = models["customers"], models["orders"]
         assert _pk(customers) == ["id"]
         assert _unique(customers) == {"email", "code"}
-        joins = {tuple(map(tuple, j.join_pairs)): j.cardinality for j in orders.relationships}
+        joins = {tuple(map(tuple, j.column_pairs)): j.cardinality for j in orders.relationships}
         assert joins == {
             (("customer_id", "id"),): RelationshipCardinality.MANY_TO_ONE,
             (("a", "a"), ("b", "b")): RelationshipCardinality.MANY_TO_ONE,

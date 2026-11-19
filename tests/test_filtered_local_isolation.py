@@ -21,11 +21,10 @@ from slayer.core.models import (
     Aggregation,
     AggregationParam,
     DatasetField,
-    DatasetMetric,
     DatasetRelationship,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery, TimeDimension
+from slayer.core.query import QueryMetric, SlayerQuery, TimeDimension
 from slayer.ir.planned import MaskTyping, PlannedQuery, RankedProducerKernel, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -41,8 +40,8 @@ def _loss_payment() -> SlayerDataset:
     return SlayerDataset(
         name="loss_payment", data_source="test", sql_table="Loss_Payment",
         fields=[
-            DatasetField(name="claim_amount_id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
+            DatasetField(name="claim_amount_id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
         ],
     )
 
@@ -51,8 +50,8 @@ def _loss_reserve() -> SlayerDataset:
     return SlayerDataset(
         name="loss_reserve", data_source="test", sql_table="Loss_Reserve",
         fields=[
-            DatasetField(name="claim_amount_id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
+            DatasetField(name="claim_amount_id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="has_flag", sql="1", datatype=DataType.FLOAT),
         ],
     )
 
@@ -61,8 +60,8 @@ def _claim() -> SlayerDataset:
     return SlayerDataset(
         name="claim", data_source="test", sql_table="Claim",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="claim_number", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="claim_number", datatype=DataType.STRING),
         ],
     )
 
@@ -71,24 +70,24 @@ def _claim_amount(
     *, with_time: bool = False, with_filter_first: bool = False,
 ) -> SlayerDataset:
     cols = [
-        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-        DatasetField(name="claim_id", datatype=DataType.INT),
-        DatasetField(name="amount", datatype=DataType.DOUBLE),
-        DatasetField(name="total_amount", sql="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+        DatasetField(name="claim_id", datatype=DataType.INTEGER),
+        DatasetField(name="amount", datatype=DataType.FLOAT),
+        DatasetField(name="total_amount", sql="amount", datatype=DataType.FLOAT),
         # Same-model filter — must NOT trigger isolation.
-        DatasetField(name="paid_amount", sql="amount", filter="claim_id > 0", datatype=DataType.DOUBLE),
+        DatasetField(name="paid_amount", sql="amount", filter="claim_id > 0", datatype=DataType.FLOAT),
         # Cross-model filter — must trigger.
         DatasetField(
             name="loss_payment_amt", sql="amount",
-            filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
+            filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
         ),
     ]
     if with_time:
-        cols.append(DatasetField(name="created_at", datatype=DataType.TIMESTAMP))
+        cols.append(DatasetField(name="created_at", datatype=DataType.DATETIME))
     if with_filter_first:
         cols.append(DatasetField(
             name="latest_payment", sql="amount",
-            filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
+            filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
         ))
     return SlayerDataset(
         name="claim_amount", data_source="test", sql_table="Claim_Amount",
@@ -96,17 +95,17 @@ def _claim_amount(
         relationships=[
             DatasetRelationship(
                 to="loss_payment",
-                join_pairs=[["id", "claim_amount_id"]],
+                from_columns=["id"], to_columns=["claim_amount_id"],
                 join_type="inner",
             ),
             DatasetRelationship(
                 to="loss_reserve",
-                join_pairs=[["id", "claim_amount_id"]],
+                from_columns=["id"], to_columns=["claim_amount_id"],
                 join_type="inner",
             ),
             DatasetRelationship(
                 to="claim",
-                join_pairs=[["claim_id", "id"]],
+                from_columns=["claim_id"], to_columns=["id"],
             ),
         ],
         default_time_dimension="created_at" if with_time else None,
@@ -126,27 +125,27 @@ def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
     host = SlayerDataset(
         name="orders", data_source="test", sql_table="Orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(
-                name="is_eu", datatype=DataType.DOUBLE,
+                name="is_eu", datatype=DataType.FLOAT,
                 sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
             ),
             DatasetField(
                 name="eu_amount", sql="amount", filter=eu_amount_filter,
-                datatype=DataType.DOUBLE,
+                datatype=DataType.FLOAT,
             ),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
     customers = SlayerDataset(
         name="customers", data_source="test", sql_table="Customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region", datatype=DataType.STRING),
         ],
     )
     bundle = ResolvedSourceBundle(
@@ -166,7 +165,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"expression": "sum(total_amount)"}],
+            "metrics": [{"metric": "sum(total_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -178,7 +177,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"expression": "sum(paid_amount)"}],
+            "metrics": [{"metric": "sum(paid_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -190,7 +189,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"expression": "sum(loss_payment_amt)"}],
+            "metrics": [{"metric": "sum(loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -212,7 +211,7 @@ class TestCrossModelPlannerTriggerPredicate:
         )
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(eu_amount)"}],
+            "metrics": [{"metric": "sum(eu_amount)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -231,7 +230,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"expression": "sum(loss_payment.has_flag)"}],
+            "metrics": [{"metric": "sum(loss_payment.has_flag)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -243,30 +242,30 @@ class TestCrossModelPlannerTriggerPredicate:
         regions = SlayerDataset(
             name="regions", data_source="test", sql_table="regions",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="is_premium", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="is_premium", datatype=DataType.FLOAT),
             ],
         )
         customers = SlayerDataset(
             name="customers", data_source="test", sql_table="customers",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="region_id", datatype=DataType.INT),
-                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INTEGER),
+                DatasetField(name="revenue", datatype=DataType.FLOAT),
                 DatasetField(
                     name="premium_rev", sql="revenue",
-                    filter="regions.is_premium = 1", datatype=DataType.DOUBLE,
+                    filter="regions.is_premium = 1", datatype=DataType.FLOAT,
                 ),
             ],
-            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
         )
         orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INTEGER),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         bundle = ResolvedSourceBundle(
             dialect="postgres",
@@ -274,7 +273,7 @@ class TestCrossModelPlannerTriggerPredicate:
         )
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(customers.premium_rev)"}],
+            "metrics": [{"metric": "sum(customers.premium_rev)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -293,7 +292,7 @@ class TestProducerMode:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"expression": "sum(loss_payment_amt)"}],
+            "metrics": [{"metric": "sum(loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -320,16 +319,16 @@ class TestHostModelFiltersInteractions:
         host = SlayerDataset(
             name="claim_amount", data_source="test", sql_table="Claim_Amount",
             fields=[
-                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.FLOAT),
                 DatasetField(
                     name="loss_payment_amt", sql="amount",
-                    filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
+                    filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
                 ),
             ],
             relationships=[DatasetRelationship(
                 to="loss_payment",
-                join_pairs=[["id", "claim_amount_id"]],
+                from_columns=["id"], to_columns=["claim_amount_id"],
                 join_type="inner",
             )],
             filters=["amount > 0"],
@@ -340,7 +339,7 @@ class TestHostModelFiltersInteractions:
         )
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"expression": "sum(loss_payment_amt)"}],
+            "metrics": [{"metric": "sum(loss_payment_amt)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -359,16 +358,16 @@ class TestHostModelFiltersInteractions:
     def test_host_model_filter_referencing_aggregate_measure_raises(self):
         """``model.filters`` referencing an aggregate measure must raise at construction (``ValidationError`` is a ``ValueError``), not emit bad SQL."""
         columns = [
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             DatasetField(
                 name="loss_payment_amt", sql="amount",
-                filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
+                filter="loss_payment.has_flag = 1", datatype=DataType.FLOAT,
             ),
         ]
         joins = [DatasetRelationship(
             to="loss_payment",
-            join_pairs=[["id", "claim_amount_id"]],
+            from_columns=["id"], to_columns=["claim_amount_id"],
             join_type=JoinType.INNER,
         )]
         with pytest.raises(ValueError, match=r"(?i)aggregation reference|measure"):
@@ -388,7 +387,7 @@ class TestFirstLastNoNestedCmaPlans:
         host = _claim_amount(with_time=True, with_filter_first=True)
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"expression": "last(latest_payment)"}],
+            "metrics": [{"metric": "last(latest_payment)"}],
             "dimensions": ["claim.claim_number"],
             "time_dimensions": [
                 TimeDimension(
@@ -414,9 +413,9 @@ def _s5_regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="payment_amount", datatype=DataType.DOUBLE),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="payment_amount", datatype=DataType.FLOAT),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
         ],
     )
 
@@ -425,12 +424,12 @@ def _s5_customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
-            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
+            DatasetField(name="signup_at", datatype=DataType.DATETIME),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -439,26 +438,26 @@ def _s5_orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
-            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
+            DatasetField(name="created_at", datatype=DataType.DATETIME),
             DatasetField(name="region_pay", sql="customers.regions.payment_amount",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             DatasetField(name="cust_weight_d", sql="customers.weight",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # Sibling derived chain: doubled_pop -> pop_helper -> crossing.
             DatasetField(name="pop_helper", sql="customers.regions.payment_amount",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             DatasetField(name="doubled_pop", sql="pop_helper * 2",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             # Derived TIME column crossing a join (explicit-arg use only).
             DatasetField(name="cross_time", sql="customers.signup_at",
-                   datatype=DataType.TIMESTAMP),
-            DatasetField(name="local_double", sql="amount * 2", datatype=DataType.DOUBLE),
+                   datatype=DataType.DATETIME),
+            DatasetField(name="local_double", sql="amount * 2", datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
         aggregations=[
             # User-supplied template-fragment kwarg (`scale=` str values).
@@ -488,7 +487,7 @@ def _s5_bundle(host: SlayerDataset | None = None) -> ResolvedSourceBundle:
 def _s5_plans(expression: str, *, dimensions=None, **plan_kwargs):
     q = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": [{"expression": expression, "name": "m0"}],
+        "metrics": [{"metric": expression, "alias": "m0"}],
         "dimensions": dimensions,
     })
     planned = plan_query(query=q, bundle=_s5_bundle(), **plan_kwargs)
@@ -648,7 +647,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # Producer mode still plans a cross-model aggregate target-rooted.
         planned = plan_as_producer(query=SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(customers.weight)", name="m0")],
+            metrics=[QueryMetric(metric="sum(customers.weight)", alias="m0")],
         ), bundle=_s5_bundle())
         (attach,) = [
             a for a in planned.regroup_attach_plans
@@ -662,8 +661,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "sum(region_pay)"},
-                {"expression": "sum(region_pay) + sum(amount)", "name": "combo"},
+                {"metric": "sum(region_pay)"},
+                {"metric": "sum(region_pay) + sum(amount)", "alias": "combo"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -680,8 +679,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"expression": "sum(region_pay)"},
-                {"expression": "sum(cust_weight_d)"},
+                {"metric": "sum(region_pay)"},
+                {"metric": "sum(cust_weight_d)"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -700,7 +699,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # A host ROW filter must propagate into the sub-plan's filters.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(region_pay)"}],
+            "metrics": [{"metric": "sum(region_pay)"}],
             "filter": ["amount > 50"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -719,7 +718,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # the host, so it too propagates into the sub-plan.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": "sum(region_pay)"}],
+            "metrics": [{"metric": "sum(region_pay)"}],
             "filter": ["customers.weight > 1"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())

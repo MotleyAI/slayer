@@ -59,7 +59,7 @@ class TestClassifier:
             metric_name="flag", aggregation=agg, source_type=DataType.BOOLEAN,
         ) is expected
 
-    @pytest.mark.parametrize("source_type", [DataType.INT, DataType.DOUBLE, None])
+    @pytest.mark.parametrize("source_type", [DataType.INTEGER, DataType.FLOAT, None])
     def test_non_boolean_sum_unchanged(self, source_type: Optional[DataType]) -> None:
         assert classify_aggregation(
             metric_name="amount", aggregation="sum", source_type=source_type,
@@ -73,11 +73,11 @@ class TestColumnTyping:
             for agg in ("sum", "avg", "min", "max", "count", "first")
         }
         assert types == {
-            "sum": DataType.INT, "avg": DataType.DOUBLE, "min": DataType.BOOLEAN,
-            "max": DataType.BOOLEAN, "count": DataType.INT, "first": DataType.BOOLEAN,
+            "sum": DataType.INTEGER, "avg": DataType.FLOAT, "min": DataType.BOOLEAN,
+            "max": DataType.BOOLEAN, "count": DataType.INTEGER, "first": DataType.BOOLEAN,
         }
-        assert aggregated_type(dataset=ORDERS, metric_name="big_order", aggregation="sum") is DataType.INT
-        assert aggregated_type(dataset=ORDERS, metric_name="amount", aggregation="sum") is DataType.INT
+        assert aggregated_type(dataset=ORDERS, metric_name="big_order", aggregation="sum") is DataType.INTEGER
+        assert aggregated_type(dataset=ORDERS, metric_name="amount", aggregation="sum") is DataType.INTEGER
 
     def test_sum_format_is_integer(self) -> None:
         assert _infer_aggregated_format(dataset=ORDERS, metric_name="flag", aggregation="sum") == INTEGER
@@ -92,20 +92,20 @@ class TestColumnTyping:
 
 class TestMeasureKeyType:
     @pytest.mark.parametrize("text,expected", [
-        ("sum(flag)", DataType.INT),
-        ("avg(flag)", DataType.DOUBLE),
-        ("sum(big_order)", DataType.INT),
-        ("sum(coalesce(flag, false))", DataType.INT),
-        ("avg(coalesce(flag, false))", DataType.DOUBLE),
+        ("sum(flag)", DataType.INTEGER),
+        ("avg(flag)", DataType.FLOAT),
+        ("sum(big_order)", DataType.INTEGER),
+        ("sum(coalesce(flag, false))", DataType.INTEGER),
+        ("avg(coalesce(flag, false))", DataType.FLOAT),
         ("max(coalesce(flag, false))", DataType.BOOLEAN),
-        ("sum(amount > 15)", DataType.INT),
-        ("avg(amount > 15)", DataType.DOUBLE),
+        ("sum(amount > 15)", DataType.INTEGER),
+        ("avg(amount > 15)", DataType.FLOAT),
         ("min(amount > 15)", DataType.BOOLEAN),
-        ("count(amount > 15)", DataType.INT),
-        ("sum(status in ('ok', 'hold'))", DataType.INT),
-        ("median(flag)", DataType.DOUBLE),
-        ("stddev_samp(amount > 15)", DataType.DOUBLE),
-        ("sum(True)", DataType.INT),
+        ("count(amount > 15)", DataType.INTEGER),
+        ("sum(status in ('ok', 'hold'))", DataType.INTEGER),
+        ("median(flag)", DataType.FLOAT),
+        ("stddev_samp(amount > 15)", DataType.FLOAT),
+        ("sum(True)", DataType.INTEGER),
     ])
     def test_boolean_sources(self, text: str, expected: DataType) -> None:
         assert metric_key_type(dataset=ORDERS, key=_bind(text), bundle=BUNDLE) is expected
@@ -113,7 +113,7 @@ class TestMeasureKeyType:
     def test_mixed_coalesce_is_not_boolean_typed(self) -> None:
         """Scenario: mixed-type coalesce is not boolean — the boolean branch reads as its integer."""
         key = _bind("sum(coalesce(flag, amount))")
-        assert metric_key_type(dataset=ORDERS, key=key, bundle=BUNDLE) is DataType.INT
+        assert metric_key_type(dataset=ORDERS, key=key, bundle=BUNDLE) is DataType.INTEGER
 
 
 class TestStageMeasureType:
@@ -127,25 +127,25 @@ class TestStageMeasureType:
             for agg in ("sum", "avg", "max", "count")
         }
         assert types == {
-            "sum": DataType.INT, "avg": DataType.DOUBLE, "max": DataType.BOOLEAN, "count": DataType.INT,
+            "sum": DataType.INTEGER, "avg": DataType.FLOAT, "max": DataType.BOOLEAN, "count": DataType.INTEGER,
         }
 
 
 class TestBooleanDefaults:
     def test_boolean_default_set_is_the_numeric_set(self) -> None:
-        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.BOOLEAN] == DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
+        assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.BOOLEAN] == DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INTEGER]
 
 
 def _facade_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="facts", sql_table="facts", data_source="test", default_time_dimension="at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
             DatasetField(name="flag", datatype=DataType.BOOLEAN),
-            DatasetField(name="qty", datatype=DataType.INT),
-            DatasetField(name="price", datatype=DataType.DOUBLE),
-            DatasetField(name="label", datatype=DataType.TEXT),
-            DatasetField(name="at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="qty", datatype=DataType.INTEGER),
+            DatasetField(name="price", datatype=DataType.FLOAT),
+            DatasetField(name="label", datatype=DataType.STRING),
+            DatasetField(name="at", datatype=DataType.DATETIME),
         ],
         aggregations=[Aggregation(name="wsum", expression="SUM({value})")],
     )
@@ -170,5 +170,5 @@ class TestFacadeAgreement:
                 checked += 1
         assert checked > 0
         assert "flag_avg" in by_name
-        assert by_name["flag_sum"].data_type is DataType.INT
+        assert by_name["flag_sum"].data_type is DataType.INTEGER
         assert by_name["flag_wsum"].data_type is None

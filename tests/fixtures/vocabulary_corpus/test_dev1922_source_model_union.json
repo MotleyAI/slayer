@@ -23,18 +23,18 @@
      {
       "name": "x",
       "sql": "x",
-      "datatype": "DOUBLE"
+      "datatype": "Float"
      }
     ]
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
@@ -122,15 +122,15 @@
     "population": "orders",
     "extensions": [
      {
-      "source_name": "orders",
+      "dataset": "orders",
       "relationships": [
        {
         "to": "c",
-        "join_pairs": [
-         [
-          "id",
-          "id"
-         ]
+        "from_columns": [
+         "id"
+        ],
+        "to_columns": [
+         "id"
         ]
        }
       ]

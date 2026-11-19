@@ -17,11 +17,11 @@ from tests._dev1994_fixtures import dev1994_engine
 from tests._engine_helpers import seeded_exec_engine
 from tests._saved_query_refinement_fixtures import call_tool_json
 
-REVENUE = {"expression": "sum(orders.amount)", "name": "revenue"}
+REVENUE = {"metric": "sum(orders.amount)", "alias": "revenue"}
 # Rootless: infers ``customers``; with an ``orders.status`` filter it would infer ``orders``.
 BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "metrics": [REVENUE]}
 OK_FILTER = {"filter": ["orders.status = 'ok'"]}
-N = {"expression": "count(*)", "name": "n"}
+N = {"metric": "count(*)", "alias": "n"}
 # The final stage infers model ``orders``, which a sibling stage is named.
 COLLIDING: List[Any] = [
     {"name": "orders", "population": "customers", "dimensions": ["name"], "metrics": [N]},
@@ -55,17 +55,17 @@ def _seed_products(db_path: str) -> None:
 def _products_datasets() -> List[SlayerDataset]:
     return [
         SlayerDataset(name="customers", data_source="test", sql_table="customers", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)]),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="name", datatype=DataType.STRING)]),
         SlayerDataset(name="products", data_source="test", sql_table="products", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="title", datatype=DataType.TEXT)]),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="title", datatype=DataType.STRING)]),
         SlayerDataset(name="orders", data_source="test", sql_table="orders", fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="product_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="product_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
         ], relationships=[
-            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
-            DatasetRelationship(to="products", join_pairs=[["product_id", "id"]]),
+            DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"]),
+            DatasetRelationship(to="products", from_columns=["product_id"], to_columns=["id"]),
         ]),
     ]
 
@@ -119,12 +119,12 @@ class TestPinnedOnSave:
     async def test_every_rootless_stage_pinned_and_rooted_stages_verbatim(
         self, sqlite_engine: SlayerQueryEngine,
     ) -> None:
-        extension = {"source_name": "orders", "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}]}
+        extension = {"dataset": "orders", "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}]}
         await sqlite_engine.create_dataset_from_query(query=[
             {"name": "per_customer", **BY_CUSTOMER},
             {"name": "ext", "population": "orders", "extensions": [extension],
-             "metrics": [{"expression": "double_amount", "name": "d"}]},
-            {"population": "per_customer", "metrics": [{"expression": "sum(revenue)", "name": "total"}]},
+             "metrics": [{"metric": "double_amount", "alias": "d"}]},
+            {"population": "per_customer", "metrics": [{"metric": "sum(revenue)", "alias": "total"}]},
         ], name="staged")
         stages = {s.name: s for s in await stored_stages(sqlite_engine, "staged")}
         assert stages["per_customer"].population == "customers"

@@ -25,8 +25,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "filter": [
@@ -58,8 +58,8 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ],
     "filter": [
@@ -85,8 +85,8 @@
     "population": "daily",
     "metrics": [
      {
-      "expression": "sum(rev)",
-      "name": "r"
+      "metric": "sum(rev)",
+      "alias": "r"
      }
     ],
     "filter": [
@@ -132,8 +132,8 @@
     "population": "ev",
     "metrics": [
      {
-      "expression": "count_distinct(date_trunc('month', ts))",
-      "name": "m"
+      "metric": "count_distinct(date_trunc('month', ts))",
+      "alias": "m"
      }
     ]
    }
@@ -159,14 +159,14 @@
     "population": "ev",
     "dimensions": [
      {
-      "expression": "date_trunc('year', ts)",
-      "name": "y"
+      "field": "date_trunc('year', ts)",
+      "alias": "y"
      }
     ],
     "metrics": [
      {
-      "expression": "count(*)",
-      "name": "n"
+      "metric": "count(*)",
+      "alias": "n"
      }
     ]
    }
@@ -186,8 +186,8 @@
     "population": "ev",
     "metrics": [
      {
-      "expression": "count_distinct(date_trunc('month', code))",
-      "name": "m"
+      "metric": "count_distinct(date_trunc('month', code))",
+      "alias": "m"
      }
     ]
    }
@@ -212,8 +212,8 @@
     "dimensions": [
      "id",
      {
-      "expression": "date_add('2024-01-31 10:15', 1, 'month')",
-      "name": "v"
+      "field": "date_add('2024-01-31 10:15', 1, 'month')",
+      "alias": "v"
      }
     ],
     "filter": [

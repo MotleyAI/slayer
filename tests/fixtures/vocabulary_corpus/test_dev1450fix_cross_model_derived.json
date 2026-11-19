@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -42,7 +42,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }
@@ -67,7 +67,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }
@@ -95,7 +95,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ],
     "filter": [
@@ -123,7 +123,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.rev_x2)"
+      "metric": "sum(customers.rev_x2)"
      }
     ]
    }
@@ -148,7 +148,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(customers.revenue)"
+      "metric": "sum(customers.revenue)"
      }
     ]
    }

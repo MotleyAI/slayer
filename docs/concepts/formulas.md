@@ -99,8 +99,8 @@ trailing time-window aggregations:
 ```json
 {
   "metrics": [
-    {"expression": "sum(revenue, window='30d')", "name": "revenue_30d"},
-    {"expression": "avg(price, window='1y')", "name": "avg_price_1y"}
+    {"metric": "sum(revenue, window='30d')", "alias": "revenue_30d"},
+    {"metric": "avg(price, window='1y')", "alias": "avg_price_1y"}
   ],
   "time_dimensions": [{"field": "created_at", "granularity": "month"}]
 }
@@ -137,7 +137,7 @@ inside the expression.
 
 Windowed metrics need exactly one resolvable time dimension (a single
 `time_dimensions` entry, or `main_time_dimension` to disambiguate). Filtering on
-a windowed metric (`{"expression": "sum(revenue, window='90d') > 100"}`) applies
+a windowed metric (`"sum(revenue, window='90d') > 100"`) applies
 after aggregation and, like an order-only target, needs no matching selected
 metric — a filter-only windowed value stays out of the result.
 
@@ -176,9 +176,9 @@ share-of-parent shape (`SUM(revenue) OVER (PARTITION BY region)`):
 {
   "dimensions": ["region", "city"],
   "metrics": [
-    {"expression": "sum(revenue)", "name": "city_rev"},
-    {"expression": "sum(revenue, partition_by=region)", "name": "region_rev"},
-    {"expression": "sum(revenue) / sum(revenue, partition_by=region)", "name": "share_of_region"}
+    {"metric": "sum(revenue)", "alias": "city_rev"},
+    {"metric": "sum(revenue, partition_by=region)", "alias": "region_rev"},
+    {"metric": "sum(revenue) / sum(revenue, partition_by=region)", "alias": "share_of_region"}
   ]
 }
 ```
@@ -236,7 +236,7 @@ Wrapping a partitioned aggregate in another aggregation re-aggregates its
 {
   "dimensions": ["region"],
   "metrics": [
-    {"expression": "avg(sum(amount, partition_by=[city, region]))", "name": "avg_city_total"}
+    {"metric": "avg(sum(amount, partition_by=[city, region]))", "alias": "avg_city_total"}
   ]
 }
 ```
@@ -263,7 +263,7 @@ Metric expressions define what aggregated values a query returns. They go in the
 ```json
 "metrics": [
   "count(*)",
-  {"expression": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"},
+  {"metric": "sum(revenue) / count(*)", "alias": "aov", "label": "Average Order Value"},
   "cumsum(sum(revenue))"
 ]
 ```
@@ -305,9 +305,9 @@ All three forms below — bare name, transform, arithmetic — work as query met
 
 ```json
 "metrics": [
-  {"expression": "aov"},
-  {"expression": "cumsum(aov)"},
-  {"expression": "aov * 1.1", "name": "aov_with_markup"}
+  "aov",
+  "cumsum(aov)",
+  {"metric": "aov * 1.1", "alias": "aov_with_markup"}
 ]
 ```
 
@@ -387,8 +387,8 @@ comparisons:
 ```json
 {
   "metrics": [
-    {"expression": "consecutive_periods(sum(revenue) > 0)", "name": "positive_run"},
-    {"expression": "consecutive_periods(sum(revenue) > 0) >= 3", "name": "positive_3_periods"}
+    {"metric": "consecutive_periods(sum(revenue) > 0)", "alias": "positive_run"},
+    {"metric": "consecutive_periods(sum(revenue) > 0) >= 3", "alias": "positive_3_periods"}
   ],
   "time_dimensions": [{"field": "created_at", "granularity": "month"}]
 }
@@ -400,10 +400,10 @@ Field expressions support nesting — window transforms can wrap self-join trans
 
 ```json
 "metrics": [
-  {"expression": "cumsum(change(sum(revenue)))", "name": "cumsum_delta"},
+  {"metric": "cumsum(change(sum(revenue)))", "alias": "cumsum_delta"},
   "last(change(sum(revenue)))",
-  {"expression": "cumsum(sum(revenue) / count(*))", "name": "running_aov"},
-  {"expression": "cumsum(sum(revenue)) / count(*)", "name": "cumsum_div_count"}
+  {"metric": "cumsum(sum(revenue) / count(*))", "alias": "running_aov"},
+  {"metric": "cumsum(sum(revenue)) / count(*)", "alias": "cumsum_div_count"}
 ]
 ```
 
@@ -423,7 +423,7 @@ The rank family — `rank`, `percent_rank`, `dense_rank`, `ntile` — are timele
   "dimensions": ["customer_name"],
   "metrics": [
     "sum(revenue)",
-    {"expression": "rank(sum(revenue), direction='desc')", "name": "rnk"}
+    {"metric": "rank(sum(revenue), direction='desc')", "alias": "rnk"}
   ],
   "order": [{"field": "sum(revenue)", "direction": "desc"}]
 }
@@ -458,8 +458,8 @@ To rank within groups instead of across the whole result set, pass `partition_by
   "dimensions": ["region", "customer_name"],
   "metrics": [
     "sum(revenue)",
-    {"expression": "dense_rank(sum(revenue), partition_by=region, direction='desc')", "name": "rev_rank_within_region"},
-    {"expression": "ntile(sum(revenue), n=4, partition_by=region)", "name": "rev_quartile_within_region"}
+    {"metric": "dense_rank(sum(revenue), partition_by=region, direction='desc')", "alias": "rev_rank_within_region"},
+    {"metric": "ntile(sum(revenue), n=4, partition_by=region)", "alias": "rev_quartile_within_region"}
   ]
 }
 ```
@@ -479,8 +479,8 @@ The rank family's `partition_by=` may name a computed dimension, as an aggregati
   "population": "orders",
   "metrics": [
     "sum(revenue)",
-    {"expression": "first(sum(revenue))", "name": "initial_revenue"},
-    {"expression": "last(sum(revenue))", "name": "latest_revenue"}
+    {"metric": "first(sum(revenue))", "alias": "initial_revenue"},
+    {"metric": "last(sum(revenue))", "alias": "latest_revenue"}
   ],
   "time_dimensions": [{"field": "created_at", "granularity": "month"}]
 }
@@ -519,9 +519,9 @@ Query and metric expressions also take `div`, `pi`, `sin` … `atan2` and `cbrt`
 Any scalar function can wrap aggregates as the **top-level** form of a query metric or `DatasetMetric.expression` (`ln(sum(x))`, `coalesce(sum(a), 0)`, `greatest(sum(a), 1)`):
 
 ```python
-{"expression": "round(sum(revenue), 2)"}        # round an aggregate
-{"expression": "abs(sum(revenue) - sum(cost))"}  # absolute difference
-{"expression": "round(sum(revenue) / count(*), 2)"}
+"round(sum(revenue), 2)"        # round an aggregate
+"abs(sum(revenue) - sum(cost))"  # absolute difference
+"round(sum(revenue) / count(*), 2)"
 ```
 
 On Postgres, 2-argument `round` over a floating-point value is automatically cast to `numeric` so it executes (Postgres has no `round(double precision, integer)` overload). SQLite and DuckDB round `DOUBLE` natively. A DECIMAL tie rounds away from zero (`round(2.5)` is `3`, `round(-0.125, 2)` is `-0.13`); a floating-point tie is rounded as the database rounds it, since a binary value is rarely an exact tie.
@@ -534,8 +534,8 @@ The single-arg aliases `log10(x)` and `log2(x)` round-trip verbatim where the ba
 
 ```python
 # Examples (in DatasetField.sql):
-DatasetField(name="ln_amount", sql="ln(amount)", datatype=DataType.DOUBLE)
-DatasetField(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", datatype=DataType.DOUBLE)
+DatasetField(name="ln_amount", sql="ln(amount)", datatype=DataType.FLOAT)
+DatasetField(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", datatype=DataType.FLOAT)
 ```
 
 ## Conditionals (`CASE WHEN` / `iif`)
@@ -543,7 +543,7 @@ DatasetField(name="rms", sql="sqrt(pow(x, 2) + pow(y, 2))", datatype=DataType.DO
 Any expression, filter, or field expression can branch with SQL `CASE`:
 
 ```json
-{"expression": "CASE WHEN sum(revenue) >= 10000 THEN 1 ELSE 0 END", "name": "big"}
+{"metric": "CASE WHEN sum(revenue) >= 10000 THEN 1 ELSE 0 END", "alias": "big"}
 ```
 
 - **Searched** (`CASE WHEN c1 THEN v1 [WHEN c2 THEN v2 …] [ELSE d] END`) and
@@ -559,9 +559,9 @@ Any expression, filter, or field expression can branch with SQL `CASE`:
   SQL operators, function calls, aggregates (`THEN sum(amount) * 2`) — and a string
   literal like `'a AND b'` is never rewritten.
 - The result **type is the join of the branches** (Postgres semantics):
-  identical types pass through, a numeric mix widens to `DOUBLE`, a `BOOLEAN`
-  beside a number reads as its integer, `DATE` beside `TIMESTAMP` widens to
-  `TIMESTAMP`, a `NULL` branch or a value whose type cannot be determined (an untyped or `UNKNOWN` field, an unrecognised expression) is
+  identical types pass through, a numeric mix widens to `Float`, a `Boolean`
+  beside a number reads as its integer, `Date` beside `DateTime` widens to
+  `DateTime`, a `NULL` branch or a value whose type cannot be determined (an untyped or `Opaque` field, an unrecognised expression) is
   absorbed by the other, and any other mix is a plan-time error naming both types; `coalesce`, `ifnull`, `greatest` and `least` follow the
   same rule on every dialect. The Python conditional `x if c else y` is not supported —
   use `CASE` / `iif`.

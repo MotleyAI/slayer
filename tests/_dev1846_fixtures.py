@@ -46,8 +46,8 @@ def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="factor", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="factor", datatype=DataType.FLOAT),
         ],
     )
 
@@ -59,21 +59,21 @@ def sales_dataset() -> SlayerDataset:
         name="sales", data_source="test", sql_table="sales",
         default_time_dimension="ordered_at",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
-            DatasetField(name="store", datatype=DataType.TEXT),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="revenue", datatype=DataType.DOUBLE),
-            DatasetField(name="qty", datatype=DataType.DOUBLE),
-            DatasetField(name="cost", datatype=DataType.DOUBLE),
-            DatasetField(name="weight", datatype=DataType.DOUBLE),
-            DatasetField(name="sku", datatype=DataType.TEXT),
-            DatasetField(name="hi_rev", datatype=DataType.DOUBLE, sql="revenue",
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
+            DatasetField(name="store", datatype=DataType.STRING),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="revenue", datatype=DataType.FLOAT),
+            DatasetField(name="qty", datatype=DataType.FLOAT),
+            DatasetField(name="cost", datatype=DataType.FLOAT),
+            DatasetField(name="weight", datatype=DataType.FLOAT),
+            DatasetField(name="sku", datatype=DataType.STRING),
+            DatasetField(name="hi_rev", datatype=DataType.FLOAT, sql="revenue",
                    filter="revenue > 15"),
-            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="ordered_at", datatype=DataType.DATETIME),
         ],
         relationships=[
-            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"]),
         ],
         aggregations=[
             Aggregation(

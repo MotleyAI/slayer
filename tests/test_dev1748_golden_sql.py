@@ -49,7 +49,7 @@ def _q(**kw) -> SlayerQuery:
 
 def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
-    last = [{"expression": "last(amount)", "name": "l"}]
+    last = [{"metric": "last(amount)", "alias": "l"}]
     return {
         # --- the base shapes: what the host SELECT looks like at all ---
         "shape/grouped": _q(dimensions=["status"], metrics=last),
@@ -64,68 +64,68 @@ def _cases() -> dict:
         "shape/first_and_last_together": _q(
             dimensions=["status"],
             metrics=[
-                {"expression": "first(amount)", "name": "f"},
-                {"expression": "last(amount)", "name": "l"},
+                {"metric": "first(amount)", "alias": "f"},
+                {"metric": "last(amount)", "alias": "l"},
             ],
         ),
         # --- siblings: what stays in the host base ---
         "sibling/local_sum": _q(
             dimensions=["status"],
             metrics=[
-                {"expression": "last(amount)", "name": "l"},
-                {"expression": "sum(amount)", "name": "s"},
+                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "sum(amount)", "alias": "s"},
             ],
         ),
         "sibling/star_count": _q(
             dimensions=["status"],
             metrics=[
-                {"expression": "last(amount)", "name": "l"},
-                {"expression": "count(*)", "name": "n"},
+                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "count(*)", "alias": "n"},
             ],
         ),
         "sibling/cross_model_measure": _q(
             to_many_handling="broadcast",
             dimensions=["status"],
             metrics=[
-                {"expression": "last(amount)", "name": "l"},
-                {"expression": "sum(customers.spend)", "name": "cs"},
+                {"metric": "last(amount)", "alias": "l"},
+                {"metric": "sum(customers.spend)", "alias": "cs"},
             ],
         ),
         # --- filtered variants: the sentinel-alias machinery B9 removes ---
         "filtered/local_column": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(big_amount)", "name": "l"}],
+            metrics=[{"metric": "last(big_amount)", "alias": "l"}],
         ),
         "filtered/joined_column": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(gold_amount)", "name": "l"}],
+            metrics=[{"metric": "last(gold_amount)", "alias": "l"}],
         ),
         "filtered/derived_expression": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(doubled_big)", "name": "l"}],
+            metrics=[{"metric": "last(doubled_big)", "alias": "l"}],
         ),
         "filtered/two_filters_one_query": _q(
             dimensions=["status"],
             metrics=[
-                {"expression": "last(big_amount)", "name": "b"},
-                {"expression": "last(gold_amount)", "name": "g"},
+                {"metric": "last(big_amount)", "alias": "b"},
+                {"metric": "last(gold_amount)", "alias": "g"},
             ],
         ),
         # --- explicit time args: the rn-suffix scheme B9 removes ---
         "time_arg/explicit_column": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(amount, shipped_at)", "name": "l"}],
+            metrics=[{"metric": "last(amount, shipped_at)", "alias": "l"}],
         ),
         "time_arg/two_distinct_columns": _q(
             dimensions=["status"],
             metrics=[
-                {"expression": "last(amount, created_at)", "name": "a"},
-                {"expression": "last(amount, shipped_at)", "name": "b"},
+                {"metric": "last(amount, created_at)", "alias": "a"},
+                {"metric": "last(amount, shipped_at)", "alias": "b"},
             ],
         ),
         "time_arg/local_derived_column": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(amount, created_alias)", "name": "l"}],
+            metrics=[{"metric": "last(amount, created_alias)", "alias": "l"}],
         ),
         # The ranked-join remnant. Recorded a raise before B9 — the ranking ran
         # in the host base, which could not pull the residual join — and emits
@@ -134,40 +134,40 @@ def _cases() -> dict:
         "time_arg/joined_derived_column": _q(
             dimensions=["status"],
             metrics=[
-                {"expression": "last(amount, customers.signup_alias)", "name": "l"},
+                {"metric": "last(amount, customers.signup_alias)", "alias": "l"},
             ],
         ),
         # --- crossing inputs: already isolated today, so a parity anchor ---
         "crossing/derived_source": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(cust_region)", "name": "l"}],
+            metrics=[{"metric": "last(cust_region)", "alias": "l"}],
         ),
         "crossing/grouped_by_the_value_it_ranks": _q(
             dimensions=["cust_region"],
-            metrics=[{"expression": "last(cust_region)", "name": "l"}],
+            metrics=[{"metric": "last(cust_region)", "alias": "l"}],
         ),
         # --- cross-model: the second ranked-subquery instance ---
         "cross_model/target_default_time": _q(
-            metrics=[{"expression": "last(customers.spend)", "name": "l"}],
+            metrics=[{"metric": "last(customers.spend)", "alias": "l"}],
         ),
         "cross_model/explicit_target_time": _q(
             metrics=[
-                {"expression": "last(customers.spend, customers.signup_at)", "name": "l"},
+                {"metric": "last(customers.spend, customers.signup_at)", "alias": "l"},
             ],
         ),
         "cross_model/derived_target_time": _q(
             metrics=[
-                {"expression": "last(customers.spend, customers.signup_alias)", "name": "l"},
+                {"metric": "last(customers.spend, customers.signup_alias)", "alias": "l"},
             ],
         ),
         "cross_model/time_arg_past_the_target": _q(
             metrics=[
-                {"expression": "last(customers.spend, customers.deep_opened)", "name": "l"},
+                {"metric": "last(customers.spend, customers.deep_opened)", "alias": "l"},
             ],
         ),
         "cross_model/rerooted_by_a_target_side_dim": _q(
             dimensions=["customers.regions.name"],
-            metrics=[{"expression": "last(customers.spend)", "name": "l"}],
+            metrics=[{"metric": "last(customers.spend)", "alias": "l"}],
         ),
         # A row filter interns a HIDDEN row slot in the re-rooted sub-plan.
         # That used to stop the sub-plan collapsing to its ranked CTE, and the
@@ -175,28 +175,28 @@ def _cases() -> dict:
         # dialect, and invisible to a reader looking for a nested ``WITH``.
         "cross_model/rerooted_with_a_row_filter": _q(
             dimensions=["customers.regions.name"],
-            metrics=[{"expression": "last(customers.spend)", "name": "l"}],
+            metrics=[{"metric": "last(customers.spend)", "alias": "l"}],
             filter=["customers.tier == 'gold'"],
         ),
         # --- composition ---
         "composite/arithmetic_of_two_ranked": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(amount) - first(amount)", "name": "d"}],
+            metrics=[{"metric": "last(amount) - first(amount)", "alias": "d"}],
         ),
         "composite/ranked_plus_local": _q(
             dimensions=["status"],
-            metrics=[{"expression": "last(amount) + sum(amount)", "name": "m"}],
+            metrics=[{"metric": "last(amount) + sum(amount)", "alias": "m"}],
         ),
         "composite/c13_two_names_one_key": _q(
             dimensions=["status"],
             metrics=[
-                {"expression": "last(amount)", "name": "l1"},
-                {"expression": "last(amount)", "name": "l2"},
+                {"metric": "last(amount)", "alias": "l1"},
+                {"metric": "last(amount)", "alias": "l2"},
             ],
         ),
         "composite/transform_chain": _q(
             time_dimensions=_MONTH,
-            metrics=[{"expression": "cumsum(last(amount))", "name": "c"}],
+            metrics=[{"metric": "cumsum(last(amount))", "alias": "c"}],
         ),
         # --- filters and ordering that TARGET the ranked measure ---
         "route/having_on_ranked": _q(
@@ -209,7 +209,7 @@ def _cases() -> dict:
         ),
         "route/order_by_hidden_ranked": _q(
             dimensions=["status"],
-            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            metrics=[{"metric": "sum(amount)", "alias": "s"}],
             order=[{"field": "last(amount)", "direction": "desc"}],
         ),
         "route/row_filter_and_ranked": _q(

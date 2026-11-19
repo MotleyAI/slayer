@@ -29,7 +29,7 @@ SECRET_TAG = "zz-secret-tag"
 
 def _dataset(name: str = "items", **extra) -> SlayerDataset:
     return SlayerDataset(name=name, sql_table="items", data_source=DS,
-                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)], **extra)
+                       fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True)], **extra)
 
 
 @pytest.fixture(params=["yaml", "sqlite"])
@@ -87,7 +87,7 @@ class TestMcp:
     async def test_create_query_backed_model_sets_tags(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_dataset())
         out = await self.call(storage, "create_dataset", name="item_count", access_tags=["hr"],
-                              query={"population": "items", "metrics": [{"expression": "count(*)", "name": "n"}]})
+                              query={"population": "items", "metrics": [{"metric": "count(*)", "alias": "n"}]})
         assert "Error" not in out, out
         assert (await must_get(storage, "item_count", DS)).access_tags == ["hr"]
 

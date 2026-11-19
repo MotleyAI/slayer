@@ -62,7 +62,7 @@ def check_field_types(dataset_name, expected_types):
     """Assert /datasets/{name} returns the expected DataType strings.
 
     expected_types: dict mapping field name to DataType .value string
-        (e.g. "DOUBLE", "TEXT", "TIMESTAMP", "DATE"). Fields absent
+        (e.g. "Float", "String", "DateTime", "Date"). Fields absent
         from the dict are ignored — different dialects expose different
         field sets, and this helper is a positive-coverage check, not
         an exhaustive schema comparison.

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -90,11 +90,11 @@
    },
    "new": {
     "to": "c",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -146,24 +146,24 @@
     ]
    },
    "new": {
-    "source_name": "c",
+    "dataset": "c",
     "relationships": [
      {
       "to": "x",
-      "join_pairs": [
-       [
-        "id",
-        "id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "id"
       ]
      },
      {
       "to": "o",
-      "join_pairs": [
-       [
-        "id",
-        "customer_id"
-       ]
+      "from_columns": [
+       "id"
+      ],
+      "to_columns": [
+       "customer_id"
       ]
      }
     ]

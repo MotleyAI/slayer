@@ -16,8 +16,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetMetric, SlayerDataset
-from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
+from slayer.core.query import QueryDimension, QueryMetric, SlayerQuery, TimeDimension
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 
 from tests._engine_helpers import _engine_generate, orders_agg_sql
@@ -36,12 +36,12 @@ class TestSqliteJsonExtractInGenerator:
             sql_table="users",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="payload", sql="payload", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="payload", sql="payload", datatype=DataType.STRING),
                 DatasetField(
                     name="tier",
                     sql="json_extract(payload, '$.tier')",
-                    datatype=DataType.TEXT,
+                    datatype=DataType.STRING,
                 ),
                 DatasetField(
                     name="is_gold",
@@ -49,7 +49,7 @@ class TestSqliteJsonExtractInGenerator:
                         "CASE LOWER(json_extract(payload, '$.tier')) "
                         "WHEN 'gold' THEN 1 ELSE 0 END"
                     ),
-                    datatype=DataType.DOUBLE,
+                    datatype=DataType.FLOAT,
                 ),
             ],
         )
@@ -59,8 +59,8 @@ class TestSqliteJsonExtractInGenerator:
     ) -> None:
         query = SlayerQuery(
             population="users",
-            dimensions=[FieldRef(name="tier")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="tier")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         sql = await _engine_generate(
             query=query, dataset=dataset_with_json_dim, dialect="sqlite",
@@ -74,7 +74,7 @@ class TestSqliteJsonExtractInGenerator:
     ) -> None:
         query = SlayerQuery(
             population="users",
-            metrics=[DatasetMetric(expression="sum(is_gold)")],
+            metrics=[QueryMetric(metric="sum(is_gold)")],
         )
         sql = await _engine_generate(
             query=query, dataset=dataset_with_json_dim, dialect="sqlite",
@@ -91,14 +91,14 @@ class TestSqliteJsonExtractInGenerator:
             ),
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="tier", sql="tier", datatype=DataType.STRING),
             ],
         )
         query = SlayerQuery(
             population="users",
-            dimensions=[FieldRef(name="tier")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="tier")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         sql = await _engine_generate(query=query, dataset=model, dialect="sqlite")
         assert "JSON_EXTRACT(" in sql, sql
@@ -116,8 +116,8 @@ class TestSqliteJsonExtractInGenerator:
         """
         query = SlayerQuery(
             population="users",
-            dimensions=[FieldRef(name="tier")],
-            metrics=[DatasetMetric(expression="count(*)")],
+            dimensions=[QueryDimension(field="tier")],
+            metrics=[QueryMetric(metric="count(*)")],
         )
         sql = await _engine_generate(
             query=query, dataset=dataset_with_json_dim, dialect="postgres",
@@ -489,11 +489,11 @@ class TestTsqlDialect:
             data_source="test",
             default_time_dimension="created_at",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-                DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
-                DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.INTEGER, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+                DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
+                DatasetField(name="quantity", sql="quantity", datatype=DataType.FLOAT),
             ],
         )
 
@@ -546,13 +546,13 @@ class TestTsqlDialect:
 
     def test_build_time_offset_year(self, gen: SQLGenerator) -> None:
         col = exp.column("created_at")
-        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("year"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("year"), operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "YEAR" in sql.upper()
 
     def test_build_time_offset_month(self, gen: SQLGenerator) -> None:
         col = exp.column("created_at")
-        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("month"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("month"), operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "MONTH" in sql.upper()
 
@@ -562,14 +562,14 @@ class TestTsqlDialect:
         shift is one week (DEV-1572). Without the ``week_sunday`` normalization
         in the T-SQL unit map, ``DATEADD(WEEK_SUNDAY, ...)`` is invalid T-SQL."""
         col = exp.column("created_at")
-        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("week_sunday"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity("week_sunday"), operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "WEEK_SUNDAY" not in sql.upper(), sql
         assert "WEEK" in sql.upper()
 
     def test_build_time_offset_positive(self, gen: SQLGenerator) -> None:
         col = exp.column("created_at")
-        sql = gen._date_offset(col, count=3, unit=TimeGranularity("day"), operand=DataType.TIMESTAMP).sql(dialect="tsql")
+        sql = gen._date_offset(col, count=3, unit=TimeGranularity("day"), operand=DataType.DATETIME).sql(dialect="tsql")
         assert "DATEADD" in sql.upper()
         assert "DAY" in sql.upper()
         assert "3" in sql
@@ -580,7 +580,7 @@ class TestTsqlDialect:
     def test_build_time_offset_no_interval_keyword(self, gen: SQLGenerator, gran: str) -> None:
         """T-SQL must never emit INTERVAL (invalid syntax) for time offsets."""
         col = exp.column("created_at")
-        sql = gen._date_offset(col, count=-1, unit=TimeGranularity(gran), operand=DataType.TIMESTAMP).sql(dialect="tsql")
+        sql = gen._date_offset(col, count=-1, unit=TimeGranularity(gran), operand=DataType.DATETIME).sql(dialect="tsql")
         assert "INTERVAL" not in sql.upper(), (
             f"INTERVAL is invalid T-SQL syntax for granularity {gran!r}: {sql}"
         )
@@ -671,8 +671,8 @@ class TestTsqlDialect:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
-            dimensions=[FieldRef(name="status")],
+            metrics=[QueryMetric(metric="count(*)"), QueryMetric(metric="sum(revenue)")],
+            dimensions=[QueryDimension(field="status")],
         )
         sql = await _engine_generate(
             query=query, dataset=orders_dataset, dialect="tsql",
@@ -685,7 +685,7 @@ class TestTsqlDialect:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[DatasetMetric(expression="sum(revenue)")],
+            metrics=[QueryMetric(metric="sum(revenue)")],
             time_dimensions=[TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
@@ -707,8 +707,8 @@ class TestTsqlDialect:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                DatasetMetric(expression="sum(revenue)"),
-                DatasetMetric(expression="time_shift(sum(revenue), -1, 'year')", name="rev_prev_year"),
+                QueryMetric(metric="sum(revenue)"),
+                QueryMetric(metric="time_shift(sum(revenue), -1, 'year')", alias="rev_prev_year"),
             ],
         )
         sql = await _engine_generate(

@@ -2,5 +2,5 @@ name: regions
 data_source: probe
 sql_table: regions
 fields:
-  - {name: id, datatype: number, primary_key: true}
-  - {name: name, datatype: string}
+  - {name: id, datatype: Float, primary_key: true}
+  - {name: name, datatype: String}

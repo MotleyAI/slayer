@@ -8,12 +8,13 @@ import pytest
 
 from slayer.core.errors import SlayerError
 
+from slayer.core.query import QueryMetric
+
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     INNER_CR,
     SHAPE_B_BAND_TOTAL,
     SPEND_BAND_EXPR,
-    DatasetMetric,
     make_exec_engine,
     reagg,
     region_key,
@@ -21,11 +22,11 @@ from tests._dev1847_fixtures import (
     sales_q,
 )
 
-BAND = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
+BAND = {"field": SPEND_BAND_EXPR, "alias": "spend_band"}
 # A second computed dimension whose expression nests an aggregate partitioned by
 # the attach-carrying spend_band (the doubly-nested attach).
-BAND2 = {"expression": "CASE WHEN sum(amount, partition_by=spend_band) > 100 "
-                       "THEN 'big' ELSE 'small' END", "name": "size"}
+BAND2 = {"field": "CASE WHEN sum(amount, partition_by=spend_band) > 100 "
+                       "THEN 'big' ELSE 'small' END", "alias": "size"}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -39,9 +40,9 @@ class TestPartitionByBandedDimension:
         """The band total broadcasts across the band's rows."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
-                      DatasetMetric(expression="sum(amount, partition_by=spend_band)",
-                                   name="bt")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot"),
+                      QueryMetric(metric="sum(amount, partition_by=spend_band)",
+                                   alias="bt")]))
         by = rows_by(resp, "sales.region", "sales.spend_band")
         assert float(by[("North", "hi")]["sales.bt"]) == pytest.approx(
             SHAPE_B_BAND_TOTAL["hi"])
@@ -55,14 +56,14 @@ class TestPartitionByBandedDimension:
         NotImplementedError here means the nested-attach guard is back."""
         await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            metrics=[DatasetMetric(expression="sum(amount, partition_by=spend_band)",
-                                   name="bt")]))
+            metrics=[QueryMetric(metric="sum(amount, partition_by=spend_band)",
+                                   alias="bt")]))
 
     async def test_nested_inside_another_computed_dimension(self, exec_engine):
         """A second computed dimension partitioned by spend_band executes."""
         resp = await exec_engine.execute(sales_q(
             dimensions=[BAND, BAND2],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")]))
         by = rows_by(resp, "sales.spend_band", "sales.size")
         # hi band total 340 > 100 -> 'big'; lo band total 85 <= 100 -> 'small'.
         assert ("hi", "big") in by
@@ -101,7 +102,7 @@ class TestFilterAndOrderSurfaces:
         (Codex review find) — only the hi band (340 > 100) survives."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")],
             filter=["sum(amount, partition_by=spend_band) > 100"]))
         labels = {row["sales.spend_band"] for row in resp.data}
         assert resp.data
@@ -112,7 +113,7 @@ class TestFilterAndOrderSurfaces:
         rows (340) sort before lo (90)."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", BAND],
-            metrics=[DatasetMetric(expression="sum(amount)", name="tot")],
+            metrics=[QueryMetric(metric="sum(amount)", alias="tot")],
             order=[{"field": "sum(amount, partition_by=spend_band)",
                     "direction": "desc"}]))
         labels = [row["sales.spend_band"] for row in resp.data]

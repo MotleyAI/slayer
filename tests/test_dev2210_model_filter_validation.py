@@ -14,14 +14,14 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2210_fixtures import seed, table_datasets
 from tests._engine_helpers import seeded_exec_engine
 
-RANKED = DatasetField(name="ranked", datatype=DataType.INT, sql="rank() over (order by amount)")
+RANKED = DatasetField(name="ranked", datatype=DataType.INTEGER, sql="rank() over (order by amount)")
 
 
 def _orders(name: str, *, columns: Sequence[DatasetField] = (), **kw) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql_table="orders",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="status", datatype=DataType.TEXT),
-                 DatasetField(name="amount", datatype=DataType.INT), *columns],
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="status", datatype=DataType.STRING),
+                 DatasetField(name="amount", datatype=DataType.INTEGER), *columns],
         **kw,
     )
 
@@ -29,8 +29,8 @@ def _orders(name: str, *, columns: Sequence[DatasetField] = (), **kw) -> SlayerD
 def _returns(name: str, *, target: str, **kw) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql_table="returns",
-        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="order_id", datatype=DataType.INT)],
-        relationships=[DatasetRelationship(to=target, join_pairs=[["order_id", "id"]])], **kw,
+        fields=[DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True), DatasetField(name="order_id", datatype=DataType.INTEGER)],
+        relationships=[DatasetRelationship(to=target, from_columns=["order_id"], to_columns=["id"])], **kw,
     )
 
 
@@ -71,7 +71,7 @@ class TestSaveRefusesInvalidFilters:
         assert await engine.storage.get_dataset("returns_ranked", data_source="test") is None
 
     async def test_filter_on_windowed_column_through_derived_column(self, engine, door):
-        model = _orders("orders_rank_plus", columns=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INT, sql="ranked + 0")],
+        model = _orders("orders_rank_plus", columns=[RANKED, DatasetField(name="rank_plus", datatype=DataType.INTEGER, sql="ranked + 0")],
                         filters=["rank_plus > 1"])
         with pytest.raises(DatasetFilterError):
             await _save(engine, model, door=door)
@@ -86,7 +86,7 @@ class TestQueryReadsInvalidStoredFilter:
             _returns("returns_bad_filtered", target="bad_done", filters=["bad_done.id is not null"]), _validate=False,
         )
         derived = _returns("returns_bad_derived", target="bad_done")
-        derived.fields.append(DatasetField(name="bad_status", datatype=DataType.TEXT, sql="bad_done.status"))
+        derived.fields.append(DatasetField(name="bad_status", datatype=DataType.STRING, sql="bad_done.status"))
         await engine.storage.save_dataset(derived, _validate=False)
         return engine
 

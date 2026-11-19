@@ -30,8 +30,8 @@
     "metrics": [
      "sum(cost)",
      {
-      "expression": "change(sum(cost))",
-      "name": "chg"
+      "metric": "change(sum(cost))",
+      "alias": "chg"
      }
     ],
     "time_dimensions": [
@@ -71,8 +71,8 @@
     "metrics": [
      "sum(cost)",
      {
-      "expression": "time_shift(sum(cost), -1, 'month')",
-      "name": "prev"
+      "metric": "time_shift(sum(cost), -1, 'month')",
+      "alias": "prev"
      }
     ],
     "time_dimensions": [
@@ -106,8 +106,8 @@
     "metrics": [
      "sum(cost)",
      {
-      "expression": "time_shift(sum(cost), -1, 'day')",
-      "name": "prev"
+      "metric": "time_shift(sum(cost), -1, 'day')",
+      "alias": "prev"
      }
     ],
     "time_dimensions": [

@@ -2,21 +2,21 @@
  "source": "tests/test_dev1883_order_keys.py",
  "pairs": [
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {
@@ -31,12 +31,12 @@
    }
   },
   {
-   "kind": "metric",
+   "kind": "query_metric",
    "old": {
     "formula": "sum(amount)"
    },
    "new": {
-    "expression": "sum(amount)"
+    "metric": "sum(amount)"
    }
   },
   {

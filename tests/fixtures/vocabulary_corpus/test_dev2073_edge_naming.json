@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "addresses",
-    "join_pairs": [
-     [
-      "legacy_addr",
-      "id"
-     ]
+    "from_columns": [
+     "legacy_addr"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

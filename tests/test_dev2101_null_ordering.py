@@ -83,9 +83,9 @@ class TestExecutedPlacement:
 
     async def test_stage_rewrite_keeps_the_policy(self, engine: SlayerQueryEngine) -> None:
         inner = SlayerQuery.model_validate({"name": "by_city", "population": "orders", "dimensions": ["city"],
-                                            "metrics": [{"expression": "max(discount)", "name": "md"}]})
+                                            "metrics": [{"metric": "max(discount)", "alias": "md"}]})
         outer = SlayerQuery.model_validate({"population": "by_city", "dimensions": ["city"],
-                                            "metrics": [{"expression": "max(md)", "name": "v"}],
+                                            "metrics": [{"metric": "max(md)", "alias": "v"}],
                                             "order": [{"field": "v", "direction": "asc", "nulls": "first"},
                                                       {"field": "city"}]})
         resp = await engine.execute([inner, outer])
@@ -126,7 +126,7 @@ class TestEmission:
         keys = [t.this.find(exp.Is) for t in tree.args["order"].expressions if t.this.find(exp.Is) is not None]
         assert keys, sql
         assert all(isinstance(k.this, exp.Column) and k.this.name in inner for k in keys), sql
-        same_level = await emit(q(dimensions=["city"], metrics=[{"expression": "max(discount)", "name": "d"}],
+        same_level = await emit(q(dimensions=["city"], metrics=[{"metric": "max(discount)", "alias": "d"}],
                                   order=[{"field": "d", "direction": "asc", "nulls": "last"}]), dialect="tsql")
         keys = [t.this.find(exp.Is) for t in _null_policy_terms(same_level, dialect="tsql")
                 if t.this.find(exp.Is) is not None]

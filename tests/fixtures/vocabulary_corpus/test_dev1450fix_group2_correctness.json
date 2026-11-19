@@ -24,7 +24,7 @@
     ],
     "metrics": [
      {
-      "expression": "count(*)"
+      "metric": "count(*)"
      }
     ],
     "filter": [
@@ -45,11 +45,11 @@
    },
    "new": {
     "to": "b",
-    "join_pairs": [
-     [
-      "id",
-      "id"
-     ]
+    "from_columns": [
+     "id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -66,11 +66,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   }

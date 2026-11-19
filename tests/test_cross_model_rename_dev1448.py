@@ -18,7 +18,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.query import FieldRef, OrderItem, SlayerQuery
+from slayer.core.query import OrderItem, QueryDimension, QueryMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -47,9 +47,9 @@ def _customers_dataset() -> SlayerDataset:
         sql_table="customers",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.FLOAT),
         ],
     )
 
@@ -61,11 +61,11 @@ def _customers_dataset_with_region_relationship() -> SlayerDataset:
         sql_table="customers",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
-            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.FLOAT),
+            DatasetField(name="revenue", sql="lifetime_revenue", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -75,8 +75,8 @@ def _regions_dataset() -> SlayerDataset:
         sql_table="regions",
         data_source="test",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="population", sql="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="population", sql="population", datatype=DataType.FLOAT),
         ],
     )
 
@@ -88,13 +88,13 @@ def _orders_dataset() -> SlayerDataset:
         data_source="test",
         default_time_dimension="created_at",
         fields=[
-            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
-            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+            DatasetField(name="status", sql="status", datatype=DataType.STRING),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.DATETIME),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.FLOAT),
         ],
-        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
     )
 
 
@@ -132,8 +132,8 @@ class TestCrossModelRenameSingleStage:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -163,8 +163,8 @@ class TestCrossModelRenameSingleStage:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -184,8 +184,8 @@ class TestCrossModelRenameSingleStage:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         assert "orders.cust_rev" in resp.columns, (
@@ -208,13 +208,13 @@ class TestCrossModelRenameNestedDAG:
         stage1 = SlayerQuery(
             name="stage1",
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         stage2 = SlayerQuery(
             population="stage1",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="max(cust_rev)", name="top_cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="max(cust_rev)", alias="top_cust_rev")],
         )
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         sql = resp.sql or ""
@@ -235,13 +235,13 @@ class TestCrossModelRenameNestedDAG:
         stage1 = SlayerQuery(
             name="stage1",
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         stage2 = SlayerQuery(
             population="stage1",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="max(cust_rev)", name="top_cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="max(cust_rev)", alias="top_cust_rev")],
         )
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql, "dry_run must produce SQL"
@@ -258,8 +258,8 @@ class TestCrossModelRenameNestedDAG:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue) / 100")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue) / 100")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -290,13 +290,13 @@ class TestCrossModelRenameNestedDAG:
         stage1 = SlayerQuery(
             name="stage1",
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         stage2 = SlayerQuery(
             population="stage1",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="max(customers__revenue_sum)")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="max(customers__revenue_sum)")],
         )
         with pytest.raises(Exception):  # noqa: BLE001 — the engine raises a domain error
             await engine.execute(query=[stage1, stage2], dry_run=True)
@@ -313,8 +313,8 @@ class TestCrossModelStarAndCountDistinctRename:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="count(customers.*)", name="cust_n")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="count(customers.*)", alias="cust_n")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -336,9 +336,9 @@ class TestCrossModelStarAndCountDistinctRename:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="count_distinct(customers.id)", name="cust_distinct"),
+                QueryMetric(metric="count_distinct(customers.id)", alias="cust_distinct"),
             ],
             to_many_handling="broadcast",
         )
@@ -366,10 +366,10 @@ class TestCrossModelDeclaredTypeCast:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(
-                expression="sum(customers.revenue)", name="cust_rev",
-                datatype=DataType.INT,
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(
+                metric="sum(customers.revenue)", alias="cust_rev",
+                datatype=DataType.INTEGER,
             )],
             to_many_handling="broadcast",
         )
@@ -387,9 +387,9 @@ class TestCrossModelDeclaredTypeCast:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(
-                expression="count(customers.*)", name="cust_n", datatype=DataType.INT,
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(
+                metric="count(customers.*)", alias="cust_n", datatype=DataType.INTEGER,
             )],
             to_many_handling="broadcast",
         )
@@ -412,10 +412,10 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(customers.revenue)", name="revenue_sum"),
-                DatasetMetric(expression="sum(revenue)"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
+                QueryMetric(metric="sum(customers.revenue)", alias="revenue_sum"),
+                QueryMetric(metric="sum(revenue)"),  # NOSONAR(S125) — explanatory note: canonical alias is "revenue_sum" (not commented-out code)
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once"):
@@ -430,10 +430,10 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(customers.revenue)", name="id_count_distinct"),
-                DatasetMetric(expression="count_distinct(customers.id)"),
+                QueryMetric(metric="sum(customers.revenue)", alias="id_count_distinct"),
+                QueryMetric(metric="count_distinct(customers.id)"),
             ],
             to_many_handling="broadcast",
         )
@@ -470,10 +470,10 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="revenue_avg"),
-                DatasetMetric(expression="avg(revenue)", name="revenue_sum"),
+                QueryMetric(metric="sum(revenue)", alias="revenue_avg"),
+                QueryMetric(metric="avg(revenue)", alias="revenue_sum"),
             ],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -503,19 +503,19 @@ class TestCrossModelRenameCollisionGuards:
             sql_table="orders",
             data_source="test",
             fields=[
-                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
-                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
-                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
-                DatasetField(name="cust_rev", sql="cust_rev", datatype=DataType.DOUBLE),
+                DatasetField(name="id", sql="id", datatype=DataType.FLOAT, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.FLOAT),
+                DatasetField(name="status", sql="status", datatype=DataType.STRING),
+                DatasetField(name="cust_rev", sql="cust_rev", datatype=DataType.FLOAT),
             ],
-            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", from_columns=["customer_id"], to_columns=["id"])],
         )
         await storage.save_dataset(orders)
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
         )
         with pytest.raises(ValueError, match=r"matches a source field"):
             await engine.execute(query=query, dry_run=True)
@@ -527,10 +527,10 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(customers.revenue)", name="metric"),
-                DatasetMetric(expression="count_distinct(customers.id)", name="metric"),
+                QueryMetric(metric="sum(customers.revenue)", alias="metric"),
+                QueryMetric(metric="count_distinct(customers.id)", alias="metric"),
             ],
         )
         with pytest.raises(ValueError, match=r"declared more than once\.\n  at metric 'metric'"):
@@ -544,10 +544,10 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="count(customers.*)"),
-                DatasetMetric(expression="sum(customers.revenue)", name="_count"),
+                QueryMetric(metric="count(customers.*)"),
+                QueryMetric(metric="sum(customers.revenue)", alias="_count"),
             ],
             to_many_handling="broadcast",
         )
@@ -577,11 +577,11 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.region_id")],
+            dimensions=[QueryDimension(field="customers.region_id")],
             metrics=[
-                DatasetMetric(
-                    expression="sum(customers.revenue)",
-                    name="customers__region_id",
+                QueryMetric(
+                    metric="sum(customers.revenue)",
+                    alias="customers__region_id",
                 ),
             ],
         )
@@ -598,8 +598,8 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="customers.region_id")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="region_id")],
+            dimensions=[QueryDimension(field="customers.region_id")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="region_id")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -623,10 +623,10 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(customers.revenue)", name="revenue_sum__div__100"),
-                DatasetMetric(expression="sum(revenue) / 100"),
+                QueryMetric(metric="sum(customers.revenue)", alias="revenue_sum__div__100"),
+                QueryMetric(metric="sum(revenue) / 100"),
             ],
             to_many_handling="broadcast",
         )
@@ -656,10 +656,10 @@ class TestCrossModelRenameCollisionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(revenue)", name="rev"),
-                DatasetMetric(expression="avg(revenue)", name="rev_avg"),
+                QueryMetric(metric="sum(revenue)", alias="rev"),
+                QueryMetric(metric="avg(revenue)", alias="rev_avg"),
             ],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -679,8 +679,8 @@ class TestRenameRegressionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -697,8 +697,8 @@ class TestRenameRegressionGuards:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(revenue)", name="rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(revenue)", alias="rev")],
         )
         resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
@@ -723,11 +723,11 @@ class TestCrossModelRenameLabelAndType:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(
-                    expression="sum(customers.revenue)",
-                    name="cust_rev",
+                QueryMetric(
+                    metric="sum(customers.revenue)",
+                    alias="cust_rev",
                     label="Customer revenue",
                 ),
             ],
@@ -753,12 +753,12 @@ class TestCrossModelRenameLabelAndType:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(
-                    expression="sum(customers.revenue)",
-                    name="cust_rev",
-                    datatype=DataType.INT,
+                QueryMetric(
+                    metric="sum(customers.revenue)",
+                    alias="cust_rev",
+                    datatype=DataType.INTEGER,
                 ),
             ],
             to_many_handling="broadcast",
@@ -790,9 +790,9 @@ class TestCrossModelRenameOrderBy:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
-            order=[OrderItem(field=FieldRef(name="cust_rev"), direction="desc")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
+            order=[OrderItem(field="cust_rev", direction="desc")],
             to_many_handling="broadcast",
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -817,8 +817,8 @@ class TestCrossModelRenameFilters:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
             filter=["cust_rev > 100"],
             to_many_handling="broadcast",
         )
@@ -849,8 +849,8 @@ class TestDeferredCrossModelFilterScope:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
-            metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
+            dimensions=[QueryDimension(field="status")],
+            metrics=[QueryMetric(metric="sum(customers.revenue)", alias="cust_rev")],
             filter=["sum(customers.revenue) > 100"],
             to_many_handling="broadcast",
         )
@@ -881,11 +881,11 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
         engine, _ = orders_customers_regions_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(
-                    expression="sum(customers.regions.population)",
-                    name="region_pop",
+                QueryMetric(
+                    metric="sum(customers.regions.population)",
+                    alias="region_pop",
                 ),
             ],
             to_many_handling="broadcast",
@@ -910,10 +910,10 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             metrics=[
-                DatasetMetric(expression="sum(customers.revenue)", name="cust_rev"),
-                DatasetMetric(expression="count_distinct(customers.id)"),
+                QueryMetric(metric="sum(customers.revenue)", alias="cust_rev"),
+                QueryMetric(metric="count_distinct(customers.id)"),
             ],
         )
         resp = await engine.execute(query=query, dry_run=True)
@@ -953,12 +953,12 @@ class TestTransformWrappedCrossModelDeferred:
         engine, _ = orders_customers_engine
         query = SlayerQuery(
             population="orders",
-            dimensions=[FieldRef(name="status")],
+            dimensions=[QueryDimension(field="status")],
             time_dimensions=[],
             metrics=[
-                DatasetMetric(
-                    expression="cumsum(sum(customers.revenue))",
-                    name="cum_cust_rev",
+                QueryMetric(
+                    metric="cumsum(sum(customers.revenue))",
+                    alias="cum_cust_rev",
                 ),
             ],
         )

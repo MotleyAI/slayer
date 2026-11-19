@@ -21,7 +21,7 @@ from sqlglot import exp
 from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expression
 
-from slayer.core.enums import DataType, DatePart, TimeGranularity
+from slayer.core.enums import DataType, DatePart, NUMERIC_DATATYPES, TimeGranularity
 from slayer.core.errors import ReadOnlyConnectionError, UnsupportedServerFunctionError
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import CastKey, ScalarCallKey
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 _MYSQL_8_0 = (8, 0, 0)
 _MYSQL_8_0_21 = (8, 0, 21)
 _VERSION = re.compile(r"\s*(\d+)\.(\d+)(?:\.(\d+))?")
-_NUMBERS = frozenset({DataType.INT, DataType.DOUBLE})
+_NUMBERS = NUMERIC_DATATYPES
 _GATED_FUNCTIONS = REGEX_LIBRARY | {"json_value"}
 
 # The session read-only from connect, through the drivers' one init statement.
@@ -289,9 +289,9 @@ class MysqlDialect(SqlDialect):
         if not isinstance(code, int):
             return None
         if code == _TINY:
-            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.INT, db_type=f"TINYINT({length})")
+            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.INTEGER, db_type=f"TINYINT({length})")
         if code == _BIT:
-            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.TEXT, db_type=f"BIT({length})")
+            return ResultColumnType(type=DataType.BOOLEAN if length == 1 else DataType.STRING, db_type=f"BIT({length})")
         if code in _DECIMALS:
             # Length counts the sign (assumed: the row has no UNSIGNED flag) and, at a positive scale, the point.
             precision = max(1, (length or 0) - 1 - (1 if scale else 0))

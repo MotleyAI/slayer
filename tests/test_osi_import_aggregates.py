@@ -56,6 +56,13 @@ async def test_filtered_correlation(db: Path) -> None:
     assert float(await scalar(result=result, db=db, dataset="orders", expression="r")) == pytest.approx(completed)
 
 
+def test_filter_condition_is_imported_without_a_deprecated_comparison(db: Path) -> None:
+    result = convert(db=db, docs=documents(_orders(m("done", "SUM(amount) FILTER (WHERE status = 'completed')"))))
+    done = by_name(result)["orders"].get_metric("done")
+    assert done is not None
+    assert "==" not in done.expression
+
+
 async def test_filtered_sample_stddev(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(m("sd", "STDDEV_SAMP(amount) FILTER (WHERE status <> 'x')"))))
     assert float(await scalar(result=result, db=db, dataset="orders", expression="sd")) == pytest.approx(

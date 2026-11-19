@@ -37,11 +37,11 @@ def _regions() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="population", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="population", datatype=DataType.FLOAT),
             # derived ON regions, referencing a regions column BARE
-            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.FLOAT),
             DatasetField(name="is_live", sql="status = 'live'", datatype=DataType.BOOLEAN),
         ],
     )
@@ -51,10 +51,10 @@ def _customers() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INTEGER),
         ],
-        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", from_columns=["region_id"], to_columns=["id"])],
     )
 
 
@@ -62,26 +62,26 @@ def _orders() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
-            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
-            DatasetField(name="customer_id", datatype=DataType.INT),
-            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INTEGER, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INTEGER),
+            DatasetField(name="amount", datatype=DataType.FLOAT),
             # 'status' ALSO exists on regions — same-name collision shape
-            DatasetField(name="status", datatype=DataType.TEXT),
-            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.STRING),
+            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.FLOAT),
             # --- the defect shapes: sql is ONE bare derived reference ---
-            DatasetField(name="alias_local", sql="doubled", datatype=DataType.DOUBLE),
+            DatasetField(name="alias_local", sql="doubled", datatype=DataType.FLOAT),
             DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             DatasetField(name="deep_live", sql="customers.regions.is_live",
                    datatype=DataType.BOOLEAN),
             # --- controls: same reference inside a larger expression ---
             DatasetField(name="deep_pop_compound", sql="customers.regions.pop_x2 * 1",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
             DatasetField(name="deep_pop_paren", sql="(customers.regions.pop_x2)",
-                   datatype=DataType.DOUBLE),
+                   datatype=DataType.FLOAT),
         ],
         relationships=[DatasetRelationship(
-            to="customers", join_pairs=[["customer_id", "id"]],
+            to="customers", from_columns=["customer_id"], to_columns=["id"],
         )],
     )
 
@@ -175,8 +175,8 @@ class TestDerivedOfDerivedEmission:
     async def test_dimension_on_derived_of_derived(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "deep_pop", "name": "deep_pop"}],
-            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
+            "dimensions": [{"field": "deep_pop", "alias": "deep_pop"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
@@ -186,8 +186,8 @@ class TestDerivedOfDerivedEmission:
     async def test_measure_over_derived_of_derived(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "status", "name": "status"}],
-            "metrics": [{"expression": "sum(deep_pop)", "name": "m0"}],
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "sum(deep_pop)", "alias": "m0"}],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
@@ -195,8 +195,8 @@ class TestDerivedOfDerivedEmission:
     async def test_filter_on_derived_of_derived(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "status", "name": "status"}],
-            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
+            "dimensions": [{"field": "status", "alias": "status"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
             "filter": ["deep_pop > 100"],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
@@ -205,8 +205,8 @@ class TestDerivedOfDerivedEmission:
     async def test_local_derived_alias_dimension(self) -> None:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "alias_local", "name": "alias_local"}],
-            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
+            "dimensions": [{"field": "alias_local", "alias": "alias_local"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
         }))
         # 'doubled' is derived on orders; it must inline, not be referenced.
         # Today this emits a BARE, unqualified `doubled` — invalid on any DB.
@@ -219,8 +219,8 @@ class TestDerivedOfDerivedEmission:
         against REGIONS, not the root model."""
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "deep_live", "name": "deep_live"}],
-            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
+            "dimensions": [{"field": "deep_live", "alias": "deep_live"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
         }))
         assert "customers__regions.status" in sql, (
             f"derived sql resolved against the wrong model:\n{sql}"
@@ -238,8 +238,8 @@ async def test_derived_of_derived_executes_on_duckdb() -> None:
     sql = await _engine_generate(
         query=SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"expression": "deep_pop", "name": "deep_pop"}],
-            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
+            "dimensions": [{"field": "deep_pop", "alias": "deep_pop"}],
+            "metrics": [{"metric": "sum(amount)", "alias": "m0"}],
         }),
         dataset=_orders(), dialect="duckdb", validate=False,
         extra_datasets=[_customers(), _regions()],

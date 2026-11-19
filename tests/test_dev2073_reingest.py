@@ -94,7 +94,7 @@ async def _snapshot(lv: Live) -> dict[str, tuple]:
     return {
         name: (
             sorted(c.name for c in m.fields),
-            sorted((j.to, j.name, str(j.join_pairs), str(j.cardinality)) for j in m.relationships),
+            sorted((j.to, j.name, str(j.column_pairs), str(j.cardinality)) for j in m.relationships),
         )
         for name, m in (await lv.datasets()).items()
     }

@@ -14,11 +14,11 @@
    },
    "new": {
     "to": "customers",
-    "join_pairs": [
-     [
-      "customer_id",
-      "id"
-     ]
+    "from_columns": [
+     "customer_id"
+    ],
+    "to_columns": [
+     "id"
     ]
    }
   },
@@ -66,7 +66,7 @@
     ],
     "metrics": [
      {
-      "expression": "sum(amount - cost)"
+      "metric": "sum(amount - cost)"
      }
     ]
    }
@@ -91,7 +91,7 @@
     ],
     "metrics": [
      {
-      "expression": "max(amount_cost_sum)"
+      "metric": "max(amount_cost_sum)"
      }
     ]
    }
