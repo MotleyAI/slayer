@@ -24,6 +24,8 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, RelationshipCardinality, finer_datatype
+from slayer.core.field_expression import OSSIE_SQL, DialectEntry, ExpressionObject, unquoted_identifier
+from slayer.core.field_expression import Expression as FieldExpression
 from slayer.core.errors import AmbiguousRelationshipPathError, UnsupportedServerFunctionError
 from slayer.core.syntax import parse_expr
 from slayer.core.relationship_walker import resolve_hop
@@ -32,6 +34,7 @@ from slayer.core.names import name_taken
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE
 from slayer.engine.binding import bind_dataset_expression
+from slayer.engine.definitions import portable_native
 from slayer.sql.field_expansion import root_scope_field_ids, resolve_ref_target
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.render.parse import fold_source_identifiers
@@ -42,10 +45,17 @@ from slayer.importers.column_types import LiveDatasource, LiveSource
 from slayer.importers.aggregates import (
     MaterializedField, Unconvertible, contains_args, convert_expression, length_arg, outermost_aggregates,
 )
-from slayer.importers.physical import PhysicalIndex, live_exact_name, root_physical_columns, unreadable_fields
+from slayer.importers.physical import (
+    PhysicalIndex,
+    finished_field,
+    live_exact_name,
+    root_physical_columns,
+    unreadable_fields,
+)
+from slayer.sql.root_scope import qualified_siblings
 from slayer.ingest_report import ConversionResult, ConversionWarning
 from slayer.database.client import ResultColumnType, SqlClient
-from slayer.osi.dialects import Selection, is_native, read, reader_for, render, select_expression
+from slayer.osi.dialects import PORTABLE_READER, Candidate, Selection, read, reader_for, render, select_expression
 from slayer.osi.models import (
     OSSIE_DATATYPES,
     TEMPORAL_DATATYPES,
@@ -64,15 +74,15 @@ from slayer.osi.source import ParsedSource, parse_source, resolve_datasource
 
 logger = logging.getLogger(__name__)
 
-def _typed_field(*, name: str, data_type: DataType, sql: str | None = None, element: DataType | None = None,
-                  hidden: bool = False, db_type: str | None = None) -> DatasetField:
+def _typed_field(*, name: str, data_type: DataType, expression: FieldExpression | None = None,
+                 element: DataType | None = None, hidden: bool = False, db_type: str | None = None) -> DatasetField:
     """A field of a probed type, narrowed by its database type; a list's elements are ``element``, else Opaque (a
     probe cannot see them)."""
     if data_type is not DataType.ARRAY:
-        return DatasetField(name=name, sql=sql, datatype=finer_datatype(data_type, db_type), hidden=hidden,
-                            db_type=db_type)
-    return DatasetField(name=name, sql=sql, datatype=data_type, element_type=element or DataType.OPAQUE, hidden=hidden,
-                  db_type=db_type)
+        return DatasetField(name=name, expression=expression, datatype=finer_datatype(data_type, db_type),
+                            hidden=hidden, db_type=db_type)
+    return DatasetField(name=name, expression=expression, datatype=data_type, element_type=element or DataType.OPAQUE,
+                        hidden=hidden, db_type=db_type)
 
 OwnerOf = Callable[[Optional[str], str], Optional[str]]
 Severity = Literal["unconverted", "dropped", "info"]
@@ -597,7 +607,7 @@ class OsiToSlayerConverter:
         dataset.default_time_dimension = _first_time_dimension(dataset)
 
     def _drop_unreadable_fields(self, dataset: SlayerDataset) -> None:
-        """Drop each field reading a source column another field's name holds (a legacy overlay reverts)."""
+        """Drop each field whose SQL does not parse or reads an ambiguous source column (a legacy overlay reverts)."""
         dropped = unreadable_fields(dataset.fields, dialect=self._target, live=self._physical[dataset.name])
         for name, problem in dropped.items():
             col = next(c for c in dataset.fields if c.name == name)
@@ -608,7 +618,7 @@ class OsiToSlayerConverter:
                 dataset.fields.remove(col)
             self._warn(f"Field {name!r} on {dataset.name!r} dropped: {problem}"
                        f"{'; the source column is kept' if original is not None else ''}.",
-                       dataset_name=dataset.name, category="masked_column")
+                       dataset_name=dataset.name, category="unreadable_column")
         if dataset.default_time_dimension in dropped and dataset.get_field(dataset.default_time_dimension) is None:
             dataset.default_time_dimension = _first_time_dimension(dataset)
 
@@ -640,7 +650,7 @@ class OsiToSlayerConverter:
             if existing is None:
                 dataset.fields.append(col)
             else:
-                if col.sql is not None:
+                if col.expression is not None:
                     self._shadowed.setdefault((dataset.name, col.name), existing)
                 dataset.fields[dataset.fields.index(existing)] = col
             by_name[col.name] = col
@@ -666,19 +676,89 @@ class OsiToSlayerConverter:
         for col in dataset.fields:
             col.primary_key = col.name in osi_pk
 
-    def _field_sql(self, field: OSIField, ds: OSIDataset) -> tuple[str, exp.Expr] | None:
-        """The field's selected expression rendered for the target, with its parse tree."""
+    def _field_form(self, field: OSIField, ds: OSIDataset) -> tuple[FieldExpression, str, exp.Expr] | None:
+        """``(expression to store, SQL it runs on the target, that SQL parsed)`` for one field: its Ossie expression
+        as written (an entry for the target's dialect folded), plus a translated target entry when no form runs."""
         label = f"Field {field.name!r} on {ds.name!r}"
+        token = self._target.upper()
+        entries = [DialectEntry(dialect=d.dialect, expression=d.expression) for d in field.expression.dialects]
+        own = [i for i, e in enumerate(entries) if e.dialect.strip().upper() == token]
+        running: str | None
+        tree: exp.Expr | None = None
+        if own:
+            if len(own) > 1:
+                self._warn(f"{label}: {len(own)} {token} entries; using the first.", dataset_name=ds.name,
+                           category="dialect", severity="info")
+                entries = [e for i, e in enumerate(entries) if i not in own[1:]]
+            running = self._folded(entries[own[0]].expression, read=self._target, ds=ds)
+            entries[own[0]] = DialectEntry(dialect=entries[own[0]].dialect, expression=running)
+        else:
+            portable = self._portable(field, label=label, ds=ds)
+            running = self._portable_running(portable, field=field, ds=ds) if portable is not None else None
+            if running is not None and portable is not None:
+                tree = self._parsed(Candidate(dialect=OSSIE_SQL, text=self._folded(portable, read=PORTABLE_READER, ds=ds)))
+            else:
+                translated = self._translated(field, label=label, ds=ds)
+                if translated is None:
+                    return None
+                running, tree = translated
+                entries.append(DialectEntry(dialect=token, expression=running))
+        try:
+            tree = tree if tree is not None else sqlglot.parse_one(running, read=self._target)
+        except SqlglotError:
+            self._warn(f"{label} has an unparseable expression {running!r}; skipping.",
+                       dataset_name=ds.name, category="expression")
+            return None
+        sql = field.expression.sql
+        stored: FieldExpression = sql if sql is not None and not entries else ExpressionObject(
+            sql=sql, dialects=entries or None)
+        return stored, running, tree
+
+    def _portable(self, field: OSIField, *, label: str, ds: OSIDataset) -> str | None:
+        """The field's portable form: its ``sql``, else its first ``OSSIE_SQL_2026`` entry (noting duplicates)."""
+        if field.expression.sql is not None:
+            return field.expression.sql
+        found = [d.expression for d in field.expression.dialects if d.dialect.strip().upper() == OSSIE_SQL]
+        if len(found) > 1:
+            self._warn(f"{label}: {len(found)} {OSSIE_SQL} entries; using the first.", dataset_name=ds.name,
+                       category="dialect", severity="info")
+        return found[0] if found else None
+
+    def _folded(self, text: str, *, read: str | None, ds: OSIDataset) -> str:
+        """``text`` with its unquoted identifiers read with the target's folding."""
+        return fold_source_identifiers(text, dialect=self._dialect, read=read,
+                                       logical_qualifiers=self._dataset_names - {ds.name},
+                                       kept_qualifiers={ds.name}).text
+
+    @staticmethod
+    def _parsed(candidate: Candidate) -> exp.Expr | None:
+        try:
+            return read(candidate)
+        except SqlglotError:
+            return None
+
+    def _portable_running(self, text: str, *, field: OSIField, ds: OSIDataset) -> str | None:
+        """The target SQL portable ``text`` runs as, or ``None`` when SLayer cannot read it."""
+        if unquoted_identifier(text) is not None:
+            return text.strip()
+        physical = [c for c in self._physical[ds.name].values() if c.is_physical_reader]
+        live = {c.physical_name: c.datatype for c in physical}
+        host = SlayerDataset(name=ds.name, sql_table=ds.name, data_source=self.data_source)
+        try:
+            return portable_native(text, field=field.name, dataset=host, datasets=[], ds_type=self._target, live=live)
+        except Exception:  # noqa: BLE001 — anything SLayer cannot read is translated instead
+            return None
+
+    def _translated(self, field: OSIField, *, label: str, ds: OSIDataset) -> tuple[str, exp.Expr] | None:
+        """The target-dialect text of the field's best readable candidate, noted, with the candidate parsed;
+        ``None`` when reported."""
         selection = select_expression(field.expression, override=self.dialect, target=self._target)
         self._note_selection(selection, label=label, dataset_name=ds.name)
         if selection.candidate is None:
             self._warn(f"{label} {selection.reason}; skipping.", dataset_name=ds.name, category="dialect")
             return None
-        folded = fold_source_identifiers(selection.candidate.text, dialect=self._dialect,
-                                         read=reader_for(selection.candidate.dialect),
-                                         logical_qualifiers=self._dataset_names - {ds.name},
-                                         kept_qualifiers={ds.name})
-        candidate = selection.candidate.model_copy(update={"text": folded.text})
+        candidate = selection.candidate.model_copy(update={
+            "text": self._folded(selection.candidate.text, read=reader_for(selection.candidate.dialect), ds=ds)})
         try:
             tree = read(candidate)
         except SqlglotError:
@@ -686,11 +766,13 @@ class OsiToSlayerConverter:
                        dataset_name=ds.name, category="expression")
             return None
         try:
-            rendered = tree if is_native(candidate, target=self._target) else self._list_calls(tree, ds=ds)
+            rendered = render(candidate, self._list_calls(tree.copy(), ds=ds), target=self._target)
         except (Unconvertible, UnsupportedServerFunctionError) as exc:
             self._warn(f"{label}: {exc}; skipping.", dataset_name=ds.name, category="expression")
             return None
-        return render(candidate, rendered, target=self._target), tree
+        self._warn(f"{label}: no form runs on {self._target.upper()}; added a {self._target.upper()} entry translated "
+                   f"from {candidate.dialect}.", dataset_name=ds.name, category="dialect", severity="info")
+        return rendered, tree
 
     def _list_calls(self, tree: exp.Expr, *, ds: OSIDataset) -> exp.Expr:
         """``tree`` with array functions as SLayer's own list SQL for the target."""
@@ -711,19 +793,19 @@ class OsiToSlayerConverter:
                 dataset_name=ds.name, category="illegal_name",
             )
             return None
-        selected = self._field_sql(field, ds)
+        selected = self._field_form(field, ds)
         if selected is None:
             return None
-        sql, tree = selected
+        stored, sql, tree = selected
         if (label := self._duplicated_label(ds.name, tree)) is not None:
             self._warn(f"Field {field.name!r} on {ds.name!r} reads source column {label!r}, which the source query "
                        f"outputs more than once; skipping.", dataset_name=ds.name, category="ambiguous_column")
             return None
         declared = OSSIE_DATATYPES.get(field.datatype or "")
         bare = _bare_field(tree)
-        typed = (self._bare_field_field(field=field, ds=ds, bare=bare, sql=sql) if bare is not None
-                 else self._derived_field_field(field=field, ds=ds, dataset=dataset, sql=sql, tree=tree,
-                                                 declared=declared))
+        typed = (self._bare_field_field(field=field, ds=ds, bare=bare, stored=stored, sql=sql) if bare is not None
+                 else self._derived_field_field(field=field, ds=ds, dataset=dataset, stored=stored, sql=sql,
+                                                 tree=tree, declared=declared))
         if typed is None:
             return None
         col, db_type = typed
@@ -764,8 +846,8 @@ class OsiToSlayerConverter:
             return None
         return next((c.name for c in root_physical_columns(tree) if live.duplicated(c.this)), None)
 
-    def _bare_field_field(self, *, field: OSIField, ds: OSIDataset, bare: exp.Identifier,
-                           sql: str) -> tuple[DatasetField, DataType | None] | None:
+    def _bare_field_field(self, *, field: OSIField, ds: OSIDataset, bare: exp.Identifier, stored: FieldExpression,
+                          sql: str) -> tuple[DatasetField, DataType | None] | None:
         found = self._source_fields(ds.name, bare)
         source = found[0] if len(found) == 1 else None
         if source is None:
@@ -775,16 +857,21 @@ class OsiToSlayerConverter:
                 dataset_name=ds.name, category="missing_column",
             )
             return None
-        # A copy keeps the source's type, db_type, key flag and DB comment.
+        # A copy keeps the source's type, db_type, key flag and DB comment; a portable column reads its exact
+        # spelling, an object is kept as written.
+        if not isinstance(stored, str):
+            col = source.model_copy(deep=True, update={"name": field.name, "expression": stored, "sql": None})
+            return col.with_native(sql), source.datatype
         if source.physical_quoted:
-            kept = source.sql
+            kept = source.definition_sql
         else:
-            kept = None if bare.name == field.name else sql
-        col = source.model_copy(deep=True, update={"name": field.name, "sql": kept})
+            kept = None if source.physical_name == field.name else source.physical_name
+        col = source.model_copy(deep=True, update={"name": field.name, "expression": kept, "sql": None})
         return col, source.datatype
 
-    def _derived_field_field(self, *, field: OSIField, ds: OSIDataset, dataset: SlayerDataset, sql: str,
-                              tree: exp.Expr, declared: DataType | None) -> tuple[DatasetField, DataType | None] | None:
+    def _derived_field_field(self, *, field: OSIField, ds: OSIDataset, dataset: SlayerDataset, stored: FieldExpression,
+                              sql: str, tree: exp.Expr,
+                              declared: DataType | None) -> tuple[DatasetField, DataType | None] | None:
         physical = self._physical[ds.name]
         missing = _missing_expr_fields(tree, known=lambda ident: bool(self._source_fields(ds.name, ident)),
                                         self_name=ds.name)
@@ -797,12 +884,13 @@ class OsiToSlayerConverter:
             return None
         probed = self._probe_expression_type(dataset=dataset, expr=sql)
         if probed is not None:
-            slayer_field = _typed_field(name=field.name, sql=sql, data_type=probed.type, db_type=probed.lossy_db_type)
+            slayer_field = _typed_field(name=field.name, expression=stored, data_type=probed.type,
+                                        db_type=probed.lossy_db_type).with_native(sql)
             return slayer_field, slayer_field.datatype
         shadowed = physical.get(field.name)
         fallback = declared or (shadowed.datatype if shadowed is not None else None) or DataType.FLOAT
         element = shadowed.element_type if shadowed is not None else None
-        return _typed_field(name=field.name, sql=sql, data_type=fallback, element=element), None
+        return _typed_field(name=field.name, expression=stored, data_type=fallback, element=element).with_native(sql), None
 
     @staticmethod
     def _apply_field_metadata(*, col: DatasetField, field: OSIField) -> None:
@@ -956,8 +1044,8 @@ class OsiToSlayerConverter:
     ) -> list[tuple[DatasetField, list[str]]]:
         result = []
         for col in dataset.fields:
-            if col.sql:
-                bad = self._unresolvable_cross_dataset_refs(dataset=dataset, sql=col.sql)
+            if col.definition_sql:
+                bad = self._unresolvable_cross_dataset_refs(dataset=dataset, sql=col.definition_sql)
                 if bad:
                     result.append((col, bad))
         return result
@@ -1017,7 +1105,8 @@ class OsiToSlayerConverter:
         """The field a chain of single cross-dataset refs from ``col`` ends at; ``None`` without a ref or on a cycle."""
         seen = {id(col)}
         end: DatasetField | None = None
-        while col.sql and (hop := self._single_cross_dataset_ref(dataset=dataset, sql=col.sql)) is not None:
+        while col.definition_sql and (
+                hop := self._single_cross_dataset_ref(dataset=dataset, sql=col.definition_sql)) is not None:
             dataset, col = hop
             if id(col) in seen:
                 return None
@@ -1115,13 +1204,25 @@ class OsiToSlayerConverter:
     # ---- Ossie metrics -> SLayer metrics ----
 
     def _metric_tree(self, metric: OSIMetric) -> exp.Expr | None:
-        """The metric's selected expression, parsed; ``None`` when reported."""
-        selection = select_expression(metric.expression, override=self.dialect, target=self._target)
+        """The metric's selected expression, parsed; ``None`` when reported. An entry for the target's dialect is not
+        imported beside portable ``sql`` and is translated without it."""
+        token = self._target.upper()
+        expression = metric.expression
+        own = [d for d in expression.dialects if d.dialect.strip().upper() == token]
+        if own and expression.sql:
+            self._warn(f"Metric {metric.name!r}: its {token} entry is not imported; a metric runs only its sql.",
+                       metric_name=metric.name, category="dialect", severity="info")
+            expression = expression.model_copy(update={
+                "dialects": [d for d in expression.dialects if d.dialect.strip().upper() != token]})
+        selection = select_expression(expression, override=self.dialect, target=self._target)
         self._note_selection(selection, label=f"Metric {metric.name!r}", metric_name=metric.name)
         if selection.candidate is None:
             self._unconv(f"Metric {metric.name!r} {selection.reason}.",
                          metric_name=metric.name, category="dialect")
             return None
+        if selection.candidate.dialect.strip().upper() == token:
+            self._warn(f"Metric {metric.name!r}: translated from its {token} entry.", metric_name=metric.name,
+                       category="dialect", severity="info")
         try:
             return read(selection.candidate)
         except SqlglotError as exc:
@@ -1158,8 +1259,9 @@ class OsiToSlayerConverter:
             taken = {h.name for h in helpers.values()}
             name = next(n for n in (f"_{metric}_{i}" for i in itertools.count())
                         if n not in taken and not self._dataset_has_name(home, n))
-            sql = source.sql if source.physical_quoted else exp.to_identifier(source.physical_name).sql(self._target)
-            helpers[source.name] = _typed_field(name=name, sql=sql, data_type=source.datatype,
+            spelled = (source.definition_sql if source.physical_quoted
+                       else exp.to_identifier(source.physical_name).sql(self._target))
+            helpers[source.name] = _typed_field(name=name, expression=spelled, data_type=source.datatype,
                                                  element=source.element_type, hidden=True, db_type=source.db_type)
         return exp.column(helpers[source.name].name)
 
@@ -1261,10 +1363,12 @@ class OsiToSlayerConverter:
             return None
 
         # Build the metric before materializing fields, so a rejected metric leaves no orphans.
+        others = [DialectEntry(dialect=d.dialect, expression=d.expression) for d in metric.expression.dialects
+                  if d.dialect.strip().upper() != self._target.upper()]
         try:
             parse_expr(result.expression)
             slayer_metric = DatasetMetric(
-                expression=result.expression,
+                expression=ExpressionObject(sql=result.expression, dialects=others) if others else result.expression,
                 name=metric.name,
                 description=render_description(explicit=metric.description, ctx=metric.ai_context),
                 meta=_build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions),
@@ -1373,7 +1477,7 @@ class OsiToSlayerConverter:
 
         def inline(ref: exp.Expr) -> exp.Expr:
             col = by_name.get(ref.name) if isinstance(ref, exp.Column) and not ref.table else None
-            definition = self._parse_target(col.sql) if col is not None and col.sql else None
+            definition = self._parse_target(col.definition_sql) if col is not None and col.definition_sql else None
             return exp.Paren(this=definition) if definition is not None else ref
         return tree.transform(inline, copy=False).sql(dialect=self._target)
 
@@ -1383,11 +1487,16 @@ class OsiToSlayerConverter:
             if dataset is None or any(c.name == mc.name for c in dataset.fields):
                 continue
             probed = self._probe_expression_type(dataset=dataset, expr=self._physical_sql(dataset, mc.sql))
-            dataset.fields.append(_typed_field(
-                name=mc.name, sql=mc.sql, hidden=True,
+            dataset.fields.append(finished_field(_typed_field(
+                name=mc.name, expression=self._fields_by_path(dataset, mc.sql), hidden=True,
                 data_type=probed.type if probed is not None else DataType.FLOAT,
                 db_type=probed.lossy_db_type if probed is not None else None,
-            ))
+            ), token=self._target.upper()))
+
+    def _fields_by_path(self, dataset: SlayerDataset, sql: str) -> str:
+        """``sql`` with each bare reference to a field not reading its own-name column written as its path."""
+        siblings = {c.name for c in dataset.fields if not (c.is_physical_reader and c.physical_name == c.name)}
+        return qualified_siblings(sql, dataset=dataset.name, siblings=siblings, dialect=self._target)
 
     # ---- SLAYER extension restore ----
 
@@ -1462,7 +1571,8 @@ class OsiToSlayerConverter:
                 self._restore_field(dataset, field)
 
     def _restore_field(self, dataset: SlayerDataset, field: DatasetField) -> None:
-        bad = [] if not field.sql else self._unresolvable_cross_dataset_refs(dataset=dataset, sql=field.sql)
+        text = field.definition_sql
+        bad = [] if not text else self._unresolvable_cross_dataset_refs(dataset=dataset, sql=text)
         if self._dataset_has_name(dataset.name, field.name) or bad:
             reason = f"reads {bad}, which do not resolve" if bad else "collides with an imported name"
             self._warn(f"SLayer-only field {field.name!r} on {dataset.name!r} {reason}; skipping it.",

@@ -32,7 +32,7 @@ from slayer.sql.render.row_expr import render_row_expression
 
 __all__ = [
     "SOURCE_READER_PREFIX", "ColumnTypes", "check_metric_forms", "needs_live_types", "portable_columns",
-    "resolved_dataset", "source_reader",
+    "portable_native", "resolved_dataset", "source_reader",
 ]
 
 #: A dataset's live source columns and their types, by name.
@@ -151,7 +151,7 @@ class _Translation:
         return _dotted((*(ref.path or (self.dataset.name,)), leaf))
 
 
-def _portable_native(
+def portable_native(
     text: str, *, field: str, dataset: SlayerDataset, datasets: Sequence[SlayerDataset], ds_type: str | None,
     live: ColumnTypes,
 ) -> str:
@@ -188,7 +188,7 @@ def _resolved_field(
     form = running_form(owner=f"Field {field.name!r}", expression=field.expression, dialect=ossie_token(ds_type))
     if form.native or unquoted_identifier(form.text) is not None:
         return field.with_native(form.text)
-    return field.with_native(_portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets,
+    return field.with_native(portable_native(form.text, field=field.name, dataset=dataset, datasets=datasets,
                                               ds_type=ds_type, live=live))
 
 

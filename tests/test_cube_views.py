@@ -85,13 +85,13 @@ def test_view_root_measure_carries_underlying_column():
     models, _ = convert(project)
     view = models["orders_overview"]
     m = metric(view, "total_revenue")
-    parsed = parse_expr(m.expression)
+    parsed = parse_expr(m.text)
     assert isinstance(parsed, AggCall), m.expression
     source = parsed.source
     assert isinstance(source, (Ref, DottedRef)), m.expression
     col_ref = ".".join(source.parts) if isinstance(source, DottedRef) else source.name
     assert view.get_field(col_ref) is not None  # underlying column copied onto facade
-    assert m.expression.startswith("sum(")
+    assert m.text.startswith("sum(")
 
 
 def test_view_joined_measure_is_cross_model_underlying_column_ref():

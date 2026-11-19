@@ -72,7 +72,8 @@ def unreachable_fields(dataset: SlayerDataset, *, datasets_by_name: Mapping[str,
 
 def _field_problem(col: DatasetField, *, dataset: SlayerDataset, datasets_by_name: Mapping[str, SlayerDataset],
                     dialect: str | None, dropped: frozenset[str], prepare: Callable[[str], str]) -> str | None:
-    for parts in (p for sql in (col.sql, col.filter) for p in _root_references(sql, dialect=dialect, prepare=prepare)):
+    texts = (col.definition_sql, col.filter)
+    for parts in (p for sql in texts for p in _root_references(sql, dialect=dialect, prepare=prepare)):
         if parts[-1] in dropped and (len(parts) == 1 or parts[:-1] == (dataset.name,)):
             return f"it reads the dropped field {parts[-1]!r}"
         if len(parts) > 1 and parts[:-1] != (dataset.name,) and _path_field(

@@ -10,7 +10,7 @@ from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 from sqlglot.optimizer.scope import ScopeType, traverse_scope
 
-__all__ = ["qualified_siblings", "respelled_qualifier", "root_scope_field_ids"]
+__all__ = ["qualified_siblings", "respelled_columns", "respelled_qualifier", "root_scope_field_ids"]
 
 
 def root_scope_field_ids(*, parsed: Expression) -> set[int]:
@@ -102,6 +102,19 @@ def _span(ident: object) -> tuple[int, int] | None:
 def _spliced(text: str, spans: list[tuple[int, int]], fn: Callable[[str], str]) -> str:
     for start, end in sorted(spans, reverse=True):
         text = f"{text[:start]}{fn(text[start:end])}{text[end:]}"
+    return text
+
+
+def respelled_columns(text: str, *, respell: Callable[[str], str | None], dialect: str | None) -> str:
+    """``text`` verbatim except each root-scope bare reference ``respell`` maps (by name) is written as it returns;
+    text the dialect cannot parse is returned unchanged."""
+    columns = _root_columns(text, dialect=dialect)
+    if columns is None:
+        return text
+    found = [(s, new) for c in columns if not c.table and (new := respell(c.name)) is not None
+             and (s := _span(c.this)) is not None]
+    for (start, end), new in sorted(found, reverse=True):
+        text = f"{text[:start]}{new}{text[end:]}"
     return text
 
 

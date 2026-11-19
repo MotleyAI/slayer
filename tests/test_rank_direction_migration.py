@@ -50,7 +50,7 @@ def _model_dict(*, measures: list[dict], version: Any = 12, **extra) -> dict:
 
 def _migrated_formula(formula: str) -> str:
     model = SlayerDataset.model_validate(_model_dict(measures=[{"name": "x", "formula": formula}]))
-    return model.metrics[0].expression
+    return model.metrics[0].text
 
 
 def _assert_only_direction_added(before: str, after: str) -> None:

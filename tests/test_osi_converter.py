@@ -184,29 +184,29 @@ def test_join_carries_relationship_ai_context(shop_engine):
 def test_simple_and_ratio_measures(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
-    assert m["total_amount"].expression == "sum(amount)"
-    assert m["order_count"].expression == "count(*)"
-    assert m["aov"].expression == "sum(amount) / count(*)"
+    assert m["total_amount"].text == "sum(amount)"
+    assert m["order_count"].text == "count(*)"
+    assert m["aov"].text == "sum(amount) / count(*)"
 
 
 def test_inline_operand_metric(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     measure = {meas.name: meas for meas in orders.metrics}["revenue_line"]
     assert not [c for c in orders.fields if c.hidden]
-    assert parse_expr(measure.expression) == parse_expr("sum(quantity * amount)")
+    assert parse_expr(measure.text) == parse_expr("sum(quantity * amount)")
 
 
 def test_cross_dataset_metric_anchors_and_dotted_ref(shop_engine):
     # The anchor reaching every referenced dataset without a fanning hop wins.
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
-    assert m["cust_reach"].expression == "sum(amount) / count_distinct(customers.customer_id)"
+    assert m["cust_reach"].text == "sum(amount) / count_distinct(customers.customer_id)"
 
 
 def test_multihop_metric_anchor_relative_path(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
-    assert m["rev_plus_pop"].expression == "sum(amount) + sum(customers.regions.population)"
+    assert m["rev_plus_pop"].text == "sum(amount) + sum(customers.regions.population)"
 
 
 # ─────────────────────────── edge / failure cases ───────────────────────────
@@ -347,7 +347,7 @@ def test_aliased_field_expression_pointing_at_real_column(shop_engine):
     orders = {m.name: m for m in result.datasets}["orders"]
     amt = {c.name: c for c in orders.fields}.get("amt")
     assert amt is not None
-    assert amt.sql == "amount"
+    assert amt.definition_sql == "amount"
 
 
 def test_non_sql_dialect_metric_clean_fails(shop_engine):
@@ -389,7 +389,7 @@ def test_quoted_alias_field_preserves_quoting(shop_engine):
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {c.name: c for c in orders.fields}["legal_type"].sql == '"status"'
+    assert {c.name: c for c in orders.fields}["legal_type"].definition_sql == '"status"'
 
 
 def test_invalid_osi_primary_key_keeps_introspected(shop_engine):
@@ -415,7 +415,7 @@ def test_invalid_derived_overlay_reverts_to_physical_column(shop_engine):
     cols = {c.name: c for c in {m.name: m for m in result.datasets}["orders"].fields}
     assert "order_id" in cols
     assert cols["order_id"].primary_key is True
-    assert cols["order_id"].sql != "customers.no_such_col"
+    assert cols["order_id"].definition_sql != "customers.no_such_col"
     assert _reported(result)
 
 
@@ -487,7 +487,7 @@ def test_bridge_anchor_metric(shop_engine):
     orders = _by_name(_shop_result(shop_engine))["orders"]
     m = {meas.name: meas for meas in orders.metrics}
     assert "bridge_metric" in m
-    assert m["bridge_metric"].expression == (
+    assert m["bridge_metric"].text == (
         "sum(products.price) + count_distinct(customers.customer_id)"
     )
 
@@ -956,7 +956,7 @@ def test_bare_alias_field_shadowing_physical_column_replaces(shop_engine):
     orders = {m.name: m for m in result.datasets}["orders"]
     status_cols = [c for c in orders.fields if c.name == "status"]
     assert len(status_cols) == 1
-    assert status_cols[0].sql == "order_id"
+    assert status_cols[0].definition_sql == "order_id"
 
 
 def test_materialized_name_avoids_existing_measure(shop_engine):
@@ -976,7 +976,7 @@ def test_materialized_name_avoids_existing_measure(shop_engine):
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
     assert "_rev_0" in {m.name for m in orders.metrics}
-    _, derived = _single_agg({m.name: m for m in orders.metrics}["rev"].expression)
+    _, derived = _single_agg({m.name: m for m in orders.metrics}["rev"].text)
     assert derived != "_rev_0"
 
 
@@ -1027,7 +1027,7 @@ def test_materialized_name_avoids_existing_column(shop_engine):
     )
     result = _convert(shop_engine, doc)
     orders = {m.name: m for m in result.datasets}["orders"]
-    _, derived = _single_agg({meas.name: meas for meas in orders.metrics}["rev"].expression)
+    _, derived = _single_agg({meas.name: meas for meas in orders.metrics}["rev"].text)
     assert derived != "_rev_0"
     assert any(c.name == derived and c.hidden for c in orders.fields)
 
@@ -1140,7 +1140,7 @@ def test_requested_non_sql_dialect_falls_back_to_sql(shop_engine):
     )
     result = _convert(shop_engine, doc, dialect="MDX")
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {m.name: m for m in orders.metrics}["tot"].expression == "sum(amount)"
+    assert {m.name: m for m in orders.metrics}["tot"].text == "sum(amount)"
 
 
 def test_databricks_dialect_expression_normalized(shop_engine):
@@ -1154,7 +1154,7 @@ def test_databricks_dialect_expression_normalized(shop_engine):
     )
     result = _convert(shop_engine, doc, dialect="DATABRICKS")
     orders = {m.name: m for m in result.datasets}["orders"]
-    assert {m.name: m for m in orders.metrics}["tot"].expression == "sum(amount)"
+    assert {m.name: m for m in orders.metrics}["tot"].text == "sum(amount)"
 
 
 def test_target_dialect_refusing_percentile_drops_the_metric(shop_engine):
@@ -1228,7 +1228,7 @@ def test_emitted_formula_is_validated_by_the_mode_b_grammar(shop_engine):
                            expression=_expr("SUM(CASE WHEN status = 'paid' THEN amount END) / COUNT(*)"))],
     )
     orders = _by_name(_convert(shop_engine, doc))["orders"]
-    formula = {m.name: m for m in orders.metrics}["paid_share"].expression
+    formula = {m.name: m for m in orders.metrics}["paid_share"].text
     parse_expr(formula)
     assert '"' not in formula
     assert "\\" not in formula

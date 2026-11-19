@@ -82,7 +82,7 @@ def test_a_dialect_that_does_not_fold_stores_as_written() -> None:
 def test_quoted_names_literals_comments_and_logical_references_kept() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "dimensions": [
         {"name": "label", "sql": "CONCAT({CUBE}.\"Status\", 'Paid', {CUBE}.Region) -- Note", "type": "string"}]})
-    assert column(_datasets(result)["orders"], "label").sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
+    assert column(_datasets(result)["orders"], "label").definition_sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
 
 
 def test_names_local_to_a_source_query() -> None:
@@ -98,7 +98,7 @@ def test_names_local_to_a_source_query() -> None:
 def test_calculated_measure_with_a_mixed_case_operand() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "measures": [
         {"name": "paid_amount", "type": "number", "sql": "SUM(CASE WHEN {CUBE}.Status = 'paid' THEN {CUBE}.Amount END)"}]})
-    operand = source_column(_datasets(result)["orders"], "paid_amount").sql
+    operand = source_column(_datasets(result)["orders"], "paid_amount").definition_sql
     assert operand is not None
     assert _columns_read(operand) == {"status", "amount"}
     assert "'paid'" in operand
@@ -131,7 +131,7 @@ def test_filter_params_string_bodies_fold_and_keep_their_variables() -> None:
         "{CUBE}.CreatedAt > '2020-01-01' AND {FILTER_PARAMS.orders.CreatedOn.filter('CreatedAt')} "
         "AND {FILTER_PARAMS.orders.brand.filter('\"Brand\"')} AND {FILTER_PARAMS.orders.region.filter('Region')}")}]})
     orders = _datasets(result)["orders"]
-    assert column(orders, "recent").sql == (
+    assert column(orders, "recent").definition_sql == (
         "createdat > '2020-01-01' AND {? createdat IN ({CreatedOn}) ?} "
         "AND {? \"Brand\" IN ({brand}) ?} AND region IN ({region})")
     assert column(orders, "CreatedOn").physical_name == "createdat"
@@ -400,15 +400,15 @@ def test_osi_fields_read_the_exact_and_folded_snowflake_columns(tmp_path: Path, 
     result = convert(db=db, db_dialect="sqlite", target_dialect="snowflake", docs=documents(flat([
         ds("t", source="t", fields=[f("foo", '"foo"'), f("exact", '"foo"'), f("upper", "BAR")])])))
     fields = cols(by_name(result)["t"])
-    assert fields["foo"].sql == '"foo"'
-    assert fields["exact"].sql == '"foo"'
-    assert fields["upper"].sql == "bar"
+    assert fields["foo"].definition_sql == '"foo"'
+    assert fields["exact"].definition_sql == '"foo"'
+    assert fields["upper"].definition_sql == "bar"
 
 
 def test_osi_self_qualified_field_keeps_its_dataset_name(osi_db: Path) -> None:
     result = convert(db=osi_db, target_dialect="postgres", docs=documents(flat([
         ds("Orders", source="orders", fields=[f("id"), f("double", "Orders.OrderAmount * 2")])])))
-    assert cols(by_name(result)["Orders"])["double"].sql == "Orders.orderamount * 2"
+    assert cols(by_name(result)["Orders"])["double"].definition_sql == "Orders.orderamount * 2"
 
 
 def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_db: Path,

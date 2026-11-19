@@ -153,7 +153,7 @@ def source_column(dataset: SlayerDataset, metric: str) -> DatasetField:
     """The column a single-aggregation measure aggregates."""
     found = dataset.get_metric(metric)
     assert found is not None, f"measure {metric!r} missing on {dataset.name}"
-    parsed = parse_expr(found.expression)
+    parsed = parse_expr(found.text)
     assert isinstance(parsed, AggCall), found.expression
     assert isinstance(parsed.source, Ref), found.expression
     return column(dataset, parsed.source.name)

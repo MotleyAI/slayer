@@ -44,7 +44,7 @@ async def test_statistical_aggregate(db: Path, sql: str, aggregation: str, expec
     assert not unconverted(result, "stat")
     stat = by_name(result)["orders"].get_metric("stat")
     assert stat is not None
-    assert aggregation in stat.expression
+    assert aggregation in stat.text
     assert float(await scalar(result=result, db=db, dataset="orders", expression="stat")) == pytest.approx(expected)
 
 
@@ -60,7 +60,7 @@ def test_filter_condition_is_imported_without_a_deprecated_comparison(db: Path) 
     result = convert(db=db, docs=documents(_orders(m("done", "SUM(amount) FILTER (WHERE status = 'completed')"))))
     done = by_name(result)["orders"].get_metric("done")
     assert done is not None
-    assert "==" not in done.expression
+    assert "==" not in done.text
 
 
 async def test_filtered_sample_stddev(db: Path) -> None:
@@ -76,7 +76,7 @@ async def test_approximate_distinct_count(db: Path) -> None:
     assert not unconverted(result, "approx")
     approx = by_name(result)["orders"].get_metric("approx")
     assert approx is not None
-    assert "count_distinct_approx" in approx.expression
+    assert "count_distinct_approx" in approx.text
     assert await scalar(result=result, db=db, dataset="orders", expression="approx") == 2
 
 

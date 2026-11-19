@@ -97,7 +97,7 @@ class TestPhysicalReferences:
     async def test_nested_scopes_are_left_alone(self, db: Path, sql: str, kept: str) -> None:
         result = import_cube([cube(dimensions=[
             dim("amount", "{CUBE}.amount * 2", type="number"), dim("spread", sql, type="number")])], db=db)
-        assert kept in (column(datasets_of(result)["orders"], "spread").sql or "")
+        assert kept in (column(datasets_of(result)["orders"], "spread").definition_sql or "")
         assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="spread") == [5, 15, 0]
 
     async def test_measure_filter_reads_the_physical_column(self, db: Path) -> None:
@@ -149,7 +149,7 @@ class TestNestedScopesAndViews:
             ID, {"name": "amount", "sql": "{CUBE}.amount * 2", "type": "number"},
             {"name": "min_amount", "sql": "(SELECT MIN(amount) FROM orders)", "type": "number"}]}
         result = import_cube([cube], db=db)
-        assert "SELECT MIN(amount) FROM orders" in (column(datasets_of(result)["orders"], "min_amount").sql or "")
+        assert "SELECT MIN(amount) FROM orders" in (column(datasets_of(result)["orders"], "min_amount").definition_sql or "")
         assert await by_id(datasets=result.datasets, db=db, dataset="orders", dimension="min_amount") == [5, 5, 5]
 
     async def test_view_over_a_filtered_measure(self, db: Path) -> None:
@@ -308,7 +308,7 @@ class TestCalculatedMeasures:
         model = datasets_of(result)["orders"]
         found = model.get_metric("total")
         assert found is not None
-        parsed = parse_expr(found.expression)
+        parsed = parse_expr(found.text)
         assert isinstance(parsed, AggCall)
         assert parsed.agg.lower() == "sum"
         assert isinstance(parsed.source, Ref)

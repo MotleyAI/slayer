@@ -363,7 +363,7 @@ class TestMeasureConsolidation:
             ),
         ])
         fire_claim = DbtToSlayerConverter(project=project, data_source="test", target_dialect="duckdb").convert().datasets[0]
-        column = next(c for c in fire_claim.fields if c.sql == "Premium")
+        column = next(c for c in fire_claim.fields if c.expression == "Premium")
         assert column.name == "Premium_col"
         assert [m.expression for m in fire_claim.metrics if m.name == "premium"] == ["sum(Premium_col)"]
 
@@ -549,7 +549,7 @@ class TestDerivedMetricConversion:
         # inlined aggregation.
         orders = next(m for m in result.datasets if m.name == "orders")
         weird = next(m for m in orders.metrics if m.name == "weird_ratio")
-        formula = weird.expression
+        formula = weird.text
         # All three input names appear as complete tokens.
         assert "total" in formula
         assert "subtotal" in formula
@@ -1033,8 +1033,8 @@ DbtMeasure(name="total_claim_amount", agg="sum", expr="claim_amount")
         assert loss_metric.label == "Loss Payment Amount"
         assert loss_metric.expression == f"sum({filtered_cols[0].name})"
 
-    def test_filter_dim_on_source_model_stays_bare(self) -> None:
-        """Dimension('orders__status') where status exists on orders → bare 'status'."""
+    def test_filter_dim_on_source_model_is_a_path(self) -> None:
+        """Dimension('orders__status') where status exists on orders → the path 'orders.status'."""
         project = DbtProject(
             semantic_models=[
                 DbtSemanticModel(
@@ -1063,7 +1063,7 @@ DbtMeasure(name="revenue", agg="sum", expr="amount")
         orders = next(m for m in result.datasets if m.name == "orders")
         filtered_cols = [c for c in orders.fields if c.filter is not None]
         assert len(filtered_cols) == 1
-        assert filtered_cols[0].filter == "status = 'active'", (
+        assert filtered_cols[0].filter == "orders.status = 'active'", (
             f"Got: {filtered_cols[0].filter!r}"
         )
         active_rev = next(m for m in orders.metrics if m.name == "active_revenue")
@@ -1425,10 +1425,10 @@ class TestUnfilteredSimpleMetricResolution:
             "Unfiltered simple metric should not be materialized as a ModelMeasure"
         )
         double = next(m for m in orders.metrics if m.name == "double_amount")
-        assert "amount_metric" not in double.expression, (
+        assert "amount_metric" not in double.text, (
             f"Derived formula must not reference unmaterialized metric name; got {double.expression!r}"
         )
-        assert "total_amount" in double.expression, (
+        assert "total_amount" in double.text, (
             f"Derived formula should reference backing measure 'total_amount'; got {double.expression!r}"
         )
 

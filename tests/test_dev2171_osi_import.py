@@ -166,7 +166,7 @@ class TestArrayFunctions:
                                                               args: tuple[Expression, ...]) -> None:
         dialect = dialect_for_ds_type(target)
         result = import_osi(flat([orders([*LIST_FIELDS, f("listed", sql)])]), db=db, target_dialect=target)
-        stored = column(datasets_of(result)["orders"], "listed").sql
+        stored = column(datasets_of(result)["orders"], "listed").definition_sql
         assert stored is not None
         expected = dialect.build_list_call(fn, args).sql(dialect=dialect.sqlglot_name)
         assert _unquoted(stored, dialect.sqlglot_name) == _unquoted(expected, dialect.sqlglot_name)
@@ -184,5 +184,5 @@ async def test_quote_and_backslash_in_a_literal(db: Path) -> None:
     result = import_osi(flat([orders(LIST_FIELDS, metrics=[metric])]), db=db)
     found = datasets_of(result)["orders"].get_metric("obrien")
     assert found is not None
-    assert "O''Brien\\x" in found.expression
+    assert "O''Brien\\x" in found.text
     assert await value(datasets=result.datasets, db=db, dataset="orders", expression="obrien") == 1

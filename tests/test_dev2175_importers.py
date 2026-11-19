@@ -86,15 +86,15 @@ class TestHiddenReader:
             "open": 1, "paid": 1, "x": 1}
 
     def test_one_helper_serves_every_surface(self, db: Path) -> None:
-        orders = cube(dimensions=[SELF_NAMED], joins=[{**JOIN, "sql": "{CUBE}.status = {customers}.region"}])
+        orders = cube(dimensions=[SELF_NAMED])
         back = {"name": "orders", "relationship": "many_to_one", "sql": "{CUBE}.region = {orders}.status"}
         customers = {**CUSTOMERS, "joins": [back],
                      "dimensions": [*CUSTOMERS["dimensions"], dim("order_status", "{orders}.status")]}
         result = import_cube([orders, customers], db=db)
         imported = datasets_of(result)
         (helper,) = readers_of(imported["orders"], "status")
-        (to_customers,) = imported["orders"].relationships
-        assert to_customers.from_columns == [helper["name"]]
+        (to_orders,) = imported["customers"].relationships
+        assert to_orders.to_columns == [helper["name"]]
         assert has_column(result, "customers", "order_status")
         assert not cube_issues(result, "order_status")
 

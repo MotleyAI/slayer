@@ -60,7 +60,7 @@ def test_child_overrides_inherited_member():
     ])
     models, _ = _convert(project)
     # Child wins on name conflict.
-    assert models["child"].get_field("label").sql == "new_label"
+    assert models["child"].get_field("label").expression == "new_label"
 
 
 def test_multi_level_extends_chain():

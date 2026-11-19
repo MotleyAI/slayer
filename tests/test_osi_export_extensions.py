@@ -61,7 +61,7 @@ async def test_slayer_only_measure_travels_in_the_extension(env, name: str) -> N
     model = rich_orders()
     result = await export_datasets(env, customers(), model)
     assert name not in _metric_names(result.document)
-    formula = next(m.expression for m in model.metrics if m.name == name)
+    formula = next(m.text for m in model.metrics if m.name == name)
     assert carries(dataset(result.document, "orders"), formula)
     [entry] = mentions(result, name, severity="info", category="extension_only")
     assert entry.suggestion
